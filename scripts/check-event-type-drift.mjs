@@ -107,10 +107,15 @@ function main() {
     process.exit(1);
   }
 
+  // Count deferred types EXCLUSIVE of ones Rust already references, so the
+  // figures sum to the frozen total. A deferred type can still appear in Rust
+  // (KOTCreated shows up in a test asserting it is unrouted), and the earlier
+  // phrasing double-counted those.
+  const deferredAndUnseen = Object.keys(NOT_YET_EMITTED).filter((t) => !seenInRust.has(t));
   console.log(
-    `Event-type drift check passed: ${frozen.length} frozen types, ` +
-      `${seenInRust.size} emitted by Rust, ` +
-      `${Object.keys(NOT_YET_EMITTED).length} deferred with a reason.`,
+    `Event-type drift check passed: ${frozen.length} frozen types — ` +
+      `${seenInRust.size} referenced by Rust, ` +
+      `${deferredAndUnseen.length} deferred with a reason.`,
   );
 }
 

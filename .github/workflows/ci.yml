@@ -37,3 +37,10 @@ jobs:
         run: cd packages/contracts && npm install --no-save zod typescript vitest
       - name: ts drift test
         run: cd packages/contracts && npx vitest run
+      # The Rust edge crates have no generated contract binding (deferred until
+      # a fourth Rust consumer — ADR-011 addendum, 0.2.2), so their event_type
+      # literals are unbound strings. A mismatch fails silently at replay: the
+      # POS writes an outbox row the cloud never recognises, with no error.
+      # This greps them against the frozen list in both directions.
+      - name: event type drift check
+        run: node scripts/check-event-type-drift.mjs
