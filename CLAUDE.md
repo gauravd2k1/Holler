@@ -16,8 +16,18 @@ Full vision: `docs/vision.md`. Full spec source: `HOLLER_MASTER_PROMPT.md` (orch
 - Restaurant hardware is old and minimal and will not be upgraded, virtualised or extended. Never add an outlet-side dependency that needs a developer toolchain, a service install, or internet at install time.
 - Installer must embed the WebView2 runtime and the VC++ runtime rather than downloading them — installing on a flaky connection is the normal case.
 
+## Environment map (where each thing actually runs)
+| Environment | What runs there |
+|---|---|
+| **Native Windows (PowerShell)** | Claude Code itself, and all Rust/Tauri/Go builds and tests. Run `cargo`, `go` and `pnpm` here — not inside WSL. |
+| **WSL2 Ubuntu** | Docker Compose only: Postgres, Redis, NATS. Reached via `make dev`; you do not work inside it. |
+| **WSL2 Kali** | Unrelated to this project. Never use it for Holler work. |
+| **Outlet machine (production)** | Bare Windows 10 — one native POS executable over one SQLite file. No WSL, no Docker, no database server (ADR-013). |
+
+The split that matters: WSL2 hosts the **cloud** dependencies for local development and nothing else. It is a convenience — Hyper-V, a remote database or a native Go build would serve equally — and no Holler component requires it. Nothing in the shipped outlet path touches it.
+
 ## Dev environment (developer convenience only — NOT a product requirement)
-- Dev machine here: Windows laptop (i7-9750H, 16GB, GTX1050). The **cloud** stack (Postgres/Redis/NATS/Go backend) runs in Docker; WSL2 is one way to host that and is in no way required — Hyper-V, a remote database or a native Go build are equally fine. Tauri/Rust Windows builds run on Windows (MSVC). Cap concurrent agent sessions at 3.
+- Dev machine here: Windows laptop (i7-9750H, 16GB, GTX1050). Cap concurrent agent sessions at 3.
 - `make dev` brings up the **cloud** stack for local development. It is never run at an outlet. Frontend runs natively for HMR.
 
 ## Money / time / identifiers
