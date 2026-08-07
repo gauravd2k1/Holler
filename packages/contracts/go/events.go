@@ -28,6 +28,16 @@ type ItemAddedEvent struct {
 	} `json:"data"`
 }
 
+// ItemRemovedEvent added at 0.2.3. Carries the full item, not just an id: once
+// the row is deleted the cloud cannot look up what left the order.
+type ItemRemovedEvent struct {
+	EventEnvelope
+	Data struct {
+		OrderID string    `json:"order_id"`
+		Item    OrderItem `json:"item"`
+	} `json:"data"`
+}
+
 type KotCreatedEvent struct {
 	EventEnvelope
 	Data struct {
@@ -80,6 +90,7 @@ type TableSessionUpdatedEvent struct {
 const (
 	EventTypeOrderCreated        = "OrderCreated"
 	EventTypeItemAdded           = "ItemAdded"
+	EventTypeItemRemoved         = "ItemRemoved"
 	EventTypeKotCreated          = "KOTCreated"
 	EventTypeOrderReady          = "OrderReady"
 	EventTypeSentToKitchen       = "SentToKitchen"
@@ -93,6 +104,7 @@ const (
 var OutboxEventTypes = []string{
 	EventTypeOrderCreated,
 	EventTypeItemAdded,
+	EventTypeItemRemoved,
 	EventTypeKotCreated,
 	EventTypeOrderReady,
 	EventTypeSentToKitchen,

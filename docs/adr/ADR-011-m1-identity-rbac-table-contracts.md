@@ -110,3 +110,34 @@ The check earned itself immediately: it found that `edge/sync/src/route.rs` hand
 `app_user.updated_at` is `NOT NULL` in the SQLite schema but the endpoint never supplied it, so the sync worker synthesized a wall-clock value on every pull. Harmless — `config_version` drives replace-or-ignore, not `updated_at` — but the endpoint should supply what the schema demands.
 
 `roles` is **removed** from the `/sync/config` bundle. This is the only non-additive change in the bump. The edge has no `role` table by design: permissions arrive pre-flattened on each user entry, so the field promised storage that does not exist and the sync worker parsed then discarded it. Removing it beats adding a table nothing reads.
+
+---
+
+## Addendum — 0.2.3 (2026-08-07)
+
+Two changes, both closing gaps where the contract promised more than the schema could hold. Fully additive.
+
+### 1. `order_item_modifier` — the wire promised fidelity the storage could not deliver
+
+`OrderItem` has carried a `modifiers` array since 0.1.0, and `fixtures/order.json` round-trips a real modifier through both languages. No table ever held them. So every `ItemAdded` event replayed an empty modifier list, and an order for "Large / Cheese Burst / extra paneer" — the example in docs/spec/menu.md itself — arrived at the cloud stripped of its selections. Every drift test passed throughout, because they check shape, not storage.
+
+`sqlite/0003` and `postgres/0004` add a typed `order_item_modifier` table on both sides. **Typed table, not a `modifiers_json` column**: these rows carry money (`price_delta_paise`) and must survive replay with the same fidelity as the line itself, which is exactly what ADR-008's typed-tables-over-JSONB rule is for.
+
+`modifier_id` is deliberately **not** a foreign key to `menu_item_modifier`. The catalog is config and gets replaced wholesale at a newer `config_version` (§50.1); a completed order's snapshot must never move because the menu changed underneath it. `group_name`, `option_name` and `price_delta_paise` are snapshotted for the same reason.
+
+The money invariant is stated in both migrations so the edge recompute path and the cloud replay cannot diverge:
+
+    unit_price_paise = snapshot of menu_item.base_price_paise + variant delta
+    line_total_paise = (unit_price_paise + SUM(price_delta_paise)) * quantity
+
+### 2. `ItemRemoved`
+
+docs/spec/sync.md §Event model always listed it; it was simply never frozen in `events.ts`. The consequence was asymmetry: `edge/database` hardened its add path to derive the outbox payload from the row it wrote, but could not do the same for removal because no frozen event type existed, leaving removal caller-described — a caller could delete a line and emit a misleading record, with the local row already gone.
+
+The payload carries the **full item**, not just an id: once the row is deleted the cloud cannot look up what left the order, so the event has to be self-describing.
+
+### Practice note — verify storage, not only shape
+
+This bump exists because round-trip drift tests proved the *shape* was consistent across languages while nothing proved the data could be *stored*. Contract fixtures round-tripped modifiers for three milestones over a schema that had nowhere to put them.
+
+**For future contract freezes: pair each shape round-trip with a persistence round-trip** — wire fixture → store → read back → re-serialize → byte-compare against the fixture. A shape test proves the languages agree; a persistence test proves the database can actually hold what they agreed on. The `edge/database` follow-up for this bump adds that test for `order_item` and its modifiers as the reference implementation.

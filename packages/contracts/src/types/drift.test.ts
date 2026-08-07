@@ -88,6 +88,7 @@ describe("contract drift", () => {
     expect([...OUTBOX_EVENT_TYPES]).toEqual([
       "OrderCreated",
       "ItemAdded",
+      "ItemRemoved",
       "KOTCreated",
       "OrderReady",
       "SentToKitchen",

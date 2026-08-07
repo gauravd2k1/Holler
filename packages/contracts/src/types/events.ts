@@ -35,6 +35,20 @@ export const ItemAddedEventSchema = EventEnvelope(
 );
 export type ItemAddedEvent = z.infer<typeof ItemAddedEventSchema>;
 
+// Added at 0.2.3. docs/spec/sync.md §Event model always listed ItemRemoved; it
+// was simply never frozen here, which left the edge's line-removal path
+// caller-described while the add path was hardened. The full item travels in
+// the payload, not just an id: once the row is deleted the cloud has no way to
+// look up what left the order, so the event must be self-describing.
+export const ItemRemovedEventSchema = EventEnvelope(
+  "ItemRemoved",
+  z.object({
+    order_id: z.string().uuid(),
+    item: CanonicalOrderSchema.shape.items.element,
+  }),
+);
+export type ItemRemovedEvent = z.infer<typeof ItemRemovedEventSchema>;
+
 export const KotCreatedEventSchema = EventEnvelope("KOTCreated", z.object({ kot: KotSchema }));
 export type KotCreatedEvent = z.infer<typeof KotCreatedEventSchema>;
 
@@ -75,6 +89,7 @@ export type TableSessionUpdatedEvent = z.infer<typeof TableSessionUpdatedEventSc
 export const OutboxEventSchema = z.discriminatedUnion("event_type", [
   OrderCreatedEventSchema,
   ItemAddedEventSchema,
+  ItemRemovedEventSchema,
   KotCreatedEventSchema,
   OrderReadyEventSchema,
   SentToKitchenEventSchema,
@@ -92,6 +107,7 @@ export type OutboxEvent = z.infer<typeof OutboxEventSchema>;
 export const OUTBOX_EVENT_TYPES = [
   "OrderCreated",
   "ItemAdded",
+  "ItemRemoved",
   "KOTCreated",
   "OrderReady",
   "SentToKitchen",

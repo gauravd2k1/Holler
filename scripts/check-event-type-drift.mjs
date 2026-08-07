@@ -30,6 +30,10 @@ const RUST_ROOTS = [join(REPO_ROOT, "edge/sync/src"), join(REPO_ROOT, "apps/pos/
 const NOT_YET_EMITTED = {
   KOTCreated: "KOT generation is Milestone 2",
   OrderReady: "kitchen status flow is Milestone 2",
+  // TEMPORARY — delete this entry in the same commit that makes
+  // edge/database emit ItemRemoved. If it is still here a milestone later,
+  // the hardening never landed and the removal path is still caller-described.
+  ItemRemoved: "edge hardening follow-up in flight (0.2.3)",
 };
 
 function frozenEventTypes() {

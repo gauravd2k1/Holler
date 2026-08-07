@@ -119,6 +119,7 @@ func TestOutboxEventTypes(t *testing.T) {
 	want := []string{
 		"OrderCreated",
 		"ItemAdded",
+		"ItemRemoved",
 		"KOTCreated",
 		"OrderReady",
 		"SentToKitchen",
