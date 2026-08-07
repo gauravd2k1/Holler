@@ -1,0 +1,111 @@
+package outlet_test
+
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/holler/backend/internal/outlet"
+	"github.com/holler/backend/internal/platform/httpx"
+	"github.com/holler/backend/internal/platform/postgres"
+	"github.com/holler/backend/internal/tenant"
+)
+
+func setupPool(t *testing.T) postgres.Pool {
+	t.Helper()
+
+	dbURL := os.Getenv("HOLLER_TEST_DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("HOLLER_TEST_DATABASE_URL not set; skipping outlet Postgres integration test")
+	}
+
+	ctx := context.Background()
+	pool, err := postgres.Open(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("postgres.Open: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	contractsDir, err := filepath.Abs(filepath.Join("..", "..", "..", "packages", "contracts", "postgres"))
+	if err != nil {
+		t.Fatalf("resolving contracts dir: %v", err)
+	}
+	if err := postgres.Migrate(ctx, pool, contractsDir); err != nil {
+		t.Fatalf("postgres.Migrate: %v", err)
+	}
+	return pool
+}
+
+// TestPostgresRepository_CrossTenantOutletLookupIsNotFound is the
+// dedicated automated test docs/spec/security-rbac.md §Tenant isolation
+// requires, run against a real Postgres: a request carrying tenant A's
+// principal and tenant B's outlet id must 404, not 200 and not a
+// leak-confirming 403.
+func TestPostgresRepository_CrossTenantOutletLookupIsNotFound(t *testing.T) {
+	pool := setupPool(t)
+	ctx := context.Background()
+
+	tenantSvc := tenant.NewService(tenant.NewPostgresRepository(pool))
+	outletSvc := outlet.NewService(outlet.NewPostgresRepository(pool))
+
+	orgA, err := tenantSvc.CreateOrganisation(ctx, "Integration Outlet Org A")
+	if err != nil {
+		t.Fatalf("CreateOrganisation A: %v", err)
+	}
+	orgB, err := tenantSvc.CreateOrganisation(ctx, "Integration Outlet Org B")
+	if err != nil {
+		t.Fatalf("CreateOrganisation B: %v", err)
+	}
+
+	brandA, err := tenantSvc.CreateBrand(ctx, orgA.ID, "Integration Brand A")
+	if err != nil {
+		t.Fatalf("CreateBrand A: %v", err)
+	}
+	brandB, err := tenantSvc.CreateBrand(ctx, orgB.ID, "Integration Brand B")
+	if err != nil {
+		t.Fatalf("CreateBrand B: %v", err)
+	}
+
+	principalA := outlet.Principal{TenantID: orgA.ID}
+	principalB := outlet.Principal{TenantID: orgB.ID}
+
+	outletA, err := outletSvc.CreateOutlet(ctx, principalA, brandA.ID, "Outlet A", "")
+	if err != nil {
+		t.Fatalf("CreateOutlet A: %v", err)
+	}
+	outletB, err := outletSvc.CreateOutlet(ctx, principalB, brandB.ID, "Outlet B", "")
+	if err != nil {
+		t.Fatalf("CreateOutlet B: %v", err)
+	}
+
+	// A cannot create an outlet under B's brand.
+	if _, err := outletSvc.CreateOutlet(ctx, principalA, brandB.ID, "Hijacked Outlet", ""); !errors.Is(err, httpx.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound creating outlet under another tenant's brand, got %v", err)
+	}
+
+	// A's list never contains B's outlet.
+	listA, err := outletSvc.ListOutlets(ctx, principalA)
+	if err != nil {
+		t.Fatalf("ListOutlets A: %v", err)
+	}
+	for _, o := range listA {
+		if o.ID == outletB.ID {
+			t.Fatal("tenant A's outlet list leaked tenant B's outlet")
+		}
+	}
+
+	// The core assertion: A's principal, B's outlet id -> not found.
+	if _, err := outletSvc.GetOutlet(ctx, principalA, outletB.ID); !errors.Is(err, httpx.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for cross-tenant outlet lookup, got %v", err)
+	}
+
+	// Sanity: B can fetch its own outlet, A can fetch its own outlet.
+	if _, err := outletSvc.GetOutlet(ctx, principalB, outletB.ID); err != nil {
+		t.Fatalf("owning tenant B should fetch its own outlet: %v", err)
+	}
+	if _, err := outletSvc.GetOutlet(ctx, principalA, outletA.ID); err != nil {
+		t.Fatalf("owning tenant A should fetch its own outlet: %v", err)
+	}
+}
