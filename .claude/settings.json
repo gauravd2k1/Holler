@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Edit",
+      "Write",
+      "Bash(mkdir:*)",
+      "Bash(git:*)",
+      "Bash(go build:*)",
+      "Bash(go test:*)",
+      "Bash(go mod:*)",
+      "Bash(npm install:*)",
+      "Bash(npm run:*)",
+      "Bash(npx:*)",
+      "Bash(cargo:*)",
+      "Bash(docker:*)",
+      "Bash(docker compose:*)",
+      "Bash(make:*)"
+    ]
+  }
+}

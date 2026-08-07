@@ -1,0 +1,76 @@
+version: "3.9"
+
+# Intended to run inside WSL2 on the primary dev machine (see CLAUDE.md, §3.8).
+# Alpine-based images; explicit memory limits to respect the 16GB dev host.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: holler
+      POSTGRES_PASSWORD: holler_dev
+      POSTGRES_DB: holler
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U holler"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  nats:
+    image: nats:2-alpine
+    command: ["-js"]
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgres://holler:holler_dev@postgres:5432/holler?sslmode=disable
+      REDIS_URL: redis://redis:6379
+      NATS_URL: nats://nats:4222
+      PORT: "8080"
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+volumes:
+  postgres_data:

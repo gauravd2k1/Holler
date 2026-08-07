@@ -1,0 +1,31 @@
+.claude/worktrees
+
+# Go
+backend/bin/
+*.exe
+*.test
+
+# Node
+node_modules/
+dist/
+.vite/
+
+# Rust / Tauri
+target/
+apps/pos/src-tauri/target/
+
+# Flutter
+apps/waiter/build/
+apps/waiter/.dart_tool/
+
+# Local data / secrets
+*.db
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
