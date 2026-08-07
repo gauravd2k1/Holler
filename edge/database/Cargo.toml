@@ -1,0 +1,37 @@
+[package]
+name = "holler-edge-database"
+version = "0.1.0"
+edition = "2021"
+description = "Edge SQLite database service: connection, migrations, encryption-at-rest, typed repositories and transactional outbox for the Holler POS edge node."
+
+[lib]
+name = "holler_edge_database"
+path = "src/lib.rs"
+
+[dependencies]
+# SQLite driver. "bundled" statically links SQLite so the edge node has no
+# system SQLite dependency (ADR-003: no separate server process, modest
+# restaurant hardware).
+rusqlite = { version = "0.31", features = ["bundled"] }
+
+# Application-level encryption-at-rest (ADR-011 amendment to ADR-003). See
+# src/crypto.rs for the SQLCipher-vs-application-level decision: this build
+# environment cannot compile bundled SQLCipher (no working Perl/OpenSSL
+# toolchain for MSVC — see final report), so the file is sealed with
+# AES-256-GCM at rest and only ever holds plaintext SQLite bytes for the
+# lifetime of an open Db handle.
+aes-gcm = "0.10"
+rand = "0.8"
+
+# Offline Argon2id verification against hashes produced by
+# backend/internal/platform/crypto/password.go (PHC-encoded).
+argon2 = { version = "0.5", default-features = false, features = ["alloc"] }
+base64 = "0.22"
+
+# Local ID generation for outbox/session rows created at the edge.
+uuid = { version = "1", features = ["v4"] }
+
+thiserror = "1"
+
+[dev-dependencies]
+tempfile = "3"
