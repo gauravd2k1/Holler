@@ -351,6 +351,31 @@ pub fn upsert_menu_item_modifier(conn: &Connection, m: &MenuItemModifier) -> DbR
     Ok(())
 }
 
+/// Config aggregate, read-only from the edge (§50.1): the sync worker calls
+/// `upsert_menu_category` with a cloud-authorized `config_version`; the POS
+/// only ever reads it back.
+pub fn list_menu_categories_for_outlet(
+    conn: &Connection,
+    outlet_id: &str,
+) -> DbResult<Vec<MenuCategory>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, outlet_id, name, sort_order, config_version
+         FROM menu_category WHERE outlet_id = ?1 ORDER BY sort_order, name",
+    )?;
+    let rows = stmt
+        .query_map(params![outlet_id], |row| {
+            Ok(MenuCategory {
+                id: row.get(0)?,
+                outlet_id: row.get(1)?,
+                name: row.get(2)?,
+                sort_order: row.get(3)?,
+                config_version: row.get(4)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
 pub fn list_menu_items_for_outlet(conn: &Connection, outlet_id: &str) -> DbResult<Vec<MenuItem>> {
     let mut stmt = conn.prepare(
         "SELECT id, outlet_id, category_id, name, base_price_paise, is_available, config_version
@@ -366,6 +391,66 @@ pub fn list_menu_items_for_outlet(conn: &Connection, outlet_id: &str) -> DbResul
                 base_price_paise: row.get(4)?,
                 is_available: i64_to_bool(row.get(5)?),
                 config_version: row.get(6)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// `menu_item_variant` has no `outlet_id` column of its own (it hangs off
+/// `menu_item_id`), so "outlet-scoped" means joining through `menu_item` —
+/// this is the read the POS needs to price "Large / Cheese Burst" without
+/// a second round trip per item.
+pub fn list_menu_item_variants_for_outlet(
+    conn: &Connection,
+    outlet_id: &str,
+) -> DbResult<Vec<MenuItemVariant>> {
+    let mut stmt = conn.prepare(
+        "SELECT v.id, v.menu_item_id, v.name, v.price_delta_paise, v.config_version
+         FROM menu_item_variant v
+         JOIN menu_item m ON m.id = v.menu_item_id
+         WHERE m.outlet_id = ?1
+         ORDER BY v.menu_item_id, v.name",
+    )?;
+    let rows = stmt
+        .query_map(params![outlet_id], |row| {
+            Ok(MenuItemVariant {
+                id: row.get(0)?,
+                menu_item_id: row.get(1)?,
+                name: row.get(2)?,
+                price_delta_paise: row.get(3)?,
+                config_version: row.get(4)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Same outlet-scoping-via-join rationale as
+/// [`list_menu_item_variants_for_outlet`], for modifier groups/options.
+pub fn list_menu_item_modifiers_for_outlet(
+    conn: &Connection,
+    outlet_id: &str,
+) -> DbResult<Vec<MenuItemModifier>> {
+    let mut stmt = conn.prepare(
+        "SELECT mm.id, mm.menu_item_id, mm.group_name, mm.option_name, mm.price_delta_paise,
+                mm.min_selection, mm.max_selection, mm.config_version
+         FROM menu_item_modifier mm
+         JOIN menu_item m ON m.id = mm.menu_item_id
+         WHERE m.outlet_id = ?1
+         ORDER BY mm.menu_item_id, mm.group_name, mm.option_name",
+    )?;
+    let rows = stmt
+        .query_map(params![outlet_id], |row| {
+            Ok(MenuItemModifier {
+                id: row.get(0)?,
+                menu_item_id: row.get(1)?,
+                group_name: row.get(2)?,
+                option_name: row.get(3)?,
+                price_delta_paise: row.get(4)?,
+                min_selection: row.get(5)?,
+                max_selection: row.get(6)?,
+                config_version: row.get(7)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -417,6 +502,96 @@ pub(crate) fn insert_order_item(tx: &Transaction, i: &NewOrderItem) -> DbResult<
             i.created_at,
         ],
     )?;
+    Ok(())
+}
+
+/// Enforces "amendment is only legal while the order is DRAFT" inside the
+/// same transaction as the write it is guarding, so the check and the
+/// mutation it protects can never race. Returns `DbError::NotFound` if the
+/// order does not exist, `DbError::OrderNotAmendable` if it exists but is
+/// not DRAFT.
+pub(crate) fn require_draft_order(tx: &Transaction, order_id: &str) -> DbResult<()> {
+    let status: Option<String> = tx
+        .query_row(
+            "SELECT status FROM \"order\" WHERE id = ?1",
+            params![order_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    match status {
+        None => Err(crate::error::DbError::NotFound("order")),
+        Some(s) if s == "DRAFT" => Ok(()),
+        Some(s) => Err(crate::error::DbError::OrderNotAmendable {
+            order_id: order_id.to_string(),
+            status: s,
+        }),
+    }
+}
+
+pub(crate) fn get_order_item_in_tx(tx: &Transaction, id: &str) -> DbResult<Option<OrderItem>> {
+    tx.query_row(
+        "SELECT id, order_id, menu_item_id, variant_id, quantity, unit_price_paise, line_total_paise, notes, created_at
+         FROM order_item WHERE id = ?1",
+        params![id],
+        |row| {
+            Ok(OrderItem {
+                id: row.get(0)?,
+                order_id: row.get(1)?,
+                menu_item_id: row.get(2)?,
+                variant_id: row.get(3)?,
+                quantity: row.get(4)?,
+                unit_price_paise: row.get(5)?,
+                line_total_paise: row.get(6)?,
+                notes: row.get(7)?,
+                created_at: row.get(8)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+pub(crate) fn delete_order_item(tx: &Transaction, id: &str) -> DbResult<()> {
+    let changed = tx.execute("DELETE FROM order_item WHERE id = ?1", params![id])?;
+    if changed == 0 {
+        return Err(crate::error::DbError::NotFound("order_item"));
+    }
+    Ok(())
+}
+
+/// Recomputes `subtotal_paise`/`total_paise` from the snapshot
+/// `unit_price_paise`/`line_total_paise` already stored on the remaining
+/// order_item rows — never from the live menu (CLAUDE.md: order lines
+/// snapshot price at order time). `discount_paise`/`tax_paise` are set by
+/// pricing/tax rules outside this crate's scope and are left as they are;
+/// only the subtotal (driven by the lines) and the total that follows from
+/// it are recomputed here. Bumps `version` and `updated_at` on the order,
+/// matching the optimistic-concurrency contract on `"order".version`.
+pub(crate) fn recompute_and_persist_order_totals(
+    tx: &Transaction,
+    order_id: &str,
+    updated_at: &str,
+) -> DbResult<()> {
+    let subtotal_paise: i64 = tx.query_row(
+        "SELECT COALESCE(SUM(line_total_paise), 0) FROM order_item WHERE order_id = ?1",
+        params![order_id],
+        |row| row.get(0),
+    )?;
+    let (discount_paise, tax_paise): (i64, i64) = tx.query_row(
+        "SELECT discount_paise, tax_paise FROM \"order\" WHERE id = ?1",
+        params![order_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let total_paise = subtotal_paise - discount_paise + tax_paise;
+
+    let changed = tx.execute(
+        "UPDATE \"order\" SET subtotal_paise = ?1, total_paise = ?2, version = version + 1, updated_at = ?3
+         WHERE id = ?4",
+        params![subtotal_paise, total_paise, updated_at, order_id],
+    )?;
+    if changed == 0 {
+        return Err(crate::error::DbError::NotFound("order"));
+    }
     Ok(())
 }
 

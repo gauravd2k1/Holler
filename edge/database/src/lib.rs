@@ -147,6 +147,54 @@ impl Db {
         Ok(())
     }
 
+    /// Adds a line item to an already-persisted order, writing the
+    /// `order_item` row, the recomputed order totals, and the
+    /// `local_outbox` row in the *same* transaction (ADR-007) — the same
+    /// guarantee as [`Db::create_order_with_outbox`]. Rejects the write
+    /// with `DbError::OrderNotAmendable` if the order is not `DRAFT`
+    /// (amendment is only legal pre-confirmation); rolls back entirely on
+    /// any failure, leaving neither the line nor the outbox row.
+    pub fn add_order_item_with_outbox(
+        &mut self,
+        item: &NewOrderItem,
+        outbox: &NewOutboxEntry,
+    ) -> DbResult<()> {
+        let tx = self.conn.transaction()?;
+        repo::require_draft_order(&tx, &item.order_id)?;
+        repo::insert_order_item(&tx, item)?;
+        repo::insert_outbox_entry(&tx, outbox)?;
+        repo::recompute_and_persist_order_totals(&tx, &item.order_id, &item.created_at)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Removes a line item from an already-persisted order, writing the
+    /// deletion, the recomputed order totals, and the `local_outbox` row in
+    /// the *same* transaction. Per sync.md §51 financial lines are
+    /// append-only on the *cloud*; the edge is where a cashier legitimately
+    /// removes a line before confirmation, so the row is actually deleted
+    /// here, but `outbox` (built by the caller from the line this function
+    /// is about to remove) is what lets the cloud replay the removal as an
+    /// event rather than only observing a smaller order — history is
+    /// preserved in the outbox event stream, not in this table. Rejects the
+    /// write with `DbError::OrderNotAmendable` if the order is not `DRAFT`.
+    pub fn remove_order_item_with_outbox(
+        &mut self,
+        order_item_id: &str,
+        updated_at: &str,
+        outbox: &NewOutboxEntry,
+    ) -> DbResult<()> {
+        let tx = self.conn.transaction()?;
+        let existing = repo::get_order_item_in_tx(&tx, order_item_id)?
+            .ok_or(DbError::NotFound("order_item"))?;
+        repo::require_draft_order(&tx, &existing.order_id)?;
+        repo::delete_order_item(&tx, order_item_id)?;
+        repo::insert_outbox_entry(&tx, outbox)?;
+        repo::recompute_and_persist_order_totals(&tx, &existing.order_id, updated_at)?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Opens a new table session together with its `local_outbox` row, in
     /// one transaction.
     pub fn open_table_session_with_outbox(
@@ -259,6 +307,298 @@ mod tests {
             },
         )
         .expect("seed device");
+    }
+
+    fn seed_menu(db: &Db, outlet_id: &str) -> (String, String, String) {
+        let category_id = "category-1".to_string();
+        let item_id = "item-1".to_string();
+        let variant_id = "variant-1".to_string();
+
+        repo::upsert_menu_category(
+            db.connection(),
+            &model::MenuCategory {
+                id: category_id.clone(),
+                outlet_id: outlet_id.to_string(),
+                name: "Mains".to_string(),
+                sort_order: 1,
+                config_version: 1,
+            },
+        )
+        .expect("seed category");
+        repo::upsert_menu_item(
+            db.connection(),
+            &model::MenuItem {
+                id: item_id.clone(),
+                outlet_id: outlet_id.to_string(),
+                category_id: category_id.clone(),
+                name: "Burger".to_string(),
+                base_price_paise: 25000,
+                is_available: true,
+                config_version: 1,
+            },
+        )
+        .expect("seed menu item");
+        repo::upsert_menu_item_variant(
+            db.connection(),
+            &model::MenuItemVariant {
+                id: variant_id.clone(),
+                menu_item_id: item_id.clone(),
+                name: "Large".to_string(),
+                price_delta_paise: 5000,
+                config_version: 1,
+            },
+        )
+        .expect("seed variant");
+        repo::upsert_menu_item_modifier(
+            db.connection(),
+            &model::MenuItemModifier {
+                id: "modifier-1".to_string(),
+                menu_item_id: item_id.clone(),
+                group_name: "Cheese".to_string(),
+                option_name: "Extra Paneer".to_string(),
+                price_delta_paise: 3000,
+                min_selection: 0,
+                max_selection: 1,
+                config_version: 1,
+            },
+        )
+        .expect("seed modifier");
+
+        (category_id, item_id, variant_id)
+    }
+
+    fn sample_order_item(
+        id: &str,
+        order_id: &str,
+        menu_item_id: &str,
+        line_total_paise: i64,
+    ) -> NewOrderItem {
+        NewOrderItem {
+            id: id.to_string(),
+            order_id: order_id.to_string(),
+            menu_item_id: menu_item_id.to_string(),
+            variant_id: None,
+            quantity: 1,
+            unit_price_paise: line_total_paise,
+            line_total_paise,
+            notes: None,
+            created_at: "2026-08-07T10:05:00Z".to_string(),
+        }
+    }
+
+    fn item_outbox(order_item_id: &str, event_type: &str) -> NewOutboxEntry {
+        NewOutboxEntry {
+            id: format!("outbox-{order_item_id}"),
+            aggregate_type: "order".to_string(),
+            aggregate_id: order_item_id.to_string(),
+            event_type: event_type.to_string(),
+            payload_json: "{}".to_string(),
+            created_at: "2026-08-07T10:05:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn add_order_item_writes_outbox_and_recomputes_totals_atomically() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+        let (_, menu_item_id, _) = seed_menu(&db, "outlet-1");
+
+        let order = sample_order("order-add", "outlet-1", "device-1");
+        db.create_order_with_outbox(&order, &[], &sample_outbox("order-add"))
+            .expect("create draft order");
+
+        let item = sample_order_item("item-add-1", "order-add", &menu_item_id, 25000);
+        db.add_order_item_with_outbox(&item, &item_outbox("item-add-1", "ItemAdded"))
+            .expect("add item");
+
+        let stored_order = db.get_order("order-add").unwrap().expect("order exists");
+        assert_eq!(stored_order.subtotal_paise, 25000);
+        assert_eq!(stored_order.total_paise, 25000);
+        assert_eq!(stored_order.version, 2, "version must bump on amendment");
+
+        let pending = repo::list_unpublished_outbox(db.connection(), 100).unwrap();
+        assert!(pending.iter().any(|e| e.aggregate_id == "item-add-1"));
+    }
+
+    #[test]
+    fn add_order_item_rejects_non_draft_order_and_writes_nothing() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+        let (_, menu_item_id, _) = seed_menu(&db, "outlet-1");
+
+        let mut order = sample_order("order-confirmed", "outlet-1", "device-1");
+        order.status = "CONFIRMED".to_string();
+        db.create_order_with_outbox(&order, &[], &sample_outbox("order-confirmed"))
+            .expect("create confirmed order");
+
+        let item = sample_order_item("item-reject-1", "order-confirmed", &menu_item_id, 25000);
+        let result =
+            db.add_order_item_with_outbox(&item, &item_outbox("item-reject-1", "ItemAdded"));
+
+        assert!(matches!(result, Err(DbError::OrderNotAmendable { .. })));
+
+        let items = repo::list_order_items(db.connection(), "order-confirmed").unwrap();
+        assert!(items.is_empty(), "rejected item must not be persisted");
+        let pending = repo::list_unpublished_outbox(db.connection(), 100).unwrap();
+        assert!(pending.iter().all(|e| e.aggregate_id != "item-reject-1"));
+    }
+
+    /// Proves the same rollback guarantee as
+    /// `failed_order_transaction_leaves_neither_order_nor_outbox_row`, for
+    /// the amendment path: a failure partway through (here, a duplicate
+    /// primary key on the second insert attempt) must leave neither a
+    /// second copy of the line nor its outbox row, and must not have
+    /// recomputed totals off a half-applied change.
+    #[test]
+    fn failed_add_order_item_transaction_leaves_neither_item_nor_outbox_row() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+        let (_, menu_item_id, _) = seed_menu(&db, "outlet-1");
+
+        let order = sample_order("order-fail-add", "outlet-1", "device-1");
+        db.create_order_with_outbox(&order, &[], &sample_outbox("order-fail-add"))
+            .expect("create draft order");
+
+        let item = sample_order_item("item-dup", "order-fail-add", &menu_item_id, 10000);
+        db.add_order_item_with_outbox(&item, &item_outbox("item-dup", "ItemAdded"))
+            .expect("first add succeeds");
+
+        // Same id again -> PRIMARY KEY collision partway through the
+        // transaction (after require_draft_order passed, before totals are
+        // recomputed).
+        let outbox_id = "outbox-item-dup-2".to_string();
+        let duplicate_outbox = NewOutboxEntry {
+            id: outbox_id,
+            ..item_outbox("item-dup", "ItemAdded")
+        };
+        let result = db.add_order_item_with_outbox(&item, &duplicate_outbox);
+        assert!(result.is_err(), "duplicate id must fail the transaction");
+
+        let items = repo::list_order_items(db.connection(), "order-fail-add").unwrap();
+        assert_eq!(items.len(), 1, "no duplicate line must be committed");
+        let pending = repo::list_unpublished_outbox(db.connection(), 100).unwrap();
+        assert_eq!(
+            pending
+                .iter()
+                .filter(|e| e.aggregate_id == "item-dup")
+                .count(),
+            1,
+            "no duplicate outbox row must be committed"
+        );
+
+        let stored_order = db
+            .get_order("order-fail-add")
+            .unwrap()
+            .expect("order exists");
+        assert_eq!(
+            stored_order.subtotal_paise, 10000,
+            "totals must reflect only the successful add, not a half-applied second one"
+        );
+    }
+
+    #[test]
+    fn remove_order_item_writes_outbox_and_recomputes_totals_atomically() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+        let (_, menu_item_id, _) = seed_menu(&db, "outlet-1");
+
+        let order = sample_order("order-remove", "outlet-1", "device-1");
+        let item_a = sample_order_item("item-remove-a", "order-remove", &menu_item_id, 25000);
+        let item_b = sample_order_item("item-remove-b", "order-remove", &menu_item_id, 15000);
+        db.create_order_with_outbox(&order, &[item_a, item_b], &sample_outbox("order-remove"))
+            .expect("create order with two lines");
+
+        db.remove_order_item_with_outbox(
+            "item-remove-a",
+            "2026-08-07T10:10:00Z",
+            &item_outbox("item-remove-a", "ItemRemoved"),
+        )
+        .expect("remove line a");
+
+        let remaining = repo::list_order_items(db.connection(), "order-remove").unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, "item-remove-b");
+
+        let stored_order = db.get_order("order-remove").unwrap().expect("order exists");
+        assert_eq!(
+            stored_order.subtotal_paise, 15000,
+            "totals must be recomputed from remaining snapshot prices"
+        );
+
+        // The removal must be observable as its own outbox event, not just
+        // a smaller order — the cloud replays what happened.
+        let pending = repo::list_unpublished_outbox(db.connection(), 100).unwrap();
+        let removal_event = pending
+            .iter()
+            .find(|e| e.aggregate_id == "item-remove-a")
+            .expect("removal outbox event must exist");
+        assert_eq!(removal_event.event_type, "ItemRemoved");
+    }
+
+    #[test]
+    fn remove_order_item_rejects_non_draft_order() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+        let (_, menu_item_id, _) = seed_menu(&db, "outlet-1");
+
+        let order = sample_order("order-remove-reject", "outlet-1", "device-1");
+        let item = sample_order_item(
+            "item-remove-reject",
+            "order-remove-reject",
+            &menu_item_id,
+            25000,
+        );
+        db.create_order_with_outbox(&order, &[item], &sample_outbox("order-remove-reject"))
+            .expect("create order with one line");
+
+        // Confirm the order out of DRAFT directly (bypassing this crate's
+        // amendment API, which is exactly what a caller would have done
+        // via a status-transition path outside this test's concern).
+        db.connection()
+            .execute(
+                "UPDATE \"order\" SET status = 'CONFIRMED' WHERE id = 'order-remove-reject'",
+                [],
+            )
+            .unwrap();
+
+        let result = db.remove_order_item_with_outbox(
+            "item-remove-reject",
+            "2026-08-07T10:10:00Z",
+            &item_outbox("item-remove-reject", "ItemRemoved"),
+        );
+        assert!(matches!(result, Err(DbError::OrderNotAmendable { .. })));
+
+        let remaining = repo::list_order_items(db.connection(), "order-remove-reject").unwrap();
+        assert_eq!(remaining.len(), 1, "line must survive the rejected removal");
+    }
+
+    #[test]
+    fn menu_list_functions_are_outlet_scoped_and_read_only() {
+        let db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+        let (category_id, item_id, variant_id) = seed_menu(&db, "outlet-1");
+
+        let categories =
+            repo::list_menu_categories_for_outlet(db.connection(), "outlet-1").unwrap();
+        assert_eq!(categories.len(), 1);
+        assert_eq!(categories[0].id, category_id);
+
+        let variants =
+            repo::list_menu_item_variants_for_outlet(db.connection(), "outlet-1").unwrap();
+        assert_eq!(variants.len(), 1);
+        assert_eq!(variants[0].id, variant_id);
+        assert_eq!(variants[0].menu_item_id, item_id);
+        // Money must be i64 paise, never float.
+        assert_eq!(variants[0].price_delta_paise, 5000);
+
+        let modifiers =
+            repo::list_menu_item_modifiers_for_outlet(db.connection(), "outlet-1").unwrap();
+        assert_eq!(modifiers.len(), 1);
+        assert_eq!(modifiers[0].option_name, "Extra Paneer");
+
+        // A different outlet must see none of this outlet's menu.
+        let other = repo::list_menu_categories_for_outlet(db.connection(), "outlet-2").unwrap();
+        assert!(other.is_empty());
     }
 
     #[test]

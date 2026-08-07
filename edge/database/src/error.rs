@@ -27,6 +27,13 @@ pub enum DbError {
 
     #[error("invalid input: {0}")]
     InvalidInput(String),
+
+    /// A caller tried to amend (add/remove an order_item on) an order that
+    /// is not DRAFT. Amendment is only legal pre-confirmation; the edge
+    /// enforces this itself rather than trusting the caller (see
+    /// `Db::add_order_item_with_outbox` / `Db::remove_order_item_with_outbox`).
+    #[error("order {order_id} is not amendable: status is {status}, not DRAFT")]
+    OrderNotAmendable { order_id: String, status: String },
 }
 
 pub type DbResult<T> = Result<T, DbError>;
