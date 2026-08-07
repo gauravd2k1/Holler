@@ -141,3 +141,38 @@ The payload carries the **full item**, not just an id: once the row is deleted t
 This bump exists because round-trip drift tests proved the *shape* was consistent across languages while nothing proved the data could be *stored*. Contract fixtures round-tripped modifiers for three milestones over a schema that had nowhere to put them.
 
 **For future contract freezes: pair each shape round-trip with a persistence round-trip** — wire fixture → store → read back → re-serialize → byte-compare against the fixture. A shape test proves the languages agree; a persistence test proves the database can actually hold what they agreed on. The `edge/database` follow-up for this bump adds that test for `order_item` and its modifiers as the reference implementation.
+
+---
+
+## Addendum — 0.2.4 (2026-08-07)
+
+The practice note above paid off immediately. Writing the `order_item` persistence round-trip surfaced the same class of gap one level up: **a full `CanonicalOrder` could not round-trip through the `order` table.** The wire type carries 25 fields; the table had 14 columns.
+
+### The gap
+
+Missing on **both** SQLite and Postgres: `external_order_id`, `source`, `customer`, `delivery_address`, `packaging_paise`, `delivery_charge_paise`, `aggregator_discount_paise`, `merchant_discount_paise`, `payment_status`, `payment_source`, `preparation_time_minutes`, `rider`, `confirmed_at`, `schema_version`. SQLite additionally lacked `source_payload`. And the wire said `taxes_paise` while both schemas said `tax_paise`.
+
+Fields with no column were synthesized at serialization time. For Milestone 1 that mostly happened to be harmless — POS orders are `source: POS`, `payment_status: UNPAID`, no delivery, no aggregator — but `confirmed_at` was genuinely lost on every replay despite the DRAFT→CONFIRMED transition being implemented, and the canonical model was fictional wherever no column backed it.
+
+### Decision
+
+`sqlite/0004` and `postgres/0005` add the Milestone 1–3 lifecycle fields: `source`, `external_order_id`, `payment_status`, `payment_source`, `confirmed_at`, `schema_version`, plus `source_payload_json` on the edge.
+
+**`tax_paise` is renamed to `taxes_paise` on both sides.** This is the one non-additive change. It is accepted deliberately: Milestone 3 builds a tax engine on this column, and a silent name mismatch between contract and storage feeding financial calculation is a worse failure than a coordinated rename while there is no production data. The rename ships as one sequence — contracts, then edge, then backend — never as a contracts commit left sitting alone, because every consumer breaks in between.
+
+### Deferred columns and their landing milestones
+
+These wire fields stay unpersisted for now. Each is synthesized at a fixed value, and the order-level persistence round-trip test **pins those exact values** rather than merely asserting the fields are absent — so when a milestone starts persisting one, the test fails and forces this table to be updated instead of drifting quietly.
+
+| Wire field | Synthesized as | Lands in |
+|---|---|---|
+| `packaging_paise` | `0` | Milestone 6 — aggregator orders carry it |
+| `delivery_charge_paise` | `0` | Milestone 6 |
+| `aggregator_discount_paise` | `0` | Milestone 6 |
+| `merchant_discount_paise` | `0` | Milestone 6 |
+| `customer` (`{name, phone}`) | `null` | Milestone 6 (aggregator payloads), enriched Milestone 9 |
+| `delivery_address` | `null` | Milestone 6 |
+| `rider` (`{name, phone, status}`) | `null` | Milestone 6 |
+| `preparation_time_minutes` | `null` | Milestone 2 — the kitchen owns prep time |
+
+The three `NOT NULL` columns carry `DEFAULT`s only because SQLite requires a non-null default when adding `NOT NULL` to an existing table. They are a migration mechanism, not an application fallback: writers set `source`, `payment_status` and `schema_version` explicitly.

@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Holler API — Vertical Slice
-  version: "0.2.3"
+  version: "0.2.4"
   description: >
     Covers only the §70 order endpoints needed for the Milestone 1–2 vertical
     slice (Menu → POS Order → Local SQLite → KOT → KDS → Cloud sync). Frozen
