@@ -3,3 +3,5 @@ export * from "./types/order";
 export * from "./types/kot";
 export * from "./types/events";
 export * from "./types/sync";
+export * from "./types/identity";
+export * from "./types/table";

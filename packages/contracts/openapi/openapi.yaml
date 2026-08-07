@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Holler API — Vertical Slice
-  version: "0.1.0"
+  version: "0.2.0"
   description: >
     Covers only the §70 order endpoints needed for the Milestone 1–2 vertical
     slice (Menu → POS Order → Local SQLite → KOT → KDS → Cloud sync). Frozen
@@ -121,8 +121,305 @@ paths:
               schema:
                 $ref: "#/components/schemas/CanonicalOrder"
 
+  /auth/login:
+    post:
+      summary: Authenticate a user and open a session (Argon2id verify, §56)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, outlet_id]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, format: password }
+                outlet_id: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Authenticated
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [access_token, refresh_token, principal]
+                properties:
+                  access_token: { type: string, description: short-lived }
+                  refresh_token: { type: string, description: rotated on every use }
+                  principal: { $ref: "#/components/schemas/AuthenticatedPrincipal" }
+        "401":
+          description: Invalid credentials
+
+  /auth/refresh:
+    post:
+      summary: Rotate a refresh token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token: { type: string }
+      responses:
+        "200":
+          description: Rotated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token: { type: string }
+                  refresh_token: { type: string }
+        "401":
+          description: Invalid or reused refresh token
+
+  /auth/logout:
+    post:
+      summary: Revoke the current session's refresh token
+      responses:
+        "204":
+          description: Logged out
+
+  /users:
+    get:
+      summary: List users in the caller's tenant (permission user.manage)
+      responses:
+        "200":
+          description: Users
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/AppUser" }
+    post:
+      summary: Create a user (id is client-supplied UUIDv7, §74)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, email, full_name, password]
+              properties:
+                id: { type: string, format: uuid }
+                email: { type: string, format: email }
+                full_name: { type: string }
+                password: { type: string, format: password }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AppUser" }
+
+  /users/{id}/roles:
+    put:
+      summary: Replace a user's role assignments (permission user.manage, audited)
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                type: object
+                required: [id, role_id]
+                properties:
+                  id: { type: string, format: uuid }
+                  role_id: { type: string, format: uuid }
+                  outlet_id:
+                    type: string
+                    format: uuid
+                    nullable: true
+                    description: null = tenant-wide
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AppUser" }
+
+  /roles:
+    get:
+      summary: List the tenant's roles and their permissions
+      responses:
+        "200":
+          description: Roles
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Role" }
+
+  /outlets:
+    get:
+      summary: List outlets the caller may access (tenant-isolated)
+      responses:
+        "200":
+          description: Outlets
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Outlet" }
+
+  /outlets/{outletId}/tables:
+    get:
+      summary: List the outlet's table definitions (configuration)
+      parameters:
+        - $ref: "#/components/parameters/OutletId"
+      responses:
+        "200":
+          description: Tables
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/RestaurantTable" }
+    post:
+      summary: Create a table definition (permission table.manage; bumps config_version)
+      parameters:
+        - $ref: "#/components/parameters/OutletId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RestaurantTable" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RestaurantTable" }
+
+  /menu/categories:
+    get:
+      summary: List menu categories for an outlet
+      parameters:
+        - name: outlet_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Categories
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/MenuCategory" }
+    post:
+      summary: Create a category (permission menu.manage; bumps config_version)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MenuCategory" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MenuCategory" }
+
+  /menu/items:
+    get:
+      summary: List menu items for an outlet
+      parameters:
+        - name: outlet_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Items
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/MenuItem" }
+    post:
+      summary: Create a menu item (permission menu.manage; bumps config_version)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MenuItem" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MenuItem" }
+
+  /sync/config:
+    get:
+      summary: >
+        Pull authorized configuration newer than since_version (cloud→edge,
+        §50.1). Returns only CLOUD_TO_EDGE aggregates; the edge replaces each
+        aggregate wholesale rather than merging.
+      parameters:
+        - name: outlet_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: since_version
+          in: query
+          required: true
+          schema: { type: integer, minimum: 0 }
+      responses:
+        "200":
+          description: Configuration bundle
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [config_version, users, roles, tables, categories, items]
+                properties:
+                  config_version: { type: integer }
+                  users:
+                    type: array
+                    description: >
+                      Credential material is included ONLY on this endpoint and
+                      ONLY as Argon2id hashes, so the edge can authenticate
+                      offline. The edge stores it in an encrypted-at-rest
+                      database (ADR-011). Never returned by /users.
+                    items: { $ref: "#/components/schemas/EdgeUserCacheEntry" }
+                  roles:
+                    type: array
+                    items: { $ref: "#/components/schemas/Role" }
+                  tables:
+                    type: array
+                    items: { $ref: "#/components/schemas/RestaurantTable" }
+                  categories:
+                    type: array
+                    items: { $ref: "#/components/schemas/MenuCategory" }
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/MenuItem" }
+
 components:
   parameters:
+    UserId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+    OutletId:
+      name: outletId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
     OrderId:
       name: id
       in: path
@@ -132,6 +429,192 @@ components:
         format: uuid
 
   schemas:
+    RoleCode:
+      type: string
+      description: docs/spec/security-rbac.md §Roles
+      enum:
+        [
+          PLATFORM_SUPER_ADMIN,
+          ORGANISATION_OWNER,
+          BRAND_ADMIN,
+          REGIONAL_MANAGER,
+          OUTLET_MANAGER,
+          ACCOUNTANT,
+          INVENTORY_MANAGER,
+          PURCHASE_MANAGER,
+          CHEF,
+          KITCHEN_STAFF,
+          CAPTAIN,
+          WAITER,
+          CASHIER,
+          DELIVERY_STAFF,
+          AUDITOR,
+        ]
+
+    Permission:
+      type: string
+      description: Milestone 1 permission set; extended per milestone.
+      enum:
+        [
+          order.create,
+          order.modify,
+          order.cancel,
+          order.void,
+          menu.manage,
+          table.manage,
+          outlet.manage,
+          user.manage,
+        ]
+
+    Role:
+      type: object
+      required: [id, tenant_id, code, name, permissions, schema_version]
+      properties:
+        id: { type: string, format: uuid }
+        tenant_id: { type: string, format: uuid }
+        code: { $ref: "#/components/schemas/RoleCode" }
+        name: { type: string }
+        permissions:
+          type: array
+          items: { $ref: "#/components/schemas/Permission" }
+        schema_version: { type: integer, enum: [1] }
+
+    RoleAssignment:
+      type: object
+      required: [id, role_id, role_code]
+      properties:
+        id: { type: string, format: uuid }
+        role_id: { type: string, format: uuid }
+        role_code: { $ref: "#/components/schemas/RoleCode" }
+        outlet_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: null = tenant-wide assignment
+
+    AppUser:
+      type: object
+      description: >
+        Wire shape only. Carries no credential material — password_hash and
+        pin_hash never leave the database (ADR-011).
+      required: [id, tenant_id, email, full_name, is_active, roles, config_version, created_at, updated_at, schema_version]
+      properties:
+        id: { type: string, format: uuid }
+        tenant_id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        full_name: { type: string }
+        is_active: { type: boolean }
+        roles:
+          type: array
+          items: { $ref: "#/components/schemas/RoleAssignment" }
+        config_version: { type: integer }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        schema_version: { type: integer, enum: [1] }
+
+    EdgeUserCacheEntry:
+      type: object
+      description: >
+        Returned only by /sync/config, only over TLS, only to an enrolled edge
+        node. Stored in the encrypted-at-rest edge database (ADR-011).
+      required: [id, tenant_id, outlet_id, email, full_name, password_hash, is_active, permissions, config_version]
+      properties:
+        id: { type: string, format: uuid }
+        tenant_id: { type: string, format: uuid }
+        outlet_id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        full_name: { type: string }
+        password_hash: { type: string, description: Argon2id encoded string; never logged }
+        pin_hash: { type: string, nullable: true }
+        is_active: { type: boolean }
+        permissions:
+          type: array
+          items: { $ref: "#/components/schemas/Permission" }
+        config_version: { type: integer }
+
+    AuthenticatedPrincipal:
+      type: object
+      required: [user_id, tenant_id, outlet_id, full_name, permissions, authenticated_offline, schema_version]
+      properties:
+        user_id: { type: string, format: uuid }
+        tenant_id: { type: string, format: uuid }
+        outlet_id: { type: string, format: uuid }
+        full_name: { type: string }
+        permissions:
+          type: array
+          items: { $ref: "#/components/schemas/Permission" }
+        authenticated_offline:
+          type: boolean
+          description: true when verified against the edge user cache
+        schema_version: { type: integer, enum: [1] }
+
+    Outlet:
+      type: object
+      required: [id, brand_id, name, timezone, config_version]
+      properties:
+        id: { type: string, format: uuid }
+        brand_id: { type: string, format: uuid }
+        name: { type: string }
+        timezone: { type: string, example: Asia/Kolkata }
+        config_version: { type: integer }
+
+    RestaurantTable:
+      type: object
+      description: Pure configuration; live state lives in TableSession (ADR-011).
+      required: [id, outlet_id, section, label, seat_count, is_active, config_version, schema_version]
+      properties:
+        id: { type: string, format: uuid }
+        outlet_id: { type: string, format: uuid }
+        section: { type: string }
+        label: { type: string, example: T4 }
+        seat_count: { type: integer, minimum: 1 }
+        is_active: { type: boolean }
+        config_version: { type: integer }
+        schema_version: { type: integer, enum: [1] }
+
+    TableSession:
+      type: object
+      description: Operational aggregate; edge-authoritative, replayed edge→cloud.
+      required: [id, outlet_id, table_id, state, guest_count, opened_at, version, created_at, updated_at, schema_version]
+      properties:
+        id: { type: string, format: uuid }
+        outlet_id: { type: string, format: uuid }
+        table_id: { type: string, format: uuid }
+        state:
+          type: string
+          enum: [OCCUPIED, ORDERED, KOT_SENT, FOOD_READY, BILL_REQUESTED, PAYMENT_PENDING, PAID, DIRTY, CLOSED]
+        current_order_id: { type: string, format: uuid, nullable: true }
+        guest_count: { type: integer, minimum: 1 }
+        opened_by_user_id: { type: string, format: uuid, nullable: true }
+        opened_at: { type: string, format: date-time }
+        closed_at: { type: string, format: date-time, nullable: true }
+        version: { type: integer }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        schema_version: { type: integer, enum: [1] }
+
+    MenuCategory:
+      type: object
+      required: [id, outlet_id, name, sort_order, config_version]
+      properties:
+        id: { type: string, format: uuid }
+        outlet_id: { type: string, format: uuid }
+        name: { type: string }
+        sort_order: { type: integer }
+        config_version: { type: integer }
+
+    MenuItem:
+      type: object
+      required: [id, outlet_id, category_id, name, base_price_paise, is_available, config_version]
+      properties:
+        id: { type: string, format: uuid }
+        outlet_id: { type: string, format: uuid }
+        category_id: { type: string, format: uuid }
+        name: { type: string }
+        base_price_paise: { type: integer, description: integer paise, never float }
+        is_available: { type: boolean }
+        config_version: { type: integer }
+
     OrderType:
       type: string
       enum: [DINE_IN, TAKEAWAY, DELIVERY, AGGREGATOR, QR, ROOM_SERVICE, CATERING]

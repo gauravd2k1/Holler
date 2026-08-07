@@ -1,0 +1,10 @@
+{
+  "id": "018e5a2e-eeee-7c3d-9f4e-1234567890ab",
+  "outlet_id": "018e5a2e-0000-7c3d-9f4e-1234567890ab",
+  "section": "GROUND",
+  "label": "T4",
+  "seat_count": 4,
+  "is_active": true,
+  "config_version": 7,
+  "schema_version": 1
+}

@@ -11,6 +11,12 @@ const (
 	AggregateTypeKot      AggregateType = "kot"
 	AggregateTypeMenuItem AggregateType = "menu_item"
 	AggregateTypePayment  AggregateType = "payment"
+
+	// Milestone 1 additions (ADR-011).
+	AggregateTypeTableSession    AggregateType = "table_session"
+	AggregateTypeAppUser         AggregateType = "app_user"
+	AggregateTypeRole            AggregateType = "role"
+	AggregateTypeRestaurantTable AggregateType = "restaurant_table"
 )
 
 type SyncDirection string
@@ -36,6 +42,11 @@ var AggregateAuthority = map[AggregateType]SyncDirection{
 	AggregateTypeKot:      SyncDirectionEdgeToCloud,
 	AggregateTypePayment:  SyncDirectionEdgeToCloud,
 	AggregateTypeMenuItem: SyncDirectionCloudToEdge,
+
+	AggregateTypeTableSession:    SyncDirectionEdgeToCloud,
+	AggregateTypeAppUser:         SyncDirectionCloudToEdge,
+	AggregateTypeRole:            SyncDirectionCloudToEdge,
+	AggregateTypeRestaurantTable: SyncDirectionCloudToEdge,
 }
 
 type SyncEnvelope struct {

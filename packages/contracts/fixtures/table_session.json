@@ -1,0 +1,15 @@
+{
+  "id": "018e5a2e-dddd-7c3d-9f4e-1234567890ab",
+  "outlet_id": "018e5a2e-0000-7c3d-9f4e-1234567890ab",
+  "table_id": "018e5a2e-eeee-7c3d-9f4e-1234567890ab",
+  "state": "KOT_SENT",
+  "current_order_id": "018e5a2e-2b1a-7c3d-9f4e-1234567890ab",
+  "guest_count": 4,
+  "opened_by_user_id": "018e5a2e-aaaa-7c3d-9f4e-1234567890ab",
+  "opened_at": "2026-08-07T10:05:00Z",
+  "closed_at": null,
+  "version": 3,
+  "created_at": "2026-08-07T10:05:00Z",
+  "updated_at": "2026-08-07T10:15:31Z",
+  "schema_version": 1
+}

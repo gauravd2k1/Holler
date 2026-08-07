@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -58,5 +59,59 @@ func TestSyncEnvelopeAuthorityRule(t *testing.T) {
 	}
 	if AggregateAuthority[AggregateTypeMenuItem] != SyncDirectionCloudToEdge {
 		t.Fatalf("menu_item aggregate must be CLOUD_TO_EDGE per §50.1")
+	}
+}
+
+func TestAppUserFixtureRoundTrip(t *testing.T) {
+	var user AppUser
+	roundTrip(t, "app_user.json", &user)
+}
+
+func TestRestaurantTableFixtureRoundTrip(t *testing.T) {
+	var table RestaurantTable
+	roundTrip(t, "restaurant_table.json", &table)
+}
+
+func TestTableSessionFixtureRoundTrip(t *testing.T) {
+	var session TableSession
+	roundTrip(t, "table_session.json", &session)
+}
+
+// ADR-011: a table's definition is config (cloud→edge); a seating is an
+// operational transaction (edge→cloud). No aggregate is bidirectional.
+func TestMilestone1AggregateAuthority(t *testing.T) {
+	expected := map[AggregateType]SyncDirection{
+		AggregateTypeTableSession:    SyncDirectionEdgeToCloud,
+		AggregateTypeAppUser:         SyncDirectionCloudToEdge,
+		AggregateTypeRole:            SyncDirectionCloudToEdge,
+		AggregateTypeRestaurantTable: SyncDirectionCloudToEdge,
+	}
+	for aggregate, direction := range expected {
+		if AggregateAuthority[aggregate] != direction {
+			t.Fatalf("%s must be %s per ADR-011, got %s", aggregate, direction, AggregateAuthority[aggregate])
+		}
+	}
+}
+
+// Mirrors AUDIT_REDACTED_FIELDS in src/types/identity.ts. Credential material
+// must never reach an audit_event value map or the wire (ADR-011).
+func TestAuditRedactedFields(t *testing.T) {
+	want := []string{"password_hash", "pin_hash"}
+	if !reflect.DeepEqual(AuditRedactedFields, want) {
+		t.Fatalf("AuditRedactedFields drifted from TypeScript: got %v want %v", AuditRedactedFields, want)
+	}
+}
+
+func TestWireFixturesCarryNoCredentials(t *testing.T) {
+	for _, fixture := range []string{"app_user.json", "order.json", "table_session.json"} {
+		raw, err := os.ReadFile(filepath.Join("..", "fixtures", fixture))
+		if err != nil {
+			t.Fatalf("reading fixture %s: %v", fixture, err)
+		}
+		for _, field := range AuditRedactedFields {
+			if strings.Contains(string(raw), field) {
+				t.Fatalf("%s contains credential field %q", fixture, field)
+			}
+		}
 	}
 }

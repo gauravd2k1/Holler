@@ -1,0 +1,25 @@
+{
+  "id": "018e5a2e-aaaa-7c3d-9f4e-1234567890ab",
+  "tenant_id": "018e5a2e-1111-7c3d-9f4e-1234567890ab",
+  "email": "cashier@pune-fc.example",
+  "full_name": "Asha Kulkarni",
+  "is_active": true,
+  "roles": [
+    {
+      "id": "018e5a2e-bbbb-7c3d-9f4e-1234567890ab",
+      "role_id": "018e5a2e-cccc-7c3d-9f4e-1234567890ab",
+      "role_code": "CASHIER",
+      "outlet_id": "018e5a2e-0000-7c3d-9f4e-1234567890ab"
+    },
+    {
+      "id": "018e5a2e-bbbc-7c3d-9f4e-1234567890ab",
+      "role_id": "018e5a2e-cccd-7c3d-9f4e-1234567890ab",
+      "role_code": "AUDITOR",
+      "outlet_id": null
+    }
+  ],
+  "config_version": 7,
+  "created_at": "2026-08-01T04:30:00Z",
+  "updated_at": "2026-08-07T09:00:00Z",
+  "schema_version": 1
+}

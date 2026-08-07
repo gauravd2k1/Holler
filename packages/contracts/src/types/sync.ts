@@ -5,7 +5,17 @@
 
 import { z } from "zod";
 
-export const AggregateTypeSchema = z.enum(["order", "kot", "menu_item", "payment"]);
+export const AggregateTypeSchema = z.enum([
+  "order",
+  "kot",
+  "menu_item",
+  "payment",
+  // Milestone 1 additions (ADR-011).
+  "table_session",
+  "app_user",
+  "role",
+  "restaurant_table",
+]);
 export type AggregateType = z.infer<typeof AggregateTypeSchema>;
 
 export const SyncDirectionSchema = z.enum(["EDGE_TO_CLOUD", "CLOUD_TO_EDGE"]);
@@ -21,7 +31,11 @@ export const AGGREGATE_AUTHORITY: Record<AggregateType, SyncDirection> = {
   order: "EDGE_TO_CLOUD",
   kot: "EDGE_TO_CLOUD",
   payment: "EDGE_TO_CLOUD",
+  table_session: "EDGE_TO_CLOUD", // a seating is an operational transaction
   menu_item: "CLOUD_TO_EDGE",
+  app_user: "CLOUD_TO_EDGE",
+  role: "CLOUD_TO_EDGE",
+  restaurant_table: "CLOUD_TO_EDGE", // the table's definition; its live state is table_session
 };
 
 export const SyncEnvelopeSchema = z

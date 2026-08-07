@@ -1,0 +1,5 @@
+# pnpm 10+ reads build-script approval here, not from package.json.
+# vitest's esbuild binary must be allowed to run its postinstall or the
+# contract-drift suite cannot start (CI runs `pnpm test` in this directory).
+allowBuilds:
+  esbuild: true
