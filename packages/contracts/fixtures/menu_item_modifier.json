@@ -1,0 +1,11 @@
+{
+  "id": "018e5a2e-6666-7c3d-9f4e-abcdef123456",
+  "menu_item_id": "018e5a2e-4444-7c3d-9f4e-1234567890ab",
+  "group_name": "Spice Level",
+  "option_name": "Extra Spicy",
+  "price_delta_paise": 0,
+  "min_selection": 0,
+  "max_selection": 1,
+  "config_version": 7,
+  "schema_version": 1
+}

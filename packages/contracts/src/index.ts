@@ -5,3 +5,4 @@ export * from "./types/events";
 export * from "./types/sync";
 export * from "./types/identity";
 export * from "./types/table";
+export * from "./types/menu";

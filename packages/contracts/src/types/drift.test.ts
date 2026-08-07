@@ -9,6 +9,8 @@ import { KotSchema } from "./kot";
 import { SyncEnvelopeSchema, AGGREGATE_AUTHORITY, AggregateTypeSchema } from "./sync";
 import { AppUserSchema, AuditEventSchema, AUDIT_REDACTED_FIELDS } from "./identity";
 import { RestaurantTableSchema, TableSessionSchema } from "./table";
+import { MenuItemSchema, MenuItemModifierSchema } from "./menu";
+import { OUTBOX_EVENT_TYPES } from "./events";
 
 function loadFixture(name: string): unknown {
   return JSON.parse(readFileSync(resolve(__dirname, "../../fixtures", name), "utf-8"));
@@ -68,6 +70,31 @@ describe("contract drift", () => {
     const raw = loadFixture("audit_event.json");
     const parsed = AuditEventSchema.parse(raw);
     expect(JSON.parse(JSON.stringify(parsed))).toEqual(raw);
+  });
+
+  it("menu_item.json round-trips through MenuItemSchema", () => {
+    const raw = loadFixture("menu_item.json");
+    const parsed = MenuItemSchema.parse(raw);
+    expect(JSON.parse(JSON.stringify(parsed))).toEqual(raw);
+  });
+
+  it("menu_item_modifier.json round-trips through MenuItemModifierSchema", () => {
+    const raw = loadFixture("menu_item_modifier.json");
+    const parsed = MenuItemModifierSchema.parse(raw);
+    expect(JSON.parse(JSON.stringify(parsed))).toEqual(raw);
+  });
+
+  it("event type list matches Go's OutboxEventTypes, in order", () => {
+    expect([...OUTBOX_EVENT_TYPES]).toEqual([
+      "OrderCreated",
+      "ItemAdded",
+      "KOTCreated",
+      "OrderReady",
+      "SentToKitchen",
+      "OrderCancelled",
+      "TableSessionOpened",
+      "TableSessionUpdated",
+    ]);
   });
 
   it("redacts exactly the credential fields Go redacts (ADR-011)", () => {

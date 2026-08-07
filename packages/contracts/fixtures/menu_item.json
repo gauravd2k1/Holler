@@ -1,0 +1,10 @@
+{
+  "id": "018e5a2e-4444-7c3d-9f4e-1234567890ab",
+  "outlet_id": "018e5a2e-0000-7c3d-9f4e-1234567890ab",
+  "category_id": "018e5a2e-5555-7c3d-9f4e-1234567890ab",
+  "name": "Butter Chicken",
+  "base_price_paise": 41000,
+  "is_available": true,
+  "config_version": 7,
+  "schema_version": 1
+}

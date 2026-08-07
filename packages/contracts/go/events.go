@@ -41,3 +41,62 @@ type OrderReadyEvent struct {
 		OrderID string `json:"order_id"`
 	} `json:"data"`
 }
+
+// Added at 0.2.2 — see the src/types/events.ts note on why these strings were
+// already in use at the edge before they were frozen here.
+
+type SentToKitchenEvent struct {
+	EventEnvelope
+	Data struct {
+		OrderID string `json:"order_id"`
+	} `json:"data"`
+}
+
+type OrderCancelledEvent struct {
+	EventEnvelope
+	Data struct {
+		OrderID string `json:"order_id"`
+		Reason  string `json:"reason"`
+	} `json:"data"`
+}
+
+type TableSessionOpenedEvent struct {
+	EventEnvelope
+	Data struct {
+		Session TableSession `json:"session"`
+	} `json:"data"`
+}
+
+type TableSessionUpdatedEvent struct {
+	EventEnvelope
+	Data struct {
+		Session TableSession `json:"session"`
+	} `json:"data"`
+}
+
+// Event type string constants. The edge crates carry these as Rust literals
+// with no compile-time link to this list, so scripts/check-event-type-drift.mjs
+// greps them against it in both directions.
+const (
+	EventTypeOrderCreated        = "OrderCreated"
+	EventTypeItemAdded           = "ItemAdded"
+	EventTypeKotCreated          = "KOTCreated"
+	EventTypeOrderReady          = "OrderReady"
+	EventTypeSentToKitchen       = "SentToKitchen"
+	EventTypeOrderCancelled      = "OrderCancelled"
+	EventTypeTableSessionOpened  = "TableSessionOpened"
+	EventTypeTableSessionUpdated = "TableSessionUpdated"
+)
+
+// OutboxEventTypes mirrors OUTBOX_EVENT_TYPES in src/types/events.ts, in the
+// same order. A drift test asserts they are identical.
+var OutboxEventTypes = []string{
+	EventTypeOrderCreated,
+	EventTypeItemAdded,
+	EventTypeKotCreated,
+	EventTypeOrderReady,
+	EventTypeSentToKitchen,
+	EventTypeOrderCancelled,
+	EventTypeTableSessionOpened,
+	EventTypeTableSessionUpdated,
+}

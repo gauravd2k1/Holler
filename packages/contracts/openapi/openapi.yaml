@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Holler API — Vertical Slice
-  version: "0.2.1"
+  version: "0.2.2"
   description: >
     Covers only the §70 order endpoints needed for the Milestone 1–2 vertical
     slice (Menu → POS Order → Local SQLite → KOT → KDS → Cloud sync). Frozen
@@ -510,7 +510,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [config_version, users, roles, tables, categories, items]
+                required: [config_version, users, tables, categories, items]
                 properties:
                   config_version: { type: integer }
                   users:
@@ -521,9 +521,11 @@ paths:
                       offline. The edge stores it in an encrypted-at-rest
                       database (ADR-011). Never returned by /users.
                     items: { $ref: "#/components/schemas/EdgeUserCacheEntry" }
-                  roles:
-                    type: array
-                    items: { $ref: "#/components/schemas/Role" }
+                  # `roles` was removed at 0.2.2 — the only non-additive change
+                  # in that bump. The edge has no role table by design;
+                  # permissions arrive pre-flattened on each user entry, so the
+                  # field promised storage that does not exist and the sync
+                  # worker parsed then discarded it.
                   tables:
                     type: array
                     items: { $ref: "#/components/schemas/RestaurantTable" }
@@ -771,7 +773,7 @@ components:
       description: >
         Returned only by /sync/config, only over TLS, only to an enrolled edge
         node. Stored in the encrypted-at-rest edge database (ADR-011).
-      required: [id, tenant_id, outlet_id, email, full_name, password_hash, is_active, permissions, config_version]
+      required: [id, tenant_id, outlet_id, email, full_name, password_hash, is_active, permissions, config_version, updated_at]
       properties:
         id: { type: string, format: uuid }
         tenant_id: { type: string, format: uuid }
@@ -785,6 +787,14 @@ components:
           type: array
           items: { $ref: "#/components/schemas/Permission" }
         config_version: { type: integer }
+        updated_at:
+          type: string
+          format: date-time
+          description: >
+            Added at 0.2.2. sqlite app_user.updated_at is NOT NULL, so without
+            this the edge had to synthesize a wall-clock value on every pull.
+            Not used for staleness comparison — config_version drives
+            replace-or-ignore.
 
     AuthenticatedPrincipal:
       type: object

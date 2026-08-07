@@ -8,6 +8,7 @@
 import { z } from "zod";
 import { CanonicalOrderSchema } from "./order";
 import { KotSchema } from "./kot";
+import { TableSessionSchema } from "./table";
 
 const EventEnvelope = <T extends z.ZodTypeAny>(eventType: string, dataSchema: T) =>
   z.object({
@@ -43,10 +44,59 @@ export const OrderReadyEventSchema = EventEnvelope(
 );
 export type OrderReadyEvent = z.infer<typeof OrderReadyEventSchema>;
 
+// Added at 0.2.2. The edge sync worker needed these to replay send-to-kitchen,
+// cancellation and table seatings, and coined the strings locally because the
+// contract had none — a de-facto unfrozen contract. These schemas use those
+// exact strings, so freezing them required no edge change.
+export const SentToKitchenEventSchema = EventEnvelope(
+  "SentToKitchen",
+  z.object({ order_id: z.string().uuid() }),
+);
+export type SentToKitchenEvent = z.infer<typeof SentToKitchenEventSchema>;
+
+export const OrderCancelledEventSchema = EventEnvelope(
+  "OrderCancelled",
+  z.object({ order_id: z.string().uuid(), reason: z.string() }),
+);
+export type OrderCancelledEvent = z.infer<typeof OrderCancelledEventSchema>;
+
+export const TableSessionOpenedEventSchema = EventEnvelope(
+  "TableSessionOpened",
+  z.object({ session: TableSessionSchema }),
+);
+export type TableSessionOpenedEvent = z.infer<typeof TableSessionOpenedEventSchema>;
+
+export const TableSessionUpdatedEventSchema = EventEnvelope(
+  "TableSessionUpdated",
+  z.object({ session: TableSessionSchema }),
+);
+export type TableSessionUpdatedEvent = z.infer<typeof TableSessionUpdatedEventSchema>;
+
 export const OutboxEventSchema = z.discriminatedUnion("event_type", [
   OrderCreatedEventSchema,
   ItemAddedEventSchema,
   KotCreatedEventSchema,
   OrderReadyEventSchema,
+  SentToKitchenEventSchema,
+  OrderCancelledEventSchema,
+  TableSessionOpenedEventSchema,
+  TableSessionUpdatedEventSchema,
 ]);
 export type OutboxEvent = z.infer<typeof OutboxEventSchema>;
+
+// The authoritative event_type string list. Go mirrors it as OutboxEventTypes
+// and a drift test asserts the two are identical. The Rust edge crates cannot
+// import this (no Rust binding yet — deferred until a fourth Rust consumer
+// exists, ADR-011 addendum), so scripts/check-event-type-drift.mjs greps their
+// literals against this list in both directions instead.
+export const OUTBOX_EVENT_TYPES = [
+  "OrderCreated",
+  "ItemAdded",
+  "KOTCreated",
+  "OrderReady",
+  "SentToKitchen",
+  "OrderCancelled",
+  "TableSessionOpened",
+  "TableSessionUpdated",
+] as const;
+export type OutboxEventType = (typeof OUTBOX_EVENT_TYPES)[number];

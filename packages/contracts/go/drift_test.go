@@ -102,6 +102,35 @@ func TestAuditRedactedFields(t *testing.T) {
 	}
 }
 
+func TestMenuItemFixtureRoundTrip(t *testing.T) {
+	var item MenuItem
+	roundTrip(t, "menu_item.json", &item)
+}
+
+func TestMenuItemModifierFixtureRoundTrip(t *testing.T) {
+	var modifier MenuItemModifier
+	roundTrip(t, "menu_item_modifier.json", &modifier)
+}
+
+// Mirrors OUTBOX_EVENT_TYPES in src/types/events.ts, same order. The edge
+// crates hold these as Rust literals with no compile-time link, so
+// scripts/check-event-type-drift.mjs greps them against this list too.
+func TestOutboxEventTypes(t *testing.T) {
+	want := []string{
+		"OrderCreated",
+		"ItemAdded",
+		"KOTCreated",
+		"OrderReady",
+		"SentToKitchen",
+		"OrderCancelled",
+		"TableSessionOpened",
+		"TableSessionUpdated",
+	}
+	if !reflect.DeepEqual(OutboxEventTypes, want) {
+		t.Fatalf("OutboxEventTypes drifted from TypeScript: got %v want %v", OutboxEventTypes, want)
+	}
+}
+
 func TestAuditEventFixtureRoundTrip(t *testing.T) {
 	var event AuditEvent
 	roundTrip(t, "audit_event.json", &event)

@@ -80,3 +80,33 @@ The 0.2.0 `AuditEvent` type omitted `tenant_id` even though `audit_event.tenant_
 `AUDIT_REDACTED_FIELDS` / `AuditRedactedFields` gain `token_hash`, so a `refresh_token` row can never be audited into an `audit_event` value — the same guarantee already held for `password_hash` and `pin_hash`. Both languages, asserted equal by the drift test.
 
 New fixture `audit_event.json` with round-trip tests in Go and TypeScript, and included in the sweep asserting no wire fixture carries credential material.
+
+---
+
+## Addendum — 0.2.2 (2026-08-07)
+
+Four changes closing gaps the edge implementation exposed.
+
+### 1. The four missing event types are now frozen
+
+`events.ts` and `events.go` defined only `OrderCreated`, `ItemAdded`, `KOTCreated` and `OrderReady`. The sync worker also had to replay send-to-kitchen, cancellation and table seatings, so it coined `SentToKitchen`, `OrderCancelled`, `TableSessionOpened` and `TableSessionUpdated` as Rust string literals and documented them as pending a contracts revision. That was a de-facto unfrozen contract: the cloud must match those strings exactly to interoperate, and a divergence fails silently at replay — no compile error, no test failure, just orders that never arrive.
+
+All four are now frozen as `EventEnvelope` schemas using the exact strings already in use, so freezing required no edge change. `OUTBOX_EVENT_TYPES` / `OutboxEventTypes` carry the authoritative list in both languages, asserted identical by a drift test.
+
+### 2. Rust has no binding — a bidirectional grep stands in
+
+TypeScript and Go are bound to the contract and drift-tested against each other. The Rust crates (`edge/sync`, `apps/pos/src-tauri`) are not: they hold event types as bare literals with no compile-time link. A generated Rust binding under `packages/contracts/rust/` is the real answer, and is **deferred until a fourth Rust consumer** justifies the generation step.
+
+Until then, `scripts/check-event-type-drift.mjs` runs in CI over both crates in **both directions**: forward, every event-type-shaped literal in Rust must exist in the frozen list, catching an invented or misspelled string; backward, every frozen type must appear in Rust or sit in `NOT_YET_EMITTED` with a stated reason, catching a contract addition the edge silently never adopted.
+
+The check earned itself immediately: it found that `edge/sync/src/route.rs` handles `TableSessionOpened` explicitly but routes `TableSessionUpdated` through a `("table_session", _)` wildcard. Behaviourally that works, but the literal appears nowhere, so a POS emitting a misspelled table-session event would be silently accepted by the wildcard and replayed to the wrong shape instead of erroring. Unknown event types must be an error, not a default branch.
+
+### 3. Menu types
+
+`menu.ts` and `menu.go` add `MenuCategory`, `MenuItem`, `MenuItemVariant` and `MenuItemModifier`, matching the frozen SQLite and Postgres columns field-for-field, with fixtures and round-trip tests. Without them the POS frontend would hand-roll menu shapes in TypeScript against raw SQLite column names — the drift that already produced the `AppUser`/`Role` divergences, except across the Rust↔TypeScript boundary where no drift test reaches.
+
+### 4. `EdgeUserCacheEntry.updated_at` added; `/sync/config` `roles` removed
+
+`app_user.updated_at` is `NOT NULL` in the SQLite schema but the endpoint never supplied it, so the sync worker synthesized a wall-clock value on every pull. Harmless — `config_version` drives replace-or-ignore, not `updated_at` — but the endpoint should supply what the schema demands.
+
+`roles` is **removed** from the `/sync/config` bundle. This is the only non-additive change in the bump. The edge has no `role` table by design: permissions arrive pre-flattened on each user entry, so the field promised storage that does not exist and the sync worker parsed then discarded it. Removing it beats adding a table nothing reads.
