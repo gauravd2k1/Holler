@@ -33,5 +33,9 @@ uuid = { version = "1", features = ["v4"] }
 
 thiserror = "1"
 
+# Building the outbox event payloads this crate owns (ItemAdded), matching
+# the JSON shape frozen in packages/contracts/src/types/events.ts.
+serde_json = "1"
+
 [dev-dependencies]
 tempfile = "3"

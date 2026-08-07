@@ -507,23 +507,25 @@ pub(crate) fn insert_order_item(tx: &Transaction, i: &NewOrderItem) -> DbResult<
 
 /// Enforces "amendment is only legal while the order is DRAFT" inside the
 /// same transaction as the write it is guarding, so the check and the
-/// mutation it protects can never race. Returns `DbError::NotFound` if the
+/// mutation it protects can never race. Returns the order's `outlet_id` on
+/// success (callers that need it, e.g. to build an outbox event envelope,
+/// then avoid a second round trip). Returns `DbError::NotFound` if the
 /// order does not exist, `DbError::OrderNotAmendable` if it exists but is
 /// not DRAFT.
-pub(crate) fn require_draft_order(tx: &Transaction, order_id: &str) -> DbResult<()> {
-    let status: Option<String> = tx
+pub(crate) fn require_draft_order(tx: &Transaction, order_id: &str) -> DbResult<String> {
+    let row: Option<(String, String)> = tx
         .query_row(
-            "SELECT status FROM \"order\" WHERE id = ?1",
+            "SELECT outlet_id, status FROM \"order\" WHERE id = ?1",
             params![order_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?;
-    match status {
+    match row {
         None => Err(crate::error::DbError::NotFound("order")),
-        Some(s) if s == "DRAFT" => Ok(()),
-        Some(s) => Err(crate::error::DbError::OrderNotAmendable {
+        Some((outlet_id, status)) if status == "DRAFT" => Ok(outlet_id),
+        Some((_, status)) => Err(crate::error::DbError::OrderNotAmendable {
             order_id: order_id.to_string(),
-            status: s,
+            status,
         }),
     }
 }
@@ -557,6 +559,86 @@ pub(crate) fn delete_order_item(tx: &Transaction, id: &str) -> DbResult<()> {
         return Err(crate::error::DbError::NotFound("order_item"));
     }
     Ok(())
+}
+
+/// The frozen outbox event type for a line added to a DRAFT order, from
+/// `packages/contracts/src/types/events.ts` `OUTBOX_EVENT_TYPES` (checked
+/// against drift by `scripts/check-event-type-drift.mjs`). Do not change
+/// this string without updating that list first.
+const EVENT_TYPE_ITEM_ADDED: &str = "ItemAdded";
+
+/// Builds the `ItemAdded` event envelope + `data` payload from the
+/// `order_item` row this crate is about to write, matching
+/// `ItemAddedEventSchema` in `packages/contracts/src/types/events.ts`
+/// exactly (`{ event_id, event_type, occurred_at, outlet_id,
+/// schema_version, data: { order_id, item } }`). The caller never supplies
+/// `event_type` or the item description — both come from the row itself,
+/// so a caller cannot describe a mismatched event for a real write.
+///
+/// One known gap versus the contract's `OrderItem` shape: this crate's
+/// `order_item` table has no `modifiers` column (0001_init.sql), so
+/// `item.modifiers` is always emitted as `[]`. `ItemAddedEventSchema`
+/// defaults that field to `[]`, so this is schema-valid, but it means a
+/// modifier selection is not yet represented on the wire from this path —
+/// out of Milestone 1 scope, called out rather than silently glossed over.
+fn build_item_added_payload(
+    outlet_id: &str,
+    order_id: &str,
+    item: &NewOrderItem,
+    event_id: &str,
+    occurred_at: &str,
+) -> String {
+    serde_json::json!({
+        "event_id": event_id,
+        "event_type": EVENT_TYPE_ITEM_ADDED,
+        "occurred_at": occurred_at,
+        "outlet_id": outlet_id,
+        "schema_version": 1,
+        "data": {
+            "order_id": order_id,
+            "item": {
+                "id": item.id,
+                "menu_item_id": item.menu_item_id,
+                "variant_id": item.variant_id,
+                "quantity": item.quantity,
+                "unit_price_paise": item.unit_price_paise,
+                "line_total_paise": item.line_total_paise,
+                "modifiers": Vec::<serde_json::Value>::new(),
+                "notes": item.notes,
+            }
+        }
+    })
+    .to_string()
+}
+
+/// Writes the `local_outbox` row for an `add_order_item_with_outbox` call.
+/// `event_type`/`payload_json` are derived here, not accepted from the
+/// caller — see [`build_item_added_payload`].
+pub(crate) fn insert_item_added_outbox(
+    tx: &Transaction,
+    outlet_id: &str,
+    order_id: &str,
+    item: &NewOrderItem,
+    meta: &OrderItemAddedMeta,
+) -> DbResult<()> {
+    let payload = build_item_added_payload(
+        outlet_id,
+        order_id,
+        item,
+        &meta.outbox_id,
+        &meta.occurred_at,
+    );
+    insert_outbox_entry(
+        tx,
+        &NewOutboxEntry {
+            id: meta.outbox_id.clone(),
+            aggregate_type: "order".to_string(),
+            aggregate_id: order_id.to_string(),
+            event_type: EVENT_TYPE_ITEM_ADDED.to_string(),
+            payload_json: payload,
+            created_at: meta.occurred_at.clone(),
+        },
+    )
 }
 
 /// Recomputes `subtotal_paise`/`total_paise` from the snapshot

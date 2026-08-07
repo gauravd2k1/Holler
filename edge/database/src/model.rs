@@ -199,6 +199,20 @@ pub struct Kot {
     pub updated_at: String,
 }
 
+/// Caller-supplied fields for the `local_outbox` row that
+/// [`crate::Db::add_order_item_with_outbox`] writes, deliberately narrower
+/// than [`NewOutboxEntry`]: `event_type` and `payload_json` are owned by
+/// the crate (built from the `order_item` row it just wrote, matching the
+/// frozen `ItemAdded` event in `packages/contracts/src/types/events.ts`) so
+/// a caller cannot describe a mismatched event for a real write. The
+/// caller supplies only what the crate genuinely cannot derive: the
+/// outbox row's own id and the moment the event occurred.
+#[derive(Debug, Clone)]
+pub struct OrderItemAddedMeta {
+    pub outbox_id: String,
+    pub occurred_at: String,
+}
+
 /// A local_outbox row to be written in the *same* transaction as the
 /// operational write it describes (ADR-007). `id`/`created_at` are supplied
 /// by the caller for the same reason as [`NewOrder`].

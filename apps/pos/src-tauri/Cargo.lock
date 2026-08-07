@@ -1353,6 +1353,7 @@ dependencies = [
  "base64 0.22.1",
  "rand",
  "rusqlite",
+ "serde_json",
  "thiserror 1.0.69",
  "uuid",
 ]

@@ -21,7 +21,10 @@ use std::path::{Path, PathBuf};
 use rusqlite::Connection;
 
 use crate::crypto::EncryptionKey;
-use crate::model::{NewOrder, NewOrderItem, NewOutboxEntry, NewTableSession, Order, TableSession};
+use crate::model::{
+    NewOrder, NewOrderItem, NewOutboxEntry, NewTableSession, Order, OrderItemAddedMeta,
+    TableSession,
+};
 
 /// An open handle to the edge database. The plaintext SQLite file backing
 /// this handle exists on disk only between [`Db::open`] and [`Db::close`]
@@ -148,21 +151,30 @@ impl Db {
     }
 
     /// Adds a line item to an already-persisted order, writing the
-    /// `order_item` row, the recomputed order totals, and the
-    /// `local_outbox` row in the *same* transaction (ADR-007) — the same
-    /// guarantee as [`Db::create_order_with_outbox`]. Rejects the write
-    /// with `DbError::OrderNotAmendable` if the order is not `DRAFT`
-    /// (amendment is only legal pre-confirmation); rolls back entirely on
-    /// any failure, leaving neither the line nor the outbox row.
+    /// `order_item` row, its `local_outbox` event, and the recomputed order
+    /// totals in the *same* transaction (ADR-007) — the same guarantee as
+    /// [`Db::create_order_with_outbox`]. Rejects the write with
+    /// `DbError::OrderNotAmendable` if the order is not `DRAFT` (amendment
+    /// is only legal pre-confirmation); rolls back entirely on any failure,
+    /// leaving neither the line nor the outbox row.
+    ///
+    /// Unlike the general-purpose outbox writers on this type, the caller
+    /// does not describe the event: `event_type` (the frozen `ItemAdded`
+    /// string) and `payload_json` (the added line's own fields) are built
+    /// by this crate from the `order_item` row it is writing, so a caller
+    /// cannot commit a write with a mismatched or misleading event — see
+    /// `build_item_added_payload` in `src/repo.rs`. `meta` supplies only
+    /// what this crate cannot derive: the outbox row's own id and the
+    /// moment the event occurred.
     pub fn add_order_item_with_outbox(
         &mut self,
         item: &NewOrderItem,
-        outbox: &NewOutboxEntry,
+        meta: &OrderItemAddedMeta,
     ) -> DbResult<()> {
         let tx = self.conn.transaction()?;
-        repo::require_draft_order(&tx, &item.order_id)?;
+        let outlet_id = repo::require_draft_order(&tx, &item.order_id)?;
         repo::insert_order_item(&tx, item)?;
-        repo::insert_outbox_entry(&tx, outbox)?;
+        repo::insert_item_added_outbox(&tx, &outlet_id, &item.order_id, item, meta)?;
         repo::recompute_and_persist_order_totals(&tx, &item.order_id, &item.created_at)?;
         tx.commit()?;
         Ok(())
@@ -178,6 +190,15 @@ impl Db {
     /// event rather than only observing a smaller order — history is
     /// preserved in the outbox event stream, not in this table. Rejects the
     /// write with `DbError::OrderNotAmendable` if the order is not `DRAFT`.
+    ///
+    /// NOTE: unlike [`Db::add_order_item_with_outbox`], this still accepts
+    /// a caller-described `outbox` entry rather than deriving `event_type`
+    /// internally. `packages/contracts/src/types/events.ts`
+    /// `OUTBOX_EVENT_TYPES` (as of contracts 0.2.2) has no frozen event for
+    /// "a line was removed from a DRAFT order" — `ItemAdded` is the only
+    /// line-level event, and inventing a new string here would violate the
+    /// freeze. This is a contract gap, reported rather than worked around;
+    /// tracked for a future contracts version bump.
     pub fn remove_order_item_with_outbox(
         &mut self,
         order_item_id: &str,
@@ -397,6 +418,13 @@ mod tests {
         }
     }
 
+    fn item_added_meta(order_item_id: &str) -> OrderItemAddedMeta {
+        OrderItemAddedMeta {
+            outbox_id: format!("outbox-{order_item_id}"),
+            occurred_at: "2026-08-07T10:05:00Z".to_string(),
+        }
+    }
+
     #[test]
     fn add_order_item_writes_outbox_and_recomputes_totals_atomically() {
         let mut db = Db::open_in_memory_for_tests().expect("open");
@@ -408,7 +436,7 @@ mod tests {
             .expect("create draft order");
 
         let item = sample_order_item("item-add-1", "order-add", &menu_item_id, 25000);
-        db.add_order_item_with_outbox(&item, &item_outbox("item-add-1", "ItemAdded"))
+        db.add_order_item_with_outbox(&item, &item_added_meta("item-add-1"))
             .expect("add item");
 
         let stored_order = db.get_order("order-add").unwrap().expect("order exists");
@@ -417,7 +445,50 @@ mod tests {
         assert_eq!(stored_order.version, 2, "version must bump on amendment");
 
         let pending = repo::list_unpublished_outbox(db.connection(), 100).unwrap();
-        assert!(pending.iter().any(|e| e.aggregate_id == "item-add-1"));
+        assert!(pending.iter().any(|e| e.aggregate_id == "order-add"));
+    }
+
+    /// Finding 1: the caller supplies only ids/timestamps for an added
+    /// line, never the event description. This proves the emitted event is
+    /// truthful even when a hostile/buggy caller supplies nothing about the
+    /// item's content — the payload must still describe the exact row that
+    /// was written, because there is no field on `OrderItemAddedMeta` a
+    /// caller could use to lie about it.
+    #[test]
+    fn add_order_item_outbox_payload_is_derived_and_cannot_be_spoofed() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+        let (_, menu_item_id, _) = seed_menu(&db, "outlet-1");
+
+        let order = sample_order("order-payload", "outlet-1", "device-1");
+        db.create_order_with_outbox(&order, &[], &sample_outbox("order-payload"))
+            .expect("create draft order");
+
+        let item = sample_order_item("item-payload-1", "order-payload", &menu_item_id, 42_00);
+        db.add_order_item_with_outbox(&item, &item_added_meta("item-payload-1"))
+            .expect("add item");
+
+        let pending = repo::list_unpublished_outbox(db.connection(), 100).unwrap();
+        let event = pending
+            .iter()
+            .find(|e| e.aggregate_id == "order-payload" && e.event_type == "ItemAdded")
+            .expect("ItemAdded event must exist");
+
+        // event_type is the frozen contract string, chosen by the crate —
+        // not whatever a caller might have passed.
+        assert_eq!(event.event_type, "ItemAdded");
+
+        let payload: serde_json::Value = serde_json::from_str(&event.payload_json).unwrap();
+        assert_eq!(payload["event_type"], "ItemAdded");
+        assert_eq!(payload["outlet_id"], "outlet-1");
+        assert_eq!(payload["schema_version"], 1);
+        assert_eq!(payload["data"]["order_id"], "order-payload");
+        assert_eq!(payload["data"]["item"]["id"], "item-payload-1");
+        assert_eq!(payload["data"]["item"]["menu_item_id"], menu_item_id);
+        assert_eq!(payload["data"]["item"]["quantity"], 1);
+        // Money must be i64 paise in the payload too, never float.
+        assert_eq!(payload["data"]["item"]["unit_price_paise"], 42_00);
+        assert_eq!(payload["data"]["item"]["line_total_paise"], 42_00);
     }
 
     #[test]
@@ -432,15 +503,16 @@ mod tests {
             .expect("create confirmed order");
 
         let item = sample_order_item("item-reject-1", "order-confirmed", &menu_item_id, 25000);
-        let result =
-            db.add_order_item_with_outbox(&item, &item_outbox("item-reject-1", "ItemAdded"));
+        let result = db.add_order_item_with_outbox(&item, &item_added_meta("item-reject-1"));
 
         assert!(matches!(result, Err(DbError::OrderNotAmendable { .. })));
 
         let items = repo::list_order_items(db.connection(), "order-confirmed").unwrap();
         assert!(items.is_empty(), "rejected item must not be persisted");
         let pending = repo::list_unpublished_outbox(db.connection(), 100).unwrap();
-        assert!(pending.iter().all(|e| e.aggregate_id != "item-reject-1"));
+        assert!(pending
+            .iter()
+            .all(|e| e.aggregate_id != "order-confirmed" || e.event_type != "ItemAdded"));
     }
 
     /// Proves the same rollback guarantee as
@@ -460,31 +532,30 @@ mod tests {
             .expect("create draft order");
 
         let item = sample_order_item("item-dup", "order-fail-add", &menu_item_id, 10000);
-        db.add_order_item_with_outbox(&item, &item_outbox("item-dup", "ItemAdded"))
+        db.add_order_item_with_outbox(&item, &item_added_meta("item-dup"))
             .expect("first add succeeds");
 
-        // Same id again -> PRIMARY KEY collision partway through the
-        // transaction (after require_draft_order passed, before totals are
-        // recomputed).
-        let outbox_id = "outbox-item-dup-2".to_string();
-        let duplicate_outbox = NewOutboxEntry {
-            id: outbox_id,
-            ..item_outbox("item-dup", "ItemAdded")
+        let before = repo::list_unpublished_outbox(db.connection(), 100)
+            .unwrap()
+            .len();
+
+        // Same order_item id again -> PRIMARY KEY collision partway through
+        // the transaction (after require_draft_order passed, before totals
+        // are recomputed), even though this second outbox row's own id
+        // differs.
+        let second_meta = OrderItemAddedMeta {
+            outbox_id: "outbox-item-dup-2".to_string(),
+            occurred_at: "2026-08-07T10:06:00Z".to_string(),
         };
-        let result = db.add_order_item_with_outbox(&item, &duplicate_outbox);
+        let result = db.add_order_item_with_outbox(&item, &second_meta);
         assert!(result.is_err(), "duplicate id must fail the transaction");
 
         let items = repo::list_order_items(db.connection(), "order-fail-add").unwrap();
         assert_eq!(items.len(), 1, "no duplicate line must be committed");
-        let pending = repo::list_unpublished_outbox(db.connection(), 100).unwrap();
-        assert_eq!(
-            pending
-                .iter()
-                .filter(|e| e.aggregate_id == "item-dup")
-                .count(),
-            1,
-            "no duplicate outbox row must be committed"
-        );
+        let after = repo::list_unpublished_outbox(db.connection(), 100)
+            .unwrap()
+            .len();
+        assert_eq!(after, before, "no extra outbox row must be committed");
 
         let stored_order = db
             .get_order("order-fail-add")
@@ -533,6 +604,84 @@ mod tests {
             .find(|e| e.aggregate_id == "item-remove-a")
             .expect("removal outbox event must exist");
         assert_eq!(removal_event.event_type, "ItemRemoved");
+    }
+
+    /// Finding 2 (mirror of `failed_add_order_item_transaction_leaves_neither_item_nor_outbox_row`
+    /// for the remove path): forces a failure *after* `delete_order_item`
+    /// has run but before commit (a duplicate `local_outbox.id` — the
+    /// outbox insert's own PRIMARY KEY collides with an existing row) and
+    /// proves the deleted line is still present and no outbox row was
+    /// added. The rollback guarantee was previously asserted only by
+    /// analogy to the add path; this exercises it directly.
+    #[test]
+    fn failed_remove_order_item_transaction_leaves_item_and_writes_no_outbox_row() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+        let (_, menu_item_id, _) = seed_menu(&db, "outlet-1");
+
+        let order = sample_order("order-fail-remove", "outlet-1", "device-1");
+        let item = sample_order_item(
+            "item-fail-remove",
+            "order-fail-remove",
+            &menu_item_id,
+            20000,
+        );
+        // Reuse the same outbox id for both the order-creation event and the
+        // removal attempt, so the removal's outbox insert collides on
+        // local_outbox's PRIMARY KEY and fails partway through the
+        // transaction, after delete_order_item has already run.
+        let colliding_id = "colliding-outbox-id".to_string();
+        let create_outbox = NewOutboxEntry {
+            id: colliding_id.clone(),
+            ..sample_outbox("order-fail-remove")
+        };
+        db.create_order_with_outbox(&order, &[item], &create_outbox)
+            .expect("create order with one line");
+
+        let subtotal_before_attempt = db
+            .get_order("order-fail-remove")
+            .unwrap()
+            .expect("order exists")
+            .subtotal_paise;
+        let before = repo::list_unpublished_outbox(db.connection(), 100)
+            .unwrap()
+            .len();
+
+        let colliding_removal_outbox = NewOutboxEntry {
+            id: colliding_id,
+            ..item_outbox("item-fail-remove", "ItemRemoved")
+        };
+        let result = db.remove_order_item_with_outbox(
+            "item-fail-remove",
+            "2026-08-07T10:10:00Z",
+            &colliding_removal_outbox,
+        );
+        assert!(
+            result.is_err(),
+            "colliding outbox id must fail the transaction"
+        );
+
+        let remaining = repo::list_order_items(db.connection(), "order-fail-remove").unwrap();
+        assert_eq!(
+            remaining.len(),
+            1,
+            "the deleted-then-rolled-back line must still be present"
+        );
+        assert_eq!(remaining[0].id, "item-fail-remove");
+
+        let after = repo::list_unpublished_outbox(db.connection(), 100)
+            .unwrap()
+            .len();
+        assert_eq!(after, before, "no removal outbox row must be committed");
+
+        let stored_order = db
+            .get_order("order-fail-remove")
+            .unwrap()
+            .expect("order exists");
+        assert_eq!(
+            stored_order.subtotal_paise, subtotal_before_attempt,
+            "totals must not have been recomputed off the rolled-back removal"
+        );
     }
 
     #[test]
