@@ -4,13 +4,19 @@
 //! `local_outbox.payload_json` "matches src/types/events.ts / go/events.go"
 //! per the schema comment (`0001_init.sql`) — i.e. it is an `OutboxEvent`
 //! envelope: `{ event_id, event_type, occurred_at, outlet_id, schema_version,
-//! data }`. `events.ts` is explicit that only the M0–M2 slice is defined
-//! there and grows per-milestone; this module's `event_type` set (beyond the
-//! two already frozen in `events.ts` — `OrderCreated`, `ItemAdded`) is this
-//! crate's documented extension for the M1 command/table-session routes the
-//! task requires (`SentToKitchen`, `OrderCancelled`, `TableSessionOpened`,
-//! `TableSessionUpdated`). If a future contracts revision names these event
-//! types differently, this is the only module that needs to change.
+//! data }`. Every `event_type` string this module matches on —
+//! `OrderCreated`, `ItemAdded`, `SentToKitchen`, `OrderCancelled`,
+//! `TableSessionOpened`, `TableSessionUpdated` — is frozen in
+//! `packages/contracts` `OUTBOX_EVENT_TYPES` (`src/types/events.ts` /
+//! `go/events.go`, contracts 0.2.2). `scripts/check-event-type-drift.mjs`
+//! enforces both directions: every literal here must be frozen, and every
+//! frozen type must appear here or in that script's `NOT_YET_EMITTED` list.
+//!
+//! Every arm below matches an explicit event_type literal — deliberately no
+//! wildcard for any known aggregate_type. An unrecognized event_type
+//! (typo'd or genuinely new) must fail loudly as
+//! [`SyncError::UnroutedEvent`] rather than being silently replayed against
+//! a route that happens to also fit a different event.
 
 use serde_json::Value;
 
@@ -89,9 +95,9 @@ pub fn resolve(
                 payload: session,
             })
         }
-        ("table_session", _) => {
-            // Any other table_session event (state transition, close, ...)
-            // replays against the single-session route.
+        ("table_session", "TableSessionUpdated") => {
+            // Covers every state transition and close: the single-session
+            // route re-validates the transition cloud-side (openapi.yaml).
             let session = data_field(outbox_id, event_json, "session")?.clone();
             Ok(RouteCall {
                 path: format!("/outlets/{outlet_id}/table-sessions/{aggregate_id}"),
@@ -136,5 +142,55 @@ mod tests {
         let event = serde_json::json!({ "event_type": "KOTCreated", "data": {} });
         let err = resolve("ob1", "kot", "KOTCreated", "kot-1", "outlet-1", &event).unwrap_err();
         assert!(matches!(err, SyncError::UnroutedEvent { .. }));
+    }
+
+    #[test]
+    fn table_session_updated_routes_to_single_session_route() {
+        let event = serde_json::json!({
+            "event_type": "TableSessionUpdated",
+            "data": { "session": { "id": "session-1" } }
+        });
+        let call = resolve(
+            "ob1",
+            "table_session",
+            "TableSessionUpdated",
+            "session-1",
+            "outlet-1",
+            &event,
+        )
+        .unwrap();
+        assert_eq!(call.path, "/outlets/outlet-1/table-sessions/session-1");
+        assert_eq!(call.payload["id"], "session-1");
+    }
+
+    /// An unrecognized event_type for a *known* aggregate_type must be a
+    /// hard error, never silently absorbed by a wildcard arm — a typo in
+    /// the POS's outbox event_type (e.g. "NotAFrozenEvent") must not be
+    /// replayed as if it were a legitimate transition.
+    #[test]
+    fn unknown_event_type_for_known_aggregate_is_unrouted_not_swallowed() {
+        let event = serde_json::json!({ "event_type": "NotAFrozenEvent", "data": {} });
+        let err = resolve(
+            "ob1",
+            "table_session",
+            "NotAFrozenEvent",
+            "session-1",
+            "outlet-1",
+            &event,
+        )
+        .unwrap_err();
+        assert!(matches!(err, SyncError::UnroutedEvent { .. }));
+
+        let event2 = serde_json::json!({ "event_type": "NotAFrozenOrderEvent", "data": {} });
+        let err2 = resolve(
+            "ob1",
+            "order",
+            "NotAFrozenOrderEvent",
+            "order-1",
+            "outlet-1",
+            &event2,
+        )
+        .unwrap_err();
+        assert!(matches!(err2, SyncError::UnroutedEvent { .. }));
     }
 }
