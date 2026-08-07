@@ -73,4 +73,6 @@ Edge owns operational transactions (orders, KOTs, payments, shifts, stock) — p
 - **Outbox**: every business-event-producing write uses the transactional outbox (ADR-007), both in cloud Postgres and edge SQLite.
 
 ## Deployment (initial)
-AWS with portable containers: CloudFront, ALB, ECS/Fargate, RDS PostgreSQL, ElastiCache, S3, CloudWatch/OpenTelemetry. Kubernetes only when justified. Terraform for infra. Local dev: Docker Compose inside WSL2 (§3.8) for Postgres/Redis/NATS/backend; Tauri/Rust Windows builds on the Windows side.
+AWS with portable containers: CloudFront, ALB, ECS/Fargate, RDS PostgreSQL, ElastiCache, S3, CloudWatch/OpenTelemetry. Kubernetes only when justified. Terraform for infra. Local dev: Docker Compose for Postgres/Redis/NATS/backend — WSL2 is one convenient host for that and is not required (Hyper-V or a remote database work equally well); Tauri/Rust Windows builds on the Windows side.
+
+**Outlet runtime is a different world entirely (ADR-013):** a restaurant machine runs bare Windows 10 with no WSL, no Docker and no database server — one native POS executable over a statically-linked SQLite file, syncing outbound over HTTPS. Nothing in this cloud tooling section applies to it.

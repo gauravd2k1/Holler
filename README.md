@@ -20,11 +20,16 @@ holler/
 └── tests/                 # integration, e2e, load
 ```
 
+## Deployment target
+Outlet machines run **bare Windows 10 (64-bit, 4GB RAM)** with no WSL, no Docker and no database server. The POS is a single native executable over a statically-linked SQLite file, and works fully offline. See `docs/adr/ADR-013-outlet-deployment-target.md` — the dev tooling below is for the **cloud** side and never runs at a restaurant.
+
 ## Development
-Requires: Docker Desktop with WSL2 backend, Go 1.22+, Node 20+, pnpm, Rust toolchain (MSVC on Windows).
+Requires: Go 1.22+, Node 20+, pnpm, Rust toolchain (MSVC on Windows), and Docker for the cloud services.
+
+Docker can be hosted however you prefer — WSL2, Hyper-V, or a remote/managed Postgres. WSL2 is a convenience, not a requirement.
 
 ```
-make dev    # bring up Postgres/Redis/NATS + backend inside WSL2
+make dev    # bring up Postgres/Redis/NATS + backend (cloud stack, local dev only)
 make test   # unit + integration tests
 ```
 

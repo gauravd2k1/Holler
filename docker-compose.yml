@@ -1,6 +1,9 @@
 version: "3.9"
 
-# Intended to run inside WSL2 on the primary dev machine (see CLAUDE.md, §3.8).
+# CLOUD-SIDE DEVELOPMENT ONLY. This never runs at a restaurant — outlet
+# machines are bare Windows 10 with no Docker and no database server (ADR-013).
+# Any Docker host works: WSL2, Hyper-V, or a remote engine. WSL2 is a
+# convenience on one dev machine, not a requirement of Holler.
 # Alpine-based images; explicit memory limits to respect the 16GB dev host.
 
 services:

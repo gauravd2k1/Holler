@@ -11,9 +11,14 @@ Full vision: `docs/vision.md`. Full spec source: `HOLLER_MASTER_PROMPT.md` (orch
 - Waiter app: Flutter (Android-first) — decided, see ADR-010
 - Contracts: `packages/contracts/` — TS+Zod, Go structs, OpenAPI, SQLite/Postgres migrations. Read-only for builder agents.
 
-## Dev environment
-- Windows laptop (i7-9750H, 16GB, GTX1050). Docker services (Postgres/Redis/NATS/Go backend) run in **WSL2**. Tauri/Rust Windows builds run on Windows (MSVC). Cap concurrent agent sessions at 3.
-- `make dev` brings up the stack. Frontend runs natively for HMR.
+## Deployment target (ADR-013) — read before assuming anything about the host
+- **Outlet machines run bare Windows 10, 64-bit, 4GB RAM, spinning disk.** No WSL, no Docker, no PostgreSQL, no Redis, no NATS — ever. The outlet runs one native executable (the POS) over one statically-linked SQLite file, syncing outbound over HTTPS.
+- Restaurant hardware is old and minimal and will not be upgraded, virtualised or extended. Never add an outlet-side dependency that needs a developer toolchain, a service install, or internet at install time.
+- Installer must embed the WebView2 runtime and the VC++ runtime rather than downloading them — installing on a flaky connection is the normal case.
+
+## Dev environment (developer convenience only — NOT a product requirement)
+- Dev machine here: Windows laptop (i7-9750H, 16GB, GTX1050). The **cloud** stack (Postgres/Redis/NATS/Go backend) runs in Docker; WSL2 is one way to host that and is in no way required — Hyper-V, a remote database or a native Go build are equally fine. Tauri/Rust Windows builds run on Windows (MSVC). Cap concurrent agent sessions at 3.
+- `make dev` brings up the **cloud** stack for local development. It is never run at an outlet. Frontend runs natively for HMR.
 
 ## Money / time / identifiers
 - Money: INR stored as integer paise (₹125.50 = 12550). Never floating point for money.
