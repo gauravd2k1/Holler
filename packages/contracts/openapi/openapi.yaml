@@ -1,0 +1,252 @@
+openapi: 3.0.3
+info:
+  title: Holler API — Vertical Slice
+  version: "0.1.0"
+  description: >
+    Covers only the §70 order endpoints needed for the Milestone 1–2 vertical
+    slice (Menu → POS Order → Local SQLite → KOT → KDS → Cloud sync). Frozen
+    at Milestone 0.5 alongside the rest of packages/contracts (ADR-008).
+    Schemas here must stay in sync with src/types/*.ts and go/*.go —
+    enforced by the CI contract-drift check.
+
+servers:
+  - url: http://localhost:8080
+    description: local backend (docker compose, WSL2)
+
+paths:
+  /health:
+    get:
+      summary: Liveness check
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  time: { type: string, format: date-time }
+
+  /orders:
+    post:
+      summary: Create an order (business command, not raw CRUD — see §70)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CanonicalOrder"
+      responses:
+        "201":
+          description: Order created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CanonicalOrder"
+
+  /orders/{id}:
+    get:
+      summary: Fetch an order
+      parameters:
+        - $ref: "#/components/parameters/OrderId"
+      responses:
+        "200":
+          description: Order found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CanonicalOrder"
+        "404":
+          description: Not found
+
+  /orders/{id}/items:
+    post:
+      summary: Add an item to a DRAFT order
+      parameters:
+        - $ref: "#/components/parameters/OrderId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrderItem"
+      responses:
+        "200":
+          description: Item added
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CanonicalOrder"
+
+  /orders/{id}/send-to-kitchen:
+    post:
+      summary: Transition order to SENT_TO_KITCHEN, generating station KOTs
+      parameters:
+        - $ref: "#/components/parameters/OrderId"
+      responses:
+        "200":
+          description: KOTs generated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  order:
+                    $ref: "#/components/schemas/CanonicalOrder"
+                  kots:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Kot"
+
+  /orders/{id}/cancel:
+    post:
+      summary: Cancel an order (authorized, audited — see docs/spec/security-rbac.md)
+      parameters:
+        - $ref: "#/components/parameters/OrderId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string }
+      responses:
+        "200":
+          description: Order cancelled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CanonicalOrder"
+
+components:
+  parameters:
+    OrderId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  schemas:
+    OrderType:
+      type: string
+      enum: [DINE_IN, TAKEAWAY, DELIVERY, AGGREGATOR, QR, ROOM_SERVICE, CATERING]
+
+    OrderStatus:
+      type: string
+      enum: [DRAFT, CONFIRMED, SENT_TO_KITCHEN, PREPARING, READY, SERVED, BILLED, PAID, CLOSED, CANCELLED]
+
+    OrderItemModifier:
+      type: object
+      required: [modifier_id, group_name, option_name, price_delta_paise]
+      properties:
+        modifier_id: { type: string, format: uuid }
+        group_name: { type: string }
+        option_name: { type: string }
+        price_delta_paise: { type: integer }
+
+    OrderItem:
+      type: object
+      required: [id, menu_item_id, quantity, unit_price_paise, line_total_paise]
+      properties:
+        id: { type: string, format: uuid }
+        menu_item_id: { type: string, format: uuid }
+        variant_id: { type: string, format: uuid, nullable: true }
+        quantity: { type: integer, minimum: 1 }
+        unit_price_paise: { type: integer }
+        line_total_paise: { type: integer }
+        modifiers:
+          type: array
+          items: { $ref: "#/components/schemas/OrderItemModifier" }
+        notes: { type: string, nullable: true }
+
+    CanonicalOrder:
+      type: object
+      description: See docs/spec/ordering.md §Canonical order model.
+      required:
+        - holler_order_id
+        - source
+        - outlet_id
+        - order_type
+        - status
+        - items
+        - subtotal_paise
+        - total_paise
+        - payment_status
+        - timestamps
+        - schema_version
+      properties:
+        holler_order_id: { type: string, format: uuid }
+        external_order_id: { type: string, nullable: true }
+        source:
+          type: string
+          enum: [POS, QR, AGGREGATOR_ZOMATO, AGGREGATOR_SWIGGY, DIRECT]
+        outlet_id: { type: string, format: uuid }
+        order_type: { $ref: "#/components/schemas/OrderType" }
+        status: { $ref: "#/components/schemas/OrderStatus" }
+        table_id: { type: string, format: uuid, nullable: true }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/OrderItem" }
+        subtotal_paise: { type: integer }
+        discount_paise: { type: integer, default: 0 }
+        packaging_paise: { type: integer, default: 0 }
+        delivery_charge_paise: { type: integer, default: 0 }
+        taxes_paise: { type: integer, default: 0 }
+        aggregator_discount_paise: { type: integer, default: 0 }
+        merchant_discount_paise: { type: integer, default: 0 }
+        total_paise: { type: integer }
+        payment_status:
+          type: string
+          enum: [UNPAID, PARTIALLY_PAID, PAID, REFUNDED]
+        payment_source: { type: string, nullable: true }
+        preparation_time_minutes: { type: integer, nullable: true }
+        timestamps:
+          type: object
+          required: [created_at, updated_at]
+          properties:
+            created_at: { type: string, format: date-time }
+            confirmed_at: { type: string, format: date-time, nullable: true }
+            updated_at: { type: string, format: date-time }
+        source_payload:
+          type: object
+          nullable: true
+          description: Raw external payload, audit only.
+        schema_version:
+          type: integer
+          enum: [1]
+
+    Kot:
+      type: object
+      description: One row per station ticket — see docs/spec/kitchen.md §12.
+      required: [id, order_id, station, sequence, status, items, created_by_device_id, created_at, updated_at, schema_version]
+      properties:
+        id: { type: string, format: uuid }
+        order_id: { type: string, format: uuid }
+        station: { type: string }
+        sequence: { type: integer }
+        status:
+          type: string
+          enum: [NEW, ACKNOWLEDGED, PREPARING, READY, SERVED, CANCELLED]
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              order_item_id: { type: string, format: uuid }
+              name: { type: string }
+              quantity: { type: integer }
+              modifiers:
+                type: array
+                items: { type: string }
+              notes: { type: string, nullable: true }
+        created_by_device_id: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        schema_version:
+          type: integer
+          enum: [1]

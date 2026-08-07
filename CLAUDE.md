@@ -41,12 +41,17 @@ Full vision: `docs/vision.md`. Full spec source: `HOLLER_MASTER_PROMPT.md` (orch
 - POS: `pnpm test` / `pnpm tauri dev` inside `apps/pos/`.
 - CI: lint, format, unit, integration, contract-drift check, build, security scan.
 
-## Current milestone: MILESTONE 0 — Foundation
-Scope: repo scaffolding, architecture/domain docs, ADR-001..010, CI skeleton, Docker Compose (WSL2), Postgres/Redis/NATS config, Go backend health service, POS shell, KDS shell, spec decomposition (this file + docs/spec/ + docs/vision.md).
+## Contracts status: FROZEN (Milestone 0.5 complete)
+`packages/contracts/` now holds the vertical-slice source of truth — SQLite schema, PostgreSQL migrations, TS+Zod types, mirrored Go structs, OpenAPI spec, and fixtures with Go+TS round-trip drift tests wired into CI. **Read-only to builder agents** (ADR-008); only the orchestrator/architect session edits it, serialized, with a version bump + ADR note for semantic changes.
 
-**EXCLUDES (must not exist yet):** any business logic, any UI beyond empty shells, aggregators, payments, inventory, CRM, loyalty, AI.
+## Current milestone: MILESTONE 1 — Core POS
+Scope: organisation, outlet, users, RBAC, menu, categories, modifiers, tables, order creation, local SQLite, basic synchronization — all built against the frozen `packages/contracts/` shapes.
 
-Next: MILESTONE 0.5 — freeze `packages/contracts/` for the vertical slice before any slice implementation begins.
+Acceptance: internet may be disconnected and the cashier can still create restaurant orders.
+
+**EXCLUDES:** aggregators, payments beyond cash, inventory, recipes, loyalty, CRM, multi-outlet UI, reservations, QR ordering, reporting beyond a basic order list.
+
+Note: `backend/migrations/0001_tenant_outlet.sql` and `0002_menu_order_skeleton.sql` are pre-0.5 placeholders now superseded by `packages/contracts/postgres/0001_init.sql`; reconcile/remove them on next backend touch rather than letting two schemas diverge silently.
 
 ## Response rules for agents
 Inspect repo first, output a concise plan, then edit real files. If a task touches >15 files, stop and present the plan instead of proceeding. Report per milestone: Implemented / Verified / Performance / Remaining / Next.

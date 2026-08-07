@@ -1,0 +1,49 @@
+{
+  "holler_order_id": "018e5a2e-2b1a-7c3d-9f4e-1234567890ab",
+  "external_order_id": null,
+  "source": "POS",
+  "outlet_id": "018e5a2e-1111-7c3d-9f4e-1234567890ab",
+  "order_type": "DINE_IN",
+  "status": "SENT_TO_KITCHEN",
+  "table_id": "018e5a2e-2222-7c3d-9f4e-1234567890ab",
+  "customer": null,
+  "delivery_address": null,
+  "items": [
+    {
+      "id": "018e5a2e-3333-7c3d-9f4e-1234567890ab",
+      "menu_item_id": "018e5a2e-4444-7c3d-9f4e-1234567890ab",
+      "variant_id": null,
+      "quantity": 2,
+      "unit_price_paise": 41000,
+      "line_total_paise": 82000,
+      "modifiers": [
+        {
+          "modifier_id": "018e5a2e-5555-7c3d-9f4e-1234567890ab",
+          "group_name": "Spice Level",
+          "option_name": "Extra Spicy",
+          "price_delta_paise": 0
+        }
+      ],
+      "notes": "no onion"
+    }
+  ],
+  "subtotal_paise": 82000,
+  "discount_paise": 0,
+  "packaging_paise": 0,
+  "delivery_charge_paise": 0,
+  "taxes_paise": 4100,
+  "aggregator_discount_paise": 0,
+  "merchant_discount_paise": 0,
+  "total_paise": 86100,
+  "payment_status": "UNPAID",
+  "payment_source": null,
+  "preparation_time_minutes": null,
+  "rider": null,
+  "timestamps": {
+    "created_at": "2026-08-07T10:15:00Z",
+    "confirmed_at": "2026-08-07T10:15:05Z",
+    "updated_at": "2026-08-07T10:15:30Z"
+  },
+  "source_payload": null,
+  "schema_version": 1
+}

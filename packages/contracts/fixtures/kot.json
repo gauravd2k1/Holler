@@ -1,0 +1,20 @@
+{
+  "id": "018e5a2e-6666-7c3d-9f4e-1234567890ab",
+  "order_id": "018e5a2e-2b1a-7c3d-9f4e-1234567890ab",
+  "station": "MAIN_KITCHEN",
+  "sequence": 1,
+  "status": "NEW",
+  "items": [
+    {
+      "order_item_id": "018e5a2e-3333-7c3d-9f4e-1234567890ab",
+      "name": "Butter Chicken",
+      "quantity": 2,
+      "modifiers": ["Extra Spicy"],
+      "notes": "no onion"
+    }
+  ],
+  "created_by_device_id": "018e5a2e-7777-7c3d-9f4e-1234567890ab",
+  "created_at": "2026-08-07T10:15:31Z",
+  "updated_at": "2026-08-07T10:15:31Z",
+  "schema_version": 1
+}

@@ -17,11 +17,23 @@ jobs:
       - name: test
         run: cd backend && go test ./...
 
-  # Contract-drift check activates once packages/contracts/ has fixtures
-  # (Milestone 0.5, ADR-008). Placeholder job kept intentionally minimal.
+  # Contract-drift check (Milestone 0.5, ADR-008): fixtures under
+  # packages/contracts/fixtures/ must round-trip identically through both
+  # the Go and TypeScript representations. A Rust check joins this job when
+  # edge/ implementation begins.
   contracts:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: placeholder
-        run: echo "contract-drift check lands with Milestone 0.5"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - name: go drift test
+        run: cd packages/contracts/go && go test ./...
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: install contracts deps
+        run: cd packages/contracts && npm install --no-save zod typescript vitest
+      - name: ts drift test
+        run: cd packages/contracts && npx vitest run
