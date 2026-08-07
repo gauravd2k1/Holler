@@ -7,14 +7,34 @@
       "Bash(git:*)",
       "Bash(go build:*)",
       "Bash(go test:*)",
+      "Bash(go run:*)",
       "Bash(go mod:*)",
+      "Bash(go vet:*)",
+      "Bash(gofmt:*)",
       "Bash(npm install:*)",
       "Bash(npm run:*)",
       "Bash(npx:*)",
+      "Bash(pnpm:*)",
       "Bash(cargo:*)",
+      "Bash(rustup:*)",
       "Bash(docker:*)",
       "Bash(docker compose:*)",
-      "Bash(make:*)"
+      "Bash(make:*)",
+      "Bash(ls:*)",
+      "Bash(dir:*)",
+      "Bash(cat:*)",
+      "Bash(tail:*)",
+      "Bash(grep:*)",
+      "Bash(find:*)",
+      "Bash(sqlite3:*)"
+    ],
+    "deny": [
+      "Bash(curl:*)",
+      "Bash(wget:*)",
+      "Bash(rm -rf:*)",
+      "Read(.env)",
+      "Read(.env.*)",
+      "Read(**/secrets/**)"
     ]
   }
 }
