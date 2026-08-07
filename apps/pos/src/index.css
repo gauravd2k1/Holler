@@ -1,0 +1,179 @@
+/* Dense, fast, touch-first, large targets, no decorative flourish
+   (CLAUDE.md §UI language). Layout is a fixed grid so it never shifts. */
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, sans-serif;
+  font-size: 16px;
+  background: #111;
+  color: #eee;
+}
+
+button {
+  min-height: 44px;
+  min-width: 44px;
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+/* ---------------------------------------------------------------- login -- */
+.login-screen {
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.login-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  width: 320px;
+}
+.login-card input {
+  min-height: 44px;
+  font-size: 1.1rem;
+}
+.login-error {
+  color: #f66;
+}
+
+/* ------------------------------------------------------------- pos grid -- */
+.pos-screen {
+  height: 100vh;
+  display: grid;
+  grid-template-columns: 140px 1fr 320px;
+  grid-template-rows: 64px 1fr 72px;
+  grid-template-areas:
+    "top   top  top"
+    "cats  grid cart"
+    "bot   bot  bot";
+}
+
+.pos-top-bar {
+  grid-area: top;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0 0.5rem;
+  border-bottom: 1px solid #333;
+}
+.pos-search {
+  flex: 1;
+  min-height: 44px;
+  font-size: 1rem;
+}
+.pos-order-type button.active,
+.pos-categories button.active {
+  background: #3a6;
+  color: #fff;
+}
+
+.pos-categories {
+  grid-area: cats;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  border-right: 1px solid #333;
+}
+.pos-categories button {
+  border: none;
+  border-bottom: 1px solid #222;
+  background: #1a1a1a;
+  color: inherit;
+  text-align: left;
+  padding: 0 0.5rem;
+}
+
+.pos-menu-grid {
+  grid-area: grid;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 0.5rem;
+  padding: 0.5rem;
+  overflow-y: auto;
+  align-content: start;
+}
+.pos-menu-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-height: 72px;
+  padding: 0.5rem;
+  background: #1a1a1a;
+  border: 1px solid #333;
+  color: inherit;
+}
+.pos-menu-item .price {
+  opacity: 0.8;
+}
+
+.pos-cart {
+  grid-area: cart;
+  border-left: 1px solid #333;
+  overflow-y: auto;
+  padding: 0.5rem;
+}
+.pos-cart-line {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid #222;
+}
+.pos-cart-line .name {
+  flex: 1;
+}
+.qty-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+.pos-cart-empty {
+  opacity: 0.6;
+}
+
+.pos-bottom-bar {
+  grid-area: bot;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 1rem;
+  padding: 0 0.5rem;
+  border-top: 1px solid #333;
+}
+.pos-subtotal {
+  font-size: 1.2rem;
+  margin-right: auto;
+}
+.pos-send-error {
+  color: #f66;
+}
+.pos-send {
+  min-width: 140px;
+  background: #3a6;
+  color: #fff;
+  border: none;
+}
+.pos-send:disabled {
+  background: #444;
+  color: #888;
+}
+
+/* --------------------------------------------------------- order list -- */
+.order-list-screen {
+  padding: 1rem;
+}
+.order-list-screen table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.order-list-screen th,
+.order-list-screen td {
+  border-bottom: 1px solid #333;
+  padding: 0.5rem;
+  text-align: left;
+}
