@@ -22,6 +22,7 @@ Execute milestone $ARGUMENTS end to end. You are the orchestrator: you plan, ser
 - When a builder reports done, dispatch verifier with the module name and claimed changed paths.
 - On FAIL: send the verifier's verdict back to the SAME builder for one retry. On second FAIL: stop that track and surface it to me with both reports.
 - A builder's own success claim is never sufficient — only verifier PASS gates a merge.
+- **Commit before the next gate.** Never leave one track's completed work unstaged while another agent runs. Either commit it after its PASS, or `git add` it so it is recoverable from the index. A whole track was once destroyed because it existed only as unstaged changes when another agent touched the tree (see docs/retro.md, 2026-08-07). Unstaged work is unrecoverable; staged or committed work is not.
 
 ## 5. Merge and integrate
 - Merge PASSed worktrees one at a time. After each merge, run `make test` once; on integration failure, identify the conflicting pair and dispatch a fix to the responsible builder.
