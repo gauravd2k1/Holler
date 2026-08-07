@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Holler API — Vertical Slice
-  version: "0.2.0"
+  version: "0.2.1"
   description: >
     Covers only the §70 order endpoints needed for the Milestone 1–2 vertical
     slice (Menu → POS Order → Local SQLite → KOT → KDS → Cloud sync). Frozen
@@ -30,13 +30,18 @@ paths:
 
   /orders:
     post:
-      summary: Create an order (business command, not raw CRUD — see §70)
+      summary: >
+        Replay an order created at the edge (§50.1, ADR-009). The cloud never
+        originates an order — record_id is the edge-assigned UUIDv7. Envelope
+        aggregate_type must be `order` and direction EDGE_TO_CLOUD; a mismatch
+        is 422, never a coercion. Idempotent: replaying the same record_id and
+        version must not duplicate the order.
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/CanonicalOrder"
+              $ref: "#/components/schemas/OrderEnvelope"
       responses:
         "201":
           description: Order created
@@ -44,6 +49,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/CanonicalOrder"
+        "422":
+          $ref: "#/components/responses/EnvelopeRouteMismatch"
 
   /orders/{id}:
     get:
@@ -62,7 +69,9 @@ paths:
 
   /orders/{id}/items:
     post:
-      summary: Add an item to a DRAFT order
+      summary: >
+        Replay an item appended to a DRAFT order at the edge. Financial line
+        items are append-only (§51) — this never updates or removes a line.
       parameters:
         - $ref: "#/components/parameters/OrderId"
       requestBody:
@@ -70,7 +79,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/OrderItem"
+              $ref: "#/components/schemas/OrderItemEnvelope"
       responses:
         "200":
           description: Item added
@@ -78,13 +87,25 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/CanonicalOrder"
+        "422":
+          $ref: "#/components/responses/EnvelopeRouteMismatch"
 
   /orders/{id}/send-to-kitchen:
     post:
-      summary: Transition order to SENT_TO_KITCHEN, generating station KOTs
+      summary: >
+        Replay the SENT_TO_KITCHEN transition. KOT generation is Milestone 2 —
+        until then the kots array is empty and only the order state changes.
       parameters:
         - $ref: "#/components/parameters/OrderId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrderCommandEnvelope"
       responses:
+        "422":
+          $ref: "#/components/responses/EnvelopeRouteMismatch"
         "200":
           description: KOTs generated
           content:
@@ -101,7 +122,7 @@ paths:
 
   /orders/{id}/cancel:
     post:
-      summary: Cancel an order (authorized, audited — see docs/spec/security-rbac.md)
+      summary: Replay an order cancellation (authorized, audited — see docs/spec/security-rbac.md)
       parameters:
         - $ref: "#/components/parameters/OrderId"
       requestBody:
@@ -109,10 +130,7 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              required: [reason]
-              properties:
-                reason: { type: string }
+              $ref: "#/components/schemas/OrderCancelEnvelope"
       responses:
         "200":
           description: Order cancelled
@@ -120,6 +138,120 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/CanonicalOrder"
+        "422":
+          $ref: "#/components/responses/EnvelopeRouteMismatch"
+
+  /outlets/{outletId}/table-sessions:
+    post:
+      summary: >
+        Replay a table seating opened at the edge. table_session is an
+        edge-authoritative operational aggregate (ADR-011) and rides the same
+        envelope ingest pattern as orders — there is no unwrapped REST write
+        route for it. Envelope aggregate_type must be `table_session` and
+        direction EDGE_TO_CLOUD.
+      parameters:
+        - $ref: "#/components/parameters/OutletId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TableSessionEnvelope"
+      responses:
+        "201":
+          description: Session replayed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TableSession"
+        "422":
+          $ref: "#/components/responses/EnvelopeRouteMismatch"
+    get:
+      summary: List open sessions for an outlet (read path, not envelope-wrapped)
+      parameters:
+        - $ref: "#/components/parameters/OutletId"
+      responses:
+        "200":
+          description: Open sessions
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/TableSession" }
+
+  /outlets/{outletId}/table-sessions/{sessionId}:
+    post:
+      summary: >
+        Replay a session state transition or close from the edge. The state
+        machine is validated cloud-side; an illegal transition is rejected
+        rather than applied.
+      parameters:
+        - $ref: "#/components/parameters/OutletId"
+        - $ref: "#/components/parameters/TableSessionId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TableSessionEnvelope"
+      responses:
+        "200":
+          description: Session updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TableSession"
+        "409":
+          description: Illegal state transition
+        "422":
+          $ref: "#/components/responses/EnvelopeRouteMismatch"
+    get:
+      summary: Fetch a session (read path, not envelope-wrapped)
+      parameters:
+        - $ref: "#/components/parameters/OutletId"
+        - $ref: "#/components/parameters/TableSessionId"
+      responses:
+        "200":
+          description: Session found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TableSession"
+        "404":
+          description: Not found
+
+  /menu/items/{itemId}/availability:
+    post:
+      summary: >
+        Snooze or un-snooze a menu item. A catalog write like any other: bumps
+        the outlet's config_version so the edge replaces the item on its next
+        config pull (§50.1). Permission: menu.manage. Audited.
+      parameters:
+        - $ref: "#/components/parameters/MenuItemId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [available]
+              additionalProperties: false
+              properties:
+                available: { type: boolean }
+                reason:
+                  type: string
+                  maxLength: 280
+                  description: Optional operator note, recorded on the audit event.
+      responses:
+        "200":
+          description: Availability updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MenuItem" }
+        "403":
+          description: Missing menu.manage permission
+        "404":
+          description: No such item in the caller's tenant
 
   /auth/login:
     post:
@@ -403,7 +535,38 @@ paths:
                     items: { $ref: "#/components/schemas/MenuItem" }
 
 components:
+  responses:
+    EnvelopeRouteMismatch:
+      description: >
+        The envelope's aggregate_type or direction does not match the route.
+        Each ingest route pins its aggregate, and §50.1 pins that aggregate's
+        direction, so a mismatch is a protocol violation and is rejected —
+        never coerced into the route's expected values.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              code: { type: string, example: envelope_route_mismatch }
+              message: { type: string }
+
   parameters:
+    MenuItemId:
+      name: itemId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+    TableSessionId:
+      name: sessionId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
     UserId:
       name: id
       in: path
@@ -429,6 +592,97 @@ components:
         format: uuid
 
   schemas:
+    SyncDirection:
+      type: string
+      enum: [EDGE_TO_CLOUD, CLOUD_TO_EDGE]
+
+    AggregateType:
+      type: string
+      enum: [order, kot, payment, table_session, menu_item, app_user, role, restaurant_table]
+
+    SyncEnvelope:
+      type: object
+      description: >
+        The single wire shape for replaying an edge-authoritative aggregate to
+        the cloud (§50.1, ADR-009). Mirrors src/types/sync.ts SyncEnvelopeSchema
+        and go/sync.go SyncEnvelope. It exists on the wire because record_id,
+        device_id and version are edge-owned facts that the payload types do
+        not carry — CanonicalOrder has no version field by design; the envelope
+        is the concurrency token's home. There is no unwrapped write route for
+        any EDGE_TO_CLOUD aggregate.
+      required:
+        [record_id, tenant_id, outlet_id, device_id, aggregate_type, direction,
+         created_at, updated_at, version, sync_status, payload]
+      properties:
+        record_id:
+          type: string
+          format: uuid
+          description: The wrapped entity's own edge-assigned UUIDv7. The cloud never mints it.
+        tenant_id: { type: string, format: uuid }
+        outlet_id: { type: string, format: uuid }
+        device_id: { type: string, format: uuid }
+        aggregate_type: { $ref: "#/components/schemas/AggregateType" }
+        direction: { $ref: "#/components/schemas/SyncDirection" }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        version:
+          type: integer
+          description: Optimistic concurrency / config version, per-aggregate policy (sync.md §51).
+        sync_status: { type: string, enum: [PENDING, SYNCED, FAILED] }
+        payload: { type: object }
+
+    OrderEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/SyncEnvelope"
+        - type: object
+          properties:
+            aggregate_type: { enum: [order] }
+            direction: { enum: [EDGE_TO_CLOUD] }
+            payload: { $ref: "#/components/schemas/CanonicalOrder" }
+
+    OrderItemEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/SyncEnvelope"
+        - type: object
+          properties:
+            aggregate_type: { enum: [order] }
+            direction: { enum: [EDGE_TO_CLOUD] }
+            payload: { $ref: "#/components/schemas/OrderItem" }
+
+    OrderCommandEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/SyncEnvelope"
+        - type: object
+          properties:
+            aggregate_type: { enum: [order] }
+            direction: { enum: [EDGE_TO_CLOUD] }
+            payload:
+              type: object
+              additionalProperties: false
+
+    OrderCancelEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/SyncEnvelope"
+        - type: object
+          properties:
+            aggregate_type: { enum: [order] }
+            direction: { enum: [EDGE_TO_CLOUD] }
+            payload:
+              type: object
+              required: [reason]
+              additionalProperties: false
+              properties:
+                reason: { type: string }
+
+    TableSessionEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/SyncEnvelope"
+        - type: object
+          properties:
+            aggregate_type: { enum: [table_session] }
+            direction: { enum: [EDGE_TO_CLOUD] }
+            payload: { $ref: "#/components/schemas/TableSession" }
+
     RoleCode:
       type: string
       description: docs/spec/security-rbac.md §Roles

@@ -41,13 +41,15 @@ Full vision: `docs/vision.md`. Full spec source: `HOLLER_MASTER_PROMPT.md` (orch
 - POS: `pnpm test` / `pnpm tauri dev` inside `apps/pos/`.
 - CI: lint, format, unit, integration, contract-drift check, build, security scan.
 
-## Contracts status: FROZEN at v0.2.0 (Milestone 1 additions applied)
+## Contracts status: FROZEN at v0.2.1 (Milestone 1 additions applied)
 `packages/contracts/` holds the source of truth — SQLite schema, PostgreSQL migrations, TS+Zod types, mirrored Go structs, OpenAPI spec, and fixtures with Go+TS round-trip drift tests wired into CI. **Read-only to builder agents** (ADR-008); only the orchestrator/architect session edits it, serialized, with a version bump + ADR note for semantic changes.
 
 v0.2.0 added identity/RBAC/tables for Milestone 1 (ADR-011): `app_user`, `role`, `role_permission`, `user_role`, `restaurant_table`, `table_session`, `audit_event`. Three rules bind every builder:
 - A table's **definition** (`restaurant_table`) is config, cloud→edge. A table's **live state** (`table_session`) is an edge-authoritative operational aggregate, edge→cloud. No row is half-config, half-transaction.
 - The edge SQLite file caches Argon2id hashes so login works offline. It is **encrypted at rest** — never copy it or its backups anywhere unencrypted.
-- `password_hash`/`pin_hash` never appear on the wire (except `GET /sync/config` to an enrolled edge node) and never inside an `audit_event` old/new value. Use the audit helper, which redacts them.
+- `password_hash`/`pin_hash`/`token_hash` never appear on the wire (except `GET /sync/config` to an enrolled edge node) and never inside an `audit_event` old/new value. Use the audit helper, which redacts them.
+
+v0.2.1 (ADR-011 addendum, ADR-012) added: envelope-wrapped ingest as the **single** edge→cloud replay pattern — every mutating route for an `EDGE_TO_CLOUD` aggregate takes a `SyncEnvelope` whose `payload` is the aggregate, the route pins `aggregate_type`, §50.1 pins `direction`, and a mismatch is 422 rather than a coercion; `table_session` ingest routes on that pattern; `POST /menu/items/{itemId}/availability`; the `refresh_token` table (cloud-only, deliberately not an `AggregateType`); and `AuditEvent.tenant_id`. Read paths stay unwrapped.
 
 ## Current milestone: MILESTONE 1 — Core POS
 Scope: organisation, outlet, users, RBAC, menu, categories, modifiers, tables, order creation, local SQLite, basic synchronization — all built against the frozen `packages/contracts/` shapes.
@@ -60,3 +62,13 @@ Note: `backend/migrations/0001_tenant_outlet.sql` and `0002_menu_order_skeleton.
 
 ## Response rules for agents
 Inspect repo first, output a concise plan, then edit real files. If a task touches >15 files, stop and present the plan instead of proceeding. Report per milestone: Implemented / Verified / Performance / Remaining / Next.
+
+## Contract & constraint review rubric
+Before proposing any contract change or .claude/ edit, self-review against:
+- IDs: app-generated UUIDv7/ULID per §74 — never DB-side random defaults
+- No nullable columns in primary keys
+- Every aggregate single-authority per §50.1 — no split-authority columns; split the aggregate instead
+- No credential material (hashes, tokens) in audit values, logs, or wire types
+- Uniqueness constraints tenant-scoped, not global
+- Additive changes to frozen contracts require version bump + ADR
+Present the proposal WITH your self-review findings, then wait for approval.

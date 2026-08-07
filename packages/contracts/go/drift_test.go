@@ -96,14 +96,19 @@ func TestMilestone1AggregateAuthority(t *testing.T) {
 // Mirrors AUDIT_REDACTED_FIELDS in src/types/identity.ts. Credential material
 // must never reach an audit_event value map or the wire (ADR-011).
 func TestAuditRedactedFields(t *testing.T) {
-	want := []string{"password_hash", "pin_hash"}
+	want := []string{"password_hash", "pin_hash", "token_hash"}
 	if !reflect.DeepEqual(AuditRedactedFields, want) {
 		t.Fatalf("AuditRedactedFields drifted from TypeScript: got %v want %v", AuditRedactedFields, want)
 	}
 }
 
+func TestAuditEventFixtureRoundTrip(t *testing.T) {
+	var event AuditEvent
+	roundTrip(t, "audit_event.json", &event)
+}
+
 func TestWireFixturesCarryNoCredentials(t *testing.T) {
-	for _, fixture := range []string{"app_user.json", "order.json", "table_session.json"} {
+	for _, fixture := range []string{"app_user.json", "order.json", "table_session.json", "audit_event.json"} {
 		raw, err := os.ReadFile(filepath.Join("..", "fixtures", fixture))
 		if err != nil {
 			t.Fatalf("reading fixture %s: %v", fixture, err)

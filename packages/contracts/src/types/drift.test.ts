@@ -7,7 +7,7 @@ import { resolve } from "node:path";
 import { CanonicalOrderSchema } from "./order";
 import { KotSchema } from "./kot";
 import { SyncEnvelopeSchema, AGGREGATE_AUTHORITY, AggregateTypeSchema } from "./sync";
-import { AppUserSchema, AUDIT_REDACTED_FIELDS } from "./identity";
+import { AppUserSchema, AuditEventSchema, AUDIT_REDACTED_FIELDS } from "./identity";
 import { RestaurantTableSchema, TableSessionSchema } from "./table";
 
 function loadFixture(name: string): unknown {
@@ -64,12 +64,18 @@ describe("contract drift", () => {
     expect(AGGREGATE_AUTHORITY.restaurant_table).toBe("CLOUD_TO_EDGE");
   });
 
+  it("audit_event.json round-trips through AuditEventSchema", () => {
+    const raw = loadFixture("audit_event.json");
+    const parsed = AuditEventSchema.parse(raw);
+    expect(JSON.parse(JSON.stringify(parsed))).toEqual(raw);
+  });
+
   it("redacts exactly the credential fields Go redacts (ADR-011)", () => {
-    expect([...AUDIT_REDACTED_FIELDS]).toEqual(["password_hash", "pin_hash"]);
+    expect([...AUDIT_REDACTED_FIELDS]).toEqual(["password_hash", "pin_hash", "token_hash"]);
   });
 
   it("no wire fixture carries credential material", () => {
-    for (const name of ["app_user.json", "order.json", "table_session.json"]) {
+    for (const name of ["app_user.json", "order.json", "table_session.json", "audit_event.json"]) {
       const serialized = JSON.stringify(loadFixture(name));
       for (const field of AUDIT_REDACTED_FIELDS) {
         expect(serialized).not.toContain(field);

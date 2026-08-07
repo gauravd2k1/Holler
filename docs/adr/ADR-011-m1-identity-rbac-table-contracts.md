@@ -44,3 +44,39 @@ Two constraints follow, and both are binding on builder agents:
 - New TS+Zod and mirrored Go types: `identity.ts`/`identity.go`, `table.ts`/`table.go`, exported from the package entrypoint. New fixtures `app_user.json`, `restaurant_table.json`, `table_session.json` with round-trip tests in both languages.
 - OpenAPI `0.2.0` adds `/auth/*`, `/users`, `/users/{id}/roles`, `/roles`, `/outlets`, `/outlets/{outletId}/tables`, `/menu/categories`, `/menu/items`, `/sync/config`.
 - Contracts are frozen again at `0.2.0`. Builder agents treat them as read-only; the next semantic change needs the same process and a new ADR.
+
+---
+
+## Addendum — 0.2.1 (2026-08-07)
+
+Five changes, all additive, all driven by findings from the Milestone 1 build rather than by new design. Contracts move `0.2.0 → 0.2.1`.
+
+### 1. Envelope-wrapped ingest is the single edge→cloud replay pattern
+
+The 0.2.0 OpenAPI defined `POST /orders` as taking a raw `CanonicalOrder`. That shape cannot work. `record_id`, `device_id` and `version` are edge-owned facts, and `CanonicalOrder` carries no `version` field by design — the concurrency token's home is the envelope. A raw body therefore cannot express what a replay is.
+
+Every mutating route for an `EDGE_TO_CLOUD` aggregate now takes a `SyncEnvelope` whose `payload` is the aggregate. Each route pins its `aggregate_type`, and §50.1 pins that aggregate's `direction`, so the server validates both against the route and returns 422 on mismatch — never coercing the envelope into the route's expected values. There is no unwrapped write route for any edge-authoritative aggregate.
+
+Read paths stay unwrapped: a GET returns the aggregate, not an envelope.
+
+### 2. `table_session` rides that same pattern
+
+`table_session` already carried `EDGE_TO_CLOUD` in `AGGREGATE_AUTHORITY` from 0.2.0, but had no ingest route, so the cloud had no contracted way to receive a seating. It now has `/outlets/{outletId}/table-sessions` and `/outlets/{outletId}/table-sessions/{sessionId}`, both envelope-wrapped. Deliberately *not* a bespoke REST write route — the point of one replay pattern is that adding an edge-authoritative aggregate later does not add a new ingest idiom.
+
+### 3. Menu item availability endpoint
+
+`POST /menu/items/{itemId}/availability`, body `{available, reason?}`. Item snooze is in Milestone 1 scope and `is_available` exists in the frozen schema, but 0.2.0 exposed no way to write it. It is an ordinary catalog write: bumps `config_version`, requires `menu.manage`, audited. `additionalProperties: false` matches the `DisallowUnknownFields` decoder in `platform/httpx`, so a typo'd field is a 400 rather than a silent no-op.
+
+### 4. `refresh_token` table
+
+`postgres/0003_refresh_token.sql`. The auth context implemented refresh rotation against an in-process map because no table existed, which meant sessions died on restart and the design could not run on more than one instance — a Definition of Done violation, not an acceptable Milestone 1 shortcut.
+
+Cloud-only state: refresh tokens never sync to the edge, because offline login verifies the cached Argon2id hash and issues a local session. It therefore has **no** `AggregateType` entry and never appears in a sync envelope. `token_hash` stores a SHA-256 — the token itself is never persisted. Its uniqueness is global rather than tenant-scoped, deliberately: a token must be unique across all tenants, since per-tenant scoping would let one secret authenticate twice.
+
+### 5. `AuditEvent.tenant_id`, and `token_hash` redaction
+
+The 0.2.0 `AuditEvent` type omitted `tenant_id` even though `audit_event.tenant_id` is `NOT NULL` in `postgres/0002`. That was an error in the original ADR, caught when the auth builder added the field locally and the verification pass flagged it as drift. The type now carries it, non-null.
+
+`AUDIT_REDACTED_FIELDS` / `AuditRedactedFields` gain `token_hash`, so a `refresh_token` row can never be audited into an `audit_event` value — the same guarantee already held for `password_hash` and `pin_hash`. Both languages, asserted equal by the drift test.
+
+New fixture `audit_event.json` with round-trip tests in Go and TypeScript, and included in the sweep asserting no wire fixture carries credential material.

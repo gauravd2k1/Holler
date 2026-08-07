@@ -91,10 +91,16 @@ export type AuthenticatedPrincipal = z.infer<typeof AuthenticatedPrincipalSchema
 // Field names that must never be written into audit_event old_value/new_value
 // or emitted on the wire. The audit helper in each runtime redacts these
 // (ADR-011); the drift tests assert the list matches Go.
-export const AUDIT_REDACTED_FIELDS = ["password_hash", "pin_hash"] as const;
+//
+// token_hash added at 0.2.1 alongside the refresh_token table: a refresh-token
+// row must never reach an audit_event value either.
+export const AUDIT_REDACTED_FIELDS = ["password_hash", "pin_hash", "token_hash"] as const;
 
 export const AuditEventSchema = z.object({
   id: z.string().uuid(),
+  // Non-null, matching audit_event.tenant_id in postgres/0002. Corrected at
+  // 0.2.1 — the 0.2.0 type omitted it and drifted from the table.
+  tenant_id: z.string().uuid(),
   outlet_id: z.string().uuid().nullable(),
   actor_user_id: z.string().uuid().nullable(),
   device_id: z.string().uuid().nullable(),

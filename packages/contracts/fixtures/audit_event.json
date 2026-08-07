@@ -1,0 +1,15 @@
+{
+  "id": "018e5a2e-9999-7c3d-9f4e-1234567890ab",
+  "tenant_id": "018e5a2e-1111-7c3d-9f4e-1234567890ab",
+  "outlet_id": "018e5a2e-0000-7c3d-9f4e-1234567890ab",
+  "actor_user_id": "018e5a2e-aaaa-7c3d-9f4e-1234567890ab",
+  "device_id": "018e5a2e-7777-7c3d-9f4e-1234567890ab",
+  "action": "order.cancel",
+  "entity_type": "order",
+  "entity_id": "018e5a2e-2b1a-7c3d-9f4e-1234567890ab",
+  "old_value": { "status": "CONFIRMED" },
+  "new_value": { "status": "CANCELLED" },
+  "reason": "guest left before service",
+  "occurred_at": "2026-08-07T10:22:04Z",
+  "schema_version": 1
+}

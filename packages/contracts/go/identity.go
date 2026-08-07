@@ -89,10 +89,16 @@ type AuthenticatedPrincipal struct {
 // AuditRedactedFields must never appear in AuditEvent OldValue/NewValue or on
 // the wire. Mirrors AUDIT_REDACTED_FIELDS in src/types/identity.ts; the audit
 // helper strips these keys before persisting (ADR-011).
-var AuditRedactedFields = []string{"password_hash", "pin_hash"}
+//
+// token_hash added at 0.2.1 alongside the refresh_token table: a refresh-token
+// row must never reach an audit_event value either.
+var AuditRedactedFields = []string{"password_hash", "pin_hash", "token_hash"}
 
 type AuditEvent struct {
-	ID            string                 `json:"id"`
+	ID string `json:"id"`
+	// TenantID is non-null, matching audit_event.tenant_id in postgres/0002.
+	// Corrected at 0.2.1 — the 0.2.0 type omitted it and drifted from the table.
+	TenantID      string                 `json:"tenant_id"`
 	OutletID      *string                `json:"outlet_id"`
 	ActorUserID   *string                `json:"actor_user_id"`
 	DeviceID      *string                `json:"device_id"`
