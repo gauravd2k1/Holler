@@ -59,7 +59,7 @@ func RequirePermission(permission Permission) func(http.Handler) http.Handler {
 				httpx.Error(w, httpx.ErrUnauthorized)
 				return
 			}
-			if !principal.HasPermission(string(permission)) {
+			if !hasPermission(principal, string(permission)) {
 				httpx.Error(w, httpx.ErrForbidden)
 				return
 			}

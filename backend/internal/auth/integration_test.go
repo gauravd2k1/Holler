@@ -71,8 +71,9 @@ func TestIntegration_CreateUserAndLogin(t *testing.T) {
 	repo := NewRepository(pool)
 	auditor := NewAuditor(repo)
 	signer := NewTokenSigner([]byte("integration-test-key"))
-	refresh := NewRefreshStore()
-	svc := NewService(repo, signer, refresh, auditor, time.Minute, time.Hour)
+	refresh := NewInMemoryRefreshStore()
+	limiter := NewInMemoryRateLimiter()
+	svc := NewService(repo, signer, refresh, limiter, auditor, time.Minute, time.Hour)
 	ctx := context.Background()
 
 	tenantID := id.New()
@@ -101,11 +102,150 @@ func TestIntegration_CreateUserAndLogin(t *testing.T) {
 		t.Fatalf("unexpected created user: %+v", user)
 	}
 
-	result, err := svc.Login(ctx, tenantID, "integration@example.com", "correct-horse-battery", outletID)
+	result, err := svc.Login(ctx, testClientIP, tenantID, "integration@example.com", "correct-horse-battery", outletID)
 	if err != nil {
 		t.Fatalf("login: %v", err)
 	}
 	if result.Principal.UserID != userID {
 		t.Fatalf("unexpected principal: %+v", result.Principal)
+	}
+}
+
+// refreshFixture creates the tenant/outlet/user rows a PostgresRefreshStore
+// test needs to satisfy refresh_token's foreign keys, and registers cleanup.
+func refreshFixture(t *testing.T, pool postgres.Pool) (userID, outletID string) {
+	t.Helper()
+	ctx := context.Background()
+
+	tenantID := id.New()
+	outletID = id.New()
+	userID = id.New()
+
+	if _, err := pool.Exec(ctx, `INSERT INTO tenant (id, name, created_at, updated_at) VALUES ($1, $2, now(), now())`, tenantID, "Refresh Store Test Tenant"); err != nil {
+		t.Fatalf("inserting tenant fixture: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO outlet (id, tenant_id, name, timezone, created_at, updated_at) VALUES ($1, $2, 'Test Outlet', 'Asia/Kolkata', now(), now())`, outletID, tenantID); err != nil {
+		t.Fatalf("inserting outlet fixture: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO app_user (id, tenant_id, email, full_name, password_hash, is_active, config_version, created_at, updated_at)
+		VALUES ($1, $2, 'refresh-fixture@example.com', 'Refresh Fixture', 'unused', TRUE, 0, now(), now())
+	`, userID, tenantID); err != nil {
+		t.Fatalf("inserting user fixture: %v", err)
+	}
+
+	t.Cleanup(func() {
+		pool.Exec(ctx, `DELETE FROM refresh_token WHERE user_id = $1`, userID)
+		pool.Exec(ctx, `DELETE FROM app_user WHERE id = $1`, userID)
+		pool.Exec(ctx, `DELETE FROM outlet WHERE id = $1`, outletID)
+		pool.Exec(ctx, `DELETE FROM tenant WHERE id = $1`, tenantID)
+	})
+
+	return userID, outletID
+}
+
+func TestIntegration_PostgresRefreshStore_IssueAndRotate(t *testing.T) {
+	pool := testPool(t)
+	userID, outletID := refreshFixture(t, pool)
+	store := NewPostgresRefreshStore(pool)
+
+	ctx := context.Background()
+	token, err := store.Issue(ctx, userID, outletID, time.Hour)
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+
+	next, gotUserID, gotOutletID, err := store.Rotate(ctx, token, time.Hour)
+	if err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+	if gotUserID != userID || gotOutletID != outletID {
+		t.Fatalf("unexpected identity from rotate: %s %s", gotUserID, gotOutletID)
+	}
+	if next == token {
+		t.Fatal("expected a distinct successor token")
+	}
+
+	// The persisted row for the rotated-away token must carry used_at and
+	// replaced_by_id set in the same transaction as the successor insert.
+	var usedAt *time.Time
+	var replacedByID *string
+	if err := pool.QueryRow(ctx, `SELECT used_at, replaced_by_id FROM refresh_token WHERE token_hash = $1`, hashToken(token)).Scan(&usedAt, &replacedByID); err != nil {
+		t.Fatalf("checking rotated row: %v", err)
+	}
+	if usedAt == nil || replacedByID == nil {
+		t.Fatal("expected used_at and replaced_by_id to be set on the rotated-away token")
+	}
+}
+
+func TestIntegration_PostgresRefreshStore_ReuseRevokesFamily(t *testing.T) {
+	pool := testPool(t)
+	userID, outletID := refreshFixture(t, pool)
+	store := NewPostgresRefreshStore(pool)
+
+	ctx := context.Background()
+	token, err := store.Issue(ctx, userID, outletID, time.Hour)
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	next, _, _, err := store.Rotate(ctx, token, time.Hour)
+	if err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+
+	// Reusing the rotated-away token must revoke the whole family.
+	if _, _, _, err := store.Rotate(ctx, token, time.Hour); err != ErrInvalidToken {
+		t.Fatalf("expected reuse of rotated token to be rejected, got %v", err)
+	}
+	if _, _, _, err := store.Rotate(ctx, next, time.Hour); err != ErrInvalidToken {
+		t.Fatalf("expected reuse to invalidate the whole family, got %v", err)
+	}
+
+	var revokedCount int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM refresh_token
+		WHERE user_id = $1 AND revoked_at IS NOT NULL
+	`, userID).Scan(&revokedCount); err != nil {
+		t.Fatalf("counting revoked rows: %v", err)
+	}
+	if revokedCount == 0 {
+		t.Fatal("expected every row in the family to be revoked")
+	}
+}
+
+// TestIntegration_PostgresRefreshStore_SurvivesRestart proves rotation state
+// is Postgres-backed, not process-local: a second store constructed over the
+// same pool (simulating a backend restart) can still validate a token issued
+// by the first, and reuse detected by the second store still revokes the
+// family for both.
+func TestIntegration_PostgresRefreshStore_SurvivesRestart(t *testing.T) {
+	pool := testPool(t)
+	userID, outletID := refreshFixture(t, pool)
+	ctx := context.Background()
+
+	firstProcessStore := NewPostgresRefreshStore(pool)
+	token, err := firstProcessStore.Issue(ctx, userID, outletID, time.Hour)
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+
+	// "Restart": a brand new store instance, sharing only the Postgres pool.
+	secondProcessStore := NewPostgresRefreshStore(pool)
+
+	next, gotUserID, gotOutletID, err := secondProcessStore.Rotate(ctx, token, time.Hour)
+	if err != nil {
+		t.Fatalf("rotate on second store instance: %v", err)
+	}
+	if gotUserID != userID || gotOutletID != outletID {
+		t.Fatalf("unexpected identity after restart: %s %s", gotUserID, gotOutletID)
+	}
+
+	// Reuse against the token the first store issued, presented to the
+	// second store instance, must still revoke the whole family.
+	if _, _, _, err := secondProcessStore.Rotate(ctx, token, time.Hour); err != ErrInvalidToken {
+		t.Fatalf("expected reuse to be rejected after restart, got %v", err)
+	}
+	if _, _, _, err := firstProcessStore.Rotate(ctx, next, time.Hour); err != ErrInvalidToken {
+		t.Fatalf("expected family revoked by second store to be visible to the first, got %v", err)
 	}
 }

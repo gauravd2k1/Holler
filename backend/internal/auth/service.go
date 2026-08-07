@@ -33,18 +33,20 @@ type UserRepository interface {
 type Service struct {
 	repo       UserRepository
 	tokens     *TokenSigner
-	refresh    *RefreshStore
+	refresh    RefreshStore
+	limiter    RateLimiter
 	auditor    AuditRecorder
 	accessTTL  time.Duration
 	refreshTTL time.Duration
 	now        func() time.Time
 }
 
-func NewService(repo UserRepository, tokens *TokenSigner, refresh *RefreshStore, auditor AuditRecorder, accessTTL, refreshTTL time.Duration) *Service {
+func NewService(repo UserRepository, tokens *TokenSigner, refresh RefreshStore, limiter RateLimiter, auditor AuditRecorder, accessTTL, refreshTTL time.Duration) *Service {
 	return &Service{
 		repo:       repo,
 		tokens:     tokens,
 		refresh:    refresh,
+		limiter:    limiter,
 		auditor:    auditor,
 		accessTTL:  accessTTL,
 		refreshTTL: refreshTTL,
@@ -61,8 +63,18 @@ type LoginResult struct {
 
 // Login authenticates a user against a tenant + outlet and, on success,
 // resolves their effective permissions at that outlet. Failure never
-// distinguishes "no such user" from "wrong password".
-func (s *Service) Login(ctx context.Context, tenantID, email, password, outletID string) (LoginResult, error) {
+// distinguishes "no such user" from "wrong password" — and, per ADR-012,
+// nor does rate-limit rejection: it returns the identical ErrRateLimited
+// regardless of whether clientIP+tenantID's target account exists.
+//
+// clientIP + tenantID is the rate-limit key (ADR-012): keying on IP as well
+// as tenant means rotating X-Tenant-ID cannot reset an attacker's budget,
+// because a second, IP-only check always applies too.
+func (s *Service) Login(ctx context.Context, clientIP, tenantID, email, password, outletID string) (LoginResult, error) {
+	if err := s.checkLoginRateLimit(ctx, clientIP, tenantID); err != nil {
+		return LoginResult{}, err
+	}
+
 	row, err := s.repo.FindUserByEmailForAuth(ctx, tenantID, strings.ToLower(email))
 	if err != nil {
 		// Do the same work whether the user exists or not, so timing does not
@@ -86,7 +98,7 @@ func (s *Service) Login(ctx context.Context, tenantID, email, password, outletID
 	if err != nil {
 		return LoginResult{}, err
 	}
-	refreshToken, err := s.refresh.Issue(row.id, outletID, s.refreshTTL)
+	refreshToken, err := s.refresh.Issue(ctx, row.id, outletID, s.refreshTTL)
 	if err != nil {
 		return LoginResult{}, err
 	}
@@ -98,11 +110,41 @@ func (s *Service) Login(ctx context.Context, tenantID, email, password, outletID
 // failed lookup take roughly the same time as a real verify.
 const dummyHash = "$argon2id$v=19$m=65536,t=2,p=4$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 
+// checkLoginRateLimit enforces the ADR-012 login budget on two keys: IP
+// alone, and IP+tenant together. Both must allow the attempt. The IP-alone
+// check is what stops rotating X-Tenant-ID from resetting the budget — it
+// does not vary with the header, so an attacker cycling tenants against one
+// IP still exhausts a single shared counter. A limiter error (backing store
+// unavailable) fails closed: the attempt is denied, never allowed through.
+func (s *Service) checkLoginRateLimit(ctx context.Context, clientIP, tenantID string) error {
+	if s.limiter == nil {
+		return nil
+	}
+
+	ipAllowed, err := s.limiter.Allow(ctx, "login:ip:"+clientIP, LoginRateLimitAttempts, LoginRateLimitWindow)
+	if err != nil {
+		return ErrRateLimited
+	}
+	if !ipAllowed {
+		return ErrRateLimited
+	}
+
+	compositeAllowed, err := s.limiter.Allow(ctx, "login:ip:"+clientIP+"|tenant:"+tenantID, LoginRateLimitAttempts, LoginRateLimitWindow)
+	if err != nil {
+		return ErrRateLimited
+	}
+	if !compositeAllowed {
+		return ErrRateLimited
+	}
+
+	return nil
+}
+
 // Refresh rotates a refresh token. Reuse of an already-rotated token
 // invalidates the whole chain and returns ErrInvalidToken via
 // httpx.ErrUnauthorized.
 func (s *Service) Refresh(ctx context.Context, refreshToken string) (LoginResult, error) {
-	next, userID, outletID, err := s.refresh.Rotate(refreshToken, s.refreshTTL)
+	next, userID, outletID, err := s.refresh.Rotate(ctx, refreshToken, s.refreshTTL)
 	if err != nil {
 		return LoginResult{}, httpx.ErrUnauthorized
 	}
@@ -125,8 +167,8 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (LoginResult
 }
 
 // Logout revokes the refresh token's whole rotation family.
-func (s *Service) Logout(refreshToken string) {
-	s.refresh.Revoke(refreshToken)
+func (s *Service) Logout(ctx context.Context, refreshToken string) {
+	s.refresh.Revoke(ctx, refreshToken)
 }
 
 // resolvePrincipal computes the effective permission set for a user at a

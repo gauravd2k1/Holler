@@ -90,7 +90,7 @@ func (r *Repository) CreateUser(ctx context.Context, id, tenantID, email, fullNa
 // ListUsers returns every user of a tenant with their role assignments.
 func (r *Repository) ListUsers(ctx context.Context, tenantID string) ([]User, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT id, tenant_id, email, full_name, is_active, created_at, updated_at
+		SELECT id, tenant_id, email, full_name, is_active, config_version, created_at, updated_at
 		FROM app_user
 		WHERE tenant_id = $1
 		ORDER BY created_at
@@ -103,9 +103,10 @@ func (r *Repository) ListUsers(ctx context.Context, tenantID string) ([]User, er
 	var users []User
 	for rows.Next() {
 		var u User
-		if err := rows.Scan(&u.ID, &u.TenantID, &u.Email, &u.FullName, &u.IsActive, &u.CreatedAt, &u.UpdatedAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.TenantID, &u.Email, &u.FullName, &u.IsActive, &u.ConfigVersion, &u.CreatedAt, &u.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("auth: scanning user: %w", err)
 		}
+		u.SchemaVersion = schemaVersion
 		users = append(users, u)
 	}
 	if err := rows.Err(); err != nil {
@@ -126,16 +127,17 @@ func (r *Repository) ListUsers(ctx context.Context, tenantID string) ([]User, er
 func (r *Repository) GetUser(ctx context.Context, tenantID, userID string) (User, error) {
 	var u User
 	err := r.pool.QueryRow(ctx, `
-		SELECT id, tenant_id, email, full_name, is_active, created_at, updated_at
+		SELECT id, tenant_id, email, full_name, is_active, config_version, created_at, updated_at
 		FROM app_user
 		WHERE tenant_id = $1 AND id = $2
-	`, tenantID, userID).Scan(&u.ID, &u.TenantID, &u.Email, &u.FullName, &u.IsActive, &u.CreatedAt, &u.UpdatedAt)
+	`, tenantID, userID).Scan(&u.ID, &u.TenantID, &u.Email, &u.FullName, &u.IsActive, &u.ConfigVersion, &u.CreatedAt, &u.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return User{}, httpx.ErrNotFound
 	}
 	if err != nil {
 		return User{}, fmt.Errorf("auth: getting user: %w", err)
 	}
+	u.SchemaVersion = schemaVersion
 	roles, err := r.RolesForUser(ctx, u.ID)
 	if err != nil {
 		return User{}, err
@@ -233,6 +235,7 @@ func (r *Repository) ListRoles(ctx context.Context, tenantID string) ([]Role, er
 			return nil, fmt.Errorf("auth: scanning role: %w", err)
 		}
 		role.Code = RoleCode(code)
+		role.SchemaVersion = schemaVersion
 		roles = append(roles, role)
 	}
 	if err := rows.Err(); err != nil {
@@ -263,6 +266,7 @@ func (r *Repository) GetRole(ctx context.Context, tenantID, roleID string) (Role
 		return Role{}, fmt.Errorf("auth: getting role: %w", err)
 	}
 	role.Code = RoleCode(code)
+	role.SchemaVersion = schemaVersion
 	perms, err := r.PermissionsForRole(ctx, role.ID)
 	if err != nil {
 		return Role{}, err

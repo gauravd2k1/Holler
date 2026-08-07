@@ -21,8 +21,9 @@ func TestHandlers_NoResponseEverContainsPasswordHash(t *testing.T) {
 	repo := newFakeRepo()
 	auditor := &fakeAuditor{}
 	signer := NewTokenSigner([]byte("handler-test-key"))
-	refresh := NewRefreshStore()
-	svc := NewService(repo, signer, refresh, auditor, time.Minute, time.Hour)
+	refresh := NewInMemoryRefreshStore()
+	limiter := NewInMemoryRateLimiter()
+	svc := NewService(repo, signer, refresh, limiter, auditor, time.Minute, time.Hour)
 	h := NewHandlers(svc, signer)
 
 	tenantID := id.New()
@@ -100,8 +101,9 @@ func TestHandlers_NoResponseEverContainsPasswordHash(t *testing.T) {
 func TestLogin_FailureResponseDoesNotDistinguishReasons(t *testing.T) {
 	repo := newFakeRepo()
 	signer := NewTokenSigner([]byte("handler-test-key"))
-	refresh := NewRefreshStore()
-	svc := NewService(repo, signer, refresh, nil, time.Minute, time.Hour)
+	refresh := NewInMemoryRefreshStore()
+	limiter := NewInMemoryRateLimiter()
+	svc := NewService(repo, signer, refresh, limiter, nil, time.Minute, time.Hour)
 	h := NewHandlers(svc, signer)
 
 	tenantID := id.New()

@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"net"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -47,21 +48,56 @@ type sessionResponse struct {
 	Principal    AuthenticatedPrincipal `json:"principal"`
 }
 
+// resolveTenantID is the ONE place in this package that resolves the tenant
+// of an unauthenticated request (ADR-012 "Host-based tenant resolution,
+// with X-Tenant-ID as a time-boxed interim"). Every other request in this
+// package (post-login) gets its tenant from the resolved
+// AuthenticatedPrincipal, never from a header — POST /auth/login is the one
+// endpoint with no principal yet, so it is the one place this seam is
+// needed.
+//
+// Confined here so that swapping the client-supplied header for TLS-SNI /
+// host-based resolution — required before Holler serves more than one
+// tenant in production — is a single-function change. When that swap
+// happens, ADR-012 requires X-Tenant-ID to be *rejected*, not silently
+// ignored; that rejection also belongs only here.
+func resolveTenantID(r *http.Request) string {
+	return r.Header.Get("X-Tenant-ID")
+}
+
+// clientIP extracts the caller's address for the ADR-012 login rate limit
+// key. It reads RemoteAddr, which in this deployment is set by the
+// connecting peer (no trusted reverse proxy sits in front of Milestone 1's
+// local stack) — X-Forwarded-For is deliberately not trusted here, since an
+// unauthenticated caller could forge it to reset their own rate-limit
+// bucket, defeating the IP component ADR-012 relies on.
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
 func (h *Handlers) login(w http.ResponseWriter, r *http.Request) {
 	var req loginRequest
 	if err := httpx.DecodeJSON(r, &req); err != nil {
 		httpx.Error(w, err)
 		return
 	}
-	tenantID := r.Header.Get("X-Tenant-ID")
+	tenantID := resolveTenantID(r)
 	if tenantID == "" || req.Email == "" || req.Password == "" || req.OutletID == "" {
 		httpx.Error(w, httpx.ErrUnauthorized)
 		return
 	}
 
-	result, err := h.service.Login(r.Context(), tenantID, req.Email, req.Password, req.OutletID)
+	result, err := h.service.Login(r.Context(), clientIP(r), tenantID, req.Email, req.Password, req.OutletID)
 	if err != nil {
-		httpx.Error(w, err)
+		// ErrRateLimited maps onto the identical unauthorized response as a
+		// bad credential: rate-limit rejection must not be distinguishable
+		// from "wrong password", which would otherwise leak that throttling
+		// is specifically account-related (ADR-012).
+		httpx.Error(w, httpx.ErrUnauthorized)
 		return
 	}
 	httpx.JSON(w, http.StatusOK, sessionResponse{
@@ -104,7 +140,7 @@ func (h *Handlers) logout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.RefreshToken != "" {
-		h.service.Logout(req.RefreshToken)
+		h.service.Logout(r.Context(), req.RefreshToken)
 	}
 	httpx.JSON(w, http.StatusNoContent, nil)
 }
@@ -116,7 +152,12 @@ func (h *Handlers) listUsers(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, err)
 		return
 	}
-	httpx.JSON(w, http.StatusOK, toUserResponses(users))
+	// users is []User = []contracts.AppUser, which never carries a hash field
+	// (packages/contracts/go/identity.go) — safe to marshal directly.
+	if users == nil {
+		users = []User{}
+	}
+	httpx.JSON(w, http.StatusOK, users)
 }
 
 type createUserRequest struct {
@@ -144,7 +185,7 @@ func (h *Handlers) createUser(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, err)
 		return
 	}
-	httpx.JSON(w, http.StatusCreated, toUserResponse(user))
+	httpx.JSON(w, http.StatusCreated, user)
 }
 
 type roleAssignmentRequest struct {
@@ -174,7 +215,7 @@ func (h *Handlers) setUserRoles(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, err)
 		return
 	}
-	httpx.JSON(w, http.StatusOK, toUserResponse(user))
+	httpx.JSON(w, http.StatusOK, user)
 }
 
 func (h *Handlers) listRoles(w http.ResponseWriter, r *http.Request) {
@@ -184,67 +225,8 @@ func (h *Handlers) listRoles(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, err)
 		return
 	}
-	httpx.JSON(w, http.StatusOK, toRoleResponses(roles))
-}
-
-// --- wire shapes (mirror contracts.AppUser / contracts.Role; never carry a
-// hash field) ---
-
-type roleAssignmentWire struct {
-	ID       string  `json:"id"`
-	RoleID   string  `json:"role_id"`
-	RoleCode string  `json:"role_code"`
-	OutletID *string `json:"outlet_id"`
-}
-
-type userWire struct {
-	ID       string               `json:"id"`
-	TenantID string               `json:"tenant_id"`
-	Email    string               `json:"email"`
-	FullName string               `json:"full_name"`
-	IsActive bool                 `json:"is_active"`
-	Roles    []roleAssignmentWire `json:"roles"`
-}
-
-func toUserResponse(u User) userWire {
-	roles := make([]roleAssignmentWire, 0, len(u.Roles))
-	for _, a := range u.Roles {
-		roles = append(roles, roleAssignmentWire{ID: a.ID, RoleID: a.RoleID, RoleCode: string(a.RoleCode), OutletID: a.OutletID})
+	if roles == nil {
+		roles = []Role{}
 	}
-	return userWire{
-		ID:       u.ID,
-		TenantID: u.TenantID,
-		Email:    u.Email,
-		FullName: u.FullName,
-		IsActive: u.IsActive,
-		Roles:    roles,
-	}
-}
-
-func toUserResponses(users []User) []userWire {
-	out := make([]userWire, 0, len(users))
-	for _, u := range users {
-		out = append(out, toUserResponse(u))
-	}
-	return out
-}
-
-type roleWire struct {
-	ID          string   `json:"id"`
-	TenantID    string   `json:"tenant_id"`
-	Code        string   `json:"code"`
-	Name        string   `json:"name"`
-	Permissions []string `json:"permissions"`
-}
-
-func toRoleResponses(roles []Role) []roleWire {
-	out := make([]roleWire, 0, len(roles))
-	for _, r := range roles {
-		perms := make([]string, 0, len(r.Permissions))
-		for _, p := range r.Permissions {
-			perms = append(perms, string(p))
-		}
-		out = append(out, roleWire{ID: r.ID, TenantID: r.TenantID, Code: string(r.Code), Name: r.Name, Permissions: perms})
-	}
-	return out
+	httpx.JSON(w, http.StatusOK, roles)
 }

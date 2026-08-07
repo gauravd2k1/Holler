@@ -124,13 +124,18 @@ func (f *fakeAuditor) Audit(ctx context.Context, input AuditInput) error {
 	return nil
 }
 
+// testClientIP is used by every service_test.go login unless a test needs a
+// distinct address on purpose (rate-limit tests).
+const testClientIP = "198.51.100.10"
+
 func newTestService(t *testing.T) (*Service, *fakeRepo, *fakeAuditor) {
 	t.Helper()
 	repo := newFakeRepo()
 	auditor := &fakeAuditor{}
 	signer := NewTokenSigner([]byte("test-signing-key-not-a-secret"))
-	refresh := NewRefreshStore()
-	svc := NewService(repo, signer, refresh, auditor, time.Minute, time.Hour)
+	refresh := NewInMemoryRefreshStore()
+	limiter := NewInMemoryRateLimiter()
+	svc := NewService(repo, signer, refresh, limiter, auditor, time.Minute, time.Hour)
 	return svc, repo, auditor
 }
 
@@ -156,14 +161,14 @@ func TestLogin_Success(t *testing.T) {
 	repo.addRole(role)
 	repo.userRoles[userID] = []RoleAssignment{{ID: id.New(), RoleID: role.ID, RoleCode: role.Code, OutletID: nil}}
 
-	result, err := svc.Login(context.Background(), tenantID, "cashier@example.com", "correct-horse-battery-staple", outletID)
+	result, err := svc.Login(context.Background(), testClientIP, tenantID, "cashier@example.com", "correct-horse-battery-staple", outletID)
 	if err != nil {
 		t.Fatalf("expected login success, got %v", err)
 	}
 	if result.AccessToken == "" || result.RefreshToken == "" {
 		t.Fatal("expected non-empty tokens")
 	}
-	if !result.Principal.HasPermission(string(PermissionOrderCreate)) {
+	if !hasPermission(result.Principal, string(PermissionOrderCreate)) {
 		t.Fatal("expected principal to carry order.create from tenant-wide role")
 	}
 }
@@ -175,8 +180,8 @@ func TestLogin_WrongPassword_And_NoSuchUser_SameError(t *testing.T) {
 	hash := mustHash(t, "correct-password")
 	repo.CreateUser(context.Background(), userID, tenantID, "someone@example.com", "Someone", hash, time.Now())
 
-	_, err1 := svc.Login(context.Background(), tenantID, "someone@example.com", "wrong-password", id.New())
-	_, err2 := svc.Login(context.Background(), tenantID, "nobody@example.com", "irrelevant-password", id.New())
+	_, err1 := svc.Login(context.Background(), testClientIP, tenantID, "someone@example.com", "wrong-password", id.New())
+	_, err2 := svc.Login(context.Background(), testClientIP, tenantID, "nobody@example.com", "irrelevant-password", id.New())
 
 	if err1 == nil || err2 == nil {
 		t.Fatal("expected both logins to fail")
@@ -205,25 +210,25 @@ func TestPermissionResolution_TenantWideVsOutletScoped(t *testing.T) {
 		{ID: id.New(), RoleID: outletScopedRole.ID, RoleCode: outletScopedRole.Code, OutletID: &outletA},
 	}
 
-	resultA, err := svc.Login(context.Background(), tenantID, "manager@example.com", "password12345", outletA)
+	resultA, err := svc.Login(context.Background(), testClientIP, tenantID, "manager@example.com", "password12345", outletA)
 	if err != nil {
 		t.Fatalf("login at outlet A: %v", err)
 	}
-	if !resultA.Principal.HasPermission(string(PermissionOrderCreate)) {
+	if !hasPermission(resultA.Principal, string(PermissionOrderCreate)) {
 		t.Error("expected tenant-wide permission to apply at outlet A")
 	}
-	if !resultA.Principal.HasPermission(string(PermissionMenuManage)) {
+	if !hasPermission(resultA.Principal, string(PermissionMenuManage)) {
 		t.Error("expected outlet-scoped permission to apply at its own outlet")
 	}
 
-	resultB, err := svc.Login(context.Background(), tenantID, "manager@example.com", "password12345", outletB)
+	resultB, err := svc.Login(context.Background(), testClientIP, tenantID, "manager@example.com", "password12345", outletB)
 	if err != nil {
 		t.Fatalf("login at outlet B: %v", err)
 	}
-	if !resultB.Principal.HasPermission(string(PermissionOrderCreate)) {
+	if !hasPermission(resultB.Principal, string(PermissionOrderCreate)) {
 		t.Error("expected tenant-wide permission to apply at outlet B too")
 	}
-	if resultB.Principal.HasPermission(string(PermissionMenuManage)) {
+	if hasPermission(resultB.Principal, string(PermissionMenuManage)) {
 		t.Error("outlet-scoped permission from outlet A must not leak into outlet B")
 	}
 }
@@ -236,7 +241,7 @@ func TestRefresh_RotatesAndDetectsReuse(t *testing.T) {
 	hash := mustHash(t, "password12345")
 	repo.CreateUser(context.Background(), userID, tenantID, "user@example.com", "User", hash, time.Now())
 
-	login, err := svc.Login(context.Background(), tenantID, "user@example.com", "password12345", outletID)
+	login, err := svc.Login(context.Background(), testClientIP, tenantID, "user@example.com", "password12345", outletID)
 	if err != nil {
 		t.Fatalf("login: %v", err)
 	}
@@ -268,12 +273,12 @@ func TestLogout_RevokesRefreshToken(t *testing.T) {
 	hash := mustHash(t, "password12345")
 	repo.CreateUser(context.Background(), userID, tenantID, "user@example.com", "User", hash, time.Now())
 
-	login, err := svc.Login(context.Background(), tenantID, "user@example.com", "password12345", outletID)
+	login, err := svc.Login(context.Background(), testClientIP, tenantID, "user@example.com", "password12345", outletID)
 	if err != nil {
 		t.Fatalf("login: %v", err)
 	}
 
-	svc.Logout(login.RefreshToken)
+	svc.Logout(context.Background(), login.RefreshToken)
 
 	if _, err := svc.Refresh(context.Background(), login.RefreshToken); err == nil {
 		t.Fatal("expected refresh with a revoked token to fail")

@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -99,6 +100,25 @@ func (s *TokenSigner) verify(token string) ([]byte, error) {
 	return payload, nil
 }
 
+// RefreshStore issues and rotates refresh tokens, detecting reuse of an
+// already-rotated token by invalidating its whole family. Service depends on
+// this interface, not a concrete store, so it is unchanged by which
+// implementation backs it. PostgresRefreshStore (refresh_store_postgres.go)
+// is the persistent implementation, backed by
+// packages/contracts/postgres/0003_refresh_token.sql; InMemoryRefreshStore
+// below exists for unit tests that don't want a database dependency.
+type RefreshStore interface {
+	// Issue starts a new rotation family and returns the first refresh token.
+	Issue(ctx context.Context, userID, outletID string, ttl time.Duration) (string, error)
+	// Rotate consumes token and issues its successor in the same family. If
+	// token was already used (reuse — a stolen-token signal), revoked, or
+	// otherwise invalid, the whole family is revoked and ErrInvalidToken is
+	// returned.
+	Rotate(ctx context.Context, token string, ttl time.Duration) (newToken, userID, outletID string, err error)
+	// Revoke invalidates a single refresh token's whole family (logout).
+	Revoke(ctx context.Context, token string)
+}
+
 // refreshEntry is one link in a refresh token rotation chain.
 type refreshEntry struct {
 	familyID  string
@@ -109,27 +129,21 @@ type refreshEntry struct {
 	revoked   bool
 }
 
-// RefreshStore issues and rotates refresh tokens, detecting reuse of an
-// already-rotated token by invalidating its whole family.
-//
-// KNOWN LIMITATION (reported to orchestrator): packages/contracts/postgres/
-// 0002_m1_identity_tables.sql has no refresh_token table, so this store is
-// in-process and does not survive a restart or scale across backend
-// instances. A future contracts change should add a refresh_token table
-// (token_hash, family_id, user_id, outlet_id, expires_at, used_at, revoked_at)
-// so RefreshStore can be backed by Postgres without changing this interface.
-type RefreshStore struct {
+// InMemoryRefreshStore is a RefreshStore that keeps rotation state in a
+// process-local map. It does not survive a restart and does not work across
+// backend instances — use PostgresRefreshStore in production; this exists
+// for tests that want RefreshStore behavior without a database.
+type InMemoryRefreshStore struct {
 	mu      sync.Mutex
 	entries map[string]*refreshEntry // token -> entry
 	now     func() time.Time
 }
 
-func NewRefreshStore() *RefreshStore {
-	return &RefreshStore{entries: make(map[string]*refreshEntry), now: time.Now}
+func NewInMemoryRefreshStore() *InMemoryRefreshStore {
+	return &InMemoryRefreshStore{entries: make(map[string]*refreshEntry), now: time.Now}
 }
 
-// Issue starts a new rotation family and returns the first refresh token.
-func (s *RefreshStore) Issue(userID, outletID string, ttl time.Duration) (string, error) {
+func (s *InMemoryRefreshStore) Issue(ctx context.Context, userID, outletID string, ttl time.Duration) (string, error) {
 	token, err := randomToken()
 	if err != nil {
 		return "", err
@@ -150,11 +164,7 @@ func (s *RefreshStore) Issue(userID, outletID string, ttl time.Duration) (string
 	return token, nil
 }
 
-// Rotate consumes token and issues its successor in the same family. If
-// token was already used (reuse of a rotated token — a stolen-token signal)
-// or is otherwise invalid, the whole family is revoked and ErrInvalidToken
-// is returned.
-func (s *RefreshStore) Rotate(token string, ttl time.Duration) (newToken, userID, outletID string, err error) {
+func (s *InMemoryRefreshStore) Rotate(ctx context.Context, token string, ttl time.Duration) (newToken, userID, outletID string, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -182,8 +192,7 @@ func (s *RefreshStore) Rotate(token string, ttl time.Duration) (newToken, userID
 	return next, entry.userID, entry.outletID, nil
 }
 
-// Revoke invalidates a single refresh token's whole family (logout).
-func (s *RefreshStore) Revoke(token string) {
+func (s *InMemoryRefreshStore) Revoke(ctx context.Context, token string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	entry, ok := s.entries[token]
@@ -193,7 +202,7 @@ func (s *RefreshStore) Revoke(token string) {
 	s.revokeFamilyLocked(entry.familyID)
 }
 
-func (s *RefreshStore) revokeFamilyLocked(familyID string) {
+func (s *InMemoryRefreshStore) revokeFamilyLocked(familyID string) {
 	for _, e := range s.entries {
 		if e.familyID == familyID {
 			e.revoked = true
