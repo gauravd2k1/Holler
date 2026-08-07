@@ -1,3 +1,0 @@
-DROP TABLE IF EXISTS outlets;
-DROP TABLE IF EXISTS brands;
-DROP TABLE IF EXISTS organisations;
