@@ -1,0 +1,34 @@
+[package]
+name = "holler-edge-sync"
+version = "0.1.0"
+edition = "2021"
+description = "Edge sync worker: outbox pump (edge→cloud) and config pull (cloud→edge) against Holler Cloud, enforcing the §50.1 authority split (ADR-009)."
+
+[lib]
+name = "holler_edge_sync"
+path = "src/lib.rs"
+
+[dependencies]
+holler-edge-database = { path = "../database" }
+
+# Only for the BEGIN/ROLLBACK/COMMIT wrapping a multi-row config-bundle apply
+# spans (see src/config.rs::exec_batch) — edge/database exposes no
+# transaction spanning several of its own repo calls made from outside the
+# crate. All other SQLite access goes through holler_edge_database's typed
+# repositories, never raw rusqlite calls. Version pinned to match
+# edge/database's own dependency so Cargo unifies the build.
+rusqlite = { version = "0.31", default-features = false }
+
+# Blocking HTTP client with rustls (no system OpenSSL dependency on Windows,
+# matching the "modest restaurant hardware, no server process" posture of
+# edge/database's own dependency choices).
+ureq = { version = "2", default-features = false, features = ["json", "tls"] }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[dev-dependencies]
+tempfile = "3"
+tiny_http = "0.12"
