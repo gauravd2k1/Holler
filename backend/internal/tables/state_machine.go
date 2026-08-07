@@ -1,6 +1,7 @@
 package tables
 
 import (
+	"errors"
 	"fmt"
 
 	contracts "github.com/holler/contracts"
@@ -53,15 +54,22 @@ var allowedTransitions = map[TableSessionState][]TableSessionState{
 	contracts.TableSessionStateClosed: {},
 }
 
-// validateTransition returns an httpx.ErrInvalidInput-wrapped error unless
-// moving a session from `from` to `to` is a legal edge in the state machine.
+// ErrIllegalTransition marks a state-machine violation specifically (as
+// opposed to other httpx.ErrInvalidInput causes such as a missing field), so
+// HTTP layers that must map it to a different status code — the envelope
+// ingest routes return 409, not 400 — can distinguish it with errors.Is.
+var ErrIllegalTransition = errors.New("illegal table session state transition")
+
+// validateTransition returns an error wrapping both ErrIllegalTransition and
+// httpx.ErrInvalidInput unless moving a session from `from` to `to` is a
+// legal edge in the state machine.
 func validateTransition(from, to TableSessionState) error {
 	for _, next := range allowedTransitions[from] {
 		if next == to {
 			return nil
 		}
 	}
-	return fmt.Errorf("%w: table session cannot transition from %s to %s", httpx.ErrInvalidInput, from, to)
+	return fmt.Errorf("%w: table session cannot transition from %s to %s: %w", ErrIllegalTransition, from, to, httpx.ErrInvalidInput)
 }
 
 // DeriveDisplayState returns the floor-plan state for a table. A table with

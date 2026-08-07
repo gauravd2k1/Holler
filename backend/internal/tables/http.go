@@ -10,10 +10,10 @@ import (
 
 // Handlers wires the tables HTTP surface onto a shared router. Endpoints
 // match packages/contracts/openapi/openapi.yaml exactly: GET/POST
-// /outlets/{outletId}/tables. There is no HTTP surface for TableSession in
-// Milestone 1 — it is edge-authoritative and reaches the cloud only via
-// replay, which a future sync context ingests through Service.OpenSession /
-// TransitionSession / CloseSession.
+// /outlets/{outletId}/tables for the RestaurantTable config path, and (as of
+// contracts 0.2.1 / ADR-011 addendum) the envelope-wrapped
+// /outlets/{outletId}/table-sessions[/{sessionId}] routes for the
+// TableSession replay path — see http_envelope.go.
 type Handlers struct {
 	svc *Service
 }
@@ -22,12 +22,14 @@ func NewHandlers(svc *Service) *Handlers {
 	return &Handlers{svc: svc}
 }
 
-// Mount registers the tables routes on r.
+// Mount registers every tables route — both RestaurantTable config
+// endpoints and the TableSession envelope-ingest endpoints — on r.
 func (h *Handlers) Mount(r chi.Router) {
 	r.Route("/outlets/{outletId}/tables", func(r chi.Router) {
 		r.Get("/", h.listTables)
 		r.Post("/", h.createTable)
 	})
+	h.MountEnvelopeIngest(r)
 }
 
 type tableWire struct {
