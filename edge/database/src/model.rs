@@ -155,6 +155,37 @@ pub struct OrderItem {
     pub created_at: String,
 }
 
+/// A snapshot of one modifier selection on an order line
+/// (`order_item_modifier`, contracts 0.2.3). Used both to write and to read
+/// back the row — like `menu_item_variant`/`menu_item_modifier`, there are
+/// no server-generated columns, so one struct suffices instead of a
+/// New/read pair. `modifier_id`/`group_name`/`option_name`/
+/// `price_delta_paise` are deliberately snapshots, not a foreign key to the
+/// live catalog (0003_order_item_modifiers.sql): a completed order's line
+/// must never move because the menu changed underneath it.
+#[derive(Debug, Clone)]
+pub struct OrderItemModifier {
+    pub id: String,
+    pub order_item_id: String,
+    pub modifier_id: String,
+    pub group_name: String,
+    pub option_name: String,
+    pub price_delta_paise: i64,
+    pub created_at: String,
+}
+
+/// Caller-supplied fields for the `local_outbox` row that
+/// [`crate::Db::remove_order_item_with_outbox`] writes — mirrors
+/// [`OrderItemAddedMeta`]. `event_type` (the frozen `ItemRemoved` string)
+/// and `payload_json` (the full removed line, including its modifiers) are
+/// owned by the crate, built from the row it is about to delete, so a
+/// caller cannot describe a mismatched removal.
+#[derive(Debug, Clone)]
+pub struct OrderItemRemovedMeta {
+    pub outbox_id: String,
+    pub occurred_at: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct NewTableSession {
     pub id: String,

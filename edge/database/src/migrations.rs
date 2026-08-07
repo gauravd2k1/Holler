@@ -1,8 +1,9 @@
 //! Applies the frozen contract schema files verbatim, in order.
 //!
-//! `packages/contracts/sqlite/0001_init.sql` and
-//! `0002_m1_identity_tables.sql` are read-only and authoritative (ADR-008,
-//! ADR-011). This module never edits, reorders, or adds to their statements
+//! `packages/contracts/sqlite/0001_init.sql`, `0002_m1_identity_tables.sql`
+//! and `0003_order_item_modifiers.sql` are read-only and authoritative
+//! (ADR-008, ADR-011). This module never edits, reorders, or adds to their
+//! statements
 //! — it only decides *whether* to run each file exactly once.
 //!
 //! Idempotency is tracked with SQLite's built-in `PRAGMA user_version`
@@ -26,6 +27,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
     (
         "0002_m1_identity_tables.sql",
         include_str!("../../../packages/contracts/sqlite/0002_m1_identity_tables.sql"),
+    ),
+    (
+        "0003_order_item_modifiers.sql",
+        include_str!("../../../packages/contracts/sqlite/0003_order_item_modifiers.sql"),
     ),
 ];
 
@@ -111,6 +116,7 @@ mod tests {
             "menu_item_variant",
             "menu_item_modifier",
             "order_item",
+            "order_item_modifier",
             "kot",
             "local_outbox",
             "sync_state",

@@ -39,15 +39,7 @@ pub fn upsert_outlet(conn: &Connection, o: &Outlet) -> DbResult<()> {
             config_version = excluded.config_version,
             updated_at = excluded.updated_at
          WHERE excluded.config_version >= outlet.config_version",
-        params![
-            o.id,
-            o.brand_id,
-            o.name,
-            o.timezone,
-            o.config_version,
-            o.created_at,
-            o.updated_at
-        ],
+        params![o.id, o.brand_id, o.name, o.timezone, o.config_version, o.created_at, o.updated_at],
     )?;
     Ok(())
 }
@@ -84,14 +76,7 @@ pub fn upsert_device(conn: &Connection, d: &Device) -> DbResult<()> {
             kind = excluded.kind,
             name = excluded.name,
             last_seen_at = excluded.last_seen_at",
-        params![
-            d.id,
-            d.outlet_id,
-            d.kind,
-            d.name,
-            d.last_seen_at,
-            d.created_at
-        ],
+        params![d.id, d.outlet_id, d.kind, d.name, d.last_seen_at, d.created_at],
     )?;
     Ok(())
 }
@@ -171,8 +156,7 @@ fn row_to_app_user(row: &rusqlite::Row) -> rusqlite::Result<AppUser> {
     })
 }
 
-const APP_USER_COLUMNS: &str =
-    "id, tenant_id, outlet_id, email, full_name, password_hash, pin_hash, \
+const APP_USER_COLUMNS: &str = "id, tenant_id, outlet_id, email, full_name, password_hash, pin_hash, \
      is_active, permissions_json, config_version, updated_at";
 
 pub fn get_app_user_by_id(conn: &Connection, id: &str) -> DbResult<Option<AppUser>> {
@@ -246,10 +230,7 @@ pub fn upsert_restaurant_table(conn: &Connection, t: &RestaurantTable) -> DbResu
     Ok(())
 }
 
-pub fn list_restaurant_tables(
-    conn: &Connection,
-    outlet_id: &str,
-) -> DbResult<Vec<RestaurantTable>> {
+pub fn list_restaurant_tables(conn: &Connection, outlet_id: &str) -> DbResult<Vec<RestaurantTable>> {
     let mut stmt = conn.prepare(
         "SELECT id, outlet_id, section, label, seat_count, is_active, config_version
          FROM restaurant_table WHERE outlet_id = ?1 ORDER BY section, label",
@@ -315,13 +296,7 @@ pub fn upsert_menu_item_variant(conn: &Connection, v: &MenuItemVariant) -> DbRes
             menu_item_id = excluded.menu_item_id, name = excluded.name,
             price_delta_paise = excluded.price_delta_paise, config_version = excluded.config_version
          WHERE excluded.config_version >= menu_item_variant.config_version",
-        params![
-            v.id,
-            v.menu_item_id,
-            v.name,
-            v.price_delta_paise,
-            v.config_version
-        ],
+        params![v.id, v.menu_item_id, v.name, v.price_delta_paise, v.config_version],
     )?;
     Ok(())
 }
@@ -561,33 +536,167 @@ pub(crate) fn delete_order_item(tx: &Transaction, id: &str) -> DbResult<()> {
     Ok(())
 }
 
-/// The frozen outbox event type for a line added to a DRAFT order, from
+// -------------------------------------------------- order_item_modifier ---
+// Snapshot rows (contracts 0.2.3, 0003_order_item_modifiers.sql).
+// modifier_id/group_name/option_name/price_delta_paise are deliberately NOT
+// joined from menu_item_modifier at read time — see the migration's own
+// comment. This crate never "helpfully" fills them from the live catalog.
+
+pub(crate) fn insert_order_item_modifier(tx: &Transaction, m: &OrderItemModifier) -> DbResult<()> {
+    tx.execute(
+        "INSERT INTO order_item_modifier
+            (id, order_item_id, modifier_id, group_name, option_name, price_delta_paise, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            m.id,
+            m.order_item_id,
+            m.modifier_id,
+            m.group_name,
+            m.option_name,
+            m.price_delta_paise,
+            m.created_at,
+        ],
+    )?;
+    Ok(())
+}
+
+fn row_to_order_item_modifier(row: &rusqlite::Row) -> rusqlite::Result<OrderItemModifier> {
+    Ok(OrderItemModifier {
+        id: row.get(0)?,
+        order_item_id: row.get(1)?,
+        modifier_id: row.get(2)?,
+        group_name: row.get(3)?,
+        option_name: row.get(4)?,
+        price_delta_paise: row.get(5)?,
+        created_at: row.get(6)?,
+    })
+}
+
+const ORDER_ITEM_MODIFIER_COLUMNS: &str =
+    "id, order_item_id, modifier_id, group_name, option_name, price_delta_paise, created_at";
+
+pub(crate) fn list_order_item_modifiers_in_tx(
+    tx: &Transaction,
+    order_item_id: &str,
+) -> DbResult<Vec<OrderItemModifier>> {
+    let mut stmt = tx.prepare(&format!(
+        "SELECT {ORDER_ITEM_MODIFIER_COLUMNS} FROM order_item_modifier \
+         WHERE order_item_id = ?1 ORDER BY created_at, id"
+    ))?;
+    let rows = stmt
+        .query_map(params![order_item_id], row_to_order_item_modifier)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Public read path for an already-committed line's modifier selections
+/// (e.g. rendering a receipt or the cart). Config-analogue read-only
+/// accessor; there is no public write path — modifiers are only ever
+/// written inside [`crate::Db::add_order_item_with_outbox`].
+pub fn list_order_item_modifiers(
+    conn: &Connection,
+    order_item_id: &str,
+) -> DbResult<Vec<OrderItemModifier>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {ORDER_ITEM_MODIFIER_COLUMNS} FROM order_item_modifier \
+         WHERE order_item_id = ?1 ORDER BY created_at, id"
+    ))?;
+    let rows = stmt
+        .query_map(params![order_item_id], row_to_order_item_modifier)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// The MONEY INVARIANT from `0003_order_item_modifiers.sql`, the single
+/// definition shared by the edge recompute path and (by contract) the cloud
+/// replay path:
+///     unit_price_paise = snapshot of base + variant delta
+///     line_total_paise = (unit_price_paise + SUM(price_delta_paise)) * quantity
+/// All `i64`; never floating point.
+pub(crate) fn compute_line_total_paise(
+    unit_price_paise: i64,
+    quantity: i64,
+    modifiers: &[OrderItemModifier],
+) -> i64 {
+    let modifier_delta_sum: i64 = modifiers.iter().map(|m| m.price_delta_paise).sum();
+    (unit_price_paise + modifier_delta_sum) * quantity
+}
+
+/// The frozen outbox event types for order-line amendment, from
 /// `packages/contracts/src/types/events.ts` `OUTBOX_EVENT_TYPES` (checked
 /// against drift by `scripts/check-event-type-drift.mjs`). Do not change
-/// this string without updating that list first.
+/// these strings without updating that list first.
 const EVENT_TYPE_ITEM_ADDED: &str = "ItemAdded";
+const EVENT_TYPE_ITEM_REMOVED: &str = "ItemRemoved";
+
+/// Builds the contract's `OrderItem` shape (`packages/contracts/src/types/order.ts`
+/// `OrderItemSchema`) as JSON: `{ id, menu_item_id, variant_id, quantity,
+/// unit_price_paise, line_total_paise, modifiers, notes }`, where each
+/// modifier is `{ modifier_id, group_name, option_name, price_delta_paise }`
+/// — exactly the columns `order_item_modifier` snapshots, no more. Shared by
+/// the `ItemAdded` and `ItemRemoved` payload builders so the two events
+/// describe a line identically.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn item_json(
+    id: &str,
+    menu_item_id: &str,
+    variant_id: Option<&str>,
+    quantity: i64,
+    unit_price_paise: i64,
+    line_total_paise: i64,
+    notes: Option<&str>,
+    modifiers: &[OrderItemModifier],
+) -> serde_json::Value {
+    let modifiers_json: Vec<serde_json::Value> = modifiers
+        .iter()
+        .map(|m| {
+            serde_json::json!({
+                "modifier_id": m.modifier_id,
+                "group_name": m.group_name,
+                "option_name": m.option_name,
+                "price_delta_paise": m.price_delta_paise,
+            })
+        })
+        .collect();
+
+    serde_json::json!({
+        "id": id,
+        "menu_item_id": menu_item_id,
+        "variant_id": variant_id,
+        "quantity": quantity,
+        "unit_price_paise": unit_price_paise,
+        "line_total_paise": line_total_paise,
+        "modifiers": modifiers_json,
+        "notes": notes,
+    })
+}
 
 /// Builds the `ItemAdded` event envelope + `data` payload from the
-/// `order_item` row this crate is about to write, matching
-/// `ItemAddedEventSchema` in `packages/contracts/src/types/events.ts`
-/// exactly (`{ event_id, event_type, occurred_at, outlet_id,
-/// schema_version, data: { order_id, item } }`). The caller never supplies
-/// `event_type` or the item description — both come from the row itself,
-/// so a caller cannot describe a mismatched event for a real write.
-///
-/// One known gap versus the contract's `OrderItem` shape: this crate's
-/// `order_item` table has no `modifiers` column (0001_init.sql), so
-/// `item.modifiers` is always emitted as `[]`. `ItemAddedEventSchema`
-/// defaults that field to `[]`, so this is schema-valid, but it means a
-/// modifier selection is not yet represented on the wire from this path —
-/// out of Milestone 1 scope, called out rather than silently glossed over.
+/// `order_item` row this crate is about to write (with its real modifier
+/// snapshots, not an empty placeholder), matching `ItemAddedEventSchema` in
+/// `packages/contracts/src/types/events.ts` exactly (`{ event_id,
+/// event_type, occurred_at, outlet_id, schema_version, data: { order_id,
+/// item } }`). The caller never supplies `event_type` or the item
+/// description — both come from the row itself, so a caller cannot commit
+/// a mismatched event for a real write.
 fn build_item_added_payload(
     outlet_id: &str,
     order_id: &str,
     item: &NewOrderItem,
+    modifiers: &[OrderItemModifier],
     event_id: &str,
     occurred_at: &str,
 ) -> String {
+    let item_value = item_json(
+        &item.id,
+        &item.menu_item_id,
+        item.variant_id.as_deref(),
+        item.quantity,
+        item.unit_price_paise,
+        item.line_total_paise,
+        item.notes.as_deref(),
+        modifiers,
+    );
     serde_json::json!({
         "event_id": event_id,
         "event_type": EVENT_TYPE_ITEM_ADDED,
@@ -596,16 +705,7 @@ fn build_item_added_payload(
         "schema_version": 1,
         "data": {
             "order_id": order_id,
-            "item": {
-                "id": item.id,
-                "menu_item_id": item.menu_item_id,
-                "variant_id": item.variant_id,
-                "quantity": item.quantity,
-                "unit_price_paise": item.unit_price_paise,
-                "line_total_paise": item.line_total_paise,
-                "modifiers": Vec::<serde_json::Value>::new(),
-                "notes": item.notes,
-            }
+            "item": item_value,
         }
     })
     .to_string()
@@ -619,12 +719,14 @@ pub(crate) fn insert_item_added_outbox(
     outlet_id: &str,
     order_id: &str,
     item: &NewOrderItem,
+    modifiers: &[OrderItemModifier],
     meta: &OrderItemAddedMeta,
 ) -> DbResult<()> {
     let payload = build_item_added_payload(
         outlet_id,
         order_id,
         item,
+        modifiers,
         &meta.outbox_id,
         &meta.occurred_at,
     );
@@ -641,14 +743,90 @@ pub(crate) fn insert_item_added_outbox(
     )
 }
 
+/// Builds the `ItemRemoved` event envelope + `data` payload from the
+/// `order_item` row about to be deleted (with its modifier snapshots read
+/// *before* the delete — `order_item_modifier` cascades on delete, so they
+/// are unrecoverable afterward), matching `ItemRemovedEventSchema` exactly.
+/// The full item travels in the payload deliberately: once the row is gone
+/// the cloud has no way to look up what left the order.
+fn build_item_removed_payload(
+    outlet_id: &str,
+    order_id: &str,
+    item: &OrderItem,
+    modifiers: &[OrderItemModifier],
+    event_id: &str,
+    occurred_at: &str,
+) -> String {
+    let item_value = item_json(
+        &item.id,
+        &item.menu_item_id,
+        item.variant_id.as_deref(),
+        item.quantity,
+        item.unit_price_paise,
+        item.line_total_paise,
+        item.notes.as_deref(),
+        modifiers,
+    );
+    serde_json::json!({
+        "event_id": event_id,
+        "event_type": EVENT_TYPE_ITEM_REMOVED,
+        "occurred_at": occurred_at,
+        "outlet_id": outlet_id,
+        "schema_version": 1,
+        "data": {
+            "order_id": order_id,
+            "item": item_value,
+        }
+    })
+    .to_string()
+}
+
+/// Writes the `local_outbox` row for a `remove_order_item_with_outbox`
+/// call. `event_type`/`payload_json` are derived here, not accepted from
+/// the caller — see [`build_item_removed_payload`].
+pub(crate) fn insert_item_removed_outbox(
+    tx: &Transaction,
+    outlet_id: &str,
+    order_id: &str,
+    item: &OrderItem,
+    modifiers: &[OrderItemModifier],
+    meta: &OrderItemRemovedMeta,
+) -> DbResult<()> {
+    let payload = build_item_removed_payload(
+        outlet_id,
+        order_id,
+        item,
+        modifiers,
+        &meta.outbox_id,
+        &meta.occurred_at,
+    );
+    insert_outbox_entry(
+        tx,
+        &NewOutboxEntry {
+            id: meta.outbox_id.clone(),
+            aggregate_type: "order".to_string(),
+            aggregate_id: order_id.to_string(),
+            event_type: EVENT_TYPE_ITEM_REMOVED.to_string(),
+            payload_json: payload,
+            created_at: meta.occurred_at.clone(),
+        },
+    )
+}
+
 /// Recomputes `subtotal_paise`/`total_paise` from the snapshot
-/// `unit_price_paise`/`line_total_paise` already stored on the remaining
-/// order_item rows — never from the live menu (CLAUDE.md: order lines
-/// snapshot price at order time). `discount_paise`/`tax_paise` are set by
-/// pricing/tax rules outside this crate's scope and are left as they are;
-/// only the subtotal (driven by the lines) and the total that follows from
-/// it are recomputed here. Bumps `version` and `updated_at` on the order,
-/// matching the optimistic-concurrency contract on `"order".version`.
+/// `line_total_paise` already stored on the remaining order_item rows —
+/// never from the live menu (CLAUDE.md: order lines snapshot price at
+/// order time). Each `line_total_paise` was itself computed at write time
+/// by [`compute_line_total_paise`] per the money invariant in
+/// `0003_order_item_modifiers.sql`
+/// (`line_total_paise = (unit_price_paise + SUM(modifier price_delta_paise)) * quantity`),
+/// so summing them here is consistent with that invariant rather than a
+/// second, potentially divergent, computation of it.
+/// `discount_paise`/`tax_paise` are set by pricing/tax rules outside this
+/// crate's scope and are left as they are; only the subtotal (driven by the
+/// lines) and the total that follows from it are recomputed here. Bumps
+/// `version` and `updated_at` on the order, matching the
+/// optimistic-concurrency contract on `"order".version`.
 pub(crate) fn recompute_and_persist_order_totals(
     tx: &Transaction,
     order_id: &str,
@@ -805,14 +983,7 @@ pub(crate) fn update_table_session(
          SET state = ?1, current_order_id = ?2, guest_count = ?3, closed_at = ?4,
              version = version + 1, updated_at = ?5
          WHERE id = ?6",
-        params![
-            state,
-            current_order_id,
-            guest_count,
-            closed_at,
-            updated_at,
-            id
-        ],
+        params![state, current_order_id, guest_count, closed_at, updated_at, id],
     )?;
     if changed == 0 {
         return Err(crate::error::DbError::NotFound("table_session"));

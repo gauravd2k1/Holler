@@ -23,17 +23,22 @@ import { join, relative } from "node:path";
 
 const REPO_ROOT = new URL("..", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1");
 const EVENTS_TS = join(REPO_ROOT, "packages/contracts/src/types/events.ts");
-const RUST_ROOTS = [join(REPO_ROOT, "edge/sync/src"), join(REPO_ROOT, "apps/pos/src-tauri/src")];
+// Every Rust crate that names an event type. edge/database was missing from
+// this list until 0.2.3 — the crate that BUILDS the outbox payloads was the one
+// the check never scanned, so its literals were unguarded in both directions
+// while the check reported green. If a new Rust crate touches event types, it
+// belongs here.
+const RUST_ROOTS = [
+  join(REPO_ROOT, "edge/database/src"),
+  join(REPO_ROOT, "edge/sync/src"),
+  join(REPO_ROOT, "apps/pos/src-tauri/src"),
+];
 
 // Frozen event types the Rust edge legitimately does not emit yet. Each needs a
 // reason — an empty justification here defeats the backward check.
 const NOT_YET_EMITTED = {
   KOTCreated: "KOT generation is Milestone 2",
   OrderReady: "kitchen status flow is Milestone 2",
-  // TEMPORARY — delete this entry in the same commit that makes
-  // edge/database emit ItemRemoved. If it is still here a milestone later,
-  // the hardening never landed and the removal path is still caller-described.
-  ItemRemoved: "edge hardening follow-up in flight (0.2.3)",
 };
 
 function frozenEventTypes() {
