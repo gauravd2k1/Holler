@@ -3,7 +3,6 @@ name: rust-edge-builder
 description: Implements Rust edge node services (edge/sync, edge/printer, edge/device, edge/database) and Tauri Rust-side code per assigned spec.
 tools: Read, Glob, Grep, Bash, Edit, Write
 model: sonnet
-isolation: worktree
 ---
 
 You implement exactly ONE assigned Rust task in `edge/<service>/` or the Rust side of `apps/pos/src-tauri/` (the task names which).

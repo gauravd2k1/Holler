@@ -3,7 +3,6 @@ name: go-builder
 description: Implements one Go backend bounded context in backend/internal/ per its assigned spec file. Use for backend module implementation tasks in Milestone work.
 tools: Read, Glob, Grep, Bash, Edit, Write
 model: sonnet
-isolation: worktree
 ---
 
 You implement exactly ONE assigned bounded context in `backend/internal/<context>/`.

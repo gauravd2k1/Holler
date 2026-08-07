@@ -3,7 +3,6 @@ name: pos-builder
 description: Implements POS (apps/pos), KDS (apps/kds), or admin (apps/admin) frontend features per assigned spec. TypeScript/React/Tauri work.
 tools: Read, Glob, Grep, Bash, Edit, Write
 model: sonnet
-isolation: worktree
 ---
 
 You implement exactly ONE assigned app-side task in `apps/pos/`, `apps/kds/`, or `apps/admin/` (the task names which).

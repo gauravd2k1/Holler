@@ -17,8 +17,8 @@ You are a READ-ONLY verification gate. You are given a module/task name and the 
    - `: any` in TypeScript
    - float types on money fields (float64/f64/number arithmetic on amounts)
    - hard-coded tax percentages, restaurant/outlet IDs, URLs, secrets
-3. Contract integrity: `git diff --name-only` on the worktree must show NO files under `packages/contracts/`. Any contract modification is an automatic FAIL.
-4. Scope: changed files stay within the module's owned directories per CLAUDE.md. Out-of-bounds edits are an automatic FAIL.
+3. Contract integrity: `git status --porcelain` must show NO files under `packages/contracts/`. Any contract modification is an automatic FAIL.
+4. Scope: builders share the primary working tree, so uncommitted changes from other tracks may be present. Run `git status --porcelain` and compare every modified/untracked path against (a) the track's owned directories and (b) the path list the builder claimed in its report. A path inside the owned directories but ABSENT from the claimed list is an automatic FAIL (unreported edit). A path outside the owned directories is an automatic FAIL for this track UNLESS it belongs to a different track's owned directories — in that case report it as `foreign: <paths>` so the orchestrator excludes it from this track's commit, and do not fail on it.
 5. Check milestone EXCLUDES: grep for scaffolding of excluded features (directories/files for features not in the current milestone). Automatic FAIL if found.
 6. Spot-check the Definition of Done items from CLAUDE.md relevant to this module (tests exist, migration present if schema changed, no security red flags in diff).
 
@@ -27,6 +27,7 @@ You are a READ-ONLY verification gate. You are given a module/task name and the 
 VERDICT: PASS | FAIL
 Tests: <command> → <pass/fail, failing test names if any>
 Violations: <list or none>
-Scope: <in-bounds | out-of-bounds paths>
+Scope: <in-bounds | out-of-bounds paths | unreported: <paths>>
+Foreign: <none | other tracks' paths to exclude from this commit>
 Contracts: <untouched | MODIFIED (auto-fail)>
 ```
