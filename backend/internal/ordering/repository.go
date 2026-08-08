@@ -84,15 +84,19 @@ func (r *PostgresRepository) InsertOrder(ctx context.Context, tenantID, deviceID
 
 	tag, err := r.pool.Exec(ctx,
 		`INSERT INTO "order" (id, outlet_id, device_id, order_type, status, table_id,
-			subtotal_paise, discount_paise, tax_paise, total_paise, version,
-			source_payload, created_at, updated_at)
+			subtotal_paise, discount_paise, taxes_paise, total_paise, version,
+			source_payload, created_at, updated_at,
+			source, external_order_id, payment_status, payment_source, confirmed_at, schema_version)
 		 SELECT $1, $2, $3, $4, $5, $6,
-			$7, $8, $9, $10, $11, $12, $13, $14
+			$7, $8, $9, $10, $11, $12, $13, $14,
+			$16, $17, $18, $19, $20, $21
 		 WHERE EXISTS (SELECT 1 FROM outlet o JOIN brand b ON b.id = o.brand_id WHERE o.id = $2 AND b.tenant_id = $15)
 		 ON CONFLICT (id) DO NOTHING`,
 		order.HollerOrderID, order.OutletID, deviceID, string(order.OrderType), string(order.Status), order.TableID,
 		order.SubtotalPaise, order.DiscountPaise, order.TaxesPaise, order.TotalPaise, version,
 		sourcePayload, order.Timestamps.CreatedAt, order.Timestamps.UpdatedAt, tenantID,
+		string(order.Source), order.ExternalOrderID, string(order.PaymentStatus), order.PaymentSource,
+		order.Timestamps.ConfirmedAt, order.SchemaVersion,
 	)
 	if err != nil {
 		return StoredOrder{}, false, fmt.Errorf("ordering: inserting order: %w", err)
@@ -113,12 +117,14 @@ func (r *PostgresRepository) InsertOrder(ctx context.Context, tenantID, deviceID
 func (r *PostgresRepository) GetByID(ctx context.Context, tenantID, orderID string) (StoredOrder, error) {
 	var so StoredOrder
 	o := &so.Order
-	var orderType, status string
+	var orderType, status, source, paymentStatus string
 	var sourcePayload []byte
 	err := r.pool.QueryRow(ctx,
 		`SELECT ord.id, ord.outlet_id, ord.order_type, ord.status, ord.table_id,
-			ord.subtotal_paise, ord.discount_paise, ord.tax_paise, ord.total_paise,
-			ord.version, ord.source_payload, ord.created_at, ord.updated_at
+			ord.subtotal_paise, ord.discount_paise, ord.taxes_paise, ord.total_paise,
+			ord.version, ord.source_payload, ord.created_at, ord.updated_at,
+			ord.source, ord.external_order_id, ord.payment_status, ord.payment_source,
+			ord.confirmed_at, ord.schema_version
 		 FROM "order" ord
 		 JOIN outlet ot ON ot.id = ord.outlet_id
 		 JOIN brand b ON b.id = ot.brand_id
@@ -126,7 +132,9 @@ func (r *PostgresRepository) GetByID(ctx context.Context, tenantID, orderID stri
 		orderID, tenantID,
 	).Scan(&o.HollerOrderID, &o.OutletID, &orderType, &status, &o.TableID,
 		&o.SubtotalPaise, &o.DiscountPaise, &o.TaxesPaise, &o.TotalPaise,
-		&so.Version, &sourcePayload, &o.Timestamps.CreatedAt, &o.Timestamps.UpdatedAt)
+		&so.Version, &sourcePayload, &o.Timestamps.CreatedAt, &o.Timestamps.UpdatedAt,
+		&source, &o.ExternalOrderID, &paymentStatus, &o.PaymentSource,
+		&o.Timestamps.ConfirmedAt, &o.SchemaVersion)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return StoredOrder{}, httpx.ErrNotFound
@@ -135,12 +143,25 @@ func (r *PostgresRepository) GetByID(ctx context.Context, tenantID, orderID stri
 	}
 	o.OrderType = contracts.OrderType(orderType)
 	o.Status = contracts.OrderStatus(status)
-	o.SchemaVersion = 1
+	o.Source = contracts.OrderSource(source)
+	o.PaymentStatus = contracts.PaymentStatus(paymentStatus)
 	if len(sourcePayload) > 0 {
 		if err := json.Unmarshal(sourcePayload, &o.SourcePayload); err != nil {
 			return StoredOrder{}, fmt.Errorf("ordering: decoding source_payload: %w", err)
 		}
 	}
+
+	// Deferred wire fields: no storage column yet (see the ADR-011 0.2.4
+	// addendum's deferred-columns table). Synthesized at a fixed value until
+	// their milestone lands storage for them — pinned by an exact-value test.
+	o.PackagingPaise = 0
+	o.DeliveryChargePaise = 0
+	o.AggregatorDiscountPaise = 0
+	o.MerchantDiscountPaise = 0
+	o.Customer = nil
+	o.DeliveryAddress = nil
+	o.Rider = nil
+	o.PreparationTimeMinutes = nil
 
 	items, err := r.ItemsForOrder(ctx, orderID)
 	if err != nil {
