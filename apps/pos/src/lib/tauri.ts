@@ -134,6 +134,19 @@ export async function listOrders(): Promise<CanonicalOrder[]> {
   }
 }
 
+/** The cashier's DRAFT -> CONFIRMED transition (apps/pos/src-tauri/src/commands/orders.rs
+ * `confirm_order`). Rejects with `ORDER_NOT_CONFIRMABLE` if the order is not
+ * currently DRAFT — the edge, not this layer, is authoritative for that
+ * check (sync.md §50.1). */
+export async function confirmOrder(orderId: string): Promise<CanonicalOrder> {
+  try {
+    const raw = await invoke("confirm_order", { orderId });
+    return CanonicalOrderSchema.parse(raw);
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
+
 // `add_order_item` / `remove_order_item` Tauri commands exist but always
 // reject with `UNSUPPORTED_DB_OPERATION` (see
 // apps/pos/src-tauri/src/commands/orders.rs module doc comment: the edge

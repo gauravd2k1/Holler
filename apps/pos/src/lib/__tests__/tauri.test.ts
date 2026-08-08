@@ -6,7 +6,9 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 // Imported after the mock so the module under test picks it up.
-const { login, listMenuItems, listTables, createOrder, isTauriCommandError } = await import("../tauri");
+const { login, listMenuItems, listTables, createOrder, confirmOrder, isTauriCommandError } = await import(
+  "../tauri"
+);
 
 beforeEach(() => {
   invokeMock.mockReset();
@@ -117,5 +119,35 @@ describe("createOrder", () => {
     const order = await createOrder("TAKEAWAY", null, []);
     expect(order.holler_order_id).toBe(VALID_ORDER.holler_order_id);
     expect(order.total_paise).toBe(0);
+  });
+});
+
+describe("confirmOrder", () => {
+  it("invokes confirm_order with the order id and Zod-parses the response", async () => {
+    const confirmed = {
+      ...VALID_ORDER,
+      status: "CONFIRMED",
+      timestamps: { ...VALID_ORDER.timestamps, confirmed_at: "2026-08-08T10:00:00.000Z" },
+    };
+    invokeMock.mockResolvedValue(confirmed);
+    const order = await confirmOrder(VALID_ORDER.holler_order_id);
+    expect(invokeMock).toHaveBeenCalledWith("confirm_order", { orderId: VALID_ORDER.holler_order_id });
+    expect(order.status).toBe("CONFIRMED");
+    expect(order.timestamps.confirmed_at).toBe("2026-08-08T10:00:00.000Z");
+  });
+
+  it("throws a normalized TauriCommandError on ORDER_NOT_CONFIRMABLE rejection", async () => {
+    invokeMock.mockRejectedValue({
+      code: "ORDER_NOT_CONFIRMABLE",
+      message: "order x is not in DRAFT status and cannot be confirmed",
+    });
+    await expect(confirmOrder(VALID_ORDER.holler_order_id)).rejects.toSatisfy((err: unknown) =>
+      isTauriCommandError(err),
+    );
+  });
+
+  it("rejects a malformed response rather than trusting the cast", async () => {
+    invokeMock.mockResolvedValue({ holler_order_id: "not-a-uuid" });
+    await expect(confirmOrder(VALID_ORDER.holler_order_id)).rejects.toBeTruthy();
   });
 });

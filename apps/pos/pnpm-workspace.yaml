@@ -1,2 +1,7 @@
+# pnpm 10+ reads build-script approval here, not from package.json.
+# vitest's esbuild binary must be allowed to run its postinstall or the POS
+# test suite cannot start. This previously held pnpm's own prompt text
+# ("set this to true or false") as the value, which blocks every `pnpm test`
+# and `pnpm tsc` in this directory — builders were working around it with npx.
 allowBuilds:
-  esbuild: set this to true or false
+  esbuild: true
