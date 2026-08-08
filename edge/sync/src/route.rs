@@ -5,10 +5,10 @@
 //! per the schema comment (`0001_init.sql`) — i.e. it is an `OutboxEvent`
 //! envelope: `{ event_id, event_type, occurred_at, outlet_id, schema_version,
 //! data }`. Every `event_type` string this module matches on —
-//! `OrderCreated`, `ItemAdded`, `SentToKitchen`, `OrderCancelled`,
-//! `TableSessionOpened`, `TableSessionUpdated` — is frozen in
+//! `OrderCreated`, `ItemAdded`, `OrderConfirmed`, `SentToKitchen`,
+//! `OrderCancelled`, `TableSessionOpened`, `TableSessionUpdated` — is frozen in
 //! `packages/contracts` `OUTBOX_EVENT_TYPES` (`src/types/events.ts` /
-//! `go/events.go`, contracts 0.2.2). `scripts/check-event-type-drift.mjs`
+//! `go/events.go`, contracts 0.2.5). `scripts/check-event-type-drift.mjs`
 //! enforces both directions: every literal here must be frozen, and every
 //! frozen type must appear here or in that script's `NOT_YET_EMITTED` list.
 //!
@@ -81,6 +81,13 @@ pub fn resolve(
                 payload,
             })
         }
+        ("order", "OrderConfirmed") => {
+            let confirmed_at = data_field(outbox_id, event_json, "confirmed_at")?.clone();
+            Ok(RouteCall {
+                path: format!("/orders/{aggregate_id}/confirm"),
+                payload: serde_json::json!({ "confirmed_at": confirmed_at }),
+            })
+        }
         ("order", "OrderCancelled") => {
             let reason = data_field(outbox_id, event_json, "reason")?.clone();
             Ok(RouteCall {
@@ -135,6 +142,25 @@ mod tests {
         let call = resolve("ob1", "order", "ItemAdded", "order-1", "outlet-1", &event).unwrap();
         assert_eq!(call.path, "/orders/order-1/items");
         assert_eq!(call.payload["id"], "item-1");
+    }
+
+    #[test]
+    fn order_confirmed_routes_to_confirm_endpoint() {
+        let event = serde_json::json!({
+            "event_type": "OrderConfirmed",
+            "data": { "order_id": "order-1", "confirmed_at": "2026-08-08T10:00:00Z" }
+        });
+        let call = resolve(
+            "ob1",
+            "order",
+            "OrderConfirmed",
+            "order-1",
+            "outlet-1",
+            &event,
+        )
+        .unwrap();
+        assert_eq!(call.path, "/orders/order-1/confirm");
+        assert_eq!(call.payload["confirmed_at"], "2026-08-08T10:00:00Z");
     }
 
     #[test]
