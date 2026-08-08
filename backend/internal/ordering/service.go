@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/holler/backend/internal/platform/httpx"
 	contracts "github.com/holler/contracts"
@@ -173,6 +174,63 @@ func (s *Service) transition(ctx context.Context, callerTenantID string, env con
 		// Lost a race with a concurrent replay; the row has already moved
 		// on, which is fine as long as it moved on legally — surface the
 		// row currently stored rather than a false error.
+		return stored, nil
+	}
+	return stored, nil
+}
+
+// Confirm replays the DRAFT->CONFIRMED transition (contracts 0.2.5). It is a
+// dedicated method rather than a call into transition(): transition's
+// UpdateStatus call has no way to carry a payload, and confirmed_at must be
+// stamped from the envelope's payload, not the server clock — widening the
+// generic transition/UpdateStatus path to accept an optional payload would
+// let SendToKitchen/Cancel's callers reach a code path that must never carry
+// one (ADR-011 0.2.5 addendum). confirmedAt is taken as given: the edge
+// recorded it, §50.1 makes the edge authoritative for order transactions,
+// and the cloud never substitutes time.Now().
+func (s *Service) Confirm(ctx context.Context, callerTenantID string, env contracts.SyncEnvelope, orderID string, confirmedAt time.Time) (StoredOrder, error) {
+	if err := requireEnvelope(env, contracts.AggregateTypeOrder); err != nil {
+		return StoredOrder{}, err
+	}
+	if err := requireTenantMatch(callerTenantID, env); err != nil {
+		return StoredOrder{}, err
+	}
+	orderID = strings.TrimSpace(orderID)
+	if orderID == "" {
+		return StoredOrder{}, fmt.Errorf("%w: order id is required", httpx.ErrInvalidInput)
+	}
+	if confirmedAt.IsZero() {
+		return StoredOrder{}, fmt.Errorf("%w: confirmed_at is required", httpx.ErrInvalidInput)
+	}
+
+	current, err := s.repo.GetByID(ctx, callerTenantID, orderID)
+	if err != nil {
+		return StoredOrder{}, err
+	}
+
+	// Idempotent replay: the edge resent an envelope whose version this
+	// order already carries (or is behind). Return the current row rather
+	// than re-applying or shifting confirmed_at.
+	if env.Version <= current.Version {
+		return current, nil
+	}
+	if env.Version != current.Version+1 {
+		return StoredOrder{}, fmt.Errorf("%w: envelope version %d is not the next version after %d", httpx.ErrConflict, env.Version, current.Version)
+	}
+	if current.Status != contracts.OrderStatusDraft {
+		return StoredOrder{}, fmt.Errorf("%w: order must be DRAFT to confirm, is %q", httpx.ErrConflict, current.Status)
+	}
+	if !validTransition(current.Status, contracts.OrderStatusConfirmed) {
+		return StoredOrder{}, fmt.Errorf("%w: cannot move order from %q to %q", ErrIllegalTransition, current.Status, contracts.OrderStatusConfirmed)
+	}
+
+	stored, applied, err := s.repo.ConfirmOrder(ctx, callerTenantID, orderID, current.Version, env.Version, confirmedAt)
+	if err != nil {
+		return StoredOrder{}, err
+	}
+	if !applied {
+		// Lost a race with a concurrent replay; surface the row as it
+		// currently stands rather than a false error.
 		return stored, nil
 	}
 	return stored, nil

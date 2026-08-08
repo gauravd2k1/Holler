@@ -199,6 +199,161 @@ func TestCreateOrderHTTP_DuplicateEnvelopeIsIdempotent(t *testing.T) {
 	}
 }
 
+// confirmPayloadFor builds the OrderConfirmEnvelope payload shape.
+func confirmPayloadFor(confirmedAt time.Time) map[string]interface{} {
+	return map[string]interface{}{"confirmed_at": confirmedAt.Format(time.RFC3339Nano)}
+}
+
+// TestConfirmOrderHTTP_HappyPath posts a well-formed OrderConfirmEnvelope
+// against a DRAFT order and asserts the stored confirmed_at equals the
+// envelope payload's value, not the server clock.
+func TestConfirmOrderHTTP_HappyPath(t *testing.T) {
+	r, _ := newTestRouter(t)
+
+	createEnv := wireEnvelopeFor(testOrderID, 1, baseOrder())
+	if rec := doPost(t, r, "/orders", createEnv); rec.Code != http.StatusCreated {
+		t.Fatalf("setup: expected 201 creating order, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	confirmedAt := time.Date(2026, 8, 8, 10, 30, 0, 0, time.UTC)
+	confirmEnv := wireEnvelopeFor(testOrderID, 2, confirmPayloadFor(confirmedAt))
+	rec := doPost(t, r, "/orders/"+testOrderID+"/confirm", confirmEnv)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var got contracts.CanonicalOrder
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if got.Status != contracts.OrderStatusConfirmed {
+		t.Fatalf("expected CONFIRMED, got %s", got.Status)
+	}
+	if got.Timestamps.ConfirmedAt == nil || !got.Timestamps.ConfirmedAt.Equal(confirmedAt) {
+		t.Fatalf("expected confirmed_at %v (envelope payload), got %v", confirmedAt, got.Timestamps.ConfirmedAt)
+	}
+}
+
+// TestConfirmOrderHTTP_NonDraftIsConflict proves confirming an order that
+// left DRAFT is rejected with 409, not silently applied.
+func TestConfirmOrderHTTP_NonDraftIsConflict(t *testing.T) {
+	r, _ := newTestRouter(t)
+
+	createEnv := wireEnvelopeFor(testOrderID, 1, baseOrder())
+	if rec := doPost(t, r, "/orders", createEnv); rec.Code != http.StatusCreated {
+		t.Fatalf("setup: expected 201 creating order, got %d: %s", rec.Code, rec.Body.String())
+	}
+	firstConfirm := wireEnvelopeFor(testOrderID, 2, confirmPayloadFor(time.Now().UTC()))
+	if rec := doPost(t, r, "/orders/"+testOrderID+"/confirm", firstConfirm); rec.Code != http.StatusOK {
+		t.Fatalf("setup: expected 200 confirming order, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if rec := doPost(t, r, "/orders/"+testOrderID+"/send-to-kitchen", wireEnvelopeFor(testOrderID, 3, map[string]interface{}{})); rec.Code != http.StatusOK {
+		t.Fatalf("setup: expected 200 sending to kitchen, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec := doPost(t, r, "/orders/"+testOrderID+"/confirm", wireEnvelopeFor(testOrderID, 4, confirmPayloadFor(time.Now().UTC())))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409 confirming a SENT_TO_KITCHEN order, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestConfirmOrderHTTP_WrongAggregateTypeIsRejected proves the 422
+// EnvelopeRouteMismatch path on the confirm route.
+func TestConfirmOrderHTTP_WrongAggregateTypeIsRejected(t *testing.T) {
+	r, _ := newTestRouter(t)
+
+	createEnv := wireEnvelopeFor(testOrderID, 1, baseOrder())
+	if rec := doPost(t, r, "/orders", createEnv); rec.Code != http.StatusCreated {
+		t.Fatalf("setup: expected 201 creating order, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	confirmEnv := wireEnvelopeFor(testOrderID, 2, confirmPayloadFor(time.Now().UTC()))
+	confirmEnv.AggregateType = string(contracts.AggregateTypeKot)
+	rec := doPost(t, r, "/orders/"+testOrderID+"/confirm", confirmEnv)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body envelopeRouteMismatchBody
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if body.Code != "envelope_route_mismatch" {
+		t.Fatalf("expected code envelope_route_mismatch, got %q", body.Code)
+	}
+}
+
+// TestConfirmOrderHTTP_CloudToEdgeDirectionIsRejected proves a confirm
+// envelope carrying CLOUD_TO_EDGE — violating §50.1's authority rule for the
+// order aggregate — is rejected with 422, not coerced.
+func TestConfirmOrderHTTP_CloudToEdgeDirectionIsRejected(t *testing.T) {
+	r, _ := newTestRouter(t)
+
+	createEnv := wireEnvelopeFor(testOrderID, 1, baseOrder())
+	if rec := doPost(t, r, "/orders", createEnv); rec.Code != http.StatusCreated {
+		t.Fatalf("setup: expected 201 creating order, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	confirmEnv := wireEnvelopeFor(testOrderID, 2, confirmPayloadFor(time.Now().UTC()))
+	confirmEnv.Direction = string(contracts.SyncDirectionCloudToEdge)
+	rec := doPost(t, r, "/orders/"+testOrderID+"/confirm", confirmEnv)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var body envelopeRouteMismatchBody
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if body.Code != "envelope_route_mismatch" {
+		t.Fatalf("expected code envelope_route_mismatch, got %q", body.Code)
+	}
+}
+
+// TestConfirmOrderHTTP_RawNonEnvelopedBodyIsRejected proves a bare
+// {confirmed_at} body (not wrapped in a SyncEnvelope) is refused as 400.
+func TestConfirmOrderHTTP_RawNonEnvelopedBodyIsRejected(t *testing.T) {
+	r, _ := newTestRouter(t)
+
+	createEnv := wireEnvelopeFor(testOrderID, 1, baseOrder())
+	if rec := doPost(t, r, "/orders", createEnv); rec.Code != http.StatusCreated {
+		t.Fatalf("setup: expected 201 creating order, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec := doPost(t, r, "/orders/"+testOrderID+"/confirm", confirmPayloadFor(time.Now().UTC()))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a bare confirm payload, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestConfirmOrderHTTP_DuplicateReplayIsIdempotent replays the identical
+// confirm envelope twice through the HTTP layer and asserts the stored
+// confirmed_at is unchanged.
+func TestConfirmOrderHTTP_DuplicateReplayIsIdempotent(t *testing.T) {
+	r, _ := newTestRouter(t)
+
+	createEnv := wireEnvelopeFor(testOrderID, 1, baseOrder())
+	if rec := doPost(t, r, "/orders", createEnv); rec.Code != http.StatusCreated {
+		t.Fatalf("setup: expected 201 creating order, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	confirmedAt := time.Date(2026, 8, 8, 10, 30, 0, 0, time.UTC)
+	confirmEnv := wireEnvelopeFor(testOrderID, 2, confirmPayloadFor(confirmedAt))
+
+	first := doPost(t, r, "/orders/"+testOrderID+"/confirm", confirmEnv)
+	if first.Code != http.StatusOK {
+		t.Fatalf("expected 200 on first confirm, got %d: %s", first.Code, first.Body.String())
+	}
+	second := doPost(t, r, "/orders/"+testOrderID+"/confirm", confirmEnv)
+	if second.Code != http.StatusOK {
+		t.Fatalf("expected 200 on duplicate confirm replay, got %d: %s", second.Code, second.Body.String())
+	}
+	var got contracts.CanonicalOrder
+	if err := json.Unmarshal(second.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if got.Timestamps.ConfirmedAt == nil || !got.Timestamps.ConfirmedAt.Equal(confirmedAt) {
+		t.Fatalf("expected confirmed_at to remain %v after replay, got %v", confirmedAt, got.Timestamps.ConfirmedAt)
+	}
+}
+
 // TestAppendItemHTTP_WrongDirectionIsRejected exercises the 422 path on a
 // second envelope-ingest route, not just /orders.
 func TestAppendItemHTTP_WrongDirectionIsRejected(t *testing.T) {

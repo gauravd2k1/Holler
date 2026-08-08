@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/holler/backend/internal/auth"
@@ -23,13 +24,14 @@ func NewHandler(svc *Service) *Handler {
 
 // Mount registers this context's routes per
 // packages/contracts/openapi/openapi.yaml: POST /orders, GET /orders,
-// GET /orders/{id}, POST /orders/{id}/items, POST /orders/{id}/send-to-kitchen,
-// POST /orders/{id}/cancel.
+// GET /orders/{id}, POST /orders/{id}/items, POST /orders/{id}/confirm,
+// POST /orders/{id}/send-to-kitchen, POST /orders/{id}/cancel.
 func (h *Handler) Mount(r chi.Router) {
 	r.With(auth.RequirePermission(auth.PermissionOrderCreate)).Post("/orders", h.createOrder)
 	r.Get("/orders", h.listOrders)
 	r.Get("/orders/{id}", h.getOrder)
 	r.With(auth.RequirePermission(auth.PermissionOrderModify)).Post("/orders/{id}/items", h.appendItem)
+	r.With(auth.RequirePermission(auth.PermissionOrderModify)).Post("/orders/{id}/confirm", h.confirmOrder)
 	r.With(auth.RequirePermission(auth.PermissionOrderModify)).Post("/orders/{id}/send-to-kitchen", h.sendToKitchen)
 	r.With(auth.RequirePermission(auth.PermissionOrderCancel)).Post("/orders/{id}/cancel", h.cancelOrder)
 }
@@ -207,6 +209,40 @@ func (h *Handler) appendItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	stored, err := h.svc.AppendItem(r.Context(), principal.TenantID, env, orderID, item)
+	if err != nil {
+		writeIngestError(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, toOrderResponse(stored))
+}
+
+// confirmPayload is the OrderConfirmEnvelope payload
+// (packages/contracts/openapi/openapi.yaml): confirmed_at only, nothing
+// else — additionalProperties: false.
+type confirmPayload struct {
+	ConfirmedAt time.Time `json:"confirmed_at"`
+}
+
+func (h *Handler) confirmOrder(w http.ResponseWriter, r *http.Request) {
+	principal, ok := auth.PrincipalFromContext(r.Context())
+	if !ok {
+		httpx.Error(w, httpx.ErrUnauthorized)
+		return
+	}
+	orderID := chi.URLParam(r, "id")
+
+	env, payload, err := decodeEnvelope(r)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	var body confirmPayload
+	if err := json.Unmarshal(payload, &body); err != nil {
+		httpx.Error(w, httpx.ErrInvalidInput)
+		return
+	}
+
+	stored, err := h.svc.Confirm(r.Context(), principal.TenantID, env, orderID, body.ConfirmedAt)
 	if err != nil {
 		writeIngestError(w, err)
 		return

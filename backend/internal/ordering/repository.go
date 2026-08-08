@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/holler/backend/internal/platform/httpx"
 	"github.com/holler/backend/internal/platform/postgres"
@@ -43,6 +44,12 @@ type Repository interface {
 	// the row as stored after the call (whether or not this call itself
 	// applied the change) and whether this call applied it.
 	UpdateStatus(ctx context.Context, tenantID, orderID string, expectedCurrentVersion, newVersion int, newStatus contracts.OrderStatus) (stored StoredOrder, applied bool, err error)
+	// ConfirmOrder is UpdateStatus's DRAFT->CONFIRMED variant: it stamps
+	// confirmed_at atomically with the status/version change. Deliberately a
+	// separate method rather than a payload parameter bolted onto
+	// UpdateStatus (ADR-011 0.2.5 addendum) — that generic path is shared by
+	// SendToKitchen/Cancel, neither of which may carry a payload.
+	ConfirmOrder(ctx context.Context, tenantID, orderID string, expectedCurrentVersion, newVersion int, confirmedAt time.Time) (stored StoredOrder, applied bool, err error)
 }
 
 // Order is the wire shape ingested from the edge; it mirrors
@@ -268,6 +275,29 @@ func (r *PostgresRepository) UpdateStatus(ctx context.Context, tenantID, orderID
 	)
 	if err != nil {
 		return StoredOrder{}, false, fmt.Errorf("ordering: updating status: %w", err)
+	}
+
+	stored, err := r.GetByID(ctx, tenantID, orderID)
+	if err != nil {
+		return StoredOrder{}, false, err
+	}
+	return stored, tag.RowsAffected() > 0, nil
+}
+
+// ConfirmOrder is UpdateStatus plus confirmed_at, applied in the same
+// statement so the status/version bump and the timestamp land atomically.
+// confirmedAt is the value the caller (Service) already validated came from
+// the sync envelope's payload — this method never substitutes its own clock.
+func (r *PostgresRepository) ConfirmOrder(ctx context.Context, tenantID, orderID string, expectedCurrentVersion, newVersion int, confirmedAt time.Time) (StoredOrder, bool, error) {
+	tag, err := r.pool.Exec(ctx,
+		`UPDATE "order" ord SET status = $1, version = $2, confirmed_at = $3, updated_at = now()
+		 FROM outlet ot, brand b
+		 WHERE ord.id = $4 AND ord.version = $5
+		   AND ot.id = ord.outlet_id AND b.id = ot.brand_id AND b.tenant_id = $6`,
+		string(contracts.OrderStatusConfirmed), newVersion, confirmedAt, orderID, expectedCurrentVersion, tenantID,
+	)
+	if err != nil {
+		return StoredOrder{}, false, fmt.Errorf("ordering: confirming order: %w", err)
 	}
 
 	stored, err := r.GetByID(ctx, tenantID, orderID)

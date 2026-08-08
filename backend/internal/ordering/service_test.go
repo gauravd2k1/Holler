@@ -93,6 +93,23 @@ func (f *fakeRepo) UpdateStatus(ctx context.Context, tenantID, orderID string, e
 	return stored, true, nil
 }
 
+func (f *fakeRepo) ConfirmOrder(ctx context.Context, tenantID, orderID string, expectedCurrentVersion, newVersion int, confirmedAt time.Time) (StoredOrder, bool, error) {
+	stored, ok := f.orders[orderID]
+	if !ok || f.orderTenant[orderID] != tenantID {
+		return StoredOrder{}, false, httpx.ErrNotFound
+	}
+	if stored.Version != expectedCurrentVersion {
+		stored.Items = append([]contracts.OrderItem{}, f.items[orderID]...)
+		return stored, false, nil
+	}
+	stored.Status = contracts.OrderStatusConfirmed
+	stored.Version = newVersion
+	stored.Timestamps.ConfirmedAt = &confirmedAt
+	f.orders[orderID] = stored
+	stored.Items = append([]contracts.OrderItem{}, f.items[orderID]...)
+	return stored, true, nil
+}
+
 const (
 	testTenantID = "11111111-1111-7111-8111-111111111111"
 	testOutletID = "22222222-2222-7222-8222-222222222222"
@@ -326,6 +343,89 @@ func TestCancel_RequiresReasonAndRejectsAfterClosed(t *testing.T) {
 
 	if _, err := svc.Cancel(context.Background(), testTenantID, baseEnvelope(3), testOrderID, "again"); !errors.Is(err, ErrIllegalTransition) {
 		t.Fatalf("expected ErrIllegalTransition cancelling an already-CANCELLED order, got %v", err)
+	}
+}
+
+// TestConfirm_HappyPath proves the DRAFT->CONFIRMED replay stores exactly
+// the confirmed_at carried by the envelope payload, never the server clock —
+// the single most important correctness point in the 0.2.5 addendum.
+func TestConfirm_HappyPath(t *testing.T) {
+	svc, _ := newTestService()
+	if _, err := svc.IngestOrder(context.Background(), testTenantID, baseEnvelope(1), baseOrder()); err != nil {
+		t.Fatalf("IngestOrder: %v", err)
+	}
+
+	confirmedAt := time.Date(2026, 8, 8, 10, 30, 0, 0, time.UTC)
+	stored, err := svc.Confirm(context.Background(), testTenantID, baseEnvelope(2), testOrderID, confirmedAt)
+	if err != nil {
+		t.Fatalf("Confirm: %v", err)
+	}
+	if stored.Status != contracts.OrderStatusConfirmed {
+		t.Fatalf("expected CONFIRMED, got %s", stored.Status)
+	}
+	if stored.Timestamps.ConfirmedAt == nil || !stored.Timestamps.ConfirmedAt.Equal(confirmedAt) {
+		t.Fatalf("expected confirmed_at %v (from envelope payload), got %v", confirmedAt, stored.Timestamps.ConfirmedAt)
+	}
+}
+
+// TestConfirm_RejectsNonDraftStatuses proves every non-DRAFT status is a 409
+// (httpx.ErrConflict), not a silently applied transition.
+func TestConfirm_RejectsNonDraftStatuses(t *testing.T) {
+	nonDraft := []contracts.OrderStatus{
+		contracts.OrderStatusConfirmed,
+		contracts.OrderStatusSentToKitchen,
+		contracts.OrderStatusPreparing,
+		contracts.OrderStatusReady,
+		contracts.OrderStatusServed,
+		contracts.OrderStatusBilled,
+		contracts.OrderStatusPaid,
+		contracts.OrderStatusClosed,
+		contracts.OrderStatusCancelled,
+	}
+	for _, status := range nonDraft {
+		t.Run(string(status), func(t *testing.T) {
+			svc, repo := newTestService()
+			order := baseOrder()
+			order.Status = status
+			// Seed directly so an order can start life outside a status
+			// creatable via IngestOrder (e.g. SENT_TO_KITCHEN).
+			repo.orders[order.HollerOrderID] = StoredOrder{Order: order, Version: 1}
+			repo.orderTenant[order.HollerOrderID] = testTenantID
+
+			_, err := svc.Confirm(context.Background(), testTenantID, baseEnvelope(2), testOrderID, time.Now().UTC())
+			if !errors.Is(err, httpx.ErrConflict) {
+				t.Fatalf("expected ErrConflict confirming from %q, got %v", status, err)
+			}
+		})
+	}
+}
+
+// TestConfirm_IdempotentReplayLeavesOneConfirmationAndUnchangedTimestamp
+// replays the identical confirm envelope twice and asserts the order
+// remains confirmed exactly once with the original timestamp — not a second
+// transition, not a shifted time.
+func TestConfirm_IdempotentReplayLeavesOneConfirmationAndUnchangedTimestamp(t *testing.T) {
+	svc, _ := newTestService()
+	if _, err := svc.IngestOrder(context.Background(), testTenantID, baseEnvelope(1), baseOrder()); err != nil {
+		t.Fatalf("IngestOrder: %v", err)
+	}
+
+	confirmedAt := time.Date(2026, 8, 8, 10, 30, 0, 0, time.UTC)
+	env := baseEnvelope(2)
+	if _, err := svc.Confirm(context.Background(), testTenantID, env, testOrderID, confirmedAt); err != nil {
+		t.Fatalf("first Confirm: %v", err)
+	}
+
+	later := confirmedAt.Add(5 * time.Minute)
+	stored, err := svc.Confirm(context.Background(), testTenantID, env, testOrderID, later)
+	if err != nil {
+		t.Fatalf("replayed Confirm: %v", err)
+	}
+	if stored.Status != contracts.OrderStatusConfirmed {
+		t.Fatalf("expected order to remain CONFIRMED after replay, got %s", stored.Status)
+	}
+	if stored.Timestamps.ConfirmedAt == nil || !stored.Timestamps.ConfirmedAt.Equal(confirmedAt) {
+		t.Fatalf("expected confirmed_at to remain %v after replay, got %v", confirmedAt, stored.Timestamps.ConfirmedAt)
 	}
 }
 
