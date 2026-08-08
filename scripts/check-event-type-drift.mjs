@@ -39,6 +39,10 @@ const RUST_ROOTS = [
 const NOT_YET_EMITTED = {
   KOTCreated: "KOT generation is Milestone 2",
   OrderReady: "kitchen status flow is Milestone 2",
+  // TEMPORARY — delete this entry in the same commit that makes edge/database
+  // emit OrderConfirmed. If it is still here a milestone later, the confirm
+  // command never landed and confirmed_at is still stamped by nothing.
+  OrderConfirmed: "confirm_order track in flight (0.2.5)",
 };
 
 function frozenEventTypes() {

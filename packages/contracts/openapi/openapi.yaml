@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Holler API — Vertical Slice
-  version: "0.2.4"
+  version: "0.2.5"
   description: >
     Covers only the §70 order endpoints needed for the Milestone 1–2 vertical
     slice (Menu → POS Order → Local SQLite → KOT → KDS → Cloud sync). Frozen
@@ -119,6 +119,35 @@ paths:
                     type: array
                     items:
                       $ref: "#/components/schemas/Kot"
+
+  /orders/{id}/confirm:
+    post:
+      summary: >
+        Replay the DRAFT→CONFIRMED transition from the edge. Added at 0.2.5:
+        the generic transition routes carry no payload, so confirmed_at had no
+        way to reach the cloud and the column went unstamped by any production
+        path. The edge is authoritative for order transactions (§50.1), so the
+        timestamp is the moment the EDGE recorded — the cloud stores what it
+        replays and never substitutes its own clock.
+      parameters:
+        - $ref: "#/components/parameters/OrderId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrderConfirmEnvelope"
+      responses:
+        "200":
+          description: Order confirmed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CanonicalOrder"
+        "409":
+          description: Illegal transition — the order was not in DRAFT
+        "422":
+          $ref: "#/components/responses/EnvelopeRouteMismatch"
 
   /orders/{id}/cancel:
     post:
@@ -661,6 +690,23 @@ components:
             payload:
               type: object
               additionalProperties: false
+
+    OrderConfirmEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/SyncEnvelope"
+        - type: object
+          properties:
+            aggregate_type: { enum: [order] }
+            direction: { enum: [EDGE_TO_CLOUD] }
+            payload:
+              type: object
+              required: [confirmed_at]
+              additionalProperties: false
+              properties:
+                confirmed_at:
+                  type: string
+                  format: date-time
+                  description: When the EDGE recorded the confirmation, not when the cloud received it.
 
     OrderCancelEnvelope:
       allOf:

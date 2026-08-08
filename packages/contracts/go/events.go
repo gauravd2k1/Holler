@@ -38,6 +38,18 @@ type ItemRemovedEvent struct {
 	} `json:"data"`
 }
 
+// OrderConfirmedEvent added at 0.2.5 — the cashier confirming a draft
+// (DRAFT->CONFIRMED). Deliberately not named OrderAccepted: M6 aggregator
+// acceptance is a different business event and gets its own type.
+type OrderConfirmedEvent struct {
+	EventEnvelope
+	Data struct {
+		OrderID string `json:"order_id"`
+		// The moment the EDGE recorded, not when the cloud received it (§50.1).
+		ConfirmedAt time.Time `json:"confirmed_at"`
+	} `json:"data"`
+}
+
 type KotCreatedEvent struct {
 	EventEnvelope
 	Data struct {
@@ -91,6 +103,7 @@ const (
 	EventTypeOrderCreated        = "OrderCreated"
 	EventTypeItemAdded           = "ItemAdded"
 	EventTypeItemRemoved         = "ItemRemoved"
+	EventTypeOrderConfirmed      = "OrderConfirmed"
 	EventTypeKotCreated          = "KOTCreated"
 	EventTypeOrderReady          = "OrderReady"
 	EventTypeSentToKitchen       = "SentToKitchen"
@@ -105,6 +118,7 @@ var OutboxEventTypes = []string{
 	EventTypeOrderCreated,
 	EventTypeItemAdded,
 	EventTypeItemRemoved,
+	EventTypeOrderConfirmed,
 	EventTypeKotCreated,
 	EventTypeOrderReady,
 	EventTypeSentToKitchen,

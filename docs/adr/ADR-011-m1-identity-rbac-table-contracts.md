@@ -176,3 +176,23 @@ These wire fields stay unpersisted for now. Each is synthesized at a fixed value
 | `preparation_time_minutes` | `null` | Milestone 2 — the kitchen owns prep time |
 
 The three `NOT NULL` columns carry `DEFAULT`s only because SQLite requires a non-null default when adding `NOT NULL` to an existing table. They are a migration mechanism, not an application fallback: writers set `source`, `payment_status` and `schema_version` explicitly.
+
+---
+
+## Addendum — 0.2.5 (2026-08-07)
+
+0.2.4 gave `confirmed_at` a column on both sides. Adapting the edge and the backend then showed that **nothing could stamp it**: no crate has a DRAFT→CONFIRMED command, and cloud-side `transition()` calls `UpdateStatus`, which sets only status, version and `updated_at`. A column no production path writes is the same fictional-field problem 0.2.4 existed to fix, one level down — so the gap was ruled a Milestone 1 blocker rather than backlog.
+
+### `OrderConfirmed`, not `OrderAccepted`
+
+`docs/spec/sync.md` §Event model lists `OrderAccepted`, and reusing that name was considered and rejected. Cashier confirmation of a draft and a merchant accepting an inbound aggregator order are **different business events**: they have different actors, different preconditions and different side effects. When Milestone 6 lands, `AcceptOrder` on the `AggregatorProvider` interface gets its own event rather than sharing this one. Sharing a name would have forced every future consumer to disambiguate by context — the sort of ambiguity that reads as harmless at freeze time and becomes unfixable once replayed events exist in production.
+
+The payload carries `confirmed_at` explicitly, and the contract states it is **the moment the edge recorded, not the moment the cloud received it**. The edge is authoritative for order transactions (§50.1); a cloud that stamped its own clock would be inventing a fact about the shop floor.
+
+### `POST /orders/{id}/confirm`
+
+The generic transition routes carry no payload, so there was no way to replay a timestamp. Rather than widen those routes — which would let a payload reach transitions that must not carry one — 0.2.5 adds a dedicated envelope-wrapped ingest route with `OrderConfirmEnvelope`, whose payload is `{confirmed_at}` and nothing else (`additionalProperties: false`). `409` is returned for an order not in `DRAFT`, so an illegal transition is rejected rather than applied.
+
+### Sequencing
+
+`OrderConfirmed` sits in the drift check's `NOT_YET_EMITTED` with a stated reason until the edge emits it, so CI stays green across the gap; that entry is deleted by the commit that starts emitting it. The work spans five parts — contracts, `edge/database` (transition, stamp and event in one transaction), the Tauri command, the POS wiring, and the backend ingest route — because a timestamp the edge stamps but the cloud cannot receive would be no better than the column that nothing stamped.

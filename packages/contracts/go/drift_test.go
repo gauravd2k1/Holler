@@ -120,6 +120,7 @@ func TestOutboxEventTypes(t *testing.T) {
 		"OrderCreated",
 		"ItemAdded",
 		"ItemRemoved",
+		"OrderConfirmed",
 		"KOTCreated",
 		"OrderReady",
 		"SentToKitchen",

@@ -49,6 +49,23 @@ export const ItemRemovedEventSchema = EventEnvelope(
 );
 export type ItemRemovedEvent = z.infer<typeof ItemRemovedEventSchema>;
 
+// Added at 0.2.5. The cashier confirming a draft — DRAFT→CONFIRMED in the
+// order state machine. Deliberately NOT named OrderAccepted: docs/spec/sync.md
+// lists that name, but in the aggregator context acceptance means a merchant
+// accepting an inbound order, which is a different business event. When
+// Milestone 6 lands, AcceptOrder on the AggregatorProvider interface gets its
+// own event rather than sharing this one.
+export const OrderConfirmedEventSchema = EventEnvelope(
+  "OrderConfirmed",
+  z.object({
+    order_id: z.string().uuid(),
+    // The edge is authoritative for order transactions (§50.1), so this is the
+    // moment the edge recorded, not the moment the cloud received it.
+    confirmed_at: z.string().datetime(),
+  }),
+);
+export type OrderConfirmedEvent = z.infer<typeof OrderConfirmedEventSchema>;
+
 export const KotCreatedEventSchema = EventEnvelope("KOTCreated", z.object({ kot: KotSchema }));
 export type KotCreatedEvent = z.infer<typeof KotCreatedEventSchema>;
 
@@ -90,6 +107,7 @@ export const OutboxEventSchema = z.discriminatedUnion("event_type", [
   OrderCreatedEventSchema,
   ItemAddedEventSchema,
   ItemRemovedEventSchema,
+  OrderConfirmedEventSchema,
   KotCreatedEventSchema,
   OrderReadyEventSchema,
   SentToKitchenEventSchema,
@@ -108,6 +126,7 @@ export const OUTBOX_EVENT_TYPES = [
   "OrderCreated",
   "ItemAdded",
   "ItemRemoved",
+  "OrderConfirmed",
   "KOTCreated",
   "OrderReady",
   "SentToKitchen",
