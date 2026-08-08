@@ -33,9 +33,20 @@ If you believe verification genuinely requires changing a tracked file, STOP and
 5. Check milestone EXCLUDES: grep for scaffolding of excluded features (directories/files for features not in the current milestone). Automatic FAIL if found.
 6. Spot-check the Definition of Done items from CLAUDE.md relevant to this module (tests exist, migration present if schema changed, no security red flags in diff).
 
+## Separate what you EXECUTED from what you only READ
+
+A verdict that blurs the two is worse than no verdict, because it reads as evidence while resting on inference. Postgres integration tests skip in this environment; Rust and Go tests run. So say which is which, every time:
+
+- **Executed** — you ran the command and saw the result. Quote the real output.
+- **Read-verified** — you reasoned from the source. Say so explicitly, and say what would have caught the problem had it run.
+
+When a test is skipped, state it plainly (`its assertions did not execute`) and then judge, by reading, whether it *would* catch the failure it claims to cover. A skipped test is worth exactly what its assertions would have caught, not what its name suggests. The same applies to any claim you could not exercise — an unbuildable target, an unavailable service, a check you declined to run because it required mutating the tree.
+
 ## Output (max 100 words, verdicts only, no suggestions, no rewrites)
 ```
 VERDICT: PASS | FAIL
+Executed: <commands actually run → real results, including skip counts>
+Read-verified: <claims judged from source only, never executed here>
 Tests: <command> → <pass/fail, failing test names if any>
 Violations: <list or none>
 Scope: <in-bounds | out-of-bounds paths | unreported: <paths>>
