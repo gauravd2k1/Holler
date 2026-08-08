@@ -44,3 +44,56 @@ jobs:
       # This greps them against the frozen list in both directions.
       - name: event type drift check
         run: node scripts/check-event-type-drift.mjs
+
+  # The Rust edge crates carry the majority of Milestone 1's test coverage —
+  # including the offline order-creation test that IS the milestone acceptance
+  # criterion, the encryption crash-recovery path, and the transactional
+  # outbox guarantees. None of it ran in CI until now; it was green only
+  # because it was run by hand on one machine. "Verified" has to mean a fresh
+  # checkout reproduces it.
+  #
+  # apps/pos/src-tauri is deliberately NOT built here: Tauri needs Windows
+  # (MSVC) plus WebView2 (ADR-013), and a Linux runner cannot honestly stand in
+  # for the outlet target. Validating it belongs with the clean Windows 10 VM
+  # item in docs/backlog-m2.md, not with a green tick on ubuntu-latest.
+  edge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: edge/database -> target
+      - name: fmt
+        run: |
+          cd edge/database && cargo fmt --check
+          cd ../sync && cargo fmt --check
+      - name: clippy
+        run: |
+          cd edge/database && cargo clippy --all-targets -- -D warnings
+          cd ../sync && cargo clippy --all-targets -- -D warnings
+      - name: test
+        run: |
+          cd edge/database && cargo test
+          cd ../sync && cargo test
+
+  pos:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - name: install
+        run: cd apps/pos && pnpm install --frozen-lockfile
+      - name: typecheck
+        run: cd apps/pos && pnpm exec tsc --noEmit
+      - name: test
+        run: cd apps/pos && pnpm test
+      - name: build
+        run: cd apps/pos && pnpm build
