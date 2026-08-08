@@ -34,6 +34,13 @@ pub enum DbError {
     /// `Db::add_order_item_with_outbox` / `Db::remove_order_item_with_outbox`).
     #[error("order {order_id} is not amendable: status is {status}, not DRAFT")]
     OrderNotAmendable { order_id: String, status: String },
+
+    /// A caller tried to confirm (DRAFT -> CONFIRMED) an order that is not
+    /// DRAFT. The transition is only legal once, from DRAFT; the edge
+    /// enforces this itself rather than trusting the caller (see
+    /// `Db::confirm_order_with_outbox`).
+    #[error("order {order_id} is not confirmable: status is {status}, not DRAFT")]
+    OrderNotConfirmable { order_id: String, status: String },
 }
 
 pub type DbResult<T> = Result<T, DbError>;

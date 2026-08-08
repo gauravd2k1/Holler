@@ -147,6 +147,32 @@ pub fn add_order_item_impl(
     })
 }
 
+/// Confirms a `DRAFT` order (the cashier's DRAFT -> CONFIRMED transition).
+/// A thin boundary over `holler_edge_database::Db::confirm_order_with_outbox`
+/// — the transaction, the DRAFT-only enforcement and the derived
+/// `OrderConfirmed` outbox payload all live in that crate; this function
+/// only sources what the domain cannot: the outbox row's own id and the
+/// current moment, both minted locally on the edge (sync.md §50.1 — the
+/// edge, not the cloud, is authoritative for `confirmed_at`).
+pub fn confirm_order_impl(state: &AppState, order_id: &str) -> AppResult<CanonicalOrder> {
+    let now = now_iso();
+    let meta = holler_edge_database::model::OrderConfirmedMeta {
+        outbox_id: new_id(),
+        occurred_at: now.clone(),
+        confirmed_at: now,
+    };
+
+    let mut db = lock_db(state)?;
+    db.confirm_order_with_outbox(order_id, &meta)?;
+
+    let order = db.get_order(order_id)?.ok_or_else(|| AppError {
+        code: "NOT_FOUND",
+        message: format!("order {order_id} not found after confirm"),
+    })?;
+    let items = holler_edge_database::repo::list_order_items(db.connection(), order_id)?;
+    Ok(CanonicalOrder::from_order_and_items(order, items))
+}
+
 /// Not implemented — see module doc comment.
 pub fn remove_order_item_impl(
     _state: &AppState,
@@ -191,6 +217,11 @@ pub fn add_order_item(
     item: NewOrderItemRequest,
 ) -> AppResult<CanonicalOrder> {
     add_order_item_impl(&state, &order_id, item)
+}
+
+#[tauri::command]
+pub fn confirm_order(state: State<'_, AppState>, order_id: String) -> AppResult<CanonicalOrder> {
+    confirm_order_impl(&state, &order_id)
 }
 
 #[tauri::command]

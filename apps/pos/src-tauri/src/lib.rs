@@ -42,6 +42,7 @@ pub fn run() {
             commands::orders::list_orders,
             commands::orders::add_order_item,
             commands::orders::remove_order_item,
+            commands::orders::confirm_order,
         ])
         .run(tauri::generate_context!())
         .expect("error while running the Holler POS application");

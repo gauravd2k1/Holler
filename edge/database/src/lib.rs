@@ -22,8 +22,8 @@ use rusqlite::Connection;
 
 use crate::crypto::EncryptionKey;
 use crate::model::{
-    NewOrder, NewOrderItem, NewOutboxEntry, NewTableSession, Order, OrderItemAddedMeta,
-    OrderItemModifier, OrderItemRemovedMeta, TableSession,
+    NewOrder, NewOrderItem, NewOutboxEntry, NewTableSession, Order, OrderConfirmedMeta,
+    OrderItemAddedMeta, OrderItemModifier, OrderItemRemovedMeta, TableSession,
 };
 
 /// An open handle to the edge database. The plaintext SQLite file backing
@@ -250,6 +250,42 @@ impl Db {
         // needed, and their snapshot has already been captured above.
         repo::delete_order_item(&tx, order_item_id)?;
         repo::recompute_and_persist_order_totals(&tx, &existing.order_id, &meta.occurred_at)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Confirms a `DRAFT` order — the cashier's DRAFT -> CONFIRMED
+    /// transition — stamping `status = 'CONFIRMED'` and `confirmed_at`,
+    /// bumping `version`/`updated_at`, and writing the `OrderConfirmed`
+    /// `local_outbox` row, all in the *same* SQLite transaction (ADR-007).
+    /// Rejects the write with `DbError::OrderNotConfirmable` if the order is
+    /// not `DRAFT` (checked and mutated inside one transaction, so this
+    /// cannot race with a concurrent amendment or a second confirm); rolls
+    /// back entirely on any failure, leaving neither the status change nor
+    /// the outbox row.
+    ///
+    /// Milestone 1 scope: this is the DRAFT -> CONFIRMED transition only —
+    /// no KOT generation (Milestone 2), no tax/discount computation
+    /// (Milestone 3), no payment capture.
+    ///
+    /// Like [`Db::add_order_item_with_outbox`], the caller does not
+    /// describe the event: `event_type` (the frozen `OrderConfirmed`
+    /// string) and `payload_json` (`{ order_id, confirmed_at }`) are built
+    /// by this crate from the row it is writing, so a caller cannot commit
+    /// a mismatched or misleading confirmation event. `meta` supplies only
+    /// what this crate cannot derive: the outbox row's own id, the moment
+    /// the event occurred, and `confirmed_at` — the moment the *edge*
+    /// recorded the confirmation (sync.md §50.1); this crate never lets a
+    /// cloud-supplied clock stamp it.
+    pub fn confirm_order_with_outbox(
+        &mut self,
+        order_id: &str,
+        meta: &OrderConfirmedMeta,
+    ) -> DbResult<()> {
+        let tx = self.conn.transaction()?;
+        let outlet_id = repo::require_draft_order_for_confirm(&tx, order_id)?;
+        repo::stamp_order_confirmed(&tx, order_id, &meta.confirmed_at, &meta.occurred_at)?;
+        repo::insert_order_confirmed_outbox(&tx, &outlet_id, order_id, meta)?;
         tx.commit()?;
         Ok(())
     }
@@ -923,6 +959,167 @@ mod tests {
 
         let remaining = repo::list_order_items(db.connection(), "order-remove-reject").unwrap();
         assert_eq!(remaining.len(), 1, "line must survive the rejected removal");
+    }
+
+    fn order_confirmed_meta(order_id: &str) -> OrderConfirmedMeta {
+        OrderConfirmedMeta {
+            outbox_id: format!("outbox-confirm-{order_id}"),
+            occurred_at: "2026-08-08T12:00:00Z".to_string(),
+            confirmed_at: "2026-08-08T11:59:59Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn confirm_order_stamps_status_and_writes_outbox_atomically() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+
+        let order = sample_order("order-confirm-1", "outlet-1", "device-1");
+        db.create_order_with_outbox(&order, &[], &sample_outbox("order-confirm-1"))
+            .expect("create draft order");
+
+        let meta = order_confirmed_meta("order-confirm-1");
+        db.confirm_order_with_outbox("order-confirm-1", &meta)
+            .expect("confirm order");
+
+        let stored = db
+            .get_order("order-confirm-1")
+            .unwrap()
+            .expect("order exists");
+        assert_eq!(stored.status, "CONFIRMED");
+        assert_eq!(stored.confirmed_at.as_deref(), Some("2026-08-08T11:59:59Z"));
+        assert_eq!(stored.version, 2, "version must bump on confirmation");
+
+        let pending = repo::list_unpublished_outbox(db.connection(), 100).unwrap();
+        let event = pending
+            .iter()
+            .find(|e| e.aggregate_id == "order-confirm-1" && e.event_type == "OrderConfirmed")
+            .expect("OrderConfirmed event must exist");
+        assert_eq!(event.event_type, "OrderConfirmed");
+    }
+
+    /// The caller supplies only ids/timestamps, never the event description
+    /// — this proves the emitted payload matches `OrderConfirmedEventSchema`
+    /// exactly and is derived, not caller-described.
+    #[test]
+    fn confirm_order_outbox_payload_is_derived_and_cannot_be_spoofed() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+
+        let order = sample_order("order-confirm-payload", "outlet-1", "device-1");
+        db.create_order_with_outbox(&order, &[], &sample_outbox("order-confirm-payload"))
+            .expect("create draft order");
+
+        let meta = order_confirmed_meta("order-confirm-payload");
+        db.confirm_order_with_outbox("order-confirm-payload", &meta)
+            .expect("confirm order");
+
+        let pending = repo::list_unpublished_outbox(db.connection(), 100).unwrap();
+        let event = pending
+            .iter()
+            .find(|e| e.aggregate_id == "order-confirm-payload" && e.event_type == "OrderConfirmed")
+            .expect("OrderConfirmed event must exist");
+
+        let payload: serde_json::Value = serde_json::from_str(&event.payload_json).unwrap();
+        assert_eq!(payload["event_type"], "OrderConfirmed");
+        assert_eq!(payload["outlet_id"], "outlet-1");
+        assert_eq!(payload["schema_version"], 1);
+        assert_eq!(payload["data"]["order_id"], "order-confirm-payload");
+        assert_eq!(payload["data"]["confirmed_at"], "2026-08-08T11:59:59Z");
+        // Envelope must contain exactly the frozen shape — no extra fields
+        // a caller could have smuggled in.
+        assert_eq!(
+            payload.as_object().unwrap().len(),
+            6,
+            "envelope must be exactly event_id/event_type/occurred_at/outlet_id/schema_version/data"
+        );
+        assert_eq!(
+            payload["data"].as_object().unwrap().len(),
+            2,
+            "data must be exactly order_id/confirmed_at"
+        );
+    }
+
+    #[test]
+    fn confirm_order_rejects_non_draft_order_and_writes_nothing() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+
+        let mut order = sample_order("order-confirm-reject", "outlet-1", "device-1");
+        order.status = "CONFIRMED".to_string();
+        db.create_order_with_outbox(&order, &[], &sample_outbox("order-confirm-reject"))
+            .expect("create already-confirmed order");
+
+        let meta = order_confirmed_meta("order-confirm-reject");
+        let result = db.confirm_order_with_outbox("order-confirm-reject", &meta);
+
+        assert!(matches!(result, Err(DbError::OrderNotConfirmable { .. })));
+
+        let stored = db
+            .get_order("order-confirm-reject")
+            .unwrap()
+            .expect("order exists");
+        assert_eq!(stored.status, "CONFIRMED");
+        assert!(
+            stored.confirmed_at.is_none(),
+            "confirmed_at must be untouched by the rejected attempt"
+        );
+        assert_eq!(stored.version, 1, "version must not bump on rejection");
+
+        let pending = repo::list_unpublished_outbox(db.connection(), 100).unwrap();
+        assert!(pending
+            .iter()
+            .all(|e| e.aggregate_id != "order-confirm-reject" || e.event_type != "OrderConfirmed"));
+    }
+
+    /// Rollback guarantee: a failure partway through the transaction (a
+    /// colliding outbox id, so `insert_order_confirmed_outbox` fails after
+    /// `stamp_order_confirmed` has already run) must leave the order row in
+    /// DRAFT with no outbox row — the status stamp must not survive without
+    /// its outbox row, or vice versa.
+    #[test]
+    fn failed_confirm_order_transaction_leaves_draft_status_and_no_outbox_row() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+
+        let order = sample_order("order-confirm-fail", "outlet-1", "device-1");
+        let colliding_id = "colliding-outbox-confirm".to_string();
+        let create_outbox = NewOutboxEntry {
+            id: colliding_id.clone(),
+            ..sample_outbox("order-confirm-fail")
+        };
+        db.create_order_with_outbox(&order, &[], &create_outbox)
+            .expect("create draft order");
+
+        let colliding_meta = OrderConfirmedMeta {
+            outbox_id: colliding_id,
+            occurred_at: "2026-08-08T12:00:00Z".to_string(),
+            confirmed_at: "2026-08-08T11:59:59Z".to_string(),
+        };
+        let result = db.confirm_order_with_outbox("order-confirm-fail", &colliding_meta);
+        assert!(
+            result.is_err(),
+            "colliding outbox id must fail the transaction"
+        );
+
+        let stored = db
+            .get_order("order-confirm-fail")
+            .unwrap()
+            .expect("order exists");
+        assert_eq!(
+            stored.status, "DRAFT",
+            "rolled-back confirm must leave the order in DRAFT"
+        );
+        assert!(
+            stored.confirmed_at.is_none(),
+            "confirmed_at must not be stamped by a rolled-back transaction"
+        );
+        assert_eq!(stored.version, 1, "version must not bump on rollback");
+
+        let pending = repo::list_unpublished_outbox(db.connection(), 100).unwrap();
+        assert!(pending
+            .iter()
+            .all(|e| e.aggregate_id != "order-confirm-fail" || e.event_type != "OrderConfirmed"));
     }
 
     #[test]

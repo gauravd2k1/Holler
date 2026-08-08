@@ -267,6 +267,23 @@ pub struct OrderItemAddedMeta {
     pub occurred_at: String,
 }
 
+/// Caller-supplied fields for the `local_outbox` row that
+/// [`crate::Db::confirm_order_with_outbox`] writes — mirrors
+/// [`OrderItemAddedMeta`]/[`OrderItemRemovedMeta`]. `event_type` (the frozen
+/// `OrderConfirmed` string) and `payload_json` (`{ order_id, confirmed_at }`)
+/// are owned by the crate, derived from the row it just stamped, so a
+/// caller cannot describe a mismatched confirmation. `confirmed_at` is the
+/// moment the *edge* recorded the confirmation (sync.md §50.1: the edge is
+/// authoritative for order transactions) — this crate does not generate it
+/// itself, but it also never lets a cloud-supplied clock anywhere near it;
+/// the caller (Tauri command layer) is expected to source it locally.
+#[derive(Debug, Clone)]
+pub struct OrderConfirmedMeta {
+    pub outbox_id: String,
+    pub occurred_at: String,
+    pub confirmed_at: String,
+}
+
 /// A local_outbox row to be written in the *same* transaction as the
 /// operational write it describes (ADR-007). `id`/`created_at` are supplied
 /// by the caller for the same reason as [`NewOrder`].

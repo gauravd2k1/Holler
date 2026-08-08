@@ -540,6 +540,53 @@ pub(crate) fn require_draft_order(tx: &Transaction, order_id: &str) -> DbResult<
     }
 }
 
+/// Enforces "confirmation is only legal from DRAFT" inside the same
+/// transaction as the write it is guarding, so the check and the mutation it
+/// protects can never race — the confirm-path analogue of
+/// [`require_draft_order`]. Returns the order's `outlet_id` on success.
+/// Returns `DbError::NotFound` if the order does not exist,
+/// `DbError::OrderNotConfirmable` if it exists but is not DRAFT.
+pub(crate) fn require_draft_order_for_confirm(
+    tx: &Transaction,
+    order_id: &str,
+) -> DbResult<String> {
+    let row: Option<(String, String)> = tx
+        .query_row(
+            "SELECT outlet_id, status FROM \"order\" WHERE id = ?1",
+            params![order_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    match row {
+        None => Err(crate::error::DbError::NotFound("order")),
+        Some((outlet_id, status)) if status == "DRAFT" => Ok(outlet_id),
+        Some((_, status)) => Err(crate::error::DbError::OrderNotConfirmable {
+            order_id: order_id.to_string(),
+            status,
+        }),
+    }
+}
+
+/// Stamps `status = 'CONFIRMED'`, `confirmed_at`, bumps `version` and
+/// `updated_at` on the order row. Must only ever be called after
+/// [`require_draft_order_for_confirm`] has passed in the same transaction.
+pub(crate) fn stamp_order_confirmed(
+    tx: &Transaction,
+    order_id: &str,
+    confirmed_at: &str,
+    updated_at: &str,
+) -> DbResult<()> {
+    let changed = tx.execute(
+        "UPDATE \"order\" SET status = 'CONFIRMED', confirmed_at = ?1, version = version + 1, updated_at = ?2
+         WHERE id = ?3",
+        params![confirmed_at, updated_at, order_id],
+    )?;
+    if changed == 0 {
+        return Err(crate::error::DbError::NotFound("order"));
+    }
+    Ok(())
+}
+
 pub(crate) fn get_order_item_in_tx(tx: &Transaction, id: &str) -> DbResult<Option<OrderItem>> {
     tx.query_row(
         "SELECT id, order_id, menu_item_id, variant_id, quantity, unit_price_paise, line_total_paise, notes, created_at
@@ -663,6 +710,7 @@ pub(crate) fn compute_line_total_paise(
 /// these strings without updating that list first.
 const EVENT_TYPE_ITEM_ADDED: &str = "ItemAdded";
 const EVENT_TYPE_ITEM_REMOVED: &str = "ItemRemoved";
+const EVENT_TYPE_ORDER_CONFIRMED: &str = "OrderConfirmed";
 
 /// Builds the contract's `OrderItem` shape (`packages/contracts/src/types/order.ts`
 /// `OrderItemSchema`) as JSON: `{ id, menu_item_id, variant_id, quantity,
@@ -842,6 +890,65 @@ pub(crate) fn insert_item_removed_outbox(
             aggregate_type: "order".to_string(),
             aggregate_id: order_id.to_string(),
             event_type: EVENT_TYPE_ITEM_REMOVED.to_string(),
+            payload_json: payload,
+            created_at: meta.occurred_at.clone(),
+        },
+    )
+}
+
+/// Builds the `OrderConfirmed` event envelope + `data` payload from the
+/// order this crate just stamped CONFIRMED, matching
+/// `OrderConfirmedEventSchema` in `packages/contracts/src/types/events.ts`
+/// exactly (`{ event_id, event_type, occurred_at, outlet_id, schema_version,
+/// data: { order_id, confirmed_at } }`). The caller never supplies
+/// `event_type` or `confirmed_at`'s appearance in the payload directly —
+/// both are derived here from the meta the crate itself validated and
+/// wrote, so a caller cannot commit a mismatched event for a real
+/// confirmation.
+fn build_order_confirmed_payload(
+    outlet_id: &str,
+    order_id: &str,
+    confirmed_at: &str,
+    event_id: &str,
+    occurred_at: &str,
+) -> String {
+    serde_json::json!({
+        "event_id": event_id,
+        "event_type": EVENT_TYPE_ORDER_CONFIRMED,
+        "occurred_at": occurred_at,
+        "outlet_id": outlet_id,
+        "schema_version": 1,
+        "data": {
+            "order_id": order_id,
+            "confirmed_at": confirmed_at,
+        }
+    })
+    .to_string()
+}
+
+/// Writes the `local_outbox` row for a `confirm_order_with_outbox` call.
+/// `event_type`/`payload_json` are derived here, not accepted from the
+/// caller — see [`build_order_confirmed_payload`].
+pub(crate) fn insert_order_confirmed_outbox(
+    tx: &Transaction,
+    outlet_id: &str,
+    order_id: &str,
+    meta: &OrderConfirmedMeta,
+) -> DbResult<()> {
+    let payload = build_order_confirmed_payload(
+        outlet_id,
+        order_id,
+        &meta.confirmed_at,
+        &meta.outbox_id,
+        &meta.occurred_at,
+    );
+    insert_outbox_entry(
+        tx,
+        &NewOutboxEntry {
+            id: meta.outbox_id.clone(),
+            aggregate_type: "order".to_string(),
+            aggregate_id: order_id.to_string(),
+            event_type: EVENT_TYPE_ORDER_CONFIRMED.to_string(),
             payload_json: payload,
             created_at: meta.occurred_at.clone(),
         },

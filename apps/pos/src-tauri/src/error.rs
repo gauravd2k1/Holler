@@ -58,6 +58,7 @@ impl From<DomainError> for AppError {
 impl From<holler_edge_database::DbError> for AppError {
     fn from(e: holler_edge_database::DbError) -> Self {
         use holler_edge_database::DbError;
+        let message = e.to_string();
         match e {
             DbError::CredentialMismatch => {
                 AppError::new("CREDENTIAL_MISMATCH", "invalid email or password")
@@ -68,7 +69,9 @@ impl From<holler_edge_database::DbError> for AppError {
             }
             DbError::NotFound(what) => AppError::new("NOT_FOUND", format!("{what} not found")),
             DbError::InvalidInput(msg) => AppError::new("INVALID_INPUT", msg),
-            other => AppError::new("STORAGE_ERROR", other.to_string()),
+            DbError::OrderNotAmendable { .. } => AppError::new("ORDER_NOT_DRAFT", message),
+            DbError::OrderNotConfirmable { .. } => AppError::new("ORDER_NOT_CONFIRMABLE", message),
+            _other => AppError::new("STORAGE_ERROR", message),
         }
     }
 }
