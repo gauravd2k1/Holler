@@ -6,7 +6,7 @@
 //!
 //! Money is `i64` paise throughout (CLAUDE.md). Milestone 1 excludes tax and
 //! discount computation (Milestone 3): `total_paise` therefore always equals
-//! `subtotal_paise` here, and `discount_paise`/`tax_paise` are always the
+//! `subtotal_paise` here, and `discount_paise`/`taxes_paise` are always the
 //! caller-supplied zero.
 
 use holler_edge_database::model::{NewOrder, NewOrderItem, Order};
@@ -95,8 +95,20 @@ pub fn build_new_draft_order(
         table_id: input.table_id.clone(),
         subtotal_paise,
         discount_paise: 0,
-        tax_paise: 0,
+        taxes_paise: 0,
         total_paise,
+        // Milestone 1 writes only these values explicitly (ADR-011 0.2.4
+        // addendum) rather than relying on the migration's SQLite DEFAULTs.
+        source: "POS".to_string(),
+        external_order_id: None,
+        payment_status: "UNPAID".to_string(),
+        payment_source: None,
+        // DRAFT -> CONFIRMED transition time; unset for a brand-new DRAFT
+        // order. No confirm-order path exists at the edge yet (see task
+        // report).
+        confirmed_at: None,
+        source_payload_json: None,
+        schema_version: 1,
         created_at: now_iso.to_string(),
         updated_at: now_iso.to_string(),
     };
@@ -178,7 +190,7 @@ mod tests {
         assert_eq!(order.subtotal_paise, 50000);
         assert_eq!(order.total_paise, 50000);
         assert_eq!(order.discount_paise, 0);
-        assert_eq!(order.tax_paise, 0);
+        assert_eq!(order.taxes_paise, 0);
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].line_total_paise, 30000);
         assert_eq!(items[1].line_total_paise, 20000);
@@ -195,8 +207,15 @@ mod tests {
             table_id: None,
             subtotal_paise: 0,
             discount_paise: 0,
-            tax_paise: 0,
+            taxes_paise: 0,
             total_paise: 0,
+            source: "POS".into(),
+            external_order_id: None,
+            payment_status: "UNPAID".into(),
+            payment_source: None,
+            confirmed_at: None,
+            source_payload_json: None,
+            schema_version: 1,
             version: 1,
             sync_status: "PENDING".into(),
             created_at: "2026-08-07T10:00:00.000Z".into(),

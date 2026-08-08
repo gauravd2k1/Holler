@@ -95,6 +95,13 @@ pub struct MenuItemModifier {
 /// `updated_at` are supplied by the caller (edge is authoritative for
 /// operational aggregates — sync.md §50.1) rather than generated here, so
 /// callers control UUIDv7 ordering and clock source.
+///
+/// `source`/`payment_status`/`schema_version` have SQLite-level `DEFAULT`s
+/// (`packages/contracts/sqlite/0004_order_canonical_fields.sql`) that exist
+/// only because SQLite requires a non-null default when adding a NOT NULL
+/// column to an existing table — the ADR-011 0.2.4 addendum is explicit that
+/// writers set them explicitly rather than relying on that default. Callers
+/// must supply real values, not omit them and hope.
 #[derive(Debug, Clone)]
 pub struct NewOrder {
     pub id: String,
@@ -105,8 +112,17 @@ pub struct NewOrder {
     pub table_id: Option<String>,
     pub subtotal_paise: i64,
     pub discount_paise: i64,
-    pub tax_paise: i64,
+    pub taxes_paise: i64,
     pub total_paise: i64,
+    pub source: String,
+    pub external_order_id: Option<String>,
+    pub payment_status: String,
+    pub payment_source: Option<String>,
+    /// DRAFT -> CONFIRMED transition time. `None` for a brand-new DRAFT
+    /// order; stamped by whichever caller performs that transition.
+    pub confirmed_at: Option<String>,
+    pub source_payload_json: Option<String>,
+    pub schema_version: i64,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -121,8 +137,15 @@ pub struct Order {
     pub table_id: Option<String>,
     pub subtotal_paise: i64,
     pub discount_paise: i64,
-    pub tax_paise: i64,
+    pub taxes_paise: i64,
     pub total_paise: i64,
+    pub source: String,
+    pub external_order_id: Option<String>,
+    pub payment_status: String,
+    pub payment_source: Option<String>,
+    pub confirmed_at: Option<String>,
+    pub source_payload_json: Option<String>,
+    pub schema_version: i64,
     pub version: i64,
     pub sync_status: String,
     pub created_at: String,

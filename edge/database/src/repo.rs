@@ -39,7 +39,15 @@ pub fn upsert_outlet(conn: &Connection, o: &Outlet) -> DbResult<()> {
             config_version = excluded.config_version,
             updated_at = excluded.updated_at
          WHERE excluded.config_version >= outlet.config_version",
-        params![o.id, o.brand_id, o.name, o.timezone, o.config_version, o.created_at, o.updated_at],
+        params![
+            o.id,
+            o.brand_id,
+            o.name,
+            o.timezone,
+            o.config_version,
+            o.created_at,
+            o.updated_at
+        ],
     )?;
     Ok(())
 }
@@ -76,7 +84,14 @@ pub fn upsert_device(conn: &Connection, d: &Device) -> DbResult<()> {
             kind = excluded.kind,
             name = excluded.name,
             last_seen_at = excluded.last_seen_at",
-        params![d.id, d.outlet_id, d.kind, d.name, d.last_seen_at, d.created_at],
+        params![
+            d.id,
+            d.outlet_id,
+            d.kind,
+            d.name,
+            d.last_seen_at,
+            d.created_at
+        ],
     )?;
     Ok(())
 }
@@ -156,7 +171,8 @@ fn row_to_app_user(row: &rusqlite::Row) -> rusqlite::Result<AppUser> {
     })
 }
 
-const APP_USER_COLUMNS: &str = "id, tenant_id, outlet_id, email, full_name, password_hash, pin_hash, \
+const APP_USER_COLUMNS: &str =
+    "id, tenant_id, outlet_id, email, full_name, password_hash, pin_hash, \
      is_active, permissions_json, config_version, updated_at";
 
 pub fn get_app_user_by_id(conn: &Connection, id: &str) -> DbResult<Option<AppUser>> {
@@ -230,7 +246,10 @@ pub fn upsert_restaurant_table(conn: &Connection, t: &RestaurantTable) -> DbResu
     Ok(())
 }
 
-pub fn list_restaurant_tables(conn: &Connection, outlet_id: &str) -> DbResult<Vec<RestaurantTable>> {
+pub fn list_restaurant_tables(
+    conn: &Connection,
+    outlet_id: &str,
+) -> DbResult<Vec<RestaurantTable>> {
     let mut stmt = conn.prepare(
         "SELECT id, outlet_id, section, label, seat_count, is_active, config_version
          FROM restaurant_table WHERE outlet_id = ?1 ORDER BY section, label",
@@ -296,7 +315,13 @@ pub fn upsert_menu_item_variant(conn: &Connection, v: &MenuItemVariant) -> DbRes
             menu_item_id = excluded.menu_item_id, name = excluded.name,
             price_delta_paise = excluded.price_delta_paise, config_version = excluded.config_version
          WHERE excluded.config_version >= menu_item_variant.config_version",
-        params![v.id, v.menu_item_id, v.name, v.price_delta_paise, v.config_version],
+        params![
+            v.id,
+            v.menu_item_id,
+            v.name,
+            v.price_delta_paise,
+            v.config_version
+        ],
     )?;
     Ok(())
 }
@@ -440,8 +465,11 @@ pub(crate) fn insert_order(tx: &Transaction, o: &NewOrder) -> DbResult<()> {
     tx.execute(
         "INSERT INTO \"order\"
             (id, outlet_id, device_id, order_type, status, table_id,
-             subtotal_paise, discount_paise, tax_paise, total_paise, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+             subtotal_paise, discount_paise, taxes_paise, total_paise,
+             source, external_order_id, payment_status, payment_source,
+             confirmed_at, source_payload_json, schema_version,
+             created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
         params![
             o.id,
             o.outlet_id,
@@ -451,8 +479,15 @@ pub(crate) fn insert_order(tx: &Transaction, o: &NewOrder) -> DbResult<()> {
             o.table_id,
             o.subtotal_paise,
             o.discount_paise,
-            o.tax_paise,
+            o.taxes_paise,
             o.total_paise,
+            o.source,
+            o.external_order_id,
+            o.payment_status,
+            o.payment_source,
+            o.confirmed_at,
+            o.source_payload_json,
+            o.schema_version,
             o.created_at,
             o.updated_at,
         ],
@@ -822,7 +857,7 @@ pub(crate) fn insert_item_removed_outbox(
 /// (`line_total_paise = (unit_price_paise + SUM(modifier price_delta_paise)) * quantity`),
 /// so summing them here is consistent with that invariant rather than a
 /// second, potentially divergent, computation of it.
-/// `discount_paise`/`tax_paise` are set by pricing/tax rules outside this
+/// `discount_paise`/`taxes_paise` are set by pricing/tax rules outside this
 /// crate's scope and are left as they are; only the subtotal (driven by the
 /// lines) and the total that follows from it are recomputed here. Bumps
 /// `version` and `updated_at` on the order, matching the
@@ -837,12 +872,12 @@ pub(crate) fn recompute_and_persist_order_totals(
         params![order_id],
         |row| row.get(0),
     )?;
-    let (discount_paise, tax_paise): (i64, i64) = tx.query_row(
-        "SELECT discount_paise, tax_paise FROM \"order\" WHERE id = ?1",
+    let (discount_paise, taxes_paise): (i64, i64) = tx.query_row(
+        "SELECT discount_paise, taxes_paise FROM \"order\" WHERE id = ?1",
         params![order_id],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
-    let total_paise = subtotal_paise - discount_paise + tax_paise;
+    let total_paise = subtotal_paise - discount_paise + taxes_paise;
 
     let changed = tx.execute(
         "UPDATE \"order\" SET subtotal_paise = ?1, total_paise = ?2, version = version + 1, updated_at = ?3
@@ -855,31 +890,43 @@ pub(crate) fn recompute_and_persist_order_totals(
     Ok(())
 }
 
+const ORDER_COLUMNS: &str = "id, outlet_id, device_id, order_type, status, table_id,
+                subtotal_paise, discount_paise, taxes_paise, total_paise,
+                source, external_order_id, payment_status, payment_source,
+                confirmed_at, source_payload_json, schema_version,
+                version, sync_status, created_at, updated_at";
+
+fn order_from_row(row: &rusqlite::Row) -> rusqlite::Result<Order> {
+    Ok(Order {
+        id: row.get(0)?,
+        outlet_id: row.get(1)?,
+        device_id: row.get(2)?,
+        order_type: row.get(3)?,
+        status: row.get(4)?,
+        table_id: row.get(5)?,
+        subtotal_paise: row.get(6)?,
+        discount_paise: row.get(7)?,
+        taxes_paise: row.get(8)?,
+        total_paise: row.get(9)?,
+        source: row.get(10)?,
+        external_order_id: row.get(11)?,
+        payment_status: row.get(12)?,
+        payment_source: row.get(13)?,
+        confirmed_at: row.get(14)?,
+        source_payload_json: row.get(15)?,
+        schema_version: row.get(16)?,
+        version: row.get(17)?,
+        sync_status: row.get(18)?,
+        created_at: row.get(19)?,
+        updated_at: row.get(20)?,
+    })
+}
+
 pub fn get_order(conn: &Connection, id: &str) -> DbResult<Option<Order>> {
     conn.query_row(
-        "SELECT id, outlet_id, device_id, order_type, status, table_id,
-                subtotal_paise, discount_paise, tax_paise, total_paise, version, sync_status,
-                created_at, updated_at
-         FROM \"order\" WHERE id = ?1",
+        &format!("SELECT {ORDER_COLUMNS} FROM \"order\" WHERE id = ?1"),
         params![id],
-        |row| {
-            Ok(Order {
-                id: row.get(0)?,
-                outlet_id: row.get(1)?,
-                device_id: row.get(2)?,
-                order_type: row.get(3)?,
-                status: row.get(4)?,
-                table_id: row.get(5)?,
-                subtotal_paise: row.get(6)?,
-                discount_paise: row.get(7)?,
-                tax_paise: row.get(8)?,
-                total_paise: row.get(9)?,
-                version: row.get(10)?,
-                sync_status: row.get(11)?,
-                created_at: row.get(12)?,
-                updated_at: row.get(13)?,
-            })
-        },
+        order_from_row,
     )
     .optional()
     .map_err(Into::into)
@@ -912,31 +959,11 @@ pub fn list_order_items(conn: &Connection, order_id: &str) -> DbResult<Vec<Order
 /// "reporting beyond a basic order list" boundary; nothing beyond this
 /// query belongs in this crate.
 pub fn list_orders_for_outlet(conn: &Connection, outlet_id: &str) -> DbResult<Vec<Order>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, outlet_id, device_id, order_type, status, table_id,
-                subtotal_paise, discount_paise, tax_paise, total_paise, version, sync_status,
-                created_at, updated_at
-         FROM \"order\" WHERE outlet_id = ?1 ORDER BY created_at DESC",
-    )?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {ORDER_COLUMNS} FROM \"order\" WHERE outlet_id = ?1 ORDER BY created_at DESC"
+    ))?;
     let rows = stmt
-        .query_map(params![outlet_id], |row| {
-            Ok(Order {
-                id: row.get(0)?,
-                outlet_id: row.get(1)?,
-                device_id: row.get(2)?,
-                order_type: row.get(3)?,
-                status: row.get(4)?,
-                table_id: row.get(5)?,
-                subtotal_paise: row.get(6)?,
-                discount_paise: row.get(7)?,
-                tax_paise: row.get(8)?,
-                total_paise: row.get(9)?,
-                version: row.get(10)?,
-                sync_status: row.get(11)?,
-                created_at: row.get(12)?,
-                updated_at: row.get(13)?,
-            })
-        })?
+        .query_map(params![outlet_id], order_from_row)?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
 }
@@ -983,7 +1010,14 @@ pub(crate) fn update_table_session(
          SET state = ?1, current_order_id = ?2, guest_count = ?3, closed_at = ?4,
              version = version + 1, updated_at = ?5
          WHERE id = ?6",
-        params![state, current_order_id, guest_count, closed_at, updated_at, id],
+        params![
+            state,
+            current_order_id,
+            guest_count,
+            closed_at,
+            updated_at,
+            id
+        ],
     )?;
     if changed == 0 {
         return Err(crate::error::DbError::NotFound("table_session"));

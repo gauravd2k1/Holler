@@ -1,9 +1,9 @@
 //! Applies the frozen contract schema files verbatim, in order.
 //!
-//! `packages/contracts/sqlite/0001_init.sql`, `0002_m1_identity_tables.sql`
-//! and `0003_order_item_modifiers.sql` are read-only and authoritative
-//! (ADR-008, ADR-011). This module never edits, reorders, or adds to their
-//! statements
+//! `packages/contracts/sqlite/0001_init.sql`, `0002_m1_identity_tables.sql`,
+//! `0003_order_item_modifiers.sql` and `0004_order_canonical_fields.sql` are
+//! read-only and authoritative (ADR-008, ADR-011). This module never edits,
+//! reorders, or adds to their statements
 //! — it only decides *whether* to run each file exactly once.
 //!
 //! Idempotency is tracked with SQLite's built-in `PRAGMA user_version`
@@ -31,6 +31,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
     (
         "0003_order_item_modifiers.sql",
         include_str!("../../../packages/contracts/sqlite/0003_order_item_modifiers.sql"),
+    ),
+    (
+        "0004_order_canonical_fields.sql",
+        include_str!("../../../packages/contracts/sqlite/0004_order_canonical_fields.sql"),
     ),
 ];
 
@@ -100,6 +104,41 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM \"order\"", [], |row| row.get(0))
             .expect("querying quoted order table");
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn order_table_has_the_0004_canonical_columns() {
+        let conn = Connection::open_in_memory().expect("open");
+        configure_connection(&conn).expect("pragmas");
+        apply_all(&conn).expect("apply");
+
+        let mut stmt = conn.prepare("PRAGMA table_info(\"order\")").unwrap();
+        let columns: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        // The rename: tax_paise no longer exists, taxes_paise does.
+        assert!(
+            !columns.iter().any(|c| c == "tax_paise"),
+            "tax_paise must be renamed away, not left alongside taxes_paise"
+        );
+        for expected in [
+            "taxes_paise",
+            "source",
+            "external_order_id",
+            "payment_status",
+            "payment_source",
+            "confirmed_at",
+            "source_payload_json",
+            "schema_version",
+        ] {
+            assert!(
+                columns.iter().any(|c| c == expected),
+                "expected column {expected} on \"order\" after 0004"
+            );
+        }
     }
 
     #[test]

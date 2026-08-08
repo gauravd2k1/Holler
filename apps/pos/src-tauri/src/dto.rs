@@ -267,7 +267,7 @@ pub struct OrderTimestamps {
 pub struct CanonicalOrder {
     pub holler_order_id: String,
     pub external_order_id: Option<String>,
-    pub source: &'static str,
+    pub source: String,
     pub outlet_id: String,
 
     pub order_type: String,
@@ -288,7 +288,7 @@ pub struct CanonicalOrder {
     pub merchant_discount_paise: i64,
     pub total_paise: i64,
 
-    pub payment_status: &'static str,
+    pub payment_status: String,
     pub payment_source: Option<String>,
 
     pub preparation_time_minutes: Option<i64>,
@@ -308,8 +308,8 @@ impl CanonicalOrder {
     pub fn from_new_order_and_items(order: &db::NewOrder, items: &[db::NewOrderItem]) -> Self {
         Self {
             holler_order_id: order.id.clone(),
-            external_order_id: None,
-            source: "POS",
+            external_order_id: order.external_order_id.clone(),
+            source: order.source.clone(),
             outlet_id: order.outlet_id.clone(),
             order_type: order.order_type.clone(),
             status: order.status.clone(),
@@ -333,20 +333,23 @@ impl CanonicalOrder {
             discount_paise: order.discount_paise,
             packaging_paise: 0,
             delivery_charge_paise: 0,
-            taxes_paise: order.tax_paise,
+            taxes_paise: order.taxes_paise,
             aggregator_discount_paise: 0,
             merchant_discount_paise: 0,
             total_paise: order.total_paise,
-            payment_status: "UNPAID",
-            payment_source: None,
+            payment_status: order.payment_status.clone(),
+            payment_source: order.payment_source.clone(),
             preparation_time_minutes: None,
             rider: None,
             timestamps: OrderTimestamps {
                 created_at: order.created_at.clone(),
-                confirmed_at: None,
+                confirmed_at: order.confirmed_at.clone(),
                 updated_at: order.updated_at.clone(),
             },
-            source_payload: None,
+            source_payload: order
+                .source_payload_json
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok()),
             schema_version: 1,
         }
     }
@@ -354,8 +357,8 @@ impl CanonicalOrder {
     pub fn from_order_and_items(order: db::Order, items: Vec<db::OrderItem>) -> Self {
         Self {
             holler_order_id: order.id,
-            external_order_id: None,
-            source: "POS",
+            external_order_id: order.external_order_id,
+            source: order.source,
             outlet_id: order.outlet_id,
             order_type: order.order_type,
             status: order.status,
@@ -367,21 +370,24 @@ impl CanonicalOrder {
             discount_paise: order.discount_paise,
             packaging_paise: 0,
             delivery_charge_paise: 0,
-            taxes_paise: order.tax_paise,
+            taxes_paise: order.taxes_paise,
             aggregator_discount_paise: 0,
             merchant_discount_paise: 0,
             total_paise: order.total_paise,
-            payment_status: "UNPAID",
-            payment_source: None,
+            payment_status: order.payment_status,
+            payment_source: order.payment_source,
             preparation_time_minutes: None,
             rider: None,
             timestamps: OrderTimestamps {
                 created_at: order.created_at,
-                confirmed_at: None,
+                confirmed_at: order.confirmed_at,
                 updated_at: order.updated_at,
             },
-            source_payload: None,
-            schema_version: 1,
+            source_payload: order
+                .source_payload_json
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok()),
+            schema_version: order.schema_version as u8,
         }
     }
 }
