@@ -78,6 +78,10 @@ Note: `backend/migrations/0001_tenant_outlet.sql` and `0002_menu_order_skeleton.
 ## Response rules for agents
 Inspect repo first, output a concise plan, then edit real files. If a task touches >15 files, stop and present the plan instead of proceeding. Report per milestone: Implemented / Verified / Performance / Remaining / Next.
 
+## Commit rules
+- Always commit with `git commit -s`. This appends a `Signed-off-by:` trailer taken from the repo's `user.name`/`user.email`.
+- Never add a `Co-Authored-By: Claude ...` trailer or a "Generated with Claude Code" footer. These were stripped from history and are disabled via `includeCoAuthoredBy: false`; sign-off replaces them rather than sitting alongside them.
+
 ## Contract & constraint review rubric
 Before proposing any contract change or .claude/ edit, self-review against:
 - IDs: app-generated UUIDv7/ULID per §74 — never DB-side random defaults
