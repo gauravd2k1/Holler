@@ -32,6 +32,10 @@ Swiggy → Webhook → Aggregator Gateway
 ```
 Retry/dead-letter for malformed messages — never silently discard.
 
+Configurable auto-accept mode: outlet may enable automatic acceptance of
+incoming aggregator orders and automatic KOT print, per channel. Manual
+accept/reject remains the default. (Competitive parity — Recaho, M6.)
+
 ## Menu sync
 Holler can be master catalog, publishing to Swiggy/Zomato/QR-Web with channel-specific overrides (name, category, price, variants, modifiers, tax/charges where supported, availability, hours, images, descriptions).
 

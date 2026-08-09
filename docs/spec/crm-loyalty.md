@@ -12,5 +12,9 @@ Points, cashback, visit rewards, tiers, coupons, wallet, referral, campaigns. Ex
 ## WhatsApp integration
 Official WhatsApp Business API only. Uses: digital invoices, order confirmation, reservation confirmation, feedback, loyalty notifications, opt-in marketing. No bulk spam workflows; consent tracked and honored.
 
+Post-order feedback: optional automated message after order completion carrying
+a feedback prompt and a Google-review link, via the WhatsApp adapter (§44),
+consent-gated. (Competitive parity — Recaho, M9.)
+
 ## Milestone note
 Full CRM/loyalty/QR/reservations land in Milestone 9 (Customer Experience). Do not scaffold ahead of that milestone.

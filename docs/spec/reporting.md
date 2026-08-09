@@ -10,5 +10,8 @@ Exports: CSV, XLSX, PDF where appropriate.
 ## Analytics data model
 Keep operational and analytical workloads separate eventually. Start with PostgreSQL reporting tables/materialized views; introduce ClickHouse only when scale justifies it.
 
+Budgets: outlet-level budget targets (daily/monthly/yearly) with
+budget-vs-actual in the reporting views. (Competitive parity — Recaho, M8.)
+
 ## Milestone note
 Milestone 1 ships only a basic order list; full reporting is built out through Milestone 8 (multi-outlet/analytics) and beyond.

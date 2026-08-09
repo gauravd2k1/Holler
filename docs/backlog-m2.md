@@ -4,6 +4,10 @@ Items deferred from Milestone 1 with a decision behind each. This is not a wish 
 
 ---
 
+## Planning inputs
+Review docs/competitive.md during M2 planning — one open decision (waiter app
+milestone) and four spec additions already filed to their landing milestones.
+
 ## Gating — must clear before M2 ships
 
 ### Clean Windows 10 VM validation (ADR-013)
