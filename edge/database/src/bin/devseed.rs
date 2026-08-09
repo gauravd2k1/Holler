@@ -1,0 +1,280 @@
+//! Seeds a development edge SQLite database so the POS can log in offline.
+//!
+//! DEVELOPMENT ONLY. Never runs at an outlet, never ships in the installer.
+//! See docs/DEV_SETUP.md.
+//!
+//! Why this exists: `Db::open` applies the frozen contract schema itself, so a
+//! fresh device gets every table — but it gets *zero rows*, and nothing else
+//! ever fills them. `edge/sync` implements the cloud→edge config pull
+//! (`GET /sync/config`), but `apps/pos/src-tauri/src/lib.rs` never starts the
+//! sync worker, so on a developer machine the config bundle never arrives.
+//! Until device enrollment and sync startup are wired, this binary stands in
+//! for both by writing the same rows a config pull would have applied.
+//!
+//! It goes through the crate's public repository functions rather than raw
+//! SQL so it cannot drift from the frozen schema (ADR-003: nothing outside
+//! this crate touches the SQLite file directly).
+
+use std::env;
+use std::path::PathBuf;
+use std::process::ExitCode;
+
+use holler_edge_database::crypto::EncryptionKey;
+use holler_edge_database::model::{
+    AppUser, Device, MenuCategory, MenuItem, MenuItemModifier, MenuItemVariant, Outlet,
+    RestaurantTable,
+};
+use holler_edge_database::{repo, Db};
+
+// Fixed development ids. MUST match the constants in
+// backend/cmd/devseed/main.go — the two seeders describe the same outlet.
+const TENANT_ID: &str = "0191a000-0000-7000-8000-000000000001";
+const BRAND_ID: &str = "0191a000-0000-7000-8000-000000000002";
+const OUTLET_ID: &str = "0191a000-0000-7000-8000-00000000000a";
+const DEVICE_ID: &str = "0191a000-0000-7000-8000-00000000000b";
+const CASHIER_ID: &str = "0191a000-0000-7000-8000-00000000000c";
+const CATEGORY_ID: &str = "0191a000-0000-7000-8000-000000000010";
+const ITEM_CHAI_ID: &str = "0191a000-0000-7000-8000-000000000011";
+const ITEM_THALI_ID: &str = "0191a000-0000-7000-8000-000000000012";
+const VARIANT_ID: &str = "0191a000-0000-7000-8000-000000000013";
+const MOD_LESS_SUGAR_ID: &str = "0191a000-0000-7000-8000-000000000014";
+const MOD_EXTRA_SUGAR_ID: &str = "0191a000-0000-7000-8000-000000000015";
+const TABLE_1_ID: &str = "0191a000-0000-7000-8000-000000000020";
+const TABLE_2_ID: &str = "0191a000-0000-7000-8000-000000000021";
+
+const CASHIER_EMAIL: &str = "cashier@holler.test";
+
+/// Permissions for the seeded cashier, from the `Permission` enum in
+/// packages/contracts/src/types/identity.ts. The edge stores the flattened
+/// list for THIS outlet (§50.1, replace-not-merge).
+const CASHIER_PERMISSIONS: &str = r#"["order.create","order.modify","table.manage"]"#;
+
+/// Fixed timestamp for seeded rows. A constant rather than "now" so re-running
+/// the seeder produces an identical database — this crate has no clock
+/// dependency and a dev fixture does not need a real one.
+const SEEDED_AT: &str = "2026-08-09T00:00:00Z";
+
+/// Config version the seeded rows claim. Matches what backend/cmd/devseed
+/// writes to Postgres, so a later real config pull supersedes rather than
+/// conflicts with these rows.
+const CONFIG_VERSION: i64 = 1;
+
+fn main() -> ExitCode {
+    match run() {
+        Ok(path) => {
+            println!("devseed: sealed edge database written to {}", path.display());
+            println!("devseed: login as {CASHIER_EMAIL} with the password from backend/cmd/devseed");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("devseed: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run() -> Result<PathBuf, String> {
+    let key_hex = require_env("HOLLER_DB_KEY_HEX")?;
+    let password_hash = require_env("HOLLER_SEED_PASSWORD_HASH")?;
+    let key = parse_key_hex(&key_hex)?;
+
+    // Must match AppState::open in apps/pos/src-tauri/src/state.rs: the POS
+    // reads <app_data_dir>/edge.db.enc, so the seeder must write exactly there
+    // or the POS will create a second, empty database and login will fail.
+    let data_dir = match env::var("HOLLER_EDGE_DATA_DIR") {
+        Ok(d) => PathBuf::from(d),
+        Err(_) => default_app_data_dir()?,
+    };
+    std::fs::create_dir_all(&data_dir).map_err(|e| format!("creating {data_dir:?}: {e}"))?;
+
+    let sealed_path = data_dir.join("edge.db.enc");
+    let plaintext_path = data_dir.join("edge.db");
+
+    let db = Db::open(&sealed_path, &plaintext_path, key).map_err(|e| format!("opening db: {e}"))?;
+
+    seed(&db, &password_hash).map_err(|e| format!("seeding: {e}"))?;
+
+    // close() checkpoints, re-seals with a fresh nonce and wipes the plaintext
+    // working copy. Skipping it would leave an unencrypted edge.db on disk.
+    db.close().map_err(|e| format!("sealing db: {e}"))?;
+
+    // Optional end-to-end check: reopen the sealed file and run the same
+    // offline-login path the POS uses. This is what proves the Go-generated
+    // Argon2id hash actually verifies here — a format mismatch between the
+    // two implementations would otherwise only surface at the login screen.
+    if let Ok(password) = env::var("HOLLER_SEED_PASSWORD") {
+        let key = parse_key_hex(&key_hex)?;
+        let db = Db::open(&sealed_path, &plaintext_path, key)
+            .map_err(|e| format!("reopening for verification: {e}"))?;
+        let result =
+            repo::verify_offline_login(db.connection(), OUTLET_ID, CASHIER_EMAIL, &password);
+        db.close().map_err(|e| format!("resealing after verification: {e}"))?;
+
+        let user = result.map_err(|e| format!("offline login verification FAILED: {e}"))?;
+        println!(
+            "devseed: verified offline login for {} (permissions: {})",
+            user.email, user.permissions_json
+        );
+    }
+
+    Ok(sealed_path)
+}
+
+fn seed(db: &Db, password_hash: &str) -> Result<(), holler_edge_database::DbError> {
+    let conn = db.connection();
+
+    repo::upsert_outlet(
+        conn,
+        &Outlet {
+            id: OUTLET_ID.to_string(),
+            brand_id: BRAND_ID.to_string(),
+            name: "Pune Test Outlet".to_string(),
+            timezone: "Asia/Kolkata".to_string(),
+            config_version: CONFIG_VERSION,
+            created_at: SEEDED_AT.to_string(),
+            updated_at: SEEDED_AT.to_string(),
+        },
+    )?;
+
+    repo::upsert_device(
+        conn,
+        &Device {
+            id: DEVICE_ID.to_string(),
+            outlet_id: OUTLET_ID.to_string(),
+            kind: "POS".to_string(),
+            name: "Dev Till 1".to_string(),
+            last_seen_at: None,
+            created_at: SEEDED_AT.to_string(),
+        },
+    )?;
+
+    // The hash is generated by backend/cmd/devseed via
+    // internal/platform/crypto — one Argon2id implementation, verified here by
+    // edge/database/src/auth.rs. The plaintext never reaches this process.
+    repo::replace_app_user(
+        conn,
+        &AppUser {
+            id: CASHIER_ID.to_string(),
+            tenant_id: TENANT_ID.to_string(),
+            outlet_id: OUTLET_ID.to_string(),
+            email: CASHIER_EMAIL.to_string(),
+            full_name: "Dev Cashier".to_string(),
+            password_hash: password_hash.to_string(),
+            pin_hash: None,
+            is_active: true,
+            permissions_json: CASHIER_PERMISSIONS.to_string(),
+            config_version: CONFIG_VERSION,
+            updated_at: SEEDED_AT.to_string(),
+        },
+    )?;
+
+    for (id, label) in [(TABLE_1_ID, "T1"), (TABLE_2_ID, "T2")] {
+        repo::upsert_restaurant_table(
+            conn,
+            &RestaurantTable {
+                id: id.to_string(),
+                outlet_id: OUTLET_ID.to_string(),
+                section: "Main".to_string(),
+                label: label.to_string(),
+                seat_count: 4,
+                is_active: true,
+                config_version: CONFIG_VERSION,
+            },
+        )?;
+    }
+
+    repo::upsert_menu_category(
+        conn,
+        &MenuCategory {
+            id: CATEGORY_ID.to_string(),
+            outlet_id: OUTLET_ID.to_string(),
+            name: "Beverages".to_string(),
+            sort_order: 1,
+            config_version: CONFIG_VERSION,
+        },
+    )?;
+
+    for (id, name, price) in [
+        (ITEM_CHAI_ID, "Masala Chai", 4000),
+        (ITEM_THALI_ID, "Veg Thali", 22000),
+    ] {
+        repo::upsert_menu_item(
+            conn,
+            &MenuItem {
+                id: id.to_string(),
+                outlet_id: OUTLET_ID.to_string(),
+                category_id: CATEGORY_ID.to_string(),
+                name: name.to_string(),
+                base_price_paise: price,
+                is_available: true,
+                config_version: CONFIG_VERSION,
+            },
+        )?;
+    }
+
+    repo::upsert_menu_item_variant(
+        conn,
+        &MenuItemVariant {
+            id: VARIANT_ID.to_string(),
+            menu_item_id: ITEM_CHAI_ID.to_string(),
+            name: "Large".to_string(),
+            price_delta_paise: 1500,
+            config_version: CONFIG_VERSION,
+        },
+    )?;
+
+    // One modifier group ("Sugar") with two options.
+    for (id, option, delta) in [
+        (MOD_LESS_SUGAR_ID, "Less Sugar", 0),
+        (MOD_EXTRA_SUGAR_ID, "Extra Sugar", 500),
+    ] {
+        repo::upsert_menu_item_modifier(
+            conn,
+            &MenuItemModifier {
+                id: id.to_string(),
+                menu_item_id: ITEM_CHAI_ID.to_string(),
+                group_name: "Sugar".to_string(),
+                option_name: option.to_string(),
+                price_delta_paise: delta,
+                min_selection: 0,
+                max_selection: 1,
+                config_version: CONFIG_VERSION,
+            },
+        )?;
+    }
+
+    // Without a sync_state row the outbox has no cursor to advance against
+    // once the sync worker is eventually wired up.
+    repo::init_sync_state(conn, OUTLET_ID)?;
+
+    Ok(())
+}
+
+fn require_env(key: &'static str) -> Result<String, String> {
+    env::var(key).map_err(|_| format!("environment variable {key} is required"))
+}
+
+/// Mirrors Tauri v2's `app_data_dir()` on Windows: `%APPDATA%\<identifier>`,
+/// where the identifier is `com.holler.pos` from tauri.conf.json. Override
+/// with HOLLER_EDGE_DATA_DIR if your Tauri version resolves it differently.
+fn default_app_data_dir() -> Result<PathBuf, String> {
+    let appdata = env::var("APPDATA").map_err(|_| {
+        "APPDATA is not set; pass HOLLER_EDGE_DATA_DIR explicitly".to_string()
+    })?;
+    Ok(PathBuf::from(appdata).join("com.holler.pos"))
+}
+
+/// Same 32-byte hex key parsing as apps/pos/src-tauri/src/state.rs, duplicated
+/// rather than shared because that helper is private to the POS crate and this
+/// is a dev-only tool that must not change POS code.
+fn parse_key_hex(hex: &str) -> Result<EncryptionKey, String> {
+    if hex.len() != 64 {
+        return Err("HOLLER_DB_KEY_HEX must be exactly 64 hex characters (32 bytes)".to_string());
+    }
+    let mut bytes = [0u8; 32];
+    for i in 0..32 {
+        bytes[i] = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16)
+            .map_err(|_| "HOLLER_DB_KEY_HEX contains a non-hex character".to_string())?;
+    }
+    Ok(EncryptionKey::new(bytes))
+}
