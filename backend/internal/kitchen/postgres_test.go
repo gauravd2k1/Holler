@@ -12,6 +12,7 @@ import (
 	"github.com/holler/backend/internal/menu"
 	"github.com/holler/backend/internal/ordering"
 	"github.com/holler/backend/internal/outlet"
+	"github.com/holler/backend/internal/platform/id"
 	"github.com/holler/backend/internal/platform/postgres"
 	"github.com/holler/backend/internal/tenant"
 	contracts "github.com/holler/contracts"
@@ -73,11 +74,23 @@ func newFixture(t *testing.T, pool postgres.Pool) fixture {
 	if err != nil {
 		t.Fatalf("CreateOutlet: %v", err)
 	}
-	category, err := menuSvc.CreateCategory(ctx, menu.NewCategoryInput{OutletID: out.ID, Name: "Mains", SortOrder: 1})
+	// menu.Service.CreateCategory/CreateItem require a menu.Principal with
+	// menu.manage in context (its own context key, distinct from
+	// auth.WithPrincipal — see backend/cmd/api/principal.go's
+	// bridgeDownstreamPrincipals, which does this same wrap in production).
+	// The bare context.Background() used above for tenant/outlet setup has
+	// none.
+	menuCtx := menu.WithPrincipal(ctx, auth.NewPrincipal(auth.AuthenticatedPrincipal{
+		UserID:      "principal-user",
+		TenantID:    org.ID,
+		OutletID:    out.ID,
+		Permissions: []auth.Permission{auth.PermissionMenuManage},
+	}))
+	category, err := menuSvc.CreateCategory(menuCtx, menu.NewCategoryInput{OutletID: out.ID, Name: "Mains", SortOrder: 1})
 	if err != nil {
 		t.Fatalf("CreateCategory: %v", err)
 	}
-	item, _, _, err := menuSvc.CreateItem(ctx, menu.NewItemInput{
+	item, _, _, err := menuSvc.CreateItem(menuCtx, menu.NewItemInput{
 		OutletID:       out.ID,
 		CategoryID:     category.ID,
 		Name:           "Butter Chicken",
@@ -130,8 +143,15 @@ func TestPostgresRepository_StationPrinterKotLifecycle(t *testing.T) {
 
 	// Seed an order the KOT will ticket — kitchen's Repository does not own
 	// order creation, ordering's does.
+	//
+	// Every id below is generated fresh (id.New()) rather than a fixed
+	// literal: this suite shares a live Postgres with backend/internal/
+	// ordering's own postgres_test.go (same "order"/"order_item" tables,
+	// unique primary keys), and this test's own rows are never cleaned up,
+	// so a fixed literal would collide across packages and across repeated
+	// runs of this suite against the same database.
 	orderSvc := ordering.NewService(ordering.NewPostgresRepository(pool))
-	orderID := "bbbbbbbb-bbbb-7bbb-8bbb-bbbbbbbbbbbb"
+	orderID := id.New()
 	now := time.Now().UTC()
 	order := contracts.CanonicalOrder{
 		HollerOrderID: orderID,
@@ -156,15 +176,17 @@ func TestPostgresRepository_StationPrinterKotLifecycle(t *testing.T) {
 	svc := kitchen.NewService(kitchen.NewRepository(pool), nil)
 	ctx := kitchenCtx(fx.tenantID, fx.outletID)
 
-	stationID := "cccccccc-cccc-7ccc-8ccc-cccccccccccc"
+	stationID := id.New()
 	station, err := svc.CreateStation(ctx, fx.tenantID, kitchen.NewStationInput{
 		ID: stationID, OutletID: fx.outletID, Code: "MAIN_KITCHEN", Name: "Main Kitchen", IsActive: true,
 	})
 	if err != nil {
 		t.Fatalf("CreateStation: %v", err)
 	}
-	if station.ConfigVersion != 1 {
-		t.Fatalf("expected station config_version 1, got %d", station.ConfigVersion)
+	// newFixture already put two config writes on this outlet (CreateCategory,
+	// CreateItem) before this station is the third.
+	if station.ConfigVersion != 3 {
+		t.Fatalf("expected station config_version 3 (third config write on this outlet), got %d", station.ConfigVersion)
 	}
 
 	routing, err := svc.ReplaceItemStations(ctx, fx.tenantID, fx.menuItemID, []string{stationID})
@@ -175,7 +197,7 @@ func TestPostgresRepository_StationPrinterKotLifecycle(t *testing.T) {
 		t.Fatalf("unexpected routing: %+v", routing)
 	}
 
-	printerID := "dddddddd-dddd-7ddd-8ddd-dddddddddddd"
+	printerID := id.New()
 	printer, err := svc.CreatePrinter(ctx, fx.tenantID, kitchen.NewPrinterInput{
 		ID: printerID, OutletID: fx.outletID, Name: "Kitchen Printer",
 		ConnectionKind: kitchen.PrinterConnectionNetwork, Address: "192.168.1.50:9100", PaperWidthMM: 80, IsActive: true,
@@ -183,8 +205,10 @@ func TestPostgresRepository_StationPrinterKotLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreatePrinter: %v", err)
 	}
-	if printer.ConfigVersion != 2 {
-		t.Fatalf("expected printer config_version 2 (second config write on this outlet), got %d", printer.ConfigVersion)
+	// Fifth config write on this outlet: category, item, station,
+	// ReplaceItemStations (routing also bumps outlet.config_version), printer.
+	if printer.ConfigVersion != 5 {
+		t.Fatalf("expected printer config_version 5 (fifth config write on this outlet), got %d", printer.ConfigVersion)
 	}
 
 	printerRouting, err := svc.ReplaceStationPrinters(ctx, fx.tenantID, stationID, []string{printerID})
@@ -195,11 +219,11 @@ func TestPostgresRepository_StationPrinterKotLifecycle(t *testing.T) {
 		t.Fatalf("unexpected printer routing: %+v", printerRouting)
 	}
 
-	kotID := "eeeeeeee-eeee-7eee-8eee-eeeeeeeeeeee"
+	kotID := id.New()
 	kot := contracts.Kot{
 		ID: kotID, OrderID: orderID, Station: "MAIN_KITCHEN", Sequence: 1, Status: contracts.KotStatusNew,
 		Items: []contracts.KotTicketItem{
-			{OrderItemID: "ffffffff-ffff-7fff-8fff-ffffffffffff", Name: "Butter Chicken", Quantity: 1, Modifiers: []string{}},
+			{OrderItemID: id.New(), Name: "Butter Chicken", Quantity: 1, Modifiers: []string{}},
 		},
 		CreatedByDeviceID: testDeviceID, CreatedAt: now, UpdatedAt: now, SchemaVersion: 1,
 	}

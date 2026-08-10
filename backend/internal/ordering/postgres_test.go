@@ -7,9 +7,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/holler/backend/internal/auth"
 	"github.com/holler/backend/internal/menu"
 	"github.com/holler/backend/internal/ordering"
 	"github.com/holler/backend/internal/outlet"
+	"github.com/holler/backend/internal/platform/id"
 	"github.com/holler/backend/internal/platform/postgres"
 	"github.com/holler/backend/internal/tenant"
 	contracts "github.com/holler/contracts"
@@ -69,11 +71,23 @@ func newFixture(t *testing.T, pool postgres.Pool) fixture {
 	if err != nil {
 		t.Fatalf("CreateOutlet: %v", err)
 	}
-	category, err := menuSvc.CreateCategory(ctx, menu.NewCategoryInput{OutletID: out.ID, Name: "Mains", SortOrder: 1})
+	// menu.Service.CreateCategory/CreateItem require a menu.Principal with
+	// menu.manage in context (its own context key, distinct from
+	// auth.WithPrincipal — see backend/cmd/api/principal.go's
+	// bridgeDownstreamPrincipals, which does this same wrap in production).
+	// The bare context.Background() used above for tenant/outlet setup has
+	// none.
+	menuCtx := menu.WithPrincipal(ctx, auth.NewPrincipal(auth.AuthenticatedPrincipal{
+		UserID:      "principal-user",
+		TenantID:    org.ID,
+		OutletID:    out.ID,
+		Permissions: []auth.Permission{auth.PermissionMenuManage},
+	}))
+	category, err := menuSvc.CreateCategory(menuCtx, menu.NewCategoryInput{OutletID: out.ID, Name: "Mains", SortOrder: 1})
 	if err != nil {
 		t.Fatalf("CreateCategory: %v", err)
 	}
-	item, _, _, err := menuSvc.CreateItem(ctx, menu.NewItemInput{
+	item, _, _, err := menuSvc.CreateItem(menuCtx, menu.NewItemInput{
 		OutletID:       out.ID,
 		CategoryID:     category.ID,
 		Name:           "Butter Chicken",
@@ -128,7 +142,12 @@ func TestPostgresRepository_DuplicateOrderEnvelopeIsIdempotent(t *testing.T) {
 	fx := newFixture(t, pool)
 	svc := ordering.NewService(ordering.NewPostgresRepository(pool))
 
-	orderID := "bbbbbbbb-bbbb-7bbb-8bbb-bbbbbbbbbbbb"
+	// id.New() rather than a fixed literal: this suite's rows are never
+	// cleaned up and the same live Postgres is shared with backend/internal/
+	// kitchen's postgres_test.go (which seeds its own "order" row), so a
+	// fixed literal risks colliding across packages and across repeated runs
+	// of this suite against the same database.
+	orderID := id.New()
 	env := envelopeFor(orderID, fx.tenantID, fx.outletID, 1)
 	order := orderFor(orderID, fx.outletID)
 
@@ -157,12 +176,12 @@ func TestPostgresRepository_DuplicateItemAppendIsIdempotent(t *testing.T) {
 	fx := newFixture(t, pool)
 	svc := ordering.NewService(ordering.NewPostgresRepository(pool))
 
-	orderID := "cccccccc-cccc-7ccc-8ccc-cccccccccccc"
+	orderID := id.New()
 	if _, err := svc.IngestOrder(context.Background(), fx.tenantID, envelopeFor(orderID, fx.tenantID, fx.outletID, 1), orderFor(orderID, fx.outletID)); err != nil {
 		t.Fatalf("IngestOrder: %v", err)
 	}
 
-	itemID := "dddddddd-dddd-7ddd-8ddd-dddddddddddd"
+	itemID := id.New()
 	item := contracts.OrderItem{
 		ID:             itemID,
 		MenuItemID:     fx.menuItemID,
@@ -211,7 +230,7 @@ func TestPostgresRepository_OrderRoundTripPersistsContractsV024Fields(t *testing
 	fx := newFixture(t, pool)
 	svc := ordering.NewService(ordering.NewPostgresRepository(pool))
 
-	orderID := "ffffffff-ffff-7fff-8fff-ffffffffffff"
+	orderID := id.New()
 	externalOrderID := "zomato-order-42"
 	paymentSource := "cash"
 	env := envelopeFor(orderID, fx.tenantID, fx.outletID, 1)
@@ -301,7 +320,7 @@ func TestPostgresRepository_CrossTenantOrderLookupIsNotFound(t *testing.T) {
 	fxB := newFixture(t, pool)
 	svc := ordering.NewService(ordering.NewPostgresRepository(pool))
 
-	orderID := "eeeeeeee-eeee-7eee-8eee-eeeeeeeeeeee"
+	orderID := id.New()
 	if _, err := svc.IngestOrder(context.Background(), fxB.tenantID, envelopeFor(orderID, fxB.tenantID, fxB.outletID, 1), orderFor(orderID, fxB.outletID)); err != nil {
 		t.Fatalf("IngestOrder for tenant B: %v", err)
 	}

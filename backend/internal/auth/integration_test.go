@@ -77,18 +77,25 @@ func TestIntegration_CreateUserAndLogin(t *testing.T) {
 	ctx := context.Background()
 
 	tenantID := id.New()
+	brandID := id.New()
 	outletID := id.New()
 	if _, err := pool.Exec(ctx, `INSERT INTO tenant (id, name, created_at, updated_at) VALUES ($1, $2, now(), now())`, tenantID, "Integration Test Tenant 2"); err != nil {
 		t.Fatalf("inserting tenant fixture: %v", err)
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO outlet (id, tenant_id, name, timezone, created_at, updated_at) VALUES ($1, $2, 'Test Outlet', 'Asia/Kolkata', now(), now())`, outletID, tenantID); err != nil {
+	// outlet.brand_id is NOT NULL and has no tenant_id column of its own
+	// (packages/contracts/postgres/0001_init.sql: tenant -> brand -> outlet).
+	if _, err := pool.Exec(ctx, `INSERT INTO brand (id, tenant_id, name, created_at, updated_at) VALUES ($1, $2, $3, now(), now())`, brandID, tenantID, "Integration Test Brand 2"); err != nil {
+		t.Fatalf("inserting brand fixture: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO outlet (id, brand_id, name, timezone, created_at, updated_at) VALUES ($1, $2, 'Test Outlet', 'Asia/Kolkata', now(), now())`, outletID, brandID); err != nil {
 		t.Fatalf("inserting outlet fixture: %v", err)
 	}
 	t.Cleanup(func() {
 		pool.Exec(ctx, `DELETE FROM audit_event WHERE tenant_id = $1`, tenantID)
 		pool.Exec(ctx, `DELETE FROM user_role WHERE user_id IN (SELECT id FROM app_user WHERE tenant_id = $1)`, tenantID)
 		pool.Exec(ctx, `DELETE FROM app_user WHERE tenant_id = $1`, tenantID)
-		pool.Exec(ctx, `DELETE FROM outlet WHERE id = $1`, outletID)
+		pool.Exec(ctx, `DELETE FROM outlet WHERE brand_id = $1`, brandID)
+		pool.Exec(ctx, `DELETE FROM brand WHERE id = $1`, brandID)
 		pool.Exec(ctx, `DELETE FROM tenant WHERE id = $1`, tenantID)
 	})
 
@@ -271,13 +278,19 @@ func refreshFixture(t *testing.T, pool postgres.Pool) (userID, outletID string) 
 	ctx := context.Background()
 
 	tenantID := id.New()
+	brandID := id.New()
 	outletID = id.New()
 	userID = id.New()
 
 	if _, err := pool.Exec(ctx, `INSERT INTO tenant (id, name, created_at, updated_at) VALUES ($1, $2, now(), now())`, tenantID, "Refresh Store Test Tenant"); err != nil {
 		t.Fatalf("inserting tenant fixture: %v", err)
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO outlet (id, tenant_id, name, timezone, created_at, updated_at) VALUES ($1, $2, 'Test Outlet', 'Asia/Kolkata', now(), now())`, outletID, tenantID); err != nil {
+	// outlet.brand_id is NOT NULL and has no tenant_id column of its own
+	// (packages/contracts/postgres/0001_init.sql: tenant -> brand -> outlet).
+	if _, err := pool.Exec(ctx, `INSERT INTO brand (id, tenant_id, name, created_at, updated_at) VALUES ($1, $2, $3, now(), now())`, brandID, tenantID, "Refresh Store Test Brand"); err != nil {
+		t.Fatalf("inserting brand fixture: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO outlet (id, brand_id, name, timezone, created_at, updated_at) VALUES ($1, $2, 'Test Outlet', 'Asia/Kolkata', now(), now())`, outletID, brandID); err != nil {
 		t.Fatalf("inserting outlet fixture: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `
@@ -290,7 +303,8 @@ func refreshFixture(t *testing.T, pool postgres.Pool) (userID, outletID string) 
 	t.Cleanup(func() {
 		pool.Exec(ctx, `DELETE FROM refresh_token WHERE user_id = $1`, userID)
 		pool.Exec(ctx, `DELETE FROM app_user WHERE id = $1`, userID)
-		pool.Exec(ctx, `DELETE FROM outlet WHERE id = $1`, outletID)
+		pool.Exec(ctx, `DELETE FROM outlet WHERE brand_id = $1`, brandID)
+		pool.Exec(ctx, `DELETE FROM brand WHERE id = $1`, brandID)
 		pool.Exec(ctx, `DELETE FROM tenant WHERE id = $1`, tenantID)
 	})
 
