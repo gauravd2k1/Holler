@@ -42,11 +42,12 @@ const RUST_ROOTS = [
 
 // Frozen event types the Rust edge legitimately does not emit yet. Each needs a
 // reason — an empty justification here defeats the backward check.
-const NOT_YET_EMITTED = {
-  KOTCreated: "KOT generation is Milestone 2",
-  KOTStatusChanged: "KOT status flow is Milestone 2",
-  OrderReady: "kitchen status flow is Milestone 2",
-};
+// Emptied at Milestone 2: KOTCreated, KOTStatusChanged and OrderReady were the
+// last deferred types, and the edge now emits all three. Every frozen event
+// type is live, so the backward check no longer has an exemption to grant —
+// which is the state this map exists to drive toward, not a reason to delete it.
+// A future contract addition lands here with a reason, or it fails the check.
+const NOT_YET_EMITTED = {};
 
 function frozenEventTypes() {
   const source = readFileSync(EVENTS_TS, "utf-8");
