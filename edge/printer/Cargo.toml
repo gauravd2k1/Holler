@@ -1,0 +1,39 @@
+[package]
+name = "holler-edge-printer"
+version = "0.1.0"
+edition = "2021"
+description = "Edge printer service: ESC/POS adapter abstraction, KOT template rendering (58mm/80mm), the print spool with retry/backoff, and station->printer routing (ADR-014)."
+
+[lib]
+name = "holler_edge_printer"
+path = "src/lib.rs"
+
+[dependencies]
+# Reuses the edge SQLite connection/migration machinery and the frozen `Kot`
+# row shape rather than re-deriving either. `default-features = false` drops
+# the transitively-brought "bundled" rusqlite feature duplication warning
+# path (matches edge/sync's own dependency, which does the same for the same
+# reason) — the actual static SQLite link comes from holler-edge-database.
+holler-edge-database = { path = "../database" }
+
+# For the print_job/station/printer/station_printer/kot SQL this crate runs
+# directly against a `Connection` obtained from `holler_edge_database::Db`
+# (which owns opening, pragmas and applying every migration, including
+# 0005_m2_kitchen_stations_printers.sql — this crate does not re-apply
+# schema). Version pinned to match edge/database's own dependency so Cargo
+# unifies the build.
+rusqlite = { version = "0.31", default-features = false }
+
+thiserror = "1"
+
+# Backoff scheduling for the spool sweep (src/spool.rs::due_jobs) and KOT
+# status timestamps. Pure Rust, no OpenSSL/system dependency (ADR-013).
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+# Parsing kot.items_json (the frozen KotTicketItem[] shape) for template
+# rendering.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
