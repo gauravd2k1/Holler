@@ -1,0 +1,14 @@
+{
+  "name": "@holler/tests-kds-lan",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "T10 (Milestone 2): cross-language interop test proving one real KDS<->edge socket session — the compiled edge/device Rust server driven by the real apps/kds TypeScript client code, over a genuine WebSocket. See README.md.",
+  "scripts": {
+    "test": "vitest run --reporter=verbose"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  }
+}

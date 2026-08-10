@@ -1,0 +1,27 @@
+[package]
+name = "kds-lan-bridge"
+version = "0.1.0"
+edition = "2021"
+description = """
+Test-only harness for T10 (Milestone 2): starts the REAL edge/device LAN
+WebSocket server (holler-edge-device) over a REAL in-memory
+holler-edge-database, seeded with one active KOT, and prints its bound port
+plus every id a caller needs (outlet_id, kds device_id, kot_id) as one JSON
+line on stdout. A Node test (tests/integration/kds-lan/) spawns this as a
+child process and drives the socket with the REAL apps/kds client code — see
+tests/integration/kds-lan/README.md.
+
+This crate is not shipped: it exists only under tests/, is not a workspace
+member of any product crate, and is not referenced by edge/device or
+apps/pos/src-tauri.
+"""
+
+[[bin]]
+name = "kds-lan-bridge"
+path = "src/main.rs"
+
+[dependencies]
+holler-edge-device = { path = "../../../edge/device" }
+holler-edge-database = { path = "../../../edge/database" }
+serde_json = "1"
+uuid = { version = "1", features = ["v7"] }
