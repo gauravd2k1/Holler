@@ -88,7 +88,9 @@ M2 ships kitchen features to this same target, so validating the target before a
 
 ## Testing
 
-- ~~**Postgres integration tests have never run.**~~ **They run now — and nine of them fail.** The entry was wrong about the cause: the tests were never gated on a *missing* Postgres, they were gated on `HOLLER_TEST_DATABASE_URL` being unset while `holler-postgres-1` was up the whole time. Nobody had set the variable. Running them revealed nine failures, all **test-fixture bugs, not production bugs** — which is precisely why they went unnoticed: a suite that never executes cannot fail.
+- **Postgres integration tests never clean up their rows.** Every tenant/brand/outlet/order row these suites insert stays forever. Harmless today — ids are minted per run since `1cc087c`, so nothing collides — but the database grows without bound across CI runs. Pre-existing, and deliberately left alone during the fixture repair to keep that change to one concern. Worth a `t.Cleanup` or a per-run schema before CI runs these on every push.
+
+- ~~**Postgres integration tests have never run.**~~ **FIXED at `1cc087c` — all nine now execute and pass.** The entry below is kept because its diagnosis was wrong in an instructive way. The entry was wrong about the cause: the tests were never gated on a *missing* Postgres, they were gated on `HOLLER_TEST_DATABASE_URL` being unset while `holler-postgres-1` was up the whole time. Nobody had set the variable. Running them revealed nine failures, all **test-fixture bugs, not production bugs** — which is precisely why they went unnoticed: a suite that never executes cannot fail.
 
   | Package | Tests | Failure |
   |---|---|---|
