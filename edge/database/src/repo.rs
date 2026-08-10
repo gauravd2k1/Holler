@@ -1062,6 +1062,32 @@ pub fn list_order_items(conn: &Connection, order_id: &str) -> DbResult<Vec<Order
     Ok(rows)
 }
 
+/// Transaction-scoped twin of [`list_order_items`], for callers already
+/// inside a write transaction (e.g. `send_order_to_kitchen_with_outbox`)
+/// that must read a consistent snapshot of the order's lines.
+pub(crate) fn list_order_items_in_tx(tx: &Transaction, order_id: &str) -> DbResult<Vec<OrderItem>> {
+    let mut stmt = tx.prepare(
+        "SELECT id, order_id, menu_item_id, variant_id, quantity, unit_price_paise, line_total_paise, notes, created_at
+         FROM order_item WHERE order_id = ?1 ORDER BY created_at",
+    )?;
+    let rows = stmt
+        .query_map(params![order_id], |row| {
+            Ok(OrderItem {
+                id: row.get(0)?,
+                order_id: row.get(1)?,
+                menu_item_id: row.get(2)?,
+                variant_id: row.get(3)?,
+                quantity: row.get(4)?,
+                unit_price_paise: row.get(5)?,
+                line_total_paise: row.get(6)?,
+                notes: row.get(7)?,
+                created_at: row.get(8)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
 /// Basic order list for the outlet, most recent first — Milestone 1's
 /// "reporting beyond a basic order list" boundary; nothing beyond this
 /// query belongs in this crate.
@@ -1218,6 +1244,709 @@ pub fn list_kots_for_order(conn: &Connection, order_id: &str) -> DbResult<Vec<Ko
         })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
+}
+
+fn row_to_kot(row: &rusqlite::Row) -> rusqlite::Result<Kot> {
+    Ok(Kot {
+        id: row.get(0)?,
+        order_id: row.get(1)?,
+        station: row.get(2)?,
+        sequence: row.get(3)?,
+        status: row.get(4)?,
+        items_json: row.get(5)?,
+        created_by_device_id: row.get(6)?,
+        created_at: row.get(7)?,
+        updated_at: row.get(8)?,
+    })
+}
+
+const KOT_COLUMNS_ALIASED: &str = "k.id, k.order_id, k.station, k.sequence, k.status, \
+     k.items_json, k.created_by_device_id, k.created_at, k.updated_at";
+
+/// KOTs for an outlet (joined through `"order"`, since `kot` carries no
+/// `outlet_id` of its own), optionally narrowed to one station `code` — the
+/// query a KDS/expo screen or the LAN server needs to answer "what's on
+/// this station's pass right now".
+pub fn list_kots_for_outlet(
+    conn: &Connection,
+    outlet_id: &str,
+    station: Option<&str>,
+) -> DbResult<Vec<Kot>> {
+    let rows: Vec<Kot> = match station {
+        Some(code) => {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT {KOT_COLUMNS_ALIASED} FROM kot k \
+                 JOIN \"order\" o ON o.id = k.order_id \
+                 WHERE o.outlet_id = ?1 AND k.station = ?2 \
+                 ORDER BY k.created_at"
+            ))?;
+            let result = stmt
+                .query_map(params![outlet_id, code], row_to_kot)?
+                .collect::<Result<Vec<_>, _>>()?;
+            result
+        }
+        None => {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT {KOT_COLUMNS_ALIASED} FROM kot k \
+                 JOIN \"order\" o ON o.id = k.order_id \
+                 WHERE o.outlet_id = ?1 \
+                 ORDER BY k.created_at"
+            ))?;
+            let result = stmt
+                .query_map(params![outlet_id], row_to_kot)?
+                .collect::<Result<Vec<_>, _>>()?;
+            result
+        }
+    };
+    Ok(rows)
+}
+
+// --------------------------------------------- Milestone 2: kitchen config --
+// station / menu_item_station / printer / station_printer are CONFIG
+// aggregates (ADR-014 §1-2): cloud→edge, versioned by config_version,
+// replaced wholesale. This crate stores what sync gives it and never
+// originates a row here — mirrors the menu_* pattern above.
+
+pub fn upsert_station(conn: &Connection, s: &Station) -> DbResult<()> {
+    conn.execute(
+        "INSERT INTO station (id, outlet_id, code, name, sort_order, is_active, config_version)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(id) DO UPDATE SET
+            outlet_id = excluded.outlet_id, code = excluded.code, name = excluded.name,
+            sort_order = excluded.sort_order, is_active = excluded.is_active,
+            config_version = excluded.config_version
+         WHERE excluded.config_version >= station.config_version",
+        params![
+            s.id,
+            s.outlet_id,
+            s.code,
+            s.name,
+            s.sort_order,
+            bool_to_i64(s.is_active),
+            s.config_version
+        ],
+    )?;
+    Ok(())
+}
+
+fn row_to_station(row: &rusqlite::Row) -> rusqlite::Result<Station> {
+    Ok(Station {
+        id: row.get(0)?,
+        outlet_id: row.get(1)?,
+        code: row.get(2)?,
+        name: row.get(3)?,
+        sort_order: row.get(4)?,
+        is_active: i64_to_bool(row.get(5)?),
+        config_version: row.get(6)?,
+    })
+}
+
+const STATION_COLUMNS: &str = "id, outlet_id, code, name, sort_order, is_active, config_version";
+
+pub fn list_stations_for_outlet(conn: &Connection, outlet_id: &str) -> DbResult<Vec<Station>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {STATION_COLUMNS} FROM station WHERE outlet_id = ?1 ORDER BY sort_order, name"
+    ))?;
+    let rows = stmt
+        .query_map(params![outlet_id], row_to_station)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+pub fn get_station(conn: &Connection, id: &str) -> DbResult<Option<Station>> {
+    conn.query_row(
+        &format!("SELECT {STATION_COLUMNS} FROM station WHERE id = ?1"),
+        params![id],
+        row_to_station,
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+/// Replaces an item's station routing wholesale (PUT semantics — ADR-014
+/// §2): deletes every existing `menu_item_station` row for `menu_item_id`
+/// and inserts `station_ids` in one transaction, so a station the item no
+/// longer belongs to is guaranteed gone rather than merged. An empty
+/// `station_ids` is legitimate (a non-production line, e.g. a service
+/// charge, produces no ticket).
+pub fn replace_menu_item_stations(
+    conn: &Connection,
+    menu_item_id: &str,
+    station_ids: &[String],
+    config_version: i64,
+) -> DbResult<()> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "DELETE FROM menu_item_station WHERE menu_item_id = ?1",
+        params![menu_item_id],
+    )?;
+    for station_id in station_ids {
+        tx.execute(
+            "INSERT INTO menu_item_station (menu_item_id, station_id, config_version)
+             VALUES (?1, ?2, ?3)",
+            params![menu_item_id, station_id, config_version],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// The stations one menu item routes to, active only, ordered so ticket
+/// generation is deterministic. Used both by the routing resolver in
+/// `crate::Db::send_order_to_kitchen_with_outbox` and by any caller that
+/// just wants to display an item's routing.
+pub(crate) fn list_stations_for_menu_item(
+    tx: &Transaction,
+    menu_item_id: &str,
+) -> DbResult<Vec<Station>> {
+    let mut stmt = tx.prepare(
+        "SELECT s.id, s.outlet_id, s.code, s.name, s.sort_order, s.is_active, s.config_version
+         FROM station s
+         JOIN menu_item_station mis ON mis.station_id = s.id
+         WHERE mis.menu_item_id = ?1 AND s.is_active = 1
+         ORDER BY s.sort_order, s.code",
+    )?;
+    let rows = stmt
+        .query_map(params![menu_item_id], row_to_station)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+pub fn upsert_printer(conn: &Connection, p: &Printer) -> DbResult<()> {
+    conn.execute(
+        "INSERT INTO printer
+            (id, outlet_id, name, connection_kind, address, paper_width_mm, is_active, config_version)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         ON CONFLICT(id) DO UPDATE SET
+            outlet_id = excluded.outlet_id, name = excluded.name,
+            connection_kind = excluded.connection_kind, address = excluded.address,
+            paper_width_mm = excluded.paper_width_mm, is_active = excluded.is_active,
+            config_version = excluded.config_version
+         WHERE excluded.config_version >= printer.config_version",
+        params![
+            p.id,
+            p.outlet_id,
+            p.name,
+            p.connection_kind,
+            p.address,
+            p.paper_width_mm,
+            bool_to_i64(p.is_active),
+            p.config_version
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn list_printers_for_outlet(conn: &Connection, outlet_id: &str) -> DbResult<Vec<Printer>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, outlet_id, name, connection_kind, address, paper_width_mm, is_active, config_version
+         FROM printer WHERE outlet_id = ?1 ORDER BY name",
+    )?;
+    let rows = stmt
+        .query_map(params![outlet_id], |row| {
+            Ok(Printer {
+                id: row.get(0)?,
+                outlet_id: row.get(1)?,
+                name: row.get(2)?,
+                connection_kind: row.get(3)?,
+                address: row.get(4)?,
+                paper_width_mm: row.get(5)?,
+                is_active: i64_to_bool(row.get(6)?),
+                config_version: row.get(7)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Replaces a station's printer routing wholesale (PUT semantics, same
+/// rationale as [`replace_menu_item_stations`]).
+pub fn replace_station_printers(
+    conn: &Connection,
+    station_id: &str,
+    printer_ids: &[String],
+    config_version: i64,
+) -> DbResult<()> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "DELETE FROM station_printer WHERE station_id = ?1",
+        params![station_id],
+    )?;
+    for printer_id in printer_ids {
+        tx.execute(
+            "INSERT INTO station_printer (station_id, printer_id, config_version)
+             VALUES (?1, ?2, ?3)",
+            params![station_id, printer_id, config_version],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+pub fn list_printers_for_station(
+    conn: &Connection,
+    station_id: &str,
+) -> DbResult<Vec<StationPrinter>> {
+    let mut stmt = conn.prepare(
+        "SELECT station_id, printer_id, config_version FROM station_printer WHERE station_id = ?1",
+    )?;
+    let rows = stmt
+        .query_map(params![station_id], |row| {
+            Ok(StationPrinter {
+                station_id: row.get(0)?,
+                printer_id: row.get(1)?,
+                config_version: row.get(2)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+// ---------------------------------------- Milestone 2: KOT generation -----
+// docs/spec/kitchen.md: never "print the entire order" — one KOT per
+// station. ADR-014 §2-4.
+
+const EVENT_TYPE_KOT_CREATED: &str = "KOTCreated";
+const EVENT_TYPE_SENT_TO_KITCHEN: &str = "SentToKitchen";
+const EVENT_TYPE_KOT_STATUS_CHANGED: &str = "KOTStatusChanged";
+const EVENT_TYPE_ORDER_READY: &str = "OrderReady";
+
+/// The order_item ids already on some (any-status) KOT for this order,
+/// parsed out of each `kot.items_json` blob. An item is only ever ticketed
+/// once across the order's lifetime — a later `send_order_to_kitchen`
+/// call must skip it, producing a ticket only for the delta (ADR-014 /
+/// docs/spec/kitchen.md's #132 -> #132-A history).
+pub(crate) fn already_ticketed_order_item_ids(
+    tx: &Transaction,
+    order_id: &str,
+) -> DbResult<std::collections::HashSet<String>> {
+    let mut stmt = tx.prepare("SELECT items_json FROM kot WHERE order_id = ?1")?;
+    let blobs: Vec<String> = stmt
+        .query_map(params![order_id], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut ids = std::collections::HashSet::new();
+    for blob in blobs {
+        let items: Vec<serde_json::Value> = serde_json::from_str(&blob).unwrap_or_default();
+        for item in items {
+            if let Some(id) = item.get("order_item_id").and_then(|v| v.as_str()) {
+                ids.insert(id.to_string());
+            }
+        }
+    }
+    Ok(ids)
+}
+
+/// The station `code` of whichever earlier KOT for this order carries
+/// `order_item_id` on its ticket, or `None` if the item was never
+/// ticketed. An item is only ever ticketed once across the order's
+/// lifetime (see [`already_ticketed_order_item_ids`]), so this returns at
+/// most one station — used by
+/// `crate::Db::cancel_kitchen_items_with_outbox` to route a cancellation
+/// announcement to the same station(s) the original ticket went to.
+pub(crate) fn find_ticketed_station_for_order_item(
+    tx: &Transaction,
+    order_id: &str,
+    order_item_id: &str,
+) -> DbResult<Option<String>> {
+    let mut stmt = tx.prepare("SELECT station, items_json FROM kot WHERE order_id = ?1")?;
+    let rows: Vec<(String, String)> = stmt
+        .query_map(params![order_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    for (station, blob) in rows {
+        let items: Vec<serde_json::Value> = serde_json::from_str(&blob).unwrap_or_default();
+        let found = items
+            .iter()
+            .any(|i| i.get("order_item_id").and_then(|v| v.as_str()) == Some(order_item_id));
+        if found {
+            return Ok(Some(station));
+        }
+    }
+    Ok(None)
+}
+
+pub(crate) fn next_kot_sequence(tx: &Transaction, order_id: &str) -> DbResult<i64> {
+    let max: Option<i64> = tx.query_row(
+        "SELECT MAX(sequence) FROM kot WHERE order_id = ?1",
+        params![order_id],
+        |row| row.get(0),
+    )?;
+    Ok(max.unwrap_or(0) + 1)
+}
+
+/// Enforces "send-to-kitchen is only legal once an order has been
+/// confirmed, and before it has reached a terminal state" inside the same
+/// transaction as the write it guards. Returns `outlet_id` on success.
+pub(crate) fn require_sendable_order(tx: &Transaction, order_id: &str) -> DbResult<String> {
+    let row: Option<(String, String)> = tx
+        .query_row(
+            "SELECT outlet_id, status FROM \"order\" WHERE id = ?1",
+            params![order_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    match row {
+        None => Err(crate::error::DbError::NotFound("order")),
+        Some((outlet_id, status))
+            if matches!(
+                status.as_str(),
+                "CONFIRMED" | "SENT_TO_KITCHEN" | "PREPARING"
+            ) =>
+        {
+            Ok(outlet_id)
+        }
+        Some((_, status)) => Err(crate::error::DbError::OrderNotSendableToKitchen {
+            order_id: order_id.to_string(),
+            status,
+        }),
+    }
+}
+
+/// `menu_item.name` + the order line's quantity/notes + its modifier option
+/// names, matching `KotTicketItemSchema` (`packages/contracts/src/types/kot.ts`).
+pub(crate) fn build_kot_ticket_item(
+    tx: &Transaction,
+    item: &OrderItem,
+) -> DbResult<KotTicketItem> {
+    let name: String = tx.query_row(
+        "SELECT name FROM menu_item WHERE id = ?1",
+        params![item.menu_item_id],
+        |row| row.get(0),
+    )?;
+    let modifiers = list_order_item_modifiers_in_tx(tx, &item.id)?
+        .into_iter()
+        .map(|m| m.option_name)
+        .collect();
+    Ok(KotTicketItem {
+        order_item_id: item.id.clone(),
+        name,
+        quantity: item.quantity,
+        modifiers,
+        notes: item.notes.clone(),
+    })
+}
+
+pub(crate) fn kot_ticket_items_json(items: &[KotTicketItem]) -> String {
+    let values: Vec<serde_json::Value> = items
+        .iter()
+        .map(|i| {
+            serde_json::json!({
+                "order_item_id": i.order_item_id,
+                "name": i.name,
+                "quantity": i.quantity,
+                "modifiers": i.modifiers,
+                "notes": i.notes,
+            })
+        })
+        .collect();
+    serde_json::Value::Array(values).to_string()
+}
+
+pub(crate) fn insert_kot_in_tx(tx: &Transaction, k: &Kot) -> DbResult<()> {
+    tx.execute(
+        "INSERT INTO kot (id, order_id, station, sequence, status, items_json, created_by_device_id, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            k.id,
+            k.order_id,
+            k.station,
+            k.sequence,
+            k.status,
+            k.items_json,
+            k.created_by_device_id,
+            k.created_at,
+            k.updated_at
+        ],
+    )?;
+    Ok(())
+}
+
+fn build_kot_created_payload(
+    outlet_id: &str,
+    kot: &Kot,
+    items: &[KotTicketItem],
+    event_id: &str,
+    occurred_at: &str,
+) -> String {
+    let items_value: Vec<serde_json::Value> = items
+        .iter()
+        .map(|i| {
+            serde_json::json!({
+                "order_item_id": i.order_item_id,
+                "name": i.name,
+                "quantity": i.quantity,
+                "modifiers": i.modifiers,
+                "notes": i.notes,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "event_id": event_id,
+        "event_type": EVENT_TYPE_KOT_CREATED,
+        "occurred_at": occurred_at,
+        "outlet_id": outlet_id,
+        "schema_version": 1,
+        "data": {
+            "kot": {
+                "id": kot.id,
+                "order_id": kot.order_id,
+                "station": kot.station,
+                "sequence": kot.sequence,
+                "status": kot.status,
+                "items": items_value,
+                "created_by_device_id": kot.created_by_device_id,
+                "created_at": kot.created_at,
+                "updated_at": kot.updated_at,
+                "schema_version": 1,
+            }
+        }
+    })
+    .to_string()
+}
+
+pub(crate) fn insert_kot_created_outbox(
+    tx: &Transaction,
+    outlet_id: &str,
+    kot: &Kot,
+    items: &[KotTicketItem],
+    outbox_id: &str,
+    occurred_at: &str,
+) -> DbResult<()> {
+    let payload = build_kot_created_payload(outlet_id, kot, items, outbox_id, occurred_at);
+    insert_outbox_entry(
+        tx,
+        &NewOutboxEntry {
+            id: outbox_id.to_string(),
+            aggregate_type: "kot".to_string(),
+            aggregate_id: kot.id.clone(),
+            event_type: EVENT_TYPE_KOT_CREATED.to_string(),
+            payload_json: payload,
+            created_at: occurred_at.to_string(),
+        },
+    )
+}
+
+pub(crate) fn insert_sent_to_kitchen_outbox(
+    tx: &Transaction,
+    outlet_id: &str,
+    order_id: &str,
+    outbox_id: &str,
+    occurred_at: &str,
+) -> DbResult<()> {
+    let payload = serde_json::json!({
+        "event_id": outbox_id,
+        "event_type": EVENT_TYPE_SENT_TO_KITCHEN,
+        "occurred_at": occurred_at,
+        "outlet_id": outlet_id,
+        "schema_version": 1,
+        "data": { "order_id": order_id }
+    })
+    .to_string();
+    insert_outbox_entry(
+        tx,
+        &NewOutboxEntry {
+            id: outbox_id.to_string(),
+            aggregate_type: "order".to_string(),
+            aggregate_id: order_id.to_string(),
+            event_type: EVENT_TYPE_SENT_TO_KITCHEN.to_string(),
+            payload_json: payload,
+            created_at: occurred_at.to_string(),
+        },
+    )
+}
+
+/// Stamps `status = 'SENT_TO_KITCHEN'` unless the order has already moved
+/// further along (e.g. a second send-to-kitchen call for an addition, once
+/// the order is already PREPARING) — never regresses status backwards.
+pub(crate) fn stamp_order_sent_to_kitchen_if_earlier(
+    tx: &Transaction,
+    order_id: &str,
+    updated_at: &str,
+) -> DbResult<()> {
+    tx.execute(
+        "UPDATE \"order\" SET status = 'SENT_TO_KITCHEN', version = version + 1, updated_at = ?1
+         WHERE id = ?2 AND status = 'CONFIRMED'",
+        params![updated_at, order_id],
+    )?;
+    Ok(())
+}
+
+// ------------------------------------------ Milestone 2: KOT status trail --
+
+const LEGAL_KOT_TRANSITIONS: &[(&str, &[&str])] = &[
+    ("NEW", &["ACKNOWLEDGED", "CANCELLED"]),
+    ("ACKNOWLEDGED", &["PREPARING", "CANCELLED"]),
+    ("PREPARING", &["READY", "CANCELLED"]),
+    ("READY", &["SERVED"]),
+];
+
+pub(crate) fn is_legal_kot_transition(from: &str, to: &str) -> bool {
+    LEGAL_KOT_TRANSITIONS
+        .iter()
+        .find(|(f, _)| *f == from)
+        .is_some_and(|(_, tos)| tos.contains(&to))
+}
+
+/// Reads a KOT's current `order_id`/`status` inside the transaction that is
+/// about to transition it, so the legality check and the mutation cannot
+/// race. Returns `DbError::NotFound` if the KOT does not exist.
+pub(crate) fn get_kot_status_for_transition(
+    tx: &Transaction,
+    kot_id: &str,
+) -> DbResult<(String, String)> {
+    tx.query_row(
+        "SELECT order_id, status FROM kot WHERE id = ?1",
+        params![kot_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .optional()?
+    .ok_or(crate::error::DbError::NotFound("kot"))
+}
+
+pub(crate) fn stamp_kot_status(
+    tx: &Transaction,
+    kot_id: &str,
+    status: &str,
+    updated_at: &str,
+) -> DbResult<()> {
+    let changed = tx.execute(
+        "UPDATE kot SET status = ?1, updated_at = ?2 WHERE id = ?3",
+        params![status, updated_at, kot_id],
+    )?;
+    if changed == 0 {
+        return Err(crate::error::DbError::NotFound("kot"));
+    }
+    Ok(())
+}
+
+pub(crate) fn insert_kot_status_history(
+    tx: &Transaction,
+    entry: &KotStatusHistoryEntry,
+) -> DbResult<()> {
+    tx.execute(
+        "INSERT INTO kot_status_history (id, kot_id, status, changed_by_device_id, changed_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            entry.id,
+            entry.kot_id,
+            entry.status,
+            entry.changed_by_device_id,
+            entry.changed_at
+        ],
+    )?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn insert_kot_status_changed_outbox(
+    tx: &Transaction,
+    outlet_id: &str,
+    kot_id: &str,
+    order_id: &str,
+    status: &str,
+    changed_by_device_id: &str,
+    outbox_id: &str,
+    occurred_at: &str,
+) -> DbResult<()> {
+    let payload = serde_json::json!({
+        "event_id": outbox_id,
+        "event_type": EVENT_TYPE_KOT_STATUS_CHANGED,
+        "occurred_at": occurred_at,
+        "outlet_id": outlet_id,
+        "schema_version": 1,
+        "data": {
+            "kot_id": kot_id,
+            "order_id": order_id,
+            "status": status,
+            "changed_at": occurred_at,
+            "changed_by_device_id": changed_by_device_id,
+        }
+    })
+    .to_string();
+    insert_outbox_entry(
+        tx,
+        &NewOutboxEntry {
+            id: outbox_id.to_string(),
+            aggregate_type: "kot".to_string(),
+            aggregate_id: kot_id.to_string(),
+            event_type: EVENT_TYPE_KOT_STATUS_CHANGED.to_string(),
+            payload_json: payload,
+            created_at: occurred_at.to_string(),
+        },
+    )
+}
+
+/// True when every non-cancelled KOT on the order is READY and there is at
+/// least one such KOT — the order-status derivation from
+/// docs/spec/kitchen.md ("An order becomes READY when all its non-cancelled
+/// KOTs are READY").
+pub(crate) fn order_is_kitchen_ready(tx: &Transaction, order_id: &str) -> DbResult<bool> {
+    let (total_active, not_ready): (i64, i64) = tx.query_row(
+        "SELECT
+            COUNT(*) FILTER (WHERE status != 'CANCELLED'),
+            COUNT(*) FILTER (WHERE status NOT IN ('CANCELLED','READY'))
+         FROM kot WHERE order_id = ?1",
+        params![order_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    Ok(total_active > 0 && not_ready == 0)
+}
+
+/// Stamps the order READY and returns `true` if it did — a caller-visible
+/// signal for whether to also emit `OrderReady` — but only when the order
+/// has not already moved past READY (SERVED/BILLED/PAID/CLOSED/CANCELLED),
+/// so this derivation never regresses a further-along order backwards.
+pub(crate) fn stamp_order_ready_if_applicable(
+    tx: &Transaction,
+    order_id: &str,
+    updated_at: &str,
+) -> DbResult<bool> {
+    let changed = tx.execute(
+        "UPDATE \"order\" SET status = 'READY', version = version + 1, updated_at = ?1
+         WHERE id = ?2 AND status NOT IN ('READY','SERVED','BILLED','PAID','CLOSED','CANCELLED')",
+        params![updated_at, order_id],
+    )?;
+    Ok(changed > 0)
+}
+
+pub(crate) fn insert_order_ready_outbox(
+    tx: &Transaction,
+    outlet_id: &str,
+    order_id: &str,
+    outbox_id: &str,
+    occurred_at: &str,
+) -> DbResult<()> {
+    let payload = serde_json::json!({
+        "event_id": outbox_id,
+        "event_type": EVENT_TYPE_ORDER_READY,
+        "occurred_at": occurred_at,
+        "outlet_id": outlet_id,
+        "schema_version": 1,
+        "data": { "order_id": order_id }
+    })
+    .to_string();
+    insert_outbox_entry(
+        tx,
+        &NewOutboxEntry {
+            id: outbox_id.to_string(),
+            aggregate_type: "order".to_string(),
+            aggregate_id: order_id.to_string(),
+            event_type: EVENT_TYPE_ORDER_READY.to_string(),
+            payload_json: payload,
+            created_at: occurred_at.to_string(),
+        },
+    )
+}
+
+pub(crate) fn get_order_outlet_id(tx: &Transaction, order_id: &str) -> DbResult<String> {
+    tx.query_row(
+        "SELECT outlet_id FROM \"order\" WHERE id = ?1",
+        params![order_id],
+        |row| row.get(0),
+    )
+    .optional()?
+    .ok_or(crate::error::DbError::NotFound("order"))
 }
 
 // -------------------------------------------------------------- outbox -----

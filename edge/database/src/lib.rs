@@ -22,9 +22,11 @@ use rusqlite::Connection;
 
 use crate::crypto::EncryptionKey;
 use crate::model::{
-    NewOrder, NewOrderItem, NewOutboxEntry, NewTableSession, Order, OrderConfirmedMeta,
-    OrderItemAddedMeta, OrderItemModifier, OrderItemRemovedMeta, TableSession,
+    Kot, KotStatusHistoryEntry, KotTicketItem, KotTransitionMeta, NewOrder, NewOrderItem,
+    NewOutboxEntry, NewTableSession, Order, OrderConfirmedMeta, OrderItemAddedMeta,
+    OrderItemModifier, OrderItemRemovedMeta, SendToKitchenMeta, Station, TableSession,
 };
+use std::collections::BTreeMap;
 
 /// An open handle to the edge database. The plaintext SQLite file backing
 /// this handle exists on disk only between [`Db::open`] and [`Db::close`]
@@ -395,6 +397,359 @@ impl Db {
 
     pub fn get_table_session(&self, id: &str) -> DbResult<Option<TableSession>> {
         repo::get_table_session(self.connection(), id)
+    }
+
+    /// Generates KOTs for an order's send-to-kitchen moment: resolves each
+    /// unticketed order line to its station(s) via `menu_item_station`
+    /// (docs/spec/kitchen.md — an item may route to more than one station,
+    /// e.g. a thali hits MAIN_KITCHEN and TANDOOR), produces exactly one
+    /// `kot` row per affected station (never one ticket for the whole
+    /// order), and writes every `kot` row plus its `KOTCreated` and the
+    /// order's `SentToKitchen` `local_outbox` rows in the *same* SQLite
+    /// transaction (ADR-007).
+    ///
+    /// Idempotent-by-delta across repeated calls on the same order: an
+    /// order line already present on some earlier KOT (any status) is never
+    /// re-ticketed. All tickets produced by one call share the next
+    /// `sequence` number for the order — a later call (e.g. items added
+    /// after the first send) produces brand-new tickets carrying the next
+    /// sequence, never a mutation of an earlier one, matching the #132 ->
+    /// #132-A change history in docs/spec/kitchen.md.
+    ///
+    /// An order line whose menu item routes to no active station (e.g. a
+    /// non-production line) is silently skipped rather than ticketed
+    /// anywhere — legitimate per ADR-014 §2. Returns
+    /// `DbError::NothingToSendToKitchen` if that leaves zero tickets to
+    /// create, so an empty call is never a silent no-op. Returns
+    /// `DbError::OrderNotSendableToKitchen` if the order is not in a status
+    /// that can produce KOTs (DRAFT, or already
+    /// SERVED/BILLED/PAID/CLOSED/CANCELLED).
+    pub fn send_order_to_kitchen_with_outbox(
+        &mut self,
+        order_id: &str,
+        meta: &SendToKitchenMeta,
+    ) -> DbResult<Vec<Kot>> {
+        self.send_order_to_kitchen_with_outbox_inner(order_id, meta, None)
+    }
+
+    /// Test-only seam for [`Db::send_order_to_kitchen_with_outbox`]: lets a
+    /// test force the (kot_id, kot_outbox_id) pair used for each station
+    /// ticket, in the same order `by_station`'s `BTreeMap` iterates
+    /// (alphabetical by station code), instead of the crate's own random
+    /// UUIDv7s. This exists solely so a test can force a deterministic
+    /// mid-transaction collision (e.g. a duplicate `local_outbox` id on the
+    /// second station's ticket, after the first station's `kot` row has
+    /// already been written) and prove the whole transaction rolls back —
+    /// something that cannot be exercised against real random ids.
+    #[cfg(test)]
+    pub(crate) fn send_order_to_kitchen_with_outbox_with_forced_ids(
+        &mut self,
+        order_id: &str,
+        meta: &SendToKitchenMeta,
+        forced_ids: Vec<(String, String)>,
+    ) -> DbResult<Vec<Kot>> {
+        self.send_order_to_kitchen_with_outbox_inner(order_id, meta, Some(forced_ids))
+    }
+
+    fn send_order_to_kitchen_with_outbox_inner(
+        &mut self,
+        order_id: &str,
+        meta: &SendToKitchenMeta,
+        forced_ids: Option<Vec<(String, String)>>,
+    ) -> DbResult<Vec<Kot>> {
+        let tx = self.connection_mut().transaction()?;
+        let outlet_id = repo::require_sendable_order(&tx, order_id)?;
+
+        let already_ticketed = repo::already_ticketed_order_item_ids(&tx, order_id)?;
+        let unticketed_items: Vec<_> = repo::list_order_items_in_tx(&tx, order_id)?
+            .into_iter()
+            .filter(|item| !already_ticketed.contains(&item.id))
+            .collect();
+
+        // Group ticket lines by station code; an item present in more than
+        // one station's routing appears on more than one group.
+        let mut by_station: BTreeMap<String, Vec<KotTicketItem>> = BTreeMap::new();
+        for item in &unticketed_items {
+            let stations = repo::list_stations_for_menu_item(&tx, &item.menu_item_id)?;
+            if stations.is_empty() {
+                // Legitimate: a non-production line (e.g. a service charge)
+                // produces no ticket anywhere.
+                continue;
+            }
+            let ticket_item = repo::build_kot_ticket_item(&tx, item)?;
+            for station in stations {
+                by_station
+                    .entry(station.code)
+                    .or_default()
+                    .push(ticket_item.clone());
+            }
+        }
+
+        if by_station.is_empty() {
+            return Err(DbError::NothingToSendToKitchen {
+                order_id: order_id.to_string(),
+            });
+        }
+
+        if let Some(ids) = &forced_ids {
+            assert_eq!(
+                ids.len(),
+                by_station.len(),
+                "test bug: forced_ids must supply exactly one (kot_id, outbox_id) pair per station"
+            );
+        }
+
+        let sequence = repo::next_kot_sequence(&tx, order_id)?;
+        let mut created = Vec::with_capacity(by_station.len());
+        for (i, (station_code, items)) in by_station.into_iter().enumerate() {
+            // The number of stations affected is not knowable to the
+            // caller ahead of routing resolution, so this crate mints
+            // these ids itself (model::SendToKitchenMeta doc comment) —
+            // unless a test forced deterministic ones (see
+            // `send_order_to_kitchen_with_outbox_with_forced_ids`).
+            let (kot_id, kot_outbox_id) = match &forced_ids {
+                Some(ids) => ids[i].clone(),
+                None => (
+                    uuid::Uuid::now_v7().to_string(),
+                    uuid::Uuid::now_v7().to_string(),
+                ),
+            };
+            let kot = Kot {
+                id: kot_id,
+                order_id: order_id.to_string(),
+                station: station_code,
+                sequence,
+                status: "NEW".to_string(),
+                items_json: repo::kot_ticket_items_json(&items),
+                created_by_device_id: meta.device_id.clone(),
+                created_at: meta.occurred_at.clone(),
+                updated_at: meta.occurred_at.clone(),
+            };
+            repo::insert_kot_in_tx(&tx, &kot)?;
+            repo::insert_kot_created_outbox(
+                &tx,
+                &outlet_id,
+                &kot,
+                &items,
+                &kot_outbox_id,
+                &meta.occurred_at,
+            )?;
+            created.push(kot);
+        }
+
+        let sent_outbox_id = uuid::Uuid::now_v7().to_string();
+        repo::insert_sent_to_kitchen_outbox(
+            &tx,
+            &outlet_id,
+            order_id,
+            &sent_outbox_id,
+            &meta.occurred_at,
+        )?;
+        repo::stamp_order_sent_to_kitchen_if_earlier(&tx, order_id, &meta.occurred_at)?;
+
+        tx.commit()?;
+        Ok(created)
+    }
+
+    /// Announces the cancellation of already-ticketed order lines to the
+    /// kitchen — the `#132` -> `#132-C` step of docs/spec/kitchen.md's
+    /// change history, the cancellation counterpart to the `#132-A`
+    /// addition path in [`Db::send_order_to_kitchen_with_outbox`].
+    ///
+    /// A `CANCELLED`-status flag on the *existing* ticket is not this: a
+    /// cook working from a printed ticket has no way to observe a status
+    /// column changing in SQLite, which is exactly why the spec calls for
+    /// a new ticket. So this produces one brand-new `kot` row per station
+    /// that had one of the cancelled lines on it — grouped by station, at
+    /// the next `sequence` for the order, created directly with
+    /// `status = 'CANCELLED'` (never transitioned into it, since nothing
+    /// on this new ticket was ever being prepared) — each carrying only
+    /// the cancelled lines that were actually on that station's ticket.
+    ///
+    /// Assumption (stated per the coordinator's instruction to proceed
+    /// rather than stop on ambiguity): a line can only be cancelled once
+    /// it has actually been sent to the kitchen (present on some earlier
+    /// KOT for the order) and only once — this method does not re-derive
+    /// order-line deletion or partial-quantity cancellation, neither of
+    /// which docs/spec/kitchen.md's one-line example addresses.
+    ///
+    /// Writes every new `kot` row and its `KOTCreated` `local_outbox` row
+    /// in the *same* SQLite transaction (ADR-007), exactly like the
+    /// addition path. Returns `DbError::NothingToSendToKitchen` if
+    /// `order_item_ids` is empty. Returns `DbError::NotFound("order_item")`
+    /// if a requested id was never ticketed for this order (or its
+    /// `order_item` row is gone) — this method never silently skips a
+    /// cancellation it was explicitly asked to announce.
+    pub fn cancel_kitchen_items_with_outbox(
+        &mut self,
+        order_id: &str,
+        order_item_ids: &[String],
+        meta: &SendToKitchenMeta,
+    ) -> DbResult<Vec<Kot>> {
+        if order_item_ids.is_empty() {
+            return Err(DbError::NothingToSendToKitchen {
+                order_id: order_id.to_string(),
+            });
+        }
+
+        let tx = self.connection_mut().transaction()?;
+        let outlet_id = repo::require_sendable_order(&tx, order_id)?;
+
+        let mut by_station: BTreeMap<String, Vec<KotTicketItem>> = BTreeMap::new();
+        for order_item_id in order_item_ids {
+            let station_code =
+                repo::find_ticketed_station_for_order_item(&tx, order_id, order_item_id)?
+                    .ok_or(DbError::NotFound("order_item"))?;
+            let item = repo::get_order_item_in_tx(&tx, order_item_id)?
+                .ok_or(DbError::NotFound("order_item"))?;
+            let ticket_item = repo::build_kot_ticket_item(&tx, &item)?;
+            by_station.entry(station_code).or_default().push(ticket_item);
+        }
+
+        let sequence = repo::next_kot_sequence(&tx, order_id)?;
+        let mut created = Vec::with_capacity(by_station.len());
+        for (station_code, items) in by_station {
+            let kot_id = uuid::Uuid::now_v7().to_string();
+            let kot_outbox_id = uuid::Uuid::now_v7().to_string();
+            let kot = Kot {
+                id: kot_id,
+                order_id: order_id.to_string(),
+                station: station_code,
+                sequence,
+                // Created directly as CANCELLED: this ticket is the
+                // announcement, not a ticket that was ever being worked.
+                status: "CANCELLED".to_string(),
+                items_json: repo::kot_ticket_items_json(&items),
+                created_by_device_id: meta.device_id.clone(),
+                created_at: meta.occurred_at.clone(),
+                updated_at: meta.occurred_at.clone(),
+            };
+            repo::insert_kot_in_tx(&tx, &kot)?;
+            repo::insert_kot_created_outbox(
+                &tx,
+                &outlet_id,
+                &kot,
+                &items,
+                &kot_outbox_id,
+                &meta.occurred_at,
+            )?;
+            created.push(kot);
+        }
+
+        // A cancellation round can itself complete the order-ready
+        // derivation (e.g. the only still-active ticket was already
+        // READY, and this cancellation removes the last blocker) — same
+        // derivation as the status-transition path.
+        if repo::order_is_kitchen_ready(&tx, order_id)?
+            && repo::stamp_order_ready_if_applicable(&tx, order_id, &meta.occurred_at)?
+        {
+            let ready_outbox_id = uuid::Uuid::now_v7().to_string();
+            repo::insert_order_ready_outbox(
+                &tx,
+                &outlet_id,
+                order_id,
+                &ready_outbox_id,
+                &meta.occurred_at,
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(created)
+    }
+
+    /// Transitions one KOT's status (NEW -> ACKNOWLEDGED -> PREPARING ->
+    /// READY -> SERVED, plus CANCELLED from any non-terminal status),
+    /// writing the `kot.status` update, a `kot_status_history` row and the
+    /// `KOTStatusChanged` `local_outbox` row in the *same* SQLite
+    /// transaction (ADR-007). `POST /kots/{kotId}/status` on the cloud side
+    /// is documented (ADR-014 §4) as the only writer of `kot.status`; this
+    /// is the corresponding single edge-side writer.
+    ///
+    /// Rejects an illegal transition with `DbError::IllegalKotStatusTransition`
+    /// — never a silent no-op — and writes nothing.
+    ///
+    /// If this transition leaves every non-cancelled KOT on the order READY,
+    /// also stamps the order `status = 'READY'` (unless it has already moved
+    /// past READY) and writes an `OrderReady` `local_outbox` row, in the same
+    /// transaction — the order-status derivation stays in this domain layer,
+    /// not in a query a caller might forget to run.
+    pub fn transition_kot_status_with_outbox(
+        &mut self,
+        kot_id: &str,
+        new_status: &str,
+        meta: &KotTransitionMeta,
+    ) -> DbResult<()> {
+        let tx = self.connection_mut().transaction()?;
+        let (order_id, current_status) = repo::get_kot_status_for_transition(&tx, kot_id)?;
+
+        if !repo::is_legal_kot_transition(&current_status, new_status) {
+            return Err(DbError::IllegalKotStatusTransition {
+                kot_id: kot_id.to_string(),
+                from: current_status,
+                to: new_status.to_string(),
+            });
+        }
+
+        let outlet_id = repo::get_order_outlet_id(&tx, &order_id)?;
+
+        repo::stamp_kot_status(&tx, kot_id, new_status, &meta.occurred_at)?;
+        repo::insert_kot_status_history(
+            &tx,
+            &KotStatusHistoryEntry {
+                id: meta.status_history_id.clone(),
+                kot_id: kot_id.to_string(),
+                status: new_status.to_string(),
+                changed_by_device_id: meta.changed_by_device_id.clone(),
+                // Edge's own clock (§50.1) — the Tauri command layer sources
+                // this from the local machine, never from a KDS screen.
+                changed_at: meta.occurred_at.clone(),
+            },
+        )?;
+        repo::insert_kot_status_changed_outbox(
+            &tx,
+            &outlet_id,
+            kot_id,
+            &order_id,
+            new_status,
+            &meta.changed_by_device_id,
+            &meta.outbox_id,
+            &meta.occurred_at,
+        )?;
+
+        if repo::order_is_kitchen_ready(&tx, &order_id)?
+            && repo::stamp_order_ready_if_applicable(&tx, &order_id, &meta.occurred_at)?
+        {
+            let ready_outbox_id = uuid::Uuid::now_v7().to_string();
+            repo::insert_order_ready_outbox(
+                &tx,
+                &outlet_id,
+                &order_id,
+                &ready_outbox_id,
+                &meta.occurred_at,
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Stations configured for an outlet (config, cloud→edge — see
+    /// `repo::upsert_station`). Read surface for the POS and the LAN
+    /// server.
+    pub fn list_stations_for_outlet(&self, outlet_id: &str) -> DbResult<Vec<Station>> {
+        repo::list_stations_for_outlet(self.connection(), outlet_id)
+    }
+
+    /// All KOTs (any status) for one order, oldest sequence first.
+    pub fn list_kots_for_order(&self, order_id: &str) -> DbResult<Vec<Kot>> {
+        repo::list_kots_for_order(self.connection(), order_id)
+    }
+
+    /// KOTs for an outlet, optionally narrowed to one station code — the
+    /// query a KDS/expo screen or the LAN server needs to answer "what's on
+    /// this station's pass right now".
+    pub fn list_kots_for_outlet(&self, outlet_id: &str, station: Option<&str>) -> DbResult<Vec<Kot>> {
+        repo::list_kots_for_outlet(self.connection(), outlet_id, station)
     }
 }
 
@@ -2012,5 +2367,737 @@ mod tests {
             "the full CanonicalOrder envelope must round-trip the fixture byte-for-byte, \
              modulo the eight fields pinned above that have no column as of contracts 0.2.4"
         );
+    }
+
+    // ---------------------------------------------------- Milestone 2: kitchen --
+
+    fn seed_station(db: &Db, id: &str, outlet_id: &str, code: &str) {
+        repo::upsert_station(
+            db.connection(),
+            &model::Station {
+                id: id.to_string(),
+                outlet_id: outlet_id.to_string(),
+                code: code.to_string(),
+                name: code.to_string(),
+                sort_order: 0,
+                is_active: true,
+                config_version: 1,
+            },
+        )
+        .expect("seed station");
+    }
+
+    fn route_item_to_stations(db: &Db, menu_item_id: &str, station_ids: &[String]) {
+        repo::replace_menu_item_stations(db.connection(), menu_item_id, station_ids, 1)
+            .expect("route item to stations");
+    }
+
+    fn confirm_for_kitchen(db: &mut Db, order_id: &str) {
+        db.confirm_order_with_outbox(order_id, &order_confirmed_meta(order_id))
+            .expect("confirm order before sending to kitchen");
+    }
+
+    fn send_meta(device_id: &str, occurred_at: &str) -> model::SendToKitchenMeta {
+        model::SendToKitchenMeta {
+            device_id: device_id.to_string(),
+            occurred_at: occurred_at.to_string(),
+        }
+    }
+
+    /// The central multi-station proof required by the task: a single item
+    /// routed to two stations (a thali hitting MAIN_KITCHEN and TANDOOR)
+    /// must produce two `kot` rows — one per station — never one ticket
+    /// for the whole order, and the `kot` rows plus their `KOTCreated`
+    /// outbox events must all land in the same transaction.
+    #[test]
+    fn multi_station_routing_produces_multiple_kots_atomically() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+        let (_, menu_item_id, _) = seed_menu(&db, "outlet-1");
+
+        seed_station(&db, "station-main", "outlet-1", "MAIN_KITCHEN");
+        seed_station(&db, "station-tandoor", "outlet-1", "TANDOOR");
+        route_item_to_stations(
+            &db,
+            &menu_item_id,
+            &[
+                "station-main".to_string(),
+                "station-tandoor".to_string(),
+            ],
+        );
+
+        let order = sample_order("order-thali", "outlet-1", "device-1");
+        let item = sample_order_item("item-thali", "order-thali", &menu_item_id, 30000);
+        db.create_order_with_outbox(&order, &[item], &sample_outbox("order-thali"))
+            .expect("create draft order with thali item");
+        confirm_for_kitchen(&mut db, "order-thali");
+
+        let created = db
+            .send_order_to_kitchen_with_outbox(
+                "order-thali",
+                &send_meta("device-1", "2026-08-09T10:00:00Z"),
+            )
+            .expect("send to kitchen");
+
+        assert_eq!(created.len(), 2, "one ticket per routed station");
+        let mut stations: Vec<&str> = created.iter().map(|k| k.station.as_str()).collect();
+        stations.sort_unstable();
+        assert_eq!(stations, vec!["MAIN_KITCHEN", "TANDOOR"]);
+        assert!(created.iter().all(|k| k.sequence == 1));
+        assert!(created.iter().all(|k| k.status == "NEW"));
+
+        let stored = repo::list_kots_for_order(db.connection(), "order-thali").unwrap();
+        assert_eq!(stored.len(), 2);
+
+        let pending = repo::list_unpublished_outbox(db.connection(), 100).unwrap();
+        let kot_created_count = pending
+            .iter()
+            .filter(|e| e.event_type == "KOTCreated" && e.aggregate_id != "order-thali")
+            .count();
+        assert_eq!(
+            kot_created_count, 2,
+            "one KOTCreated outbox event per station ticket"
+        );
+        assert!(
+            pending
+                .iter()
+                .any(|e| e.event_type == "SentToKitchen" && e.aggregate_id == "order-thali"),
+            "SentToKitchen must also be emitted"
+        );
+
+        let stored_order = db.get_order("order-thali").unwrap().expect("order exists");
+        assert_eq!(stored_order.status, "SENT_TO_KITCHEN");
+    }
+
+    /// The pre-flight guard: sending an order to the kitchen while it is
+    /// not in a sendable status must produce zero `kot` rows and zero
+    /// `KOTCreated`/`SentToKitchen` outbox rows. This exercises the guard
+    /// at the top of the call, before any station routing has even begun —
+    /// it does NOT exercise the transactional-outbox rollback partway
+    /// through routing; see
+    /// `failed_send_to_kitchen_mid_transaction_leaves_no_kot_or_outbox_rows_at_all`
+    /// below for that.
+    #[test]
+    fn send_to_kitchen_rejects_non_sendable_order_and_writes_nothing() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+        let (_, menu_item_id, _) = seed_menu(&db, "outlet-1");
+
+        let order_draft = sample_order("order-fail-draft", "outlet-1", "device-1");
+        let item_draft =
+            sample_order_item("item-fail-draft", "order-fail-draft", &menu_item_id, 10000);
+        db.create_order_with_outbox(
+            &order_draft,
+            &[item_draft],
+            &sample_outbox("order-fail-draft"),
+        )
+        .expect("create draft order");
+
+        let result = db.send_order_to_kitchen_with_outbox(
+            "order-fail-draft",
+            &send_meta("device-1", "2026-08-09T10:00:00Z"),
+        );
+        assert!(matches!(
+            result,
+            Err(DbError::OrderNotSendableToKitchen { .. })
+        ));
+
+        let stored = repo::list_kots_for_order(db.connection(), "order-fail-draft").unwrap();
+        assert!(stored.is_empty(), "no kot row may exist after rejection");
+        let pending = repo::list_unpublished_outbox(db.connection(), 100).unwrap();
+        assert!(
+            pending.iter().all(|e| {
+                !(e.aggregate_id == "order-fail-draft"
+                    && matches!(e.event_type.as_str(), "KOTCreated" | "SentToKitchen"))
+            }),
+            "no KOTCreated/SentToKitchen outbox row may exist after rejection"
+        );
+    }
+
+    /// The real atomicity proof ADR-007 requires: a two-station send whose
+    /// SECOND station fails to write its `KOTCreated` outbox row (forced
+    /// via `send_order_to_kitchen_with_outbox_with_forced_ids` — the first
+    /// station's `kot` row and outbox row are already committed to the
+    /// open transaction by the time this collision hits) must roll back
+    /// the *entire* call: neither station's `kot` row, nor either
+    /// station's outbox row, may survive.
+    ///
+    /// A transaction that inserted all `kot` rows first and all outbox
+    /// rows in a second, separate transaction would pass the pre-flight
+    /// guard test above unchanged but fail this one — this test was
+    /// verified red against exactly that split before being written back
+    /// to the real (single-transaction) implementation; see the commit
+    /// message / task report for how that check was performed.
+    #[test]
+    fn failed_send_to_kitchen_mid_transaction_leaves_no_kot_or_outbox_rows_at_all() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+        let (_, menu_item_id, _) = seed_menu(&db, "outlet-1");
+        seed_station(&db, "station-main", "outlet-1", "MAIN_KITCHEN");
+        seed_station(&db, "station-tandoor", "outlet-1", "TANDOOR");
+        route_item_to_stations(
+            &db,
+            &menu_item_id,
+            &["station-main".to_string(), "station-tandoor".to_string()],
+        );
+
+        let order = sample_order("order-fail-mid", "outlet-1", "device-1");
+        let item = sample_order_item("item-fail-mid", "order-fail-mid", &menu_item_id, 30000);
+        db.create_order_with_outbox(&order, &[item], &sample_outbox("order-fail-mid"))
+            .expect("create draft order");
+        confirm_for_kitchen(&mut db, "order-fail-mid");
+
+        // by_station iterates alphabetically: MAIN_KITCHEN first, TANDOOR
+        // second. Forcing both stations' outbox ids to the same value
+        // means the first station's kot row AND outbox row commit fine
+        // inside the open transaction, then the second station's outbox
+        // insert collides on local_outbox's PRIMARY KEY.
+        let forced_ids = vec![
+            ("kot-main".to_string(), "outbox-colliding".to_string()),
+            ("kot-tandoor".to_string(), "outbox-colliding".to_string()),
+        ];
+        let result = db.send_order_to_kitchen_with_outbox_with_forced_ids(
+            "order-fail-mid",
+            &send_meta("device-1", "2026-08-09T10:00:00Z"),
+            forced_ids,
+        );
+        assert!(
+            result.is_err(),
+            "the colliding second station's outbox insert must fail the whole call"
+        );
+
+        let stored = repo::list_kots_for_order(db.connection(), "order-fail-mid").unwrap();
+        assert!(
+            stored.is_empty(),
+            "neither station's kot row may survive — including the first, already-inserted one"
+        );
+        let pending = repo::list_unpublished_outbox(db.connection(), 100).unwrap();
+        assert!(
+            pending.iter().all(|e| e.id != "outbox-colliding"),
+            "neither station's outbox row may survive either"
+        );
+        assert!(
+            pending
+                .iter()
+                .all(|e| e.event_type != "SentToKitchen" || e.aggregate_id != "order-fail-mid"),
+            "SentToKitchen must not have been reached/committed either"
+        );
+        let stored_order = db
+            .get_order("order-fail-mid")
+            .unwrap()
+            .expect("order exists");
+        assert_eq!(
+            stored_order.status, "CONFIRMED",
+            "the rolled-back call must not have advanced order status"
+        );
+    }
+
+    /// docs/spec/kitchen.md's change history: an item added after the first
+    /// send-to-kitchen must produce a brand-new ticket for the delta, not a
+    /// mutation of the original — and that new ticket carries the next
+    /// sequence number, shared across whatever stations the delta routes
+    /// to.
+    #[test]
+    fn additions_after_first_send_produce_new_ticket_with_next_sequence() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+        let (_, menu_item_id, _) = seed_menu(&db, "outlet-1");
+        seed_station(&db, "station-main", "outlet-1", "MAIN_KITCHEN");
+        route_item_to_stations(&db, &menu_item_id, &["station-main".to_string()]);
+
+        let order = sample_order("order-132", "outlet-1", "device-1");
+        let item_1 = sample_order_item("item-132-1", "order-132", &menu_item_id, 10000);
+        db.create_order_with_outbox(&order, &[item_1], &sample_outbox("order-132"))
+            .expect("create draft order");
+        confirm_for_kitchen(&mut db, "order-132");
+
+        let first_round = db
+            .send_order_to_kitchen_with_outbox(
+                "order-132",
+                &send_meta("device-1", "2026-08-09T10:00:00Z"),
+            )
+            .expect("first send");
+        assert_eq!(first_round.len(), 1);
+        assert_eq!(first_round[0].sequence, 1);
+        let first_kot_id = first_round[0].id.clone();
+
+        // A second line added directly at the storage layer (order-item
+        // amendment after confirmation is outside this crate's Milestone 1
+        // DRAFT-only guard and is not this task's concern) — what matters
+        // here is purely the KOT-generation delta behaviour.
+        let item_2 = sample_order_item("item-132-2", "order-132", &menu_item_id, 5000);
+        {
+            let tx = db.connection_mut().transaction().expect("begin tx");
+            repo::insert_order_item(&tx, &item_2).expect("insert addition line");
+            tx.commit().expect("commit addition line");
+        }
+
+        let second_round = db
+            .send_order_to_kitchen_with_outbox(
+                "order-132",
+                &send_meta("device-1", "2026-08-09T10:05:00Z"),
+            )
+            .expect("second send (addition)");
+
+        assert_eq!(
+            second_round.len(),
+            1,
+            "the addition produces exactly one new ticket for the delta"
+        );
+        assert_eq!(
+            second_round[0].sequence, 2,
+            "the addition's ticket carries the next sequence, #132-A"
+        );
+        assert_ne!(
+            second_round[0].id, first_kot_id,
+            "the addition is a NEW ticket, never a mutation of the first"
+        );
+
+        let all_kots = repo::list_kots_for_order(db.connection(), "order-132").unwrap();
+        assert_eq!(all_kots.len(), 2, "both tickets must persist side by side");
+
+        // A third call with nothing new must not silently produce an empty
+        // ticket — every item is already ticketed.
+        let third = db.send_order_to_kitchen_with_outbox(
+            "order-132",
+            &send_meta("device-1", "2026-08-09T10:10:00Z"),
+        );
+        assert!(matches!(
+            third,
+            Err(DbError::NothingToSendToKitchen { .. })
+        ));
+    }
+
+    fn kot_transition_meta(
+        status_history_id: &str,
+        outbox_id: &str,
+        device_id: &str,
+        occurred_at: &str,
+    ) -> model::KotTransitionMeta {
+        model::KotTransitionMeta {
+            status_history_id: status_history_id.to_string(),
+            outbox_id: outbox_id.to_string(),
+            changed_by_device_id: device_id.to_string(),
+            occurred_at: occurred_at.to_string(),
+        }
+    }
+
+    fn send_single_kot(db: &mut Db, order_id: &str, menu_item_id: &str, item_id: &str) -> String {
+        seed_station(db, "station-kds", "outlet-1", "MAIN_KITCHEN");
+        route_item_to_stations(db, menu_item_id, &["station-kds".to_string()]);
+        let order = sample_order(order_id, "outlet-1", "device-1");
+        let item = sample_order_item(item_id, order_id, menu_item_id, 10000);
+        db.create_order_with_outbox(&order, &[item], &sample_outbox(order_id))
+            .expect("create draft order");
+        confirm_for_kitchen(db, order_id);
+        let created = db
+            .send_order_to_kitchen_with_outbox(
+                order_id,
+                &send_meta("device-1", "2026-08-09T10:00:00Z"),
+            )
+            .expect("send to kitchen");
+        created[0].id.clone()
+    }
+
+    /// Legal transitions write the status, a `kot_status_history` row and a
+    /// `KOTStatusChanged` outbox event atomically, and once the last KOT on
+    /// the order reaches READY, the order itself becomes READY and an
+    /// `OrderReady` event is emitted — the domain-layer derivation, not a
+    /// query a caller could forget to run.
+    #[test]
+    fn legal_transition_chain_marks_order_ready_when_its_only_kot_is_ready() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+        let (_, menu_item_id, _) = seed_menu(&db, "outlet-1");
+        let kot_id = send_single_kot(&mut db, "order-ready", &menu_item_id, "item-ready");
+
+        db.transition_kot_status_with_outbox(
+            &kot_id,
+            "ACKNOWLEDGED",
+            &kot_transition_meta("h1", "o1", "device-1", "2026-08-09T10:01:00Z"),
+        )
+        .expect("NEW -> ACKNOWLEDGED");
+        db.transition_kot_status_with_outbox(
+            &kot_id,
+            "PREPARING",
+            &kot_transition_meta("h2", "o2", "device-1", "2026-08-09T10:02:00Z"),
+        )
+        .expect("ACKNOWLEDGED -> PREPARING");
+
+        let order_before = db.get_order("order-ready").unwrap().expect("order exists");
+        assert_eq!(
+            order_before.status, "SENT_TO_KITCHEN",
+            "order must not be READY before its only KOT is"
+        );
+
+        db.transition_kot_status_with_outbox(
+            &kot_id,
+            "READY",
+            &kot_transition_meta("h3", "o3", "device-1", "2026-08-09T10:03:00Z"),
+        )
+        .expect("PREPARING -> READY");
+
+        let stored_kot = repo::list_kots_for_order(db.connection(), "order-ready")
+            .unwrap()
+            .into_iter()
+            .find(|k| k.id == kot_id)
+            .expect("kot exists");
+        assert_eq!(stored_kot.status, "READY");
+
+        let history: Vec<String> = db
+            .connection()
+            .prepare("SELECT status FROM kot_status_history WHERE kot_id = ?1 ORDER BY changed_at")
+            .unwrap()
+            .query_map(rusqlite::params![kot_id], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(history, vec!["ACKNOWLEDGED", "PREPARING", "READY"]);
+
+        let order_after = db.get_order("order-ready").unwrap().expect("order exists");
+        assert_eq!(order_after.status, "READY");
+
+        let pending = repo::list_unpublished_outbox(db.connection(), 100).unwrap();
+        assert!(pending
+            .iter()
+            .filter(|e| e.event_type == "KOTStatusChanged")
+            .count()
+            >= 3);
+        assert!(
+            pending
+                .iter()
+                .any(|e| e.event_type == "OrderReady" && e.aggregate_id == "order-ready"),
+            "OrderReady must be emitted once the only KOT reaches READY"
+        );
+    }
+
+    /// Illegal transitions are rejected outright, never silently ignored —
+    /// and reject with nothing written: no status change, no history row,
+    /// no outbox row.
+    #[test]
+    fn illegal_kot_transition_is_rejected_and_writes_nothing() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+        let (_, menu_item_id, _) = seed_menu(&db, "outlet-1");
+        let kot_id = send_single_kot(&mut db, "order-illegal", &menu_item_id, "item-illegal");
+
+        // NEW -> READY skips ACKNOWLEDGED/PREPARING: illegal.
+        let result = db.transition_kot_status_with_outbox(
+            &kot_id,
+            "READY",
+            &kot_transition_meta("h-bad", "o-bad", "device-1", "2026-08-09T10:01:00Z"),
+        );
+        assert!(matches!(
+            result,
+            Err(DbError::IllegalKotStatusTransition { .. })
+        ));
+
+        let stored_kot = repo::list_kots_for_order(db.connection(), "order-illegal")
+            .unwrap()
+            .into_iter()
+            .find(|k| k.id == kot_id)
+            .expect("kot exists");
+        assert_eq!(stored_kot.status, "NEW", "status must be untouched");
+
+        let history_count: i64 = db
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM kot_status_history WHERE kot_id = ?1",
+                rusqlite::params![kot_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(history_count, 0, "no history row on a rejected transition");
+
+        let pending = repo::list_unpublished_outbox(db.connection(), 100).unwrap();
+        assert!(pending.iter().all(|e| e.id != "o-bad"));
+        assert!(pending
+            .iter()
+            .all(|e| e.event_type != "KOTStatusChanged"));
+
+        // SERVED and CANCELLED are terminal — no further transition legal.
+        db.transition_kot_status_with_outbox(
+            &kot_id,
+            "ACKNOWLEDGED",
+            &kot_transition_meta("h1", "o1", "device-1", "2026-08-09T10:02:00Z"),
+        )
+        .unwrap();
+        db.transition_kot_status_with_outbox(
+            &kot_id,
+            "CANCELLED",
+            &kot_transition_meta("h2", "o2", "device-1", "2026-08-09T10:03:00Z"),
+        )
+        .unwrap();
+        let after_cancel = db.transition_kot_status_with_outbox(
+            &kot_id,
+            "PREPARING",
+            &kot_transition_meta("h3", "o3", "device-1", "2026-08-09T10:04:00Z"),
+        );
+        assert!(matches!(
+            after_cancel,
+            Err(DbError::IllegalKotStatusTransition { .. })
+        ));
+    }
+
+    /// A cancelled KOT must not block the order from becoming READY, and a
+    /// cancel-only order (no non-cancelled KOTs left) must never be counted
+    /// as READY.
+    #[test]
+    fn cancelled_kot_is_excluded_from_the_order_ready_derivation() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+        let (_, menu_item_id, _) = seed_menu(&db, "outlet-1");
+        seed_station(&db, "station-main", "outlet-1", "MAIN_KITCHEN");
+        seed_station(&db, "station-bar", "outlet-1", "BAR");
+
+        let order = sample_order("order-mixed", "outlet-1", "device-1");
+        // Two lines, routed one each to a different station so send_to_kitchen
+        // produces two independent KOTs.
+        let item_food = sample_order_item("item-food", "order-mixed", &menu_item_id, 10000);
+        db.create_order_with_outbox(&order, &[item_food], &sample_outbox("order-mixed"))
+            .expect("create draft order");
+        route_item_to_stations(&db, &menu_item_id, &["station-main".to_string()]);
+        confirm_for_kitchen(&mut db, "order-mixed");
+
+        let created = db
+            .send_order_to_kitchen_with_outbox(
+                "order-mixed",
+                &send_meta("device-1", "2026-08-09T10:00:00Z"),
+            )
+            .expect("send to kitchen");
+        assert_eq!(created.len(), 1);
+        let kot_id = created[0].id.clone();
+
+        db.transition_kot_status_with_outbox(
+            &kot_id,
+            "CANCELLED",
+            &kot_transition_meta("h1", "o1", "device-1", "2026-08-09T10:01:00Z"),
+        )
+        .expect("NEW -> CANCELLED");
+
+        let order_after = db.get_order("order-mixed").unwrap().expect("order exists");
+        assert_ne!(
+            order_after.status, "READY",
+            "an order whose only KOT was cancelled must never be READY"
+        );
+        let pending = repo::list_unpublished_outbox(db.connection(), 100).unwrap();
+        assert!(
+            pending
+                .iter()
+                .all(|e| !(e.event_type == "OrderReady" && e.aggregate_id == "order-mixed")),
+            "OrderReady must not fire when the only KOT was cancelled, not readied"
+        );
+    }
+
+    /// The exclusion branch `cancelled_kot_is_excluded_from_the_order_ready_derivation`
+    /// never actually exercised: an order with one CANCELLED KOT and one
+    /// READY KOT (not just one lone cancelled KOT) must still become
+    /// READY — the SQL FILTER excludes CANCELLED from both the
+    /// denominator and the "not ready" count, so a cancelled ticket must
+    /// never be the thing blocking readiness.
+    #[test]
+    fn mixed_cancelled_and_ready_kots_still_make_order_ready() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+        let (_, menu_item_id, _) = seed_menu(&db, "outlet-1");
+        seed_station(&db, "station-main", "outlet-1", "MAIN_KITCHEN");
+        seed_station(&db, "station-bar", "outlet-1", "BAR");
+
+        // A second menu item routed to a different station, so one
+        // send-to-kitchen round produces two independent KOTs.
+        let menu_item_2 = "item-2-mixed".to_string();
+        repo::upsert_menu_item(
+            db.connection(),
+            &model::MenuItem {
+                id: menu_item_2.clone(),
+                outlet_id: "outlet-1".to_string(),
+                category_id: "category-1".to_string(),
+                name: "Second".to_string(),
+                base_price_paise: 5000,
+                is_available: true,
+                config_version: 1,
+            },
+        )
+        .expect("seed second menu item");
+        route_item_to_stations(&db, &menu_item_id, &["station-main".to_string()]);
+        route_item_to_stations(&db, &menu_item_2, &["station-bar".to_string()]);
+
+        let order = sample_order("order-mixed-ready", "outlet-1", "device-1");
+        let item_a = sample_order_item("item-mixed-a", "order-mixed-ready", &menu_item_id, 10000);
+        let item_b = sample_order_item("item-mixed-b", "order-mixed-ready", &menu_item_2, 5000);
+        db.create_order_with_outbox(
+            &order,
+            &[item_a, item_b],
+            &sample_outbox("order-mixed-ready"),
+        )
+        .expect("create draft order");
+        confirm_for_kitchen(&mut db, "order-mixed-ready");
+
+        let created = db
+            .send_order_to_kitchen_with_outbox(
+                "order-mixed-ready",
+                &send_meta("device-1", "2026-08-09T10:00:00Z"),
+            )
+            .expect("send to kitchen");
+        assert_eq!(created.len(), 2);
+        let main_kot = created
+            .iter()
+            .find(|k| k.station == "MAIN_KITCHEN")
+            .expect("main kot")
+            .id
+            .clone();
+        let bar_kot = created
+            .iter()
+            .find(|k| k.station == "BAR")
+            .expect("bar kot")
+            .id
+            .clone();
+
+        db.transition_kot_status_with_outbox(
+            &bar_kot,
+            "CANCELLED",
+            &kot_transition_meta("h1", "o1", "device-1", "2026-08-09T10:01:00Z"),
+        )
+        .expect("cancel the bar ticket");
+
+        db.transition_kot_status_with_outbox(
+            &main_kot,
+            "ACKNOWLEDGED",
+            &kot_transition_meta("h2", "o2", "device-1", "2026-08-09T10:02:00Z"),
+        )
+        .unwrap();
+        db.transition_kot_status_with_outbox(
+            &main_kot,
+            "PREPARING",
+            &kot_transition_meta("h3", "o3", "device-1", "2026-08-09T10:03:00Z"),
+        )
+        .unwrap();
+        db.transition_kot_status_with_outbox(
+            &main_kot,
+            "READY",
+            &kot_transition_meta("h4", "o4", "device-1", "2026-08-09T10:04:00Z"),
+        )
+        .expect("main ticket reaches READY");
+
+        let order_after = db
+            .get_order("order-mixed-ready")
+            .unwrap()
+            .expect("order exists");
+        assert_eq!(
+            order_after.status, "READY",
+            "one CANCELLED + one READY KOT must still make the order READY"
+        );
+
+        let pending = repo::list_unpublished_outbox(db.connection(), 100).unwrap();
+        assert!(
+            pending
+                .iter()
+                .any(|e| e.event_type == "OrderReady" && e.aggregate_id == "order-mixed-ready"),
+            "OrderReady must fire once the cancelled ticket stops blocking readiness"
+        );
+    }
+
+    /// docs/spec/kitchen.md's `#132 -> #132-C` cancellation step: cancelling
+    /// an already-ticketed line must produce a brand-new ticket announcing
+    /// the cancellation — never just a status flag on the original — at
+    /// the same station the original line was ticketed to, carrying the
+    /// next sequence number.
+    #[test]
+    fn cancel_kitchen_items_produces_new_cancellation_ticket_at_original_station() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+        let (_, menu_item_id, _) = seed_menu(&db, "outlet-1");
+        seed_station(&db, "station-main", "outlet-1", "MAIN_KITCHEN");
+        route_item_to_stations(&db, &menu_item_id, &["station-main".to_string()]);
+
+        let order = sample_order("order-132c", "outlet-1", "device-1");
+        let item_1 = sample_order_item("item-132c-1", "order-132c", &menu_item_id, 10000);
+        db.create_order_with_outbox(&order, &[item_1], &sample_outbox("order-132c"))
+            .expect("create draft order");
+        confirm_for_kitchen(&mut db, "order-132c");
+
+        let first_round = db
+            .send_order_to_kitchen_with_outbox(
+                "order-132c",
+                &send_meta("device-1", "2026-08-09T10:00:00Z"),
+            )
+            .expect("first send (#132)");
+        assert_eq!(first_round.len(), 1);
+        assert_eq!(first_round[0].sequence, 1);
+
+        let cancelled = db
+            .cancel_kitchen_items_with_outbox(
+                "order-132c",
+                &["item-132c-1".to_string()],
+                &send_meta("device-1", "2026-08-09T10:05:00Z"),
+            )
+            .expect("cancel (#132-C)");
+
+        assert_eq!(
+            cancelled.len(),
+            1,
+            "one cancellation ticket, at the item's original station"
+        );
+        assert_eq!(cancelled[0].station, "MAIN_KITCHEN");
+        assert_eq!(
+            cancelled[0].sequence, 2,
+            "the cancellation gets the next sequence — #132-C"
+        );
+        assert_eq!(
+            cancelled[0].status, "CANCELLED",
+            "a cancellation ticket is created already CANCELLED — it announces, it never transitions into it"
+        );
+        assert_ne!(
+            cancelled[0].id, first_round[0].id,
+            "the cancellation is a NEW ticket, never a mutation of the original"
+        );
+
+        let items: serde_json::Value = serde_json::from_str(&cancelled[0].items_json).unwrap();
+        assert_eq!(items[0]["order_item_id"], "item-132c-1");
+
+        let all_kots = repo::list_kots_for_order(db.connection(), "order-132c").unwrap();
+        assert_eq!(
+            all_kots.len(),
+            2,
+            "both #132 and #132-C must persist side by side"
+        );
+
+        let pending = repo::list_unpublished_outbox(db.connection(), 100).unwrap();
+        assert!(pending
+            .iter()
+            .any(|e| e.event_type == "KOTCreated" && e.aggregate_id == cancelled[0].id));
+    }
+
+    /// Cancelling a line that was never sent to the kitchen at all must be
+    /// rejected, not silently ticketed anywhere.
+    #[test]
+    fn cancel_kitchen_items_rejects_a_never_ticketed_line() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+        let (_, menu_item_id, _) = seed_menu(&db, "outlet-1");
+        seed_station(&db, "station-main", "outlet-1", "MAIN_KITCHEN");
+        route_item_to_stations(&db, &menu_item_id, &["station-main".to_string()]);
+
+        let order = sample_order("order-cancel-untixed", "outlet-1", "device-1");
+        let item = sample_order_item(
+            "item-cancel-untixed",
+            "order-cancel-untixed",
+            &menu_item_id,
+            10000,
+        );
+        db.create_order_with_outbox(&order, &[item], &sample_outbox("order-cancel-untixed"))
+            .expect("create draft order");
+        confirm_for_kitchen(&mut db, "order-cancel-untixed");
+        // Deliberately never sent to the kitchen.
+
+        let result = db.cancel_kitchen_items_with_outbox(
+            "order-cancel-untixed",
+            &["item-cancel-untixed".to_string()],
+            &send_meta("device-1", "2026-08-09T10:00:00Z"),
+        );
+        assert!(matches!(result, Err(DbError::NotFound("order_item"))));
+
+        let stored = repo::list_kots_for_order(db.connection(), "order-cancel-untixed").unwrap();
+        assert!(stored.is_empty());
     }
 }

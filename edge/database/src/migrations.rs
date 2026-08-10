@@ -36,6 +36,12 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0004_order_canonical_fields.sql",
         include_str!("../../../packages/contracts/sqlite/0004_order_canonical_fields.sql"),
     ),
+    (
+        "0005_m2_kitchen_stations_printers.sql",
+        include_str!(
+            "../../../packages/contracts/sqlite/0005_m2_kitchen_stations_printers.sql"
+        ),
+    ),
 ];
 
 /// Applies any migrations not yet reflected in `PRAGMA user_version`. Safe
@@ -173,5 +179,50 @@ mod tests {
                 .unwrap();
             assert_eq!(count, 1, "expected table {table} to exist");
         }
+    }
+
+    /// Regression test for the exact bug this migration's registration
+    /// fixes: `0005_m2_kitchen_stations_printers.sql` existed on disk but was
+    /// never in `MIGRATIONS`, so it never applied.
+    #[test]
+    fn all_milestone_2_kitchen_tables_exist_after_migration() {
+        let conn = Connection::open_in_memory().expect("open");
+        configure_connection(&conn).expect("pragmas");
+        apply_all(&conn).expect("apply");
+
+        for table in [
+            "station",
+            "menu_item_station",
+            "printer",
+            "station_printer",
+            "print_job",
+            "kot_status_history",
+        ] {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = ?1",
+                    [table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 1, "expected table {table} to exist");
+        }
+
+        let mut stmt = conn.prepare("PRAGMA table_info(\"order\")").unwrap();
+        let columns: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(
+            columns.iter().any(|c| c == "preparation_time_minutes"),
+            "expected preparation_time_minutes column on \"order\" after 0005"
+        );
+
+        assert_eq!(
+            MIGRATIONS.len(),
+            5,
+            "expected exactly 5 registered migrations after this task"
+        );
     }
 }

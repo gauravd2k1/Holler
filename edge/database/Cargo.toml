@@ -28,8 +28,13 @@ rand = "0.8"
 argon2 = { version = "0.5", default-features = false, features = ["alloc"] }
 base64 = "0.22"
 
-# Local ID generation for outbox/session rows created at the edge.
-uuid = { version = "1", features = ["v4"] }
+# Local ID generation for outbox/session rows created at the edge. v7 is
+# needed by the Milestone 2 kitchen path (send_order_to_kitchen_with_outbox):
+# unlike every other write in this crate, the number of `kot` rows a
+# send-to-kitchen call produces is not known to the caller ahead of time (it
+# depends on station routing), so this crate mints those ids itself rather
+# than accepting them from the caller (see model::SendToKitchenMeta).
+uuid = { version = "1", features = ["v4", "v7"] }
 
 thiserror = "1"
 

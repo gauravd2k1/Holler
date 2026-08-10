@@ -253,6 +253,113 @@ pub struct Kot {
     pub updated_at: String,
 }
 
+// ---------------------------------------------------- Milestone 2: kitchen --
+// station / menu_item_station / printer / station_printer are CONFIG
+// aggregates (cloud→edge, config_version-versioned, replaced wholesale) per
+// ADR-014 §1-2. This crate stores what sync gives it and never originates a
+// row in any of the four. Field sets mirror
+// `packages/contracts/sqlite/0005_m2_kitchen_stations_printers.sql` exactly.
+
+/// A production destination (MAIN_KITCHEN, TANDOOR, BAR, ...). `code` is
+/// unique per `(outlet_id, code)`, never globally (ADR-014 §1) — two outlets
+/// both having a TANDOOR is the normal case. `kot.station` stores this
+/// `code`, never `id`.
+#[derive(Debug, Clone)]
+pub struct Station {
+    pub id: String,
+    pub outlet_id: String,
+    pub code: String,
+    pub name: String,
+    pub sort_order: i64,
+    pub is_active: bool,
+    pub config_version: i64,
+}
+
+/// One row of item→station routing (`menu_item_station`). A join row rather
+/// than a column on `menu_item` because an item may route to more than one
+/// station (a thali hits MAIN_KITCHEN and TANDOOR) — ADR-014 §2.
+#[derive(Debug, Clone)]
+pub struct MenuItemStation {
+    pub menu_item_id: String,
+    pub station_id: String,
+    pub config_version: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct Printer {
+    pub id: String,
+    pub outlet_id: String,
+    pub name: String,
+    pub connection_kind: String,
+    pub address: String,
+    pub paper_width_mm: i64,
+    pub is_active: bool,
+    pub config_version: i64,
+}
+
+/// Station→printer routing (`station_printer`). Many-to-many both ways.
+#[derive(Debug, Clone)]
+pub struct StationPrinter {
+    pub station_id: String,
+    pub printer_id: String,
+    pub config_version: i64,
+}
+
+/// One line on a station ticket, matching `KotTicketItemSchema`
+/// (`packages/contracts/src/types/kot.ts`): `{ order_item_id, name,
+/// quantity, modifiers, notes }`. Built by this crate from `order_item` +
+/// `order_item_modifier` rows, never accepted from a caller, so a ticket
+/// cannot describe items that were not actually ordered.
+#[derive(Debug, Clone)]
+pub struct KotTicketItem {
+    pub order_item_id: String,
+    pub name: String,
+    pub quantity: i64,
+    pub modifiers: Vec<String>,
+    pub notes: Option<String>,
+}
+
+/// Caller-supplied fields for [`crate::Db::send_order_to_kitchen_with_outbox`].
+/// Unlike every other write in this crate, the number of `kot` rows this
+/// call produces is not knowable to the caller ahead of time: it depends on
+/// station routing resolved from `menu_item_station`, which can fan a
+/// single order out to an arbitrary number of station tickets. So this
+/// crate — not the caller — mints the KOT ids and their `KOTCreated`/
+/// `SentToKitchen` outbox ids (UUIDv7, via the `uuid` crate), which is the
+/// one deliberate exception to the "caller supplies every id" convention
+/// used elsewhere in this crate.
+#[derive(Debug, Clone)]
+pub struct SendToKitchenMeta {
+    pub device_id: String,
+    pub occurred_at: String,
+}
+
+/// Caller-supplied fields for
+/// [`crate::Db::transition_kot_status_with_outbox`]. `occurred_at` must be
+/// sourced from the edge machine's own clock (sync.md §50.1) by the Tauri
+/// command layer, exactly like `OrderConfirmedMeta::confirmed_at` — never a
+/// value handed up from a KDS screen. `status_history_id` and `outbox_id`
+/// are still caller-supplied (one row each, so the "crate mints ids"
+/// exception above does not apply here) except for the conditional
+/// `OrderReady` event, whose id this crate mints itself only when a
+/// transition actually triggers it.
+#[derive(Debug, Clone)]
+pub struct KotTransitionMeta {
+    pub status_history_id: String,
+    pub outbox_id: String,
+    pub changed_by_device_id: String,
+    pub occurred_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct KotStatusHistoryEntry {
+    pub id: String,
+    pub kot_id: String,
+    pub status: String,
+    pub changed_by_device_id: String,
+    pub changed_at: String,
+}
+
 /// Caller-supplied fields for the `local_outbox` row that
 /// [`crate::Db::add_order_item_with_outbox`] writes, deliberately narrower
 /// than [`NewOutboxEntry`]: `event_type` and `payload_json` are owned by
