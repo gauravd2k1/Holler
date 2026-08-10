@@ -45,6 +45,16 @@ M2 ships kitchen features to this same target, so validating the target before a
 - **Rust binding for `packages/contracts`.** Deferred until a fourth Rust consumer. Until then `scripts/check-event-type-drift.mjs` greps literals in both directions. That check had a real bug — it omitted `edge/database`, the crate that actually builds outbox payloads — which is the argument for generating a binding rather than grepping for one.
 - **Deferred `CanonicalOrder` columns.** `packaging_paise`, `delivery_charge_paise`, `aggregator_discount_paise`, `merchant_discount_paise`, `customer`, `delivery_address`, `rider` land in M6. ~~`preparation_time_minutes` in M2~~ — **its column landed at 0.3.0 (ADR-014)** in both stores; the round-trip pin moves from the synthesized `NULL` to the column, which the edge track must update when it starts persisting a value. The M6 fields are still synthesized and still pinned.
 
+## Found during M2 execution (2026-08-10)
+
+- **No composition root — blocks the M2 acceptance criterion.** `backend/cmd/api/main.go` mounts `/health` and nothing else. No bounded context's `Handler.Mount` is wired: not kitchen, and not ordering, menu or tables either. Consequently the composite `GET /sync/config` route **does not exist anywhere in the backend**, even though contracts v0.3.0 made `stations`, `item_stations`, `printers` and `station_printers` REQUIRED fields on it.
+  Confirmed by the T6 verifier as a pre-existing repo-wide gap, not a T6 defect — kitchen exposes `Service.SyncConfigBundle` as its contribution and correctly stayed out of cross-context assembly.
+  Why it blocks: station routing is cloud→edge config. Without the route, the edge can never learn which item routes to which station, so it cannot generate a ticket, so POS→KDS propagation cannot be demonstrated end to end. Scheduled as its own integration task in M2, not deferred.
+
+- **USB and Bluetooth printing is unproven on real hardware.** `NetworkTransport` (TCP) is exercised against a real listener, but USB and Bluetooth share a `PathTransport` tested only against a file standing in for a device path. That proves the open/write/flush sequence and nothing about serial handshake, USB enumeration, or Bluetooth pairing and backpressure. No printer hardware exists in this environment, so the limitation was accepted rather than faked — but "printing works" is currently true only for network printers. **Fold this into the ADR-013 clean Windows 10 VM gate above**: both are the same problem, that nothing has been exercised on the hardware an outlet actually runs.
+
+- **`POST /kots/{kotId}/status` has no HTTP-level 422 assertion.** The create route asserts the envelope-mismatch status code directly; the status route shares the identical `requireKotEnvelope` path and is covered at service level only. The code path is proven, the wire contract is not. Cheap to close on the next backend touch.
+
 ## Testing
 
 - **Postgres integration tests have never run.** Every `HOLLER_TEST_DATABASE_URL`-gated test skips in this environment, so all cloud SQL — including `PostgresRefreshStore`'s rotation and family revocation — is code-reviewed, not executed.

@@ -81,7 +81,7 @@ Acceptance: POS → kitchen propagation below target latency on LAN (<250ms, `do
 
 Milestone 1 is complete. Items consciously deferred out of it are in `docs/backlog-m2.md`, including a gate that must clear before M2 ships: nothing has ever been built or run on the bare Windows 10 target ADR-013 specifies.
 
-Note: `backend/migrations/0001_tenant_outlet.sql` and `0002_menu_order_skeleton.sql` are pre-0.5 placeholders now superseded by `packages/contracts/postgres/0001_init.sql`; reconcile/remove them on next backend touch rather than letting two schemas diverge silently.
+Note: the pre-0.5 placeholder migrations under `backend/migrations/` are gone — `packages/contracts/postgres/` is the sole schema source, and `postgres.Migrate` globs every `*.sql` there, so a new contract migration needs no backend wiring.
 
 ## Response rules for agents
 Inspect repo first, output a concise plan, then edit real files. If a task touches >15 files, stop and present the plan instead of proceeding. Report per milestone: Implemented / Verified / Performance / Remaining / Next.
