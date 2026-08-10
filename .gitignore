@@ -29,6 +29,9 @@ apps/waiter/.dart_tool/
 # apps/pos/.env.dev.example documents its shape and IS tracked.
 .env.dev
 
+# Personal notes, never shared with developers or committed.
+priv_docs/
+
 # OS
 .DS_Store
 Thumbs.db
