@@ -18,7 +18,7 @@
 //
 // Run: node scripts/check-event-type-drift.mjs
 
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import { join, relative } from "node:path";
 
 const REPO_ROOT = new URL("..", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1");
@@ -28,9 +28,15 @@ const EVENTS_TS = join(REPO_ROOT, "packages/contracts/src/types/events.ts");
 // the check never scanned, so its literals were unguarded in both directions
 // while the check reported green. If a new Rust crate touches event types, it
 // belongs here.
+// Milestone 2 adds edge/printer (the spool) and edge/device (the KDS LAN
+// server, which relays KOT state and names event types in its messages).
+// Directories that do not exist yet are skipped rather than fatal, so this list
+// can name a crate before its track lands.
 const RUST_ROOTS = [
   join(REPO_ROOT, "edge/database/src"),
   join(REPO_ROOT, "edge/sync/src"),
+  join(REPO_ROOT, "edge/printer/src"),
+  join(REPO_ROOT, "edge/device/src"),
   join(REPO_ROOT, "apps/pos/src-tauri/src"),
 ];
 
@@ -38,6 +44,7 @@ const RUST_ROOTS = [
 // reason — an empty justification here defeats the backward check.
 const NOT_YET_EMITTED = {
   KOTCreated: "KOT generation is Milestone 2",
+  KOTStatusChanged: "KOT status flow is Milestone 2",
   OrderReady: "kitchen status flow is Milestone 2",
 };
 
@@ -74,6 +81,7 @@ function main() {
   const unknown = []; // { literal, location }
 
   for (const root of RUST_ROOTS) {
+    if (!existsSync(root)) continue; // crate not created yet — see RUST_ROOTS
     for (const file of rustFiles(root)) {
       const source = readFileSync(file, "utf-8");
       source.split("\n").forEach((line, i) => {

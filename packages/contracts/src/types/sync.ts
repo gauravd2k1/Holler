@@ -15,6 +15,13 @@ export const AggregateTypeSchema = z.enum([
   "app_user",
   "role",
   "restaurant_table",
+  // Milestone 2 additions (ADR-014). Only the two entities are aggregates:
+  // menu_item_station and station_printer are routing rows that travel inside
+  // their parent's config bundle, exactly as menu_item_variant and
+  // menu_item_modifier do. print_job and kot_status_history are deliberately
+  // absent — see printer.ts and sqlite/0005 for why.
+  "station",
+  "printer",
 ]);
 export type AggregateType = z.infer<typeof AggregateTypeSchema>;
 
@@ -36,6 +43,8 @@ export const AGGREGATE_AUTHORITY: Record<AggregateType, SyncDirection> = {
   app_user: "CLOUD_TO_EDGE",
   role: "CLOUD_TO_EDGE",
   restaurant_table: "CLOUD_TO_EDGE", // the table's definition; its live state is table_session
+  station: "CLOUD_TO_EDGE", // the station's definition; its live ticket is a kot
+  printer: "CLOUD_TO_EDGE", // the printer's definition; its live work is a print_job (edge-local)
 };
 
 export const SyncEnvelopeSchema = z

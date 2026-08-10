@@ -10,6 +10,8 @@ import { SyncEnvelopeSchema, AGGREGATE_AUTHORITY, AggregateTypeSchema } from "./
 import { AppUserSchema, AuditEventSchema, AUDIT_REDACTED_FIELDS } from "./identity";
 import { RestaurantTableSchema, TableSessionSchema } from "./table";
 import { MenuItemSchema, MenuItemModifierSchema } from "./menu";
+import { StationSchema, MenuItemStationSchema } from "./station";
+import { PrinterSchema, StationPrinterSchema, PrintJobSchema } from "./printer";
 import { OUTBOX_EVENT_TYPES } from "./events";
 
 function loadFixture(name: string): unknown {
@@ -84,6 +86,59 @@ describe("contract drift", () => {
     expect(JSON.parse(JSON.stringify(parsed))).toEqual(raw);
   });
 
+  // Milestone 2 boundary-crossing tables (0.3.0, ADR-014). Every one of these
+  // has a row in both stores, so a shape that drifts breaks replay silently —
+  // the same failure the order-level round-trip test was added to catch.
+  it("station.json round-trips through StationSchema", () => {
+    const raw = loadFixture("station.json");
+    const parsed = StationSchema.parse(raw);
+    expect(JSON.parse(JSON.stringify(parsed))).toEqual(raw);
+  });
+
+  it("menu_item_station.json round-trips through MenuItemStationSchema", () => {
+    const raw = loadFixture("menu_item_station.json");
+    const parsed = MenuItemStationSchema.parse(raw);
+    expect(JSON.parse(JSON.stringify(parsed))).toEqual(raw);
+  });
+
+  it("printer.json round-trips through PrinterSchema", () => {
+    const raw = loadFixture("printer.json");
+    const parsed = PrinterSchema.parse(raw);
+    expect(JSON.parse(JSON.stringify(parsed))).toEqual(raw);
+  });
+
+  it("station_printer.json round-trips through StationPrinterSchema", () => {
+    const raw = loadFixture("station_printer.json");
+    const parsed = StationPrinterSchema.parse(raw);
+    expect(JSON.parse(JSON.stringify(parsed))).toEqual(raw);
+  });
+
+  // Edge-local: SQLite only, no Postgres mirror, no wire route. It still gets a
+  // round-trip because the POS reads it across the Tauri boundary to show staff
+  // a failed print.
+  it("print_job.json round-trips through PrintJobSchema", () => {
+    const raw = loadFixture("print_job.json");
+    const parsed = PrintJobSchema.parse(raw);
+    expect(JSON.parse(JSON.stringify(parsed))).toEqual(raw);
+  });
+
+  // print_job is deliberately not an aggregate — see the note on PrintJobSchema
+  // and the refresh_token precedent. If someone adds it to AggregateTypeSchema,
+  // they have given the spool a sync direction, and this fails.
+  it("keeps edge-local and cloud-only tables out of AggregateType", () => {
+    expect(AggregateTypeSchema.options).not.toContain("print_job");
+    expect(AggregateTypeSchema.options).not.toContain("refresh_token");
+    expect(AggregateTypeSchema.options).not.toContain("kot_status_history");
+  });
+
+  // Stations and printers are config; the ticket at the station is not. This is
+  // the ADR-011 restaurant_table/table_session split applied to the kitchen.
+  it("Milestone 2 config aggregates never become edge-authoritative", () => {
+    expect(AGGREGATE_AUTHORITY.station).toBe("CLOUD_TO_EDGE");
+    expect(AGGREGATE_AUTHORITY.printer).toBe("CLOUD_TO_EDGE");
+    expect(AGGREGATE_AUTHORITY.kot).toBe("EDGE_TO_CLOUD");
+  });
+
   it("event type list matches Go's OutboxEventTypes, in order", () => {
     expect([...OUTBOX_EVENT_TYPES]).toEqual([
       "OrderCreated",
@@ -91,6 +146,7 @@ describe("contract drift", () => {
       "ItemRemoved",
       "OrderConfirmed",
       "KOTCreated",
+      "KOTStatusChanged",
       "OrderReady",
       "SentToKitchen",
       "OrderCancelled",

@@ -1,0 +1,10 @@
+{
+  "id": "018e5a2e-8001-7c3d-9f4e-1234567890ab",
+  "outlet_id": "018e5a2e-1a09-7c3d-9f4e-1234567890ab",
+  "code": "TANDOOR",
+  "name": "Tandoor",
+  "sort_order": 2,
+  "is_active": true,
+  "config_version": 7,
+  "schema_version": 1
+}

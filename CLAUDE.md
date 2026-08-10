@@ -56,7 +56,7 @@ The split that matters: WSL2 hosts the **cloud** dependencies for local developm
 - POS: `pnpm test` / `pnpm tauri dev` inside `apps/pos/`.
 - CI: lint, format, unit, integration, contract-drift check, build, security scan.
 
-## Contracts status: FROZEN at v0.2.5 (Milestone 1 additions applied)
+## Contracts status: FROZEN at v0.3.0 (Milestone 2 additions applied)
 `packages/contracts/` holds the source of truth — SQLite schema, PostgreSQL migrations, TS+Zod types, mirrored Go structs, OpenAPI spec, and fixtures with Go+TS round-trip drift tests wired into CI. **Read-only to builder agents** (ADR-008); only the orchestrator/architect session edits it, serialized, with a version bump + ADR note for semantic changes.
 
 v0.2.0 added identity/RBAC/tables for Milestone 1 (ADR-011): `app_user`, `role`, `role_permission`, `user_role`, `restaurant_table`, `table_session`, `audit_event`. Three rules bind every builder:
@@ -66,12 +66,20 @@ v0.2.0 added identity/RBAC/tables for Milestone 1 (ADR-011): `app_user`, `role`,
 
 v0.2.1 (ADR-011 addendum, ADR-012) added: envelope-wrapped ingest as the **single** edge→cloud replay pattern — every mutating route for an `EDGE_TO_CLOUD` aggregate takes a `SyncEnvelope` whose `payload` is the aggregate, the route pins `aggregate_type`, §50.1 pins `direction`, and a mismatch is 422 rather than a coercion; `table_session` ingest routes on that pattern; `POST /menu/items/{itemId}/availability`; the `refresh_token` table (cloud-only, deliberately not an `AggregateType`); and `AuditEvent.tenant_id`. Read paths stay unwrapped.
 
-## Current milestone: MILESTONE 1 — Core POS
-Scope: organisation, outlet, users, RBAC, menu, categories, modifiers, tables, order creation, local SQLite, basic synchronization — all built against the frozen `packages/contracts/` shapes.
+v0.3.0 (ADR-014) added the Milestone 2 kitchen shapes. Four rules bind every builder:
+- `station`, `menu_item_station`, `printer`, `station_printer` are **config, cloud→edge**. The `kot` is **edge-authoritative**. Same split ADR-011 drew between `restaurant_table` and `table_session` — a station's definition is a management decision, the ticket at it is a shop-floor transaction.
+- `kot.station` stores the station's **`code`**, never its id, so a ticket survives a rename.
+- `print_job` and `kot_status_history` are **edge-local**: SQLite only, no Postgres mirror, deliberately absent from `AggregateType` (the `refresh_token` precedent, from the other side). Never give either a sync direction.
+- `POST /kots/{kotId}/status` is the **only** writer of `kot.status`, and it only replays. No cloud handler transitions a ticket.
 
-Acceptance: internet may be disconnected and the cashier can still create restaurant orders.
+## Current milestone: MILESTONE 2 — Kitchen
+Scope: KOT, station routing, printer abstraction, KDS, LAN realtime delivery, order status — all built against the frozen `packages/contracts/` shapes.
 
-**EXCLUDES:** aggregators, payments beyond cash, inventory, recipes, loyalty, CRM, multi-outlet UI, reservations, QR ordering, reporting beyond a basic order list.
+Acceptance: POS → kitchen propagation below target latency on LAN (<250ms, `docs/spec/kitchen.md`).
+
+**EXCLUDES:** aggregator KOTs, expo screen polish, label printers, waiter app.
+
+Milestone 1 is complete. Items consciously deferred out of it are in `docs/backlog-m2.md`, including a gate that must clear before M2 ships: nothing has ever been built or run on the bare Windows 10 target ADR-013 specifies.
 
 Note: `backend/migrations/0001_tenant_outlet.sql` and `0002_menu_order_skeleton.sql` are pre-0.5 placeholders now superseded by `packages/contracts/postgres/0001_init.sql`; reconcile/remove them on next backend touch rather than letting two schemas diverge silently.
 

@@ -17,6 +17,14 @@ const (
 	AggregateTypeAppUser         AggregateType = "app_user"
 	AggregateTypeRole            AggregateType = "role"
 	AggregateTypeRestaurantTable AggregateType = "restaurant_table"
+
+	// Milestone 2 additions (ADR-014). Only the two entities are aggregates:
+	// menu_item_station and station_printer are routing rows travelling inside
+	// their parent's config bundle, as menu_item_variant and menu_item_modifier
+	// already do. print_job and kot_status_history are deliberately absent —
+	// see printer.go and sqlite/0005 for why.
+	AggregateTypeStation AggregateType = "station"
+	AggregateTypePrinter AggregateType = "printer"
 )
 
 type SyncDirection string
@@ -47,6 +55,11 @@ var AggregateAuthority = map[AggregateType]SyncDirection{
 	AggregateTypeAppUser:         SyncDirectionCloudToEdge,
 	AggregateTypeRole:            SyncDirectionCloudToEdge,
 	AggregateTypeRestaurantTable: SyncDirectionCloudToEdge,
+
+	// The station's definition is config; its live ticket is a kot. The
+	// printer's definition is config; its live work is an edge-local print_job.
+	AggregateTypeStation: SyncDirectionCloudToEdge,
+	AggregateTypePrinter: SyncDirectionCloudToEdge,
 }
 
 type SyncEnvelope struct {

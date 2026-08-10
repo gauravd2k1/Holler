@@ -112,6 +112,63 @@ func TestMenuItemModifierFixtureRoundTrip(t *testing.T) {
 	roundTrip(t, "menu_item_modifier.json", &modifier)
 }
 
+// Milestone 2 boundary-crossing tables (0.3.0, ADR-014). Each has a row in
+// both stores, so a drifted shape breaks replay silently.
+
+func TestStationFixtureRoundTrip(t *testing.T) {
+	var station Station
+	roundTrip(t, "station.json", &station)
+}
+
+func TestMenuItemStationFixtureRoundTrip(t *testing.T) {
+	var routing MenuItemStation
+	roundTrip(t, "menu_item_station.json", &routing)
+}
+
+func TestPrinterFixtureRoundTrip(t *testing.T) {
+	var printer Printer
+	roundTrip(t, "printer.json", &printer)
+}
+
+func TestStationPrinterFixtureRoundTrip(t *testing.T) {
+	var routing StationPrinter
+	roundTrip(t, "station_printer.json", &routing)
+}
+
+// Edge-local: SQLite only, no Postgres mirror, no wire route. Round-tripped
+// anyway so the Go and TypeScript shapes cannot drift apart.
+func TestPrintJobFixtureRoundTrip(t *testing.T) {
+	var job PrintJob
+	roundTrip(t, "print_job.json", &job)
+}
+
+// ADR-014: stations and printers are config (cloud→edge); the ticket at the
+// station is not. The ADR-011 RestaurantTable/TableSession split, applied to
+// the kitchen.
+func TestMilestone2AggregateAuthority(t *testing.T) {
+	expected := map[AggregateType]SyncDirection{
+		AggregateTypeStation: SyncDirectionCloudToEdge,
+		AggregateTypePrinter: SyncDirectionCloudToEdge,
+		AggregateTypeKot:     SyncDirectionEdgeToCloud,
+	}
+	for aggregate, direction := range expected {
+		if AggregateAuthority[aggregate] != direction {
+			t.Fatalf("%s must be %s per ADR-014, got %s", aggregate, direction, AggregateAuthority[aggregate])
+		}
+	}
+}
+
+// print_job and kot_status_history are deliberately not aggregates — see
+// printer.go and the refresh_token precedent. Adding either to
+// AggregateAuthority gives it a sync direction it must not have.
+func TestEdgeLocalTablesAreNotAggregates(t *testing.T) {
+	for _, forbidden := range []AggregateType{"print_job", "kot_status_history", "refresh_token"} {
+		if _, listed := AggregateAuthority[forbidden]; listed {
+			t.Fatalf("%q must not be an AggregateType: it crosses no boundary", forbidden)
+		}
+	}
+}
+
 // Mirrors OUTBOX_EVENT_TYPES in src/types/events.ts, same order. The edge
 // crates hold these as Rust literals with no compile-time link, so
 // scripts/check-event-type-drift.mjs greps them against this list too.
@@ -122,6 +179,7 @@ func TestOutboxEventTypes(t *testing.T) {
 		"ItemRemoved",
 		"OrderConfirmed",
 		"KOTCreated",
+		"KOTStatusChanged",
 		"OrderReady",
 		"SentToKitchen",
 		"OrderCancelled",

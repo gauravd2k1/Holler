@@ -40,9 +40,10 @@ M2 ships kitchen features to this same target, so validating the target before a
 
 ## Contracts
 
-- **`ItemRemoved` is unroutable.** It is frozen in `OUTBOX_EVENT_TYPES` and `edge/database` emits it, but OpenAPI has no ingest route — only `POST /orders/{id}/items` for adds. So a line removal can be written to the outbox and can never reach the cloud. Needs a route plus envelope schema. **The drift check does not catch this**, and that is its real limitation: it verifies a literal *appears* in Rust, not that the event is actually deliverable. Worth considering whether the check should cross-reference OpenAPI routes, or whether that is the job the generated Rust binding should do.
+- ~~**`ItemRemoved` is unroutable.**~~ **CLOSED at contracts 0.3.0 (ADR-014 §5)** — `DELETE /orders/{id}/items/{itemId}` now accepts it, envelope-wrapped like every other edge→cloud replay. `KOTCreated` had the same hole and got `POST /orders/{id}/kots` in the same change.
+  **The underlying limitation is still open:** the drift check verifies a literal *appears* in Rust, not that the event is *deliverable*. Both holes were found by reading, not by the check. Cross-referencing frozen event types against OpenAPI routes — or generating the Rust binding rather than grepping for one — remains unbuilt.
 - **Rust binding for `packages/contracts`.** Deferred until a fourth Rust consumer. Until then `scripts/check-event-type-drift.mjs` greps literals in both directions. That check had a real bug — it omitted `edge/database`, the crate that actually builds outbox payloads — which is the argument for generating a binding rather than grepping for one.
-- **Deferred `CanonicalOrder` columns.** `packaging_paise`, `delivery_charge_paise`, `aggregator_discount_paise`, `merchant_discount_paise`, `customer`, `delivery_address`, `rider` land in M6; `preparation_time_minutes` in M2. Synthesized values are pinned by the order-level round-trip test, so persisting one will fail that test until the ADR-011 0.2.4 table is updated.
+- **Deferred `CanonicalOrder` columns.** `packaging_paise`, `delivery_charge_paise`, `aggregator_discount_paise`, `merchant_discount_paise`, `customer`, `delivery_address`, `rider` land in M6. ~~`preparation_time_minutes` in M2~~ — **its column landed at 0.3.0 (ADR-014)** in both stores; the round-trip pin moves from the synthesized `NULL` to the column, which the edge track must update when it starts persisting a value. The M6 fields are still synthesized and still pinned.
 
 ## Testing
 

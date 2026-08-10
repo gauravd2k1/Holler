@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Holler API — Vertical Slice
-  version: "0.2.5"
+  version: "0.3.0"
   description: >
     Covers only the §70 order endpoints needed for the Milestone 1–2 vertical
     slice (Menu → POS Order → Local SQLite → KOT → KDS → Cloud sync). Frozen
@@ -90,11 +90,101 @@ paths:
         "422":
           $ref: "#/components/responses/EnvelopeRouteMismatch"
 
+  /orders/{id}/items/{itemId}:
+    delete:
+      summary: >
+        Replay a line removal from a DRAFT order at the edge. Added at 0.3.0
+        (ADR-014) to close a routability hole: ItemRemoved has been frozen in
+        OUTBOX_EVENT_TYPES since 0.2.3 and edge/database emits it, but no route
+        accepted it — so a removal could be written to the outbox and could
+        never arrive. The drift check did not catch this, because it verifies
+        that an event type appears in Rust, not that it is deliverable.
+        Recorded in docs/backlog-m2.md under Contracts.
+      parameters:
+        - $ref: "#/components/parameters/OrderId"
+        - $ref: "#/components/parameters/OrderItemId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OrderItemEnvelope"
+      responses:
+        "200":
+          description: Item removed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CanonicalOrder"
+        "422":
+          $ref: "#/components/responses/EnvelopeRouteMismatch"
+
+  /orders/{id}/kots:
+    post:
+      summary: >
+        Replay a KOT generated at the edge. Added at 0.3.0 (ADR-014) — KOTCreated
+        was frozen at Milestone 0.5 and had no ingest route until Milestone 2
+        made the edge actually generate tickets.
+
+        The KOT is edge-authoritative (§50.1): the cloud stores what it replays
+        and never generates, renumbers or re-routes a ticket.
+      parameters:
+        - $ref: "#/components/parameters/OrderId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/KotEnvelope"
+      responses:
+        "200":
+          description: KOT stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Kot"
+        "422":
+          $ref: "#/components/responses/EnvelopeRouteMismatch"
+
+  /kots/{kotId}/status:
+    post:
+      summary: >
+        Replay a KOT status transition recorded at the edge (KOTStatusChanged,
+        added at 0.3.0). Cooks drive this from KDS screens over the outlet LAN;
+        by the time it reaches here it has already happened.
+
+        This is the ONLY route that writes kot.status, and it only ever replays.
+        No cloud-side handler may transition a ticket: the kitchen is the
+        authority for what the kitchen is doing (§50.1), and a cloud write would
+        make the aggregate split-authority.
+      parameters:
+        - $ref: "#/components/parameters/KotId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/KotStatusEnvelope"
+      responses:
+        "200":
+          description: Status recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Kot"
+        "422":
+          $ref: "#/components/responses/EnvelopeRouteMismatch"
+
   /orders/{id}/send-to-kitchen:
     post:
       summary: >
-        Replay the SENT_TO_KITCHEN transition. KOT generation is Milestone 2 —
-        until then the kots array is empty and only the order state changes.
+        Replay the SENT_TO_KITCHEN transition.
+
+        The kots array is a read-back convenience, not the ingest path. The edge
+        generates tickets and replays each one through POST /orders/{id}/kots,
+        which is the only route that creates a KOT (0.3.0, ADR-014). Returning
+        them here as well lets a caller confirm the order's tickets in one round
+        trip; it must never be treated as a second way to create them.
       parameters:
         - $ref: "#/components/parameters/OrderId"
       requestBody:
@@ -517,6 +607,166 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/MenuItem" }
 
+  /stations:
+    get:
+      summary: List stations for an outlet (permission menu.manage)
+      parameters:
+        - name: outlet_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Stations
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Station" }
+    post:
+      summary: >
+        Create a station (permission menu.manage; bumps config_version). Added
+        at 0.3.0 (ADR-014). Config, cloud→edge — the edge never creates one.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, outlet_id, code, name]
+              properties:
+                id:
+                  type: string
+                  format: uuid
+                  description: App-generated UUIDv7 (§74). The server never mints it.
+                outlet_id: { type: string, format: uuid }
+                code:
+                  type: string
+                  description: Stable machine code, unique per outlet — not globally.
+                name: { type: string }
+                sort_order: { type: integer }
+                is_active: { type: boolean }
+      responses:
+        "201":
+          description: Station created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Station" }
+        "409":
+          description: A station with that code already exists for this outlet
+
+  /menu/items/{itemId}/stations:
+    put:
+      summary: >
+        Replace an item's station routing (permission menu.manage; bumps
+        config_version). Added at 0.3.0 (ADR-014).
+
+        PUT, not POST: routing is a set, the edge replaces config wholesale
+        rather than merging (§50.1), and an append-only route would leave no way
+        to stop an item printing at a station it no longer belongs to.
+      parameters:
+        - $ref: "#/components/parameters/MenuItemId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [station_ids]
+              properties:
+                station_ids:
+                  type: array
+                  description: >
+                    May contain more than one — an item can route to several
+                    stations (docs/spec/kitchen.md §Stations). An empty array
+                    means the item produces no ticket, which is legitimate for
+                    a non-production line such as a service charge.
+                  items: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Routing replaced
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/MenuItemStation" }
+
+  /printers:
+    get:
+      summary: List printers for an outlet (permission outlet.manage)
+      parameters:
+        - name: outlet_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Printers
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Printer" }
+    post:
+      summary: >
+        Register a printer (permission outlet.manage; bumps config_version).
+        Added at 0.3.0 (ADR-014).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, outlet_id, name, connection_kind, address, paper_width_mm]
+              properties:
+                id:
+                  type: string
+                  format: uuid
+                  description: App-generated UUIDv7 (§74).
+                outlet_id: { type: string, format: uuid }
+                name: { type: string }
+                connection_kind: { $ref: "#/components/schemas/PrinterConnectionKind" }
+                address: { type: string }
+                paper_width_mm: { type: integer, enum: [58, 80] }
+                is_active: { type: boolean }
+      responses:
+        "201":
+          description: Printer registered
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Printer" }
+        "409":
+          description: A printer with that name already exists for this outlet
+
+  /stations/{stationId}/printers:
+    put:
+      summary: >
+        Replace a station's printer routing (permission outlet.manage; bumps
+        config_version). Added at 0.3.0 (ADR-014). Tandoor → Printer A, Bar →
+        Printer B (docs/spec/hardware-printing.md §Printing). PUT for the same
+        reason item routing is: config is replaced, not merged.
+      parameters:
+        - $ref: "#/components/parameters/StationId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [printer_ids]
+              properties:
+                printer_ids:
+                  type: array
+                  items: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Routing replaced
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/StationPrinter" }
+
   /sync/config:
     get:
       summary: >
@@ -539,7 +789,9 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [config_version, users, tables, categories, items]
+                required:
+                  [config_version, users, tables, categories, items,
+                   stations, item_stations, printers, station_printers]
                 properties:
                   config_version: { type: integer }
                   users:
@@ -564,6 +816,24 @@ paths:
                   items:
                     type: array
                     items: { $ref: "#/components/schemas/MenuItem" }
+                  # Added at 0.3.0 (ADR-014). Growing the `required` list is the
+                  # one non-additive part of this bump: the edge sync worker is
+                  # the sole consumer and is updated in the same milestone, so a
+                  # tolerated-absence field would only hide a half-configured
+                  # kitchen until the first ticket failed to route.
+                  stations:
+                    type: array
+                    items: { $ref: "#/components/schemas/Station" }
+                  item_stations:
+                    type: array
+                    description: Item → station routing; an item may appear more than once.
+                    items: { $ref: "#/components/schemas/MenuItemStation" }
+                  printers:
+                    type: array
+                    items: { $ref: "#/components/schemas/Printer" }
+                  station_printers:
+                    type: array
+                    items: { $ref: "#/components/schemas/StationPrinter" }
 
 components:
   responses:
@@ -584,6 +854,30 @@ components:
   parameters:
     MenuItemId:
       name: itemId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+    OrderItemId:
+      name: itemId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+    KotId:
+      name: kotId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+    StationId:
+      name: stationId
       in: path
       required: true
       schema:
@@ -629,7 +923,14 @@ components:
 
     AggregateType:
       type: string
-      enum: [order, kot, payment, table_session, menu_item, app_user, role, restaurant_table]
+      description: >
+        Milestone 2 added station and printer (config, cloud→edge). Deliberately
+        absent: print_job and kot_status_history are edge-local, and
+        refresh_token is cloud-only — listing any of them would promise a sync
+        direction for something that never crosses the boundary.
+      enum:
+        [order, kot, payment, table_session, menu_item, app_user, role,
+         restaurant_table, station, printer]
 
     SyncEnvelope:
       type: object
@@ -721,6 +1022,38 @@ components:
               additionalProperties: false
               properties:
                 reason: { type: string }
+
+    KotEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/SyncEnvelope"
+        - type: object
+          properties:
+            aggregate_type: { enum: [kot] }
+            direction: { enum: [EDGE_TO_CLOUD] }
+            payload: { $ref: "#/components/schemas/Kot" }
+
+    KotStatusEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/SyncEnvelope"
+        - type: object
+          properties:
+            aggregate_type: { enum: [kot] }
+            direction: { enum: [EDGE_TO_CLOUD] }
+            payload:
+              type: object
+              required: [status, changed_at, changed_by_device_id]
+              additionalProperties: false
+              properties:
+                status: { $ref: "#/components/schemas/KotStatus" }
+                changed_at:
+                  type: string
+                  format: date-time
+                  description: >
+                    When the EDGE recorded the transition, not when the cloud
+                    received it. Kitchen timing analytics are the point of this
+                    route; an outlet syncing hourly would otherwise report every
+                    ticket as prepared in the same instant.
+                changed_by_device_id: { type: string, format: uuid }
 
     TableSessionEnvelope:
       allOf:
@@ -1013,6 +1346,93 @@ components:
           type: integer
           enum: [1]
 
+    # Milestone 2 config aggregates (0.3.0, ADR-014). Mirrors
+    # src/types/station.ts, src/types/printer.ts and their Go structs.
+    Station:
+      type: object
+      description: >
+        A production destination — docs/spec/kitchen.md §Stations. CONFIG,
+        cloud→edge. The live ticket at a station is a Kot, which is
+        edge-authoritative; that split mirrors RestaurantTable/TableSession.
+      required: [id, outlet_id, code, name, sort_order, is_active, config_version, schema_version]
+      properties:
+        id: { type: string, format: uuid }
+        outlet_id: { type: string, format: uuid }
+        code:
+          type: string
+          description: >
+            Stable machine code (MAIN_KITCHEN, TANDOOR, ...), unique per outlet
+            and never globally. Kot.station stores this rather than a station
+            id, so a ticket already on the pass survives a rename.
+        name: { type: string }
+        sort_order: { type: integer }
+        is_active: { type: boolean }
+        config_version: { type: integer }
+        schema_version: { type: integer, enum: [1] }
+
+    MenuItemStation:
+      type: object
+      description: >
+        Item → station routing. A join row rather than a column on MenuItem
+        because an item may route to more than one station.
+      required: [menu_item_id, station_id, config_version, schema_version]
+      properties:
+        menu_item_id: { type: string, format: uuid }
+        station_id: { type: string, format: uuid }
+        config_version: { type: integer }
+        schema_version: { type: integer, enum: [1] }
+
+    PrinterConnectionKind:
+      type: string
+      description: >
+        Transport, not vendor. Brand differences are edge/printer adapter
+        details. Label printers are excluded from Milestone 2 (§81).
+      enum: [ESCPOS_NETWORK, ESCPOS_USB, ESCPOS_BLUETOOTH]
+
+    Printer:
+      type: object
+      description: CONFIG, cloud→edge — docs/spec/hardware-printing.md.
+      required:
+        [id, outlet_id, name, connection_kind, address, paper_width_mm,
+         is_active, config_version, schema_version]
+      properties:
+        id: { type: string, format: uuid }
+        outlet_id: { type: string, format: uuid }
+        name: { type: string, description: Unique per outlet, not globally. }
+        connection_kind: { $ref: "#/components/schemas/PrinterConnectionKind" }
+        address:
+          type: string
+          description: >
+            Interpreted only by the matching adapter — host:port, USB path or MAC.
+        paper_width_mm: { type: integer, enum: [58, 80] }
+        is_active: { type: boolean }
+        config_version: { type: integer }
+        schema_version: { type: integer, enum: [1] }
+
+    StationPrinter:
+      type: object
+      description: >
+        Station → printer routing. Many-to-many both ways: one printer can serve
+        two stations, and a station can fan out to two printers.
+      required: [station_id, printer_id, config_version, schema_version]
+      properties:
+        station_id: { type: string, format: uuid }
+        printer_id: { type: string, format: uuid }
+        config_version: { type: integer }
+        schema_version: { type: integer, enum: [1] }
+
+    # DELIBERATELY ABSENT: PrintJob. The spool is edge-local — it crosses no
+    # boundary, so it gets no wire schema and no route. The POS reads it across
+    # the Tauri boundary using the TypeScript type in src/types/printer.ts.
+
+    KotStatus:
+      type: string
+      description: >
+        KOT lifecycle — docs/spec/kitchen.md §KOT. Extracted from the inline
+        Kot.status enum at 0.3.0 so the status-transition route references one
+        definition rather than repeating the list.
+      enum: [NEW, ACKNOWLEDGED, PREPARING, READY, SERVED, CANCELLED]
+
     Kot:
       type: object
       description: One row per station ticket — see docs/spec/kitchen.md §12.
@@ -1022,9 +1442,7 @@ components:
         order_id: { type: string, format: uuid }
         station: { type: string }
         sequence: { type: integer }
-        status:
-          type: string
-          enum: [NEW, ACKNOWLEDGED, PREPARING, READY, SERVED, CANCELLED]
+        status: { $ref: "#/components/schemas/KotStatus" }
         items:
           type: array
           items:

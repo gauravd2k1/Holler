@@ -57,6 +57,22 @@ type KotCreatedEvent struct {
 	} `json:"data"`
 }
 
+// KotStatusChangedEvent added at 0.3.0 (ADR-014). Milestone 2 gives the KOT a
+// lifecycle driven from KDS screens; before this, KOTCreated was the only KOT
+// event frozen, so every transition after creation was invisible to the cloud.
+// ChangedAt is the moment the EDGE recorded (§50.1) — an outlet syncing once an
+// hour would otherwise report every ticket as prepared in the same instant.
+type KotStatusChangedEvent struct {
+	EventEnvelope
+	Data struct {
+		KotID             string    `json:"kot_id"`
+		OrderID           string    `json:"order_id"`
+		Status            KotStatus `json:"status"`
+		ChangedAt         time.Time `json:"changed_at"`
+		ChangedByDeviceID string    `json:"changed_by_device_id"`
+	} `json:"data"`
+}
+
 type OrderReadyEvent struct {
 	EventEnvelope
 	Data struct {
@@ -105,6 +121,7 @@ const (
 	EventTypeItemRemoved         = "ItemRemoved"
 	EventTypeOrderConfirmed      = "OrderConfirmed"
 	EventTypeKotCreated          = "KOTCreated"
+	EventTypeKotStatusChanged    = "KOTStatusChanged"
 	EventTypeOrderReady          = "OrderReady"
 	EventTypeSentToKitchen       = "SentToKitchen"
 	EventTypeOrderCancelled      = "OrderCancelled"
@@ -120,6 +137,7 @@ var OutboxEventTypes = []string{
 	EventTypeItemRemoved,
 	EventTypeOrderConfirmed,
 	EventTypeKotCreated,
+	EventTypeKotStatusChanged,
 	EventTypeOrderReady,
 	EventTypeSentToKitchen,
 	EventTypeOrderCancelled,

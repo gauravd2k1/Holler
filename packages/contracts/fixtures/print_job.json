@@ -1,0 +1,11 @@
+{
+  "id": "018e5a2e-a001-7c3d-9f4e-1234567890ab",
+  "kot_id": "018e5a2e-6666-7c3d-9f4e-1234567890ab",
+  "printer_id": "018e5a2e-9001-7c3d-9f4e-1234567890ab",
+  "status": "FAILED",
+  "attempt_count": 3,
+  "last_error": "connect 192.168.1.50:9100: connection refused",
+  "created_at": "2026-08-07T10:15:31Z",
+  "updated_at": "2026-08-07T10:16:02Z",
+  "schema_version": 1
+}

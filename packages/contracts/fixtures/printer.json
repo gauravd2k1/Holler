@@ -1,0 +1,11 @@
+{
+  "id": "018e5a2e-9001-7c3d-9f4e-1234567890ab",
+  "outlet_id": "018e5a2e-1a09-7c3d-9f4e-1234567890ab",
+  "name": "Tandoor Printer",
+  "connection_kind": "ESCPOS_NETWORK",
+  "address": "192.168.1.50:9100",
+  "paper_width_mm": 80,
+  "is_active": true,
+  "config_version": 7,
+  "schema_version": 1
+}

@@ -7,7 +7,7 @@
 
 import { z } from "zod";
 import { CanonicalOrderSchema } from "./order";
-import { KotSchema } from "./kot";
+import { KotSchema, KotStatusSchema } from "./kot";
 import { TableSessionSchema } from "./table";
 
 const EventEnvelope = <T extends z.ZodTypeAny>(eventType: string, dataSchema: T) =>
@@ -69,6 +69,31 @@ export type OrderConfirmedEvent = z.infer<typeof OrderConfirmedEventSchema>;
 export const KotCreatedEventSchema = EventEnvelope("KOTCreated", z.object({ kot: KotSchema }));
 export type KotCreatedEvent = z.infer<typeof KotCreatedEventSchema>;
 
+// Added at 0.3.0 (ADR-014). Milestone 2 gives the KOT a lifecycle — NEW →
+// ACKNOWLEDGED → PREPARING → READY → SERVED — driven from KDS screens on the
+// LAN. Before this, KOTCreated was the only KOT event frozen, so every
+// transition after creation was invisible to the cloud: reporting could see
+// that a ticket existed and never that the kitchen worked it.
+//
+// The status is carried with the moment the EDGE recorded it, not the moment
+// the cloud received it (§50.1). Kitchen timing analytics are the whole point
+// of the event, and an outlet that syncs once an hour would otherwise report
+// every ticket as having been prepared in the same instant.
+export const KotStatusChangedEventSchema = EventEnvelope(
+  // Spelled KOT-, matching its sibling KOTCreated. The identifiers around it
+  // read Kot- because that is Go and TypeScript naming; only the wire literal
+  // is shouted, and it stays consistent with the event already frozen.
+  "KOTStatusChanged",
+  z.object({
+    kot_id: z.string().uuid(),
+    order_id: z.string().uuid(),
+    status: KotStatusSchema,
+    changed_at: z.string().datetime(),
+    changed_by_device_id: z.string().uuid(),
+  }),
+);
+export type KotStatusChangedEvent = z.infer<typeof KotStatusChangedEventSchema>;
+
 export const OrderReadyEventSchema = EventEnvelope(
   "OrderReady",
   z.object({ order_id: z.string().uuid() }),
@@ -109,6 +134,7 @@ export const OutboxEventSchema = z.discriminatedUnion("event_type", [
   ItemRemovedEventSchema,
   OrderConfirmedEventSchema,
   KotCreatedEventSchema,
+  KotStatusChangedEventSchema,
   OrderReadyEventSchema,
   SentToKitchenEventSchema,
   OrderCancelledEventSchema,
@@ -128,6 +154,7 @@ export const OUTBOX_EVENT_TYPES = [
   "ItemRemoved",
   "OrderConfirmed",
   "KOTCreated",
+  "KOTStatusChanged",
   "OrderReady",
   "SentToKitchen",
   "OrderCancelled",
