@@ -16,6 +16,11 @@ type Config struct {
 	AccessTokenTTL  time.Duration
 	RefreshTokenTTL time.Duration
 	TokenSigningKey []byte
+	// ContractsDir points at the frozen packages/contracts/postgres
+	// migrations directory postgres.Migrate applies at startup. Never a
+	// literal in cmd/api — always sourced from here, so a deployment can
+	// relocate the contracts checkout without a code change.
+	ContractsDir string
 }
 
 // Load reads configuration from the environment, applying defaults only for
@@ -23,8 +28,9 @@ type Config struct {
 // signing key is a startup error, never a generated fallback.
 func Load() (Config, error) {
 	cfg := Config{
-		Port:        envOr("PORT", "8080"),
-		DatabaseURL: os.Getenv("DATABASE_URL"),
+		Port:         envOr("PORT", "8080"),
+		DatabaseURL:  os.Getenv("DATABASE_URL"),
+		ContractsDir: envOr("CONTRACTS_DIR", "../packages/contracts/postgres"),
 	}
 
 	if cfg.DatabaseURL == "" {
