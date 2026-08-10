@@ -66,18 +66,27 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: edge/database -> target
+      # Milestone 2 added printer and device. A crate absent from this list is
+      # a crate CI does not defend, which is how edge/database's own drift went
+      # unguarded until 0.2.3 — keep this list matching the edge/ directory.
       - name: fmt
         run: |
           cd edge/database && cargo fmt --check
           cd ../sync && cargo fmt --check
+          cd ../printer && cargo fmt --check
+          cd ../device && cargo fmt --check
       - name: clippy
         run: |
           cd edge/database && cargo clippy --all-targets -- -D warnings
           cd ../sync && cargo clippy --all-targets -- -D warnings
+          cd ../printer && cargo clippy --all-targets -- -D warnings
+          cd ../device && cargo clippy --all-targets -- -D warnings
       - name: test
         run: |
           cd edge/database && cargo test
           cd ../sync && cargo test
+          cd ../printer && cargo test
+          cd ../device && cargo test
 
   pos:
     runs-on: ubuntu-latest
@@ -97,3 +106,53 @@ jobs:
         run: cd apps/pos && pnpm test
       - name: build
         run: cd apps/pos && pnpm build
+
+  kds:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - name: install
+        run: cd apps/kds && pnpm install --frozen-lockfile
+      - name: typecheck
+        run: cd apps/kds && pnpm exec tsc --noEmit
+      - name: test
+        run: cd apps/kds && pnpm test
+      - name: build
+        run: cd apps/kds && pnpm build
+
+  # The KDS and the edge node are written in different languages and are
+  # otherwise tested only against their own fakes. They already failed to
+  # interoperate once — the server required handshake params the client did not
+  # send, and both were faithful to the frozen contract, because lan.ts pinned
+  # payloads and not the handshake. This job is the only thing that connects
+  # them, so without it that class of break returns silently.
+  lan-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tests/integration/kds-lan-bridge -> target
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      # The suite drives the real apps/kds client modules, so their deps must
+      # be installed even though the test lives elsewhere.
+      - name: install kds deps
+        run: cd apps/kds && pnpm install --frozen-lockfile
+      - name: install harness deps
+        run: cd tests/integration/kds-lan && pnpm install --frozen-lockfile
+      - name: build bridge
+        run: cd tests/integration/kds-lan-bridge && cargo build
+      - name: real socket session
+        run: cd tests/integration/kds-lan && pnpm test

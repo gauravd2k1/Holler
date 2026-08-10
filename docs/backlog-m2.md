@@ -88,5 +88,17 @@ M2 ships kitchen features to this same target, so validating the target before a
 
 ## Testing
 
-- **Postgres integration tests have never run.** Every `HOLLER_TEST_DATABASE_URL`-gated test skips in this environment, so all cloud SQL — including `PostgresRefreshStore`'s rotation and family revocation — is code-reviewed, not executed.
+- ~~**Postgres integration tests have never run.**~~ **They run now — and nine of them fail.** The entry was wrong about the cause: the tests were never gated on a *missing* Postgres, they were gated on `HOLLER_TEST_DATABASE_URL` being unset while `holler-postgres-1` was up the whole time. Nobody had set the variable. Running them revealed nine failures, all **test-fixture bugs, not production bugs** — which is precisely why they went unnoticed: a suite that never executes cannot fail.
+
+  | Package | Tests | Failure |
+  |---|---|---|
+  | `internal/auth` | `TestIntegration_CreateUserAndLogin`, 3 × `PostgresRefreshStore` | `column "tenant_id" of relation "outlet" does not exist` — the fixture inserts an outlet scoped by `tenant_id`, but `outlet` is `brand_id`-scoped (`postgres/0001_init.sql`) |
+  | `internal/kitchen` | `TestPostgresRepository_StationPrinterKotLifecycle` | `CreateCategory: unauthorized` — fixture builds no principal |
+  | `internal/ordering` | 4 × `TestPostgresRepository_*` | same missing-principal fixture bug |
+
+  What this costs: `PostgresRefreshStore`'s **rotation and family-revocation logic has still never actually executed** — the security behaviour ADR-012 relies on is code-reviewed only, and the fixture bug is what has been hiding that. Same for ordering's idempotency-on-replay and the 0.2.4 canonical-field round-trip.
+
+  Passing against real Postgres, verified: `TestBuildRouter_SyncConfigEndToEnd` (login → create table/category/item/station → pull `/sync/config` twice) and `TestIntegration_ListEdgeUserCache`, plus all of `menu`, `outlet`, `tables`, `tenant`.
+
+- **CI never ran most of what Milestone 2 built.** `.github/workflows/ci.yml` covered `edge/database` and `edge/sync` but not `edge/printer` or `edge/device`, and `apps/pos` but not `apps/kds` — and nothing ran the cross-language LAN socket test. Fixed in this milestone; the lesson is that a crate absent from that file is a crate CI does not defend, which is the same shape as the drift check omitting `edge/database` until 0.2.3.
 - **`make test` covers only Go.** The Rust and TypeScript suites are run directly. Either extend the target or stop calling it the project test command.
