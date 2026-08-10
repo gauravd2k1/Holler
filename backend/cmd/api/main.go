@@ -126,7 +126,7 @@ func buildRouter(pool postgres.Pool, cfg config.Config) *chi.Mux {
 	orderingHandler := ordering.NewHandler(orderingSvc)
 
 	// --- composite GET /sync/config ---------------------------------------
-	syncConfig := newSyncConfigHandler(outletSvc, menuSvc, tablesSvc, kitchenSvc)
+	syncConfig := newSyncConfigHandler(outletSvc, menuSvc, tablesSvc, kitchenSvc, authSvc)
 
 	router := httpx.NewRouter()
 	router.Get("/health", health.Handler)

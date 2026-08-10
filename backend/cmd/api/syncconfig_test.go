@@ -64,6 +64,28 @@ func (f fakeKitchenProvider) SyncConfigBundle(ctx context.Context, tenantID, out
 	return f.bundle, nil
 }
 
+// fakeUsersProvider stands in for auth.Service.ListEdgeUserCache. It applies
+// the same tenant/since_version filtering a real implementation must, so
+// tests can assert the handler passes both through untouched.
+type fakeUsersProvider struct {
+	entries []contracts.EdgeUserCacheEntry
+}
+
+func (f fakeUsersProvider) ListEdgeUserCache(ctx context.Context, tenantID, outletID string, sinceVersion int) ([]contracts.EdgeUserCacheEntry, error) {
+	if tenantID != scTenantID || outletID != scOutletID {
+		return nil, httpx.ErrNotFound
+	}
+	var out []contracts.EdgeUserCacheEntry
+	for _, e := range f.entries {
+		if e.ConfigVersion > sinceVersion {
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}
+
+func pinHashPtr(s string) *string { return &s }
+
 func newTestSyncConfigHandler() *syncConfigHandler {
 	return newSyncConfigHandler(
 		fakeOutletProvider{outlet: outlet.Outlet{ID: scOutletID, ConfigVersion: 7}},
@@ -91,6 +113,24 @@ func newTestSyncConfigHandler() *syncConfigHandler {
 				StationPrinters: []contracts.StationPrinter{{StationID: "station-1", PrinterID: "printer-1"}},
 			},
 		},
+		fakeUsersProvider{
+			entries: []contracts.EdgeUserCacheEntry{
+				{
+					ID: "user-old", TenantID: scTenantID, OutletID: scOutletID,
+					Email: "old@example.com", FullName: "Old User",
+					PasswordHash: "argon2id-hash-old", PinHash: nil,
+					IsActive: true, Permissions: []contracts.Permission{auth.PermissionOrderCreate},
+					ConfigVersion: 1, SchemaVersion: 1,
+				},
+				{
+					ID: "user-new", TenantID: scTenantID, OutletID: scOutletID,
+					Email: "new@example.com", FullName: "New User",
+					PasswordHash: "argon2id-hash-new", PinHash: pinHashPtr("argon2id-pin-new"),
+					IsActive: true, Permissions: []contracts.Permission{auth.PermissionOrderCreate, auth.PermissionUserManage},
+					ConfigVersion: 6, SchemaVersion: 1,
+				},
+			},
+		},
 	)
 }
 
@@ -115,9 +155,8 @@ func testPrincipal() auth.AuthenticatedPrincipal {
 }
 
 // TestSyncConfig_AllNineFieldsPresent verifies the response has exactly the
-// nine fields packages/contracts/openapi/openapi.yaml requires, and that
-// credential material never appears (users is always [] pending the gap
-// documented on edgeUserCacheEntryWire).
+// nine fields packages/contracts/openapi/openapi.yaml requires, and that the
+// users array is populated with credential material intact.
 func TestSyncConfig_AllNineFieldsPresent(t *testing.T) {
 	h := newTestSyncConfigHandler()
 	p := testPrincipal()
@@ -149,12 +188,87 @@ func TestSyncConfig_AllNineFieldsPresent(t *testing.T) {
 	if resp.ConfigVersion != 7 {
 		t.Errorf("expected config_version 7, got %d", resp.ConfigVersion)
 	}
-	if len(resp.Users) != 0 {
-		t.Errorf("expected users to be empty (credential-material gap), got %d entries", len(resp.Users))
+	if len(resp.Users) != 2 {
+		t.Fatalf("expected 2 users, got %d", len(resp.Users))
+	}
+	if !contains(rec.Body.String(), "argon2id-hash-old") || !contains(rec.Body.String(), "argon2id-hash-new") {
+		t.Errorf("expected password_hash values on the wire: %s", rec.Body.String())
+	}
+}
+
+// TestSyncConfig_UsersPinHashRoundTripsBothStates asserts pin_hash is
+// present-and-null for a user with no PIN, and present-and-set for a user
+// with one — an omitted key round-trips to a different object, so both
+// states are checked against the raw JSON, not just the decoded struct.
+func TestSyncConfig_UsersPinHashRoundTripsBothStates(t *testing.T) {
+	h := newTestSyncConfigHandler()
+	p := testPrincipal()
+	rec := doSyncConfigRequest(t, h, &p, "outlet_id="+scOutletID+"&since_version=0")
+
+	var raw struct {
+		Users []map[string]json.RawMessage `json:"users"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if len(raw.Users) != 2 {
+		t.Fatalf("expected 2 users, got %d", len(raw.Users))
 	}
 
-	if contains(rec.Body.String(), "password_hash") {
-		t.Errorf("response must never mention password_hash while users is empty: %s", rec.Body.String())
+	byEmail := map[string]map[string]json.RawMessage{}
+	for _, u := range raw.Users {
+		var email string
+		if err := json.Unmarshal(u["email"], &email); err != nil {
+			t.Fatalf("decoding email: %v", err)
+		}
+		byEmail[email] = u
+	}
+
+	oldRaw, ok := byEmail["old@example.com"]["pin_hash"]
+	if !ok {
+		t.Fatal("pin_hash key must be present, not omitted, when nil")
+	}
+	if string(oldRaw) != "null" {
+		t.Errorf("expected pin_hash null for old@example.com, got %s", string(oldRaw))
+	}
+
+	newRaw, ok := byEmail["new@example.com"]["pin_hash"]
+	if !ok {
+		t.Fatal("pin_hash key must be present when set")
+	}
+	var newPinHash string
+	if err := json.Unmarshal(newRaw, &newPinHash); err != nil {
+		t.Fatalf("decoding pin_hash: %v", err)
+	}
+	if newPinHash != "argon2id-pin-new" {
+		t.Errorf("expected pin_hash argon2id-pin-new, got %q", newPinHash)
+	}
+}
+
+// TestSyncConfig_UsersPermissionsFlattened asserts each user's permissions
+// arrive as a resolved, flat claim list rather than role references — the
+// edge has no role table to resolve against.
+func TestSyncConfig_UsersPermissionsFlattened(t *testing.T) {
+	h := newTestSyncConfigHandler()
+	p := testPrincipal()
+	rec := doSyncConfigRequest(t, h, &p, "outlet_id="+scOutletID+"&since_version=0")
+
+	var resp syncConfigResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+
+	var newUser *contracts.EdgeUserCacheEntry
+	for i := range resp.Users {
+		if resp.Users[i].Email == "new@example.com" {
+			newUser = &resp.Users[i]
+		}
+	}
+	if newUser == nil {
+		t.Fatal("expected new@example.com in users")
+	}
+	if len(newUser.Permissions) != 2 {
+		t.Fatalf("expected 2 flattened permissions, got %v", newUser.Permissions)
 	}
 }
 
@@ -181,6 +295,9 @@ func TestSyncConfig_SinceVersionFiltering(t *testing.T) {
 	}
 	if len(resp.Items) != 1 || resp.Items[0].ID != "item-new" {
 		t.Errorf("expected only item-new (config_version 6 > 3), got %+v", resp.Items)
+	}
+	if len(resp.Users) != 1 || resp.Users[0].ID != "user-new" {
+		t.Errorf("expected only user-new (config_version 6 > 3), got %+v", resp.Users)
 	}
 }
 

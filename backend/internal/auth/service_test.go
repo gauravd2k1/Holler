@@ -45,7 +45,7 @@ func (f *fakeRepo) FindUserByIDForAuth(ctx context.Context, userID string) (cred
 }
 
 func (f *fakeRepo) CreateUser(ctx context.Context, uid, tenantID, email, fullName, passwordHash string, now time.Time) error {
-	f.users[uid] = credentialRow{id: uid, tenantID: tenantID, email: email, fullName: fullName, passwordHash: passwordHash, isActive: true, createdAt: now, updatedAt: now}
+	f.users[uid] = credentialRow{id: uid, tenantID: tenantID, email: email, fullName: fullName, passwordHash: passwordHash, isActive: true, configVersion: 1, createdAt: now, updatedAt: now}
 	f.emailIndex[tenantID+"|"+email] = uid
 	return nil
 }
@@ -89,6 +89,11 @@ func (f *fakeRepo) PermissionsForRole(ctx context.Context, roleID string) ([]Per
 
 func (f *fakeRepo) ReplaceUserRoles(ctx context.Context, userID string, assignments []RoleAssignment, now time.Time) error {
 	f.userRoles[userID] = assignments
+	if row, ok := f.users[userID]; ok {
+		row.configVersion++
+		row.updatedAt = now
+		f.users[userID] = row
+	}
 	return nil
 }
 
@@ -112,6 +117,29 @@ func (f *fakeRepo) GetRole(ctx context.Context, tenantID, roleID string) (Role, 
 
 func (f *fakeRepo) addRole(role Role) {
 	f.roles[role.ID] = role
+}
+
+// ListUsersForEdgeCache mirrors Repository.ListUsersForEdgeCache: users of
+// tenantID with a role assignment either tenant-wide or scoped to outletID,
+// newer than sinceVersion.
+func (f *fakeRepo) ListUsersForEdgeCache(ctx context.Context, tenantID, outletID string, sinceVersion int) ([]credentialRow, error) {
+	var out []credentialRow
+	for uid, row := range f.users {
+		if row.tenantID != tenantID || row.configVersion <= sinceVersion {
+			continue
+		}
+		eligible := false
+		for _, a := range f.userRoles[uid] {
+			if a.OutletID == nil || *a.OutletID == outletID {
+				eligible = true
+				break
+			}
+		}
+		if eligible {
+			out = append(out, row)
+		}
+	}
+	return out, nil
 }
 
 // fakeAuditor records Audit calls in-memory for assertions.

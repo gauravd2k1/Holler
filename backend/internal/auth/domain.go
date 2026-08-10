@@ -87,6 +87,12 @@ type User = contracts.AppUser
 // AuthenticatedPrincipal is what a session resolves to.
 type AuthenticatedPrincipal = contracts.AuthenticatedPrincipal
 
+// EdgeUserCacheEntry is the ONE named exception to this package's rule that
+// password_hash/pin_hash never leave the repository layer (ADR-015). It
+// exists solely to be returned by Service.ListEdgeUserCache, which feeds
+// GET /sync/config's users array and nowhere else.
+type EdgeUserCacheEntry = contracts.EdgeUserCacheEntry
+
 // hasPermission reports whether p carries permission. It is a free function,
 // not a method, because AuthenticatedPrincipal is a type alias onto
 // contracts.AuthenticatedPrincipal and Go forbids attaching methods to a

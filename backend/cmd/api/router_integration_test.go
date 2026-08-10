@@ -57,12 +57,11 @@ func setupIntegrationPool(t *testing.T) postgres.Pool {
 // buildRouter (real Postgres-backed repositories, not fakes) end to end:
 // login, create a table/category/item/station via the mounted HTTP routes,
 // then pull GET /sync/config and assert all nine fields are present, that
-// since_version filtering excludes rows at or below the watermark, and that
-// no response anywhere in this flow — /auth/login included — ever carries
-// password_hash/pin_hash except inside /sync/config's users array (which, per
-// the contract gap documented on edgeUserCacheEntryWire, is currently always
-// empty; this test's job is to prove nothing else leaks it, not that the
-// unimplemented field is populated).
+// since_version filtering excludes rows at or below the watermark for both
+// the pre-existing fields and users, and that no response anywhere in this
+// flow — /auth/login included — ever carries password_hash/pin_hash except
+// inside /sync/config's own users array, where both fields are expected
+// (ADR-015).
 func TestBuildRouter_SyncConfigEndToEnd(t *testing.T) {
 	pool := setupIntegrationPool(t)
 	ctx := context.Background()
@@ -74,6 +73,27 @@ func TestBuildRouter_SyncConfigEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateOrganisation: %v", err)
 	}
+	// This fixture uses fixed IDs below (userID, station id) rather than
+	// id.New(), so without cleanup a second run collides on a primary key
+	// that survived the first. Delete in FK-safe order, scoped to org.ID.
+	t.Cleanup(func() {
+		pool.Exec(ctx, `DELETE FROM audit_event WHERE tenant_id = $1`, org.ID)
+		pool.Exec(ctx, `DELETE FROM refresh_token WHERE user_id IN (SELECT id FROM app_user WHERE tenant_id = $1)`, org.ID)
+		pool.Exec(ctx, `DELETE FROM user_role WHERE user_id IN (SELECT id FROM app_user WHERE tenant_id = $1)`, org.ID)
+		pool.Exec(ctx, `DELETE FROM app_user WHERE tenant_id = $1`, org.ID)
+		pool.Exec(ctx, `DELETE FROM role_permission WHERE role_id IN (SELECT id FROM role WHERE tenant_id = $1)`, org.ID)
+		pool.Exec(ctx, `DELETE FROM role WHERE tenant_id = $1`, org.ID)
+		pool.Exec(ctx, `DELETE FROM menu_item_station WHERE menu_item_id IN (SELECT id FROM menu_item WHERE outlet_id IN (SELECT id FROM outlet WHERE brand_id IN (SELECT id FROM brand WHERE tenant_id = $1)))`, org.ID)
+		pool.Exec(ctx, `DELETE FROM station_printer WHERE station_id IN (SELECT id FROM station WHERE outlet_id IN (SELECT id FROM outlet WHERE brand_id IN (SELECT id FROM brand WHERE tenant_id = $1)))`, org.ID)
+		pool.Exec(ctx, `DELETE FROM station WHERE outlet_id IN (SELECT id FROM outlet WHERE brand_id IN (SELECT id FROM brand WHERE tenant_id = $1))`, org.ID)
+		pool.Exec(ctx, `DELETE FROM printer WHERE outlet_id IN (SELECT id FROM outlet WHERE brand_id IN (SELECT id FROM brand WHERE tenant_id = $1))`, org.ID)
+		pool.Exec(ctx, `DELETE FROM restaurant_table WHERE outlet_id IN (SELECT id FROM outlet WHERE brand_id IN (SELECT id FROM brand WHERE tenant_id = $1))`, org.ID)
+		pool.Exec(ctx, `DELETE FROM menu_item WHERE outlet_id IN (SELECT id FROM outlet WHERE brand_id IN (SELECT id FROM brand WHERE tenant_id = $1))`, org.ID)
+		pool.Exec(ctx, `DELETE FROM menu_category WHERE outlet_id IN (SELECT id FROM outlet WHERE brand_id IN (SELECT id FROM brand WHERE tenant_id = $1))`, org.ID)
+		pool.Exec(ctx, `DELETE FROM outlet WHERE brand_id IN (SELECT id FROM brand WHERE tenant_id = $1)`, org.ID)
+		pool.Exec(ctx, `DELETE FROM brand WHERE tenant_id = $1`, org.ID)
+		pool.Exec(ctx, `DELETE FROM tenant WHERE id = $1`, org.ID)
+	})
 	brand, err := tenantSvc.CreateBrand(ctx, org.ID, "Sync Config Integration Brand")
 	if err != nil {
 		t.Fatalf("CreateBrand: %v", err)
@@ -266,6 +286,24 @@ func TestBuildRouter_SyncConfigEndToEnd(t *testing.T) {
 	if len(resp.Stations) != 1 {
 		t.Errorf("expected exactly the one station, got %+v", resp.Stations)
 	}
+	if len(resp.Users) != 1 || resp.Users[0].ID != userID {
+		t.Fatalf("expected exactly the tenant-wide login user in the edge cache, got %+v", resp.Users)
+	}
+	if resp.Users[0].PasswordHash == "" {
+		t.Errorf("expected password_hash populated on the edge cache entry")
+	}
+	if resp.Users[0].PinHash != nil {
+		t.Errorf("expected pin_hash nil (no PIN set for this fixture user), got %v", *resp.Users[0].PinHash)
+	}
+	foundUserManage := false
+	for _, p := range resp.Users[0].Permissions {
+		if string(p) == "user.manage" {
+			foundUserManage = true
+		}
+	}
+	if !foundUserManage {
+		t.Errorf("expected the Organisation Owner's flattened permissions to include user.manage, got %v", resp.Users[0].Permissions)
+	}
 
 	// --- since_version filtering: pulling again with the table's own
 	// config_version as the watermark must exclude it. ---------------------
@@ -284,10 +322,25 @@ func TestBuildRouter_SyncConfigEndToEnd(t *testing.T) {
 		}
 	}
 
-	// --- credential material must appear nowhere in this whole flow,
-	// including /sync/config's own body (users is empty pending the gap) --
-	if containsCredentialMaterial(rawBody) {
-		t.Errorf("GET /sync/config response must never leak credential material while users is empty: %s", string(rawBody))
+	// --- credential material must appear inside /sync/config's users array
+	// and nowhere else in this response (ADR-015). Strip "users" out and
+	// assert the remainder of the body is clean, then assert users itself
+	// does carry it — a false negative there would hide the field silently
+	// going missing rather than proving containment.
+	withoutUsers := map[string]json.RawMessage{}
+	if err := json.Unmarshal(rawBody, &withoutUsers); err != nil {
+		t.Fatalf("re-decoding /sync/config body: %v", err)
+	}
+	delete(withoutUsers, "users")
+	restOfBody, err := json.Marshal(withoutUsers)
+	if err != nil {
+		t.Fatalf("marshaling body without users: %v", err)
+	}
+	if containsCredentialMaterial(restOfBody) {
+		t.Errorf("GET /sync/config response must never leak credential material outside users: %s", string(restOfBody))
+	}
+	if !containsCredentialMaterial(rawBody) {
+		t.Errorf("expected GET /sync/config's users array to carry password_hash, got none: %s", string(rawBody))
 	}
 }
 

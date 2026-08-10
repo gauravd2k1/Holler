@@ -26,6 +26,7 @@ type UserRepository interface {
 	ReplaceUserRoles(ctx context.Context, userID string, assignments []RoleAssignment, now time.Time) error
 	ListRoles(ctx context.Context, tenantID string) ([]Role, error)
 	GetRole(ctx context.Context, tenantID, roleID string) (Role, error)
+	ListUsersForEdgeCache(ctx context.Context, tenantID, outletID string, sinceVersion int) ([]credentialRow, error)
 }
 
 // Service implements login, refresh rotation, logout, user/role management
@@ -175,28 +176,9 @@ func (s *Service) Logout(ctx context.Context, refreshToken string) {
 // given outlet: the union of every tenant-wide role's permissions plus every
 // role assigned specifically at that outlet.
 func (s *Service) resolvePrincipal(ctx context.Context, userID, tenantID, fullName, outletID string) (AuthenticatedPrincipal, error) {
-	assignments, err := s.repo.RolesForUser(ctx, userID)
+	permissions, err := s.resolveUserPermissions(ctx, userID, outletID)
 	if err != nil {
 		return AuthenticatedPrincipal{}, err
-	}
-
-	seen := make(map[Permission]struct{})
-	for _, a := range assignments {
-		if a.OutletID != nil && *a.OutletID != outletID {
-			continue
-		}
-		perms, err := s.repo.PermissionsForRole(ctx, a.RoleID)
-		if err != nil {
-			return AuthenticatedPrincipal{}, err
-		}
-		for _, p := range perms {
-			seen[p] = struct{}{}
-		}
-	}
-
-	permissions := make([]Permission, 0, len(seen))
-	for p := range seen {
-		permissions = append(permissions, p)
 	}
 
 	return AuthenticatedPrincipal{
@@ -208,6 +190,76 @@ func (s *Service) resolvePrincipal(ctx context.Context, userID, tenantID, fullNa
 		AuthenticatedOffline: false,
 		SchemaVersion:        schemaVersion,
 	}, nil
+}
+
+// resolveUserPermissions is the shared core of resolvePrincipal and
+// ListEdgeUserCache: the union of every tenant-wide role's permissions plus
+// every role assigned specifically at outletID, for one user.
+func (s *Service) resolveUserPermissions(ctx context.Context, userID, outletID string) ([]Permission, error) {
+	assignments, err := s.repo.RolesForUser(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	seen := make(map[Permission]struct{})
+	for _, a := range assignments {
+		if a.OutletID != nil && *a.OutletID != outletID {
+			continue
+		}
+		perms, err := s.repo.PermissionsForRole(ctx, a.RoleID)
+		if err != nil {
+			return nil, err
+		}
+		for _, p := range perms {
+			seen[p] = struct{}{}
+		}
+	}
+
+	permissions := make([]Permission, 0, len(seen))
+	for p := range seen {
+		permissions = append(permissions, p)
+	}
+	return permissions, nil
+}
+
+// edgeUserCacheSchemaVersion is EdgeUserCacheEntry's schema_version
+// (packages/contracts/openapi/openapi.yaml EdgeUserCacheEntry, added 0.3.1).
+const edgeUserCacheSchemaVersion = 1
+
+// ListEdgeUserCache resolves the users array of GET /sync/config (ADR-015):
+// every user of tenantID eligible to log in at outletID, with password_hash
+// and pin_hash carried verbatim and permissions resolved server-side into a
+// flat claim set, because the edge holds no role table. This is the ONLY
+// exported method in this package that returns either hash — callers outside
+// the /sync/config composite handler must not exist.
+func (s *Service) ListEdgeUserCache(ctx context.Context, tenantID, outletID string, sinceVersion int) ([]EdgeUserCacheEntry, error) {
+	rows, err := s.repo.ListUsersForEdgeCache(ctx, tenantID, outletID, sinceVersion)
+	if err != nil {
+		return nil, err
+	}
+
+	entries := make([]EdgeUserCacheEntry, 0, len(rows))
+	for _, row := range rows {
+		permissions, err := s.resolveUserPermissions(ctx, row.id, outletID)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, EdgeUserCacheEntry{
+			ID:            row.id,
+			TenantID:      row.tenantID,
+			OutletID:      outletID,
+			Email:         row.email,
+			FullName:      row.fullName,
+			PasswordHash:  row.passwordHash,
+			PinHash:       row.pinHash,
+			IsActive:      row.isActive,
+			Permissions:   permissions,
+			ConfigVersion: row.configVersion,
+			UpdatedAt:     row.updatedAt,
+			SchemaVersion: edgeUserCacheSchemaVersion,
+		})
+	}
+	return entries, nil
 }
 
 // ResolvePermissions is exported for tests and for callers that already hold

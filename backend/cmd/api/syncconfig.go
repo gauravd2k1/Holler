@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"strconv"
-	"time"
 
 	contracts "github.com/holler/contracts"
 
@@ -24,8 +23,12 @@ import (
 //
 // Every field this handler assembles comes from an existing exported method
 // on the owning context's Service — this file never runs its own SQL and
-// never reimplements another context's query (task instruction). The one
-// field it CANNOT assemble is documented on edgeUserCacheEntryWire below.
+// never reimplements another context's query (task instruction), including
+// `users`, populated via auth.Service.ListEdgeUserCache (ADR-015).
+//
+// This handler's ServeHTTP is the ONE place in backend/ that puts
+// password_hash / pin_hash on the wire. No other route, event payload, log
+// line or audit value may carry either field.
 
 // outletConfigProvider is the minimal seam onto backend/internal/outlet this
 // handler needs: resolving outlet_id against the caller's tenant (so a
@@ -56,29 +59,14 @@ type kitchenConfigProvider interface {
 	SyncConfigBundle(ctx context.Context, tenantID, outletID string, sinceVersion int) (kitchen.ConfigBundle, error)
 }
 
-// edgeUserCacheEntryWire mirrors packages/contracts/openapi/openapi.yaml's
-// EdgeUserCacheEntry schema field-for-field. There is deliberately no Go
-// mirror of this schema in packages/contracts/go (see
-// packages/contracts/go/identity.go's package doc: "no struct here carries
-// credential material") and backend/internal/auth exports no method that
-// returns a password_hash outside its own login/refresh flow (the hash lives
-// only in that package's unexported credentialRow). This handler therefore
-// cannot populate `users` without either a contracts addition or a new
-// exported auth method — both out of this task's owned directories
-// (backend/cmd/api, backend/internal/platform). See the "users" gap in this
-// task's final report; `users` is always `[]` until that lands.
-type edgeUserCacheEntryWire struct {
-	ID            string    `json:"id"`
-	TenantID      string    `json:"tenant_id"`
-	OutletID      string    `json:"outlet_id"`
-	Email         string    `json:"email"`
-	FullName      string    `json:"full_name"`
-	PasswordHash  string    `json:"password_hash"`
-	PinHash       *string   `json:"pin_hash,omitempty"`
-	IsActive      bool      `json:"is_active"`
-	Permissions   []string  `json:"permissions"`
-	ConfigVersion int       `json:"config_version"`
-	UpdatedAt     time.Time `json:"updated_at"`
+// edgeUserCacheProvider is the minimal seam onto backend/internal/auth this
+// handler needs: users eligible to log in at outletID, with password_hash /
+// pin_hash carried verbatim and permissions already flattened server-side
+// (ADR-015). auth.Service.ListEdgeUserCache is the ONLY method in this
+// backend that returns either hash — this handler's ServeHTTP is the ONLY
+// place that puts one on the wire.
+type edgeUserCacheProvider interface {
+	ListEdgeUserCache(ctx context.Context, tenantID, outletID string, sinceVersion int) ([]contracts.EdgeUserCacheEntry, error)
 }
 
 // tableConfigWire, categoryConfigWire and itemConfigWire mirror the
@@ -120,15 +108,15 @@ type itemConfigWire struct {
 // syncConfigResponse is packages/contracts/openapi/openapi.yaml's
 // GET /sync/config 200 response, all nine required fields.
 type syncConfigResponse struct {
-	ConfigVersion   int                         `json:"config_version"`
-	Users           []edgeUserCacheEntryWire    `json:"users"`
-	Tables          []tableConfigWire           `json:"tables"`
-	Categories      []categoryConfigWire        `json:"categories"`
-	Items           []itemConfigWire            `json:"items"`
-	Stations        []contracts.Station         `json:"stations"`
-	ItemStations    []contracts.MenuItemStation `json:"item_stations"`
-	Printers        []contracts.Printer         `json:"printers"`
-	StationPrinters []contracts.StationPrinter  `json:"station_printers"`
+	ConfigVersion   int                            `json:"config_version"`
+	Users           []contracts.EdgeUserCacheEntry `json:"users"`
+	Tables          []tableConfigWire              `json:"tables"`
+	Categories      []categoryConfigWire           `json:"categories"`
+	Items           []itemConfigWire               `json:"items"`
+	Stations        []contracts.Station            `json:"stations"`
+	ItemStations    []contracts.MenuItemStation    `json:"item_stations"`
+	Printers        []contracts.Printer            `json:"printers"`
+	StationPrinters []contracts.StationPrinter     `json:"station_printers"`
 }
 
 // syncConfigHandler assembles the composite bundle. It never runs SQL
@@ -139,10 +127,11 @@ type syncConfigHandler struct {
 	menu    menuConfigProvider
 	tables  tablesConfigProvider
 	kitchen kitchenConfigProvider
+	users   edgeUserCacheProvider
 }
 
-func newSyncConfigHandler(outlets outletConfigProvider, menuSvc menuConfigProvider, tablesSvc tablesConfigProvider, kitchenSvc kitchenConfigProvider) *syncConfigHandler {
-	return &syncConfigHandler{outlets: outlets, menu: menuSvc, tables: tablesSvc, kitchen: kitchenSvc}
+func newSyncConfigHandler(outlets outletConfigProvider, menuSvc menuConfigProvider, tablesSvc tablesConfigProvider, kitchenSvc kitchenConfigProvider, usersSvc edgeUserCacheProvider) *syncConfigHandler {
+	return &syncConfigHandler{outlets: outlets, menu: menuSvc, tables: tablesSvc, kitchen: kitchenSvc, users: usersSvc}
 }
 
 func (h *syncConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -194,10 +183,15 @@ func (h *syncConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, err)
 		return
 	}
+	users, err := h.users.ListEdgeUserCache(r.Context(), principal.TenantID, outletID, sinceVersion)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
 
 	resp := syncConfigResponse{
 		ConfigVersion:   o.ConfigVersion,
-		Users:           []edgeUserCacheEntryWire{},
+		Users:           users,
 		Tables:          filterTables(tbls, sinceVersion),
 		Categories:      filterCategories(cats, sinceVersion),
 		Items:           filterItems(items, sinceVersion),
@@ -205,6 +199,9 @@ func (h *syncConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ItemStations:    bundle.ItemStations,
 		Printers:        bundle.Printers,
 		StationPrinters: bundle.StationPrinters,
+	}
+	if resp.Users == nil {
+		resp.Users = []contracts.EdgeUserCacheEntry{}
 	}
 	if resp.Stations == nil {
 		resp.Stations = []contracts.Station{}
