@@ -71,7 +71,9 @@ function makeController(sockets: FakeSocket[]) {
   return new ConnectionController({
     config: {
       url: "ws://edge.local/kds",
+      outletId: OUTLET_ID,
       deviceId: DEVICE_ID,
+      station: null,
       heartbeatTimeoutMs: 5_000,
       reconnectDelayMs: 1_000,
       transitionTimeoutMs: 3_000,

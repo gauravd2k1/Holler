@@ -3,7 +3,7 @@
 // real socket/server — this module must not block on T3's edge server
 // existing.
 import { KdsLanMessageSchema, type KdsLanCommand, type KdsLanMessage } from "@holler/contracts";
-import type { LanConfig } from "./lanConfig";
+import { buildConnectionUrl, type LanConfig } from "./lanConfig";
 
 /** The subset of the `WebSocket` API this client needs. Real `WebSocket`
  * satisfies this structurally; tests supply a fake. */
@@ -45,7 +45,9 @@ export class LanClient {
   connect(): void {
     this.closedByCaller = false;
     this.handlers.onConnectionStatusChange("connecting");
-    const socket = this.createSocket(this.config.url);
+    // Identity comes from the handshake, not from a payload field — see
+    // lanConfig.ts's transport note (ADR-014 §6).
+    const socket = this.createSocket(buildConnectionUrl(this.config));
     this.socket = socket;
 
     socket.onopen = () => {
