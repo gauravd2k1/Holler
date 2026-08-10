@@ -1,0 +1,100 @@
+# Quick-launch the POS against a bootstrapped development environment.
+#
+# DEVELOPMENT ONLY (ADR-013: outlet machines have no toolchain).
+#
+# Reads device identity and the edge encryption key from apps/pos/.env.dev,
+# which scripts\dev-bootstrap.ps1 writes at the end of its run. That file is
+# gitignored because it carries a database encryption key; .env.dev.example
+# documents its shape.
+#
+# Usage (from anywhere):
+#   .\apps\pos\run-dev.ps1
+#
+# See docs/DEV_SETUP.md.
+
+[CmdletBinding()]
+param(
+    # Alternate env file, e.g. to run a second till against another outlet.
+    [string]$EnvFile = (Join-Path $PSScriptRoot ".env.dev"),
+
+    # Skip the check that the Vite dev server is up.
+    [switch]$SkipViteCheck
+)
+
+$ErrorActionPreference = "Stop"
+
+if (-not (Test-Path $EnvFile)) {
+    throw @"
+No env file at $EnvFile.
+
+Run the bootstrap first, which seeds the databases and writes it:
+    .\scripts\dev-bootstrap.ps1
+
+See docs/DEV_SETUP.md.
+"@
+}
+
+# Parse KEY=VALUE. Blank lines and # comments are ignored; values are taken
+# verbatim (no quote stripping) because the key is hex and the ids are UUIDs.
+$required = @("HOLLER_OUTLET_ID", "HOLLER_DEVICE_ID", "HOLLER_DB_KEY_HEX")
+$loaded = @{}
+
+foreach ($line in Get-Content $EnvFile) {
+    $trimmed = $line.Trim()
+    if ($trimmed -eq "" -or $trimmed.StartsWith("#")) { continue }
+    if ($trimmed -match '^([A-Za-z_][A-Za-z0-9_]*)=(.*)$') {
+        $name = $Matches[1]
+        $value = $Matches[2].Trim()
+        Set-Item -Path "Env:\$name" -Value $value
+        $loaded[$name] = $value
+    }
+}
+
+$missing = $required | Where-Object { -not $loaded.ContainsKey($_) -or $loaded[$_] -eq "" }
+if ($missing) {
+    throw "$EnvFile is missing: $($missing -join ', '). Re-run .\scripts\dev-bootstrap.ps1."
+}
+
+# The POS panics on a key that is not 32 bytes of hex; catch it here with a
+# better message than a Rust panic in a GUI process.
+if ($loaded["HOLLER_DB_KEY_HEX"].Length -ne 64) {
+    throw "HOLLER_DB_KEY_HEX must be exactly 64 hex characters (32 bytes); got $($loaded['HOLLER_DB_KEY_HEX'].Length)."
+}
+
+# tauri.conf.json has an empty beforeDevCommand, so `tauri dev` does not start
+# Vite. Without it the window opens on a dead localhost:5173 and renders blank.
+if (-not $SkipViteCheck) {
+    $viteUp = $false
+    try {
+        $null = Invoke-WebRequest -Uri "http://localhost:5173" -UseBasicParsing -TimeoutSec 3
+        $viteUp = $true
+    } catch {
+        $viteUp = $false
+    }
+    if (-not $viteUp) {
+        # Literal here-string: a double-quoted one would treat the backticks
+        # around `tauri dev` as escape characters and emit a tab.
+        throw @'
+The Vite dev server is not answering on http://localhost:5173.
+
+Start it in its own terminal first:
+    cd apps\pos
+    pnpm dev
+
+(tauri.conf.json's beforeDevCommand is empty, so `tauri dev` will not start it
+for you -- see docs/DEV_SETUP.md, Known gaps.) Pass -SkipViteCheck to bypass.
+'@
+    }
+}
+
+Write-Host "outlet : $($loaded['HOLLER_OUTLET_ID'])"
+Write-Host "device : $($loaded['HOLLER_DEVICE_ID'])"
+Write-Host "env    : $EnvFile"
+Write-Host ""
+
+Push-Location $PSScriptRoot
+try {
+    pnpm exec tauri dev
+} finally {
+    Pop-Location
+}

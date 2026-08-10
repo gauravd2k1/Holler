@@ -16,7 +16,7 @@ enrollment that does not exist yet.
 ## Quick start
 
 ```powershell
-# 1. everything except the frontend
+# 1. everything except the frontend; also writes apps\pos\.env.dev
 .\scripts\dev-bootstrap.ps1
 
 # 2. frontend dev server (leave running)
@@ -24,15 +24,20 @@ cd apps\pos
 pnpm install
 pnpm dev
 
-# 3. in a SECOND terminal: env vars from step 1, then the POS
-cd apps\pos
-$env:HOLLER_OUTLET_ID  = "0191a000-0000-7000-8000-00000000000a"
-$env:HOLLER_DEVICE_ID  = "0191a000-0000-7000-8000-00000000000b"
-$env:HOLLER_DB_KEY_HEX = "5ff0c2a1b93d4e6f8a7c1d2e3f405162738495a6b7c8d9eafb0c1d2e3f405162"
-pnpm exec tauri dev
+# 3. in a SECOND terminal: the blessed launch command
+.\apps\pos\run-dev.ps1
 ```
 
 Login: `cashier@holler.test` / `holler123`
+
+`run-dev.ps1` is the **one** way to start the POS. It reads device identity and
+the encryption key from `apps\pos\.env.dev` (written by the bootstrap in step
+1), validates them, and refuses to launch with a clear message if Vite is not
+up — rather than opening a blank window. Do not hand-set the `HOLLER_*`
+variables; regenerate `.env.dev` by re-running the bootstrap instead.
+
+`.env.dev` is gitignored because it carries the edge database's encryption key.
+`apps/pos/.env.dev.example` documents its shape and is tracked.
 
 Re-running `dev-bootstrap.ps1` is safe — both seeders upsert against fixed
 development ids. Add `-SkipInfra` when the containers are already up.
@@ -61,6 +66,8 @@ go run ./cmd/api      # health endpoint on :8080
 
 `apps/pos/src-tauri/src/state.rs` reads these at startup and **panics if any is
 missing** — there is no device enrollment flow yet, so they stand in for it.
+You should not need to set them by hand: the bootstrap writes them to
+`apps\pos\.env.dev` and `run-dev.ps1` loads them.
 
 | Variable | Meaning |
 |---|---|
@@ -121,13 +128,17 @@ in the product (6), and one remains open (1).
    backend is run natively. Tracked as a separate issue.
 2. **`@tauri-apps/cli` was missing from `apps/pos/package.json`.** Without it
    there is no `tauri` binary to run. Now a devDependency; `pnpm install` picks
-   it up. There is no `tauri` npm *script*, so use `pnpm exec tauri dev`.
+   it up. There is no `tauri` npm *script*, so the underlying invocation is
+   `pnpm exec tauri dev` — which `run-dev.ps1` wraps.
 3. **Vite watcher looped on Rust rebuilds.** `vite.config.ts` now sets
    `server.watch.ignored: ["**/src-tauri/**"]` so Rust build artifacts do not
    retrigger the frontend. Committed.
 4. **`beforeDevCommand` is empty** in `tauri.conf.json`, so `tauri dev` does
    **not** start Vite for you. Run `pnpm dev` in its own terminal first, or
    `tauri dev` opens a window pointed at a dead `localhost:5173`.
+   `run-dev.ps1` checks for this and refuses to launch rather than opening a
+   blank window, but it does not start Vite for you either — starting a
+   background process the caller did not ask for is worse than a clear error.
 5. **Nothing seeded the databases.** Postgres had no migrations applied
    (`cmd/api` is still the Milestone 0 health-only entrypoint and never calls
    `postgres.Migrate`), and the edge database had no rows. This document and

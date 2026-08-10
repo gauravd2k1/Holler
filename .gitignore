@@ -25,6 +25,9 @@ apps/waiter/.dart_tool/
 *.sqlite-shm
 .env
 .env.local
+# Written by scripts/dev-bootstrap.ps1; carries the edge encryption key.
+# apps/pos/.env.dev.example documents its shape and IS tracked.
+.env.dev
 
 # OS
 .DS_Store
