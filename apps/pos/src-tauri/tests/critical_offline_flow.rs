@@ -9,6 +9,7 @@
 
 use argon2::{Algorithm, Argon2, Params, Version};
 use base64::Engine as _;
+use holler_edge_database::crypto::EncryptionKey;
 use holler_edge_database::{model, repo, Db};
 
 use holler_pos_lib::commands::auth::login_impl;
@@ -18,8 +19,8 @@ use holler_pos_lib::commands::kitchen::{
 };
 use holler_pos_lib::commands::menu::{list_menu_categories_impl, list_menu_items_impl};
 use holler_pos_lib::commands::orders::{
-    add_order_item_impl, create_order_impl, get_order_impl, list_orders_impl,
-    remove_order_item_impl, NewOrderItemRequest,
+    add_order_item_impl, create_order_impl, get_active_draft_order_impl, get_order_impl,
+    list_orders_impl, remove_order_item_impl, NewOrderItemRequest,
 };
 use holler_pos_lib::commands::tables::list_tables_impl;
 use holler_pos_lib::state::AppState;
@@ -468,6 +469,157 @@ fn add_and_remove_item_on_a_draft_order_round_trip_through_storage() {
         remove_order_item_impl(&state, &order.holler_order_id, &added_item_id).expect("remove item");
     assert_eq!(after_remove.items.len(), 1);
     assert_eq!(after_remove.subtotal_paise, 25000);
+}
+
+/// THE TEST THAT MATTERS (T9): a cart line written through to SQLite as it
+/// happens must still be there after the process that wrote it is gone and
+/// a completely fresh one opens the same encrypted file. This is what
+/// distinguishes "an API exists that can prevent the loss" from "the loss
+/// does not happen" (docs/retro.md 2026-08-10) — nothing here asserts that
+/// `add_order_item`/`remove_order_item` were *called*; it constructs a
+/// cart, discards the entire in-memory `AppState`/`Db` (no shared
+/// connection, no in-memory-only handle — a real file under a temp dir,
+/// closed and reopened), and asserts what a fresh read of SQLite alone
+/// produces.
+#[test]
+fn a_draft_order_survives_the_pos_process_ending_and_a_fresh_one_reopening() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let sealed = dir.path().join("edge.db.enc");
+    let plaintext = dir.path().join("edge.db");
+
+    let order_id: String;
+    let first_item_id: String;
+    let second_item_id: String;
+
+    // ---- "session 1": the cashier builds a cart, nothing is ever sent. ----
+    {
+        let db = Db::open(&sealed, &plaintext, EncryptionKey::new([42u8; 32])).expect("open db");
+        seed(&db);
+        let state = AppState::new(db, OUTLET_ID.to_string(), DEVICE_ID.to_string());
+
+        // First line lands -> this is what creates the DRAFT order (task
+        // requirement 1: "A DRAFT order is created when the first line
+        // lands, not at Send").
+        let order = create_order_impl(
+            &state,
+            "DINE_IN".to_string(),
+            Some("table-1".to_string()),
+            vec![NewOrderItemRequest {
+                menu_item_id: "item-1".to_string(),
+                variant_id: None,
+                quantity: 2,
+                unit_price_paise: 25000,
+                notes: None,
+            }],
+        )
+        .expect("first line persists the draft order");
+        order_id = order.holler_order_id.clone();
+        first_item_id = order.items[0].id.clone();
+
+        // A second line lands via add-item, as a second tap on the menu
+        // would drive.
+        let after_second = add_order_item_impl(
+            &state,
+            &order_id,
+            NewOrderItemRequest {
+                menu_item_id: "item-1".to_string(),
+                variant_id: None,
+                quantity: 1,
+                unit_price_paise: 25000,
+                notes: Some("no onions".to_string()),
+            },
+        )
+        .expect("second line persists");
+        second_item_id = after_second
+            .items
+            .iter()
+            .find(|i| i.notes.as_deref() == Some("no onions"))
+            .expect("second line present")
+            .id
+            .clone();
+
+        // The whole point: no `create_order` at "Send" — the cashier never
+        // sends. `state`/`db` are dropped here without any further app
+        // action, exactly as a killed process leaves no chance to run
+        // cleanup code the frontend would have to explicitly trigger.
+    }
+
+    // ---- "session 2": a fresh process, fresh AppState, same file. ----
+    let db2 = Db::open(&sealed, &plaintext, EncryptionKey::new([42u8; 32]))
+        .expect("reopen must succeed");
+    let state2 = AppState::new(db2, OUTLET_ID.to_string(), DEVICE_ID.to_string());
+
+    let recovered = get_active_draft_order_impl(&state2)
+        .expect("recovery read must succeed")
+        .expect("a DRAFT order must be recoverable for this device");
+
+    assert_eq!(recovered.holler_order_id, order_id);
+    assert_eq!(recovered.status, "DRAFT");
+    assert_eq!(recovered.order_type, "DINE_IN");
+    assert_eq!(recovered.table_id.as_deref(), Some("table-1"));
+    assert_eq!(recovered.items.len(), 2, "both lines must survive");
+
+    let recovered_first = recovered
+        .items
+        .iter()
+        .find(|i| i.id == first_item_id)
+        .expect("first line recoverable");
+    assert_eq!(recovered_first.quantity, 2);
+    assert_eq!(recovered_first.unit_price_paise, 25000);
+    assert_eq!(recovered_first.line_total_paise, 50000);
+
+    let recovered_second = recovered
+        .items
+        .iter()
+        .find(|i| i.id == second_item_id)
+        .expect("second line recoverable");
+    assert_eq!(recovered_second.quantity, 1);
+    assert_eq!(recovered_second.notes.as_deref(), Some("no onions"));
+
+    assert_eq!(
+        recovered.subtotal_paise,
+        50000 + 25000,
+        "recomputed totals must also survive, in integer paise"
+    );
+
+    // Also reachable the ordinary way a re-opened app would query it.
+    let fetched = get_order_impl(&state2, &order_id)
+        .expect("get_order must succeed")
+        .expect("order still exists");
+    assert_eq!(fetched.items.len(), 2);
+}
+
+/// A DRAFT order with no active device match (e.g. a different device's
+/// order, or none at all) must recover as `None`, not error and not return
+/// someone else's in-progress cart.
+#[test]
+fn recovery_finds_nothing_when_there_is_no_draft_order_for_this_device() {
+    let state = seeded_state();
+    assert!(get_active_draft_order_impl(&state)
+        .expect("must succeed with no orders at all")
+        .is_none());
+
+    let order = create_order_impl(
+        &state,
+        "TAKEAWAY".to_string(),
+        None,
+        vec![NewOrderItemRequest {
+            menu_item_id: "item-1".to_string(),
+            variant_id: None,
+            quantity: 1,
+            unit_price_paise: 25000,
+            notes: None,
+        }],
+    )
+    .expect("create order");
+    holler_pos_lib::commands::orders::confirm_order_impl(&state, &order.holler_order_id)
+        .expect("confirm order");
+
+    // The only order for this device/outlet is now CONFIRMED, not DRAFT —
+    // recovery must not resurrect it into the cart.
+    assert!(get_active_draft_order_impl(&state)
+        .expect("must succeed")
+        .is_none());
 }
 
 #[test]

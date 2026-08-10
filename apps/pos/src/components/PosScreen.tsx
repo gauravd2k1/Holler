@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import type { MenuItem } from "@holler/contracts";
@@ -9,13 +9,16 @@ import { formatPaiseAsRupees } from "../domain/money";
 import { hasPermission } from "../domain/permissions";
 import { useAuthStore } from "../store/auth";
 import { useCartStore } from "../store/cart";
-import { createOrder, isTauriCommandError } from "../lib/tauri";
 import { PrintFailureBanner } from "./PrintFailureBanner";
 
 // docs/spec/ordering.md §POS layout: TOP search + order-type + table,
 // LEFT categories, CENTER menu grid, RIGHT cart, BOTTOM subtotal/send.
 // Layout is fixed so a trained cashier can work from muscle memory — no
 // zone moves depending on state.
+//
+// docs/backlog-m2.md "POS cart persistence" (reopened 2026-08-10): every
+// line in `lines` below already exists in SQLite by the time it renders —
+// see `store/cart.ts`. There is no local-only cart state left to lose.
 export function PosScreen() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -24,24 +27,40 @@ export function PosScreen() {
   const menuCategoriesQuery = useMenuCategoriesQuery();
   const tablesQuery = useTablesQuery();
 
+  const orderId = useCartStore((s) => s.orderId);
   const orderType = useCartStore((s) => s.orderType);
   const setOrderType = useCartStore((s) => s.setOrderType);
   const tableId = useCartStore((s) => s.tableId);
   const setTableId = useCartStore((s) => s.setTableId);
   const lines = useCartStore((s) => s.lines);
-  const addLine = useCartStore((s) => s.addLine);
-  const setQuantity = useCartStore((s) => s.setQuantity);
-  const clearCart = useCartStore((s) => s.clear);
+  const hydrated = useCartStore((s) => s.hydrated);
+  const cartPending = useCartStore((s) => s.pending);
+  const cartError = useCartStore((s) => s.error);
+  const hydrate = useCartStore((s) => s.hydrate);
+  const addItem = useCartStore((s) => s.addItem);
+  const removeItem = useCartStore((s) => s.removeItem);
+  const clearAfterHandoff = useCartStore((s) => s.clearAfterHandoff);
 
   const [search, setSearch] = useState("");
   const [activeCategoryId, setActiveCategoryId] = useState<string | null>(null);
-  const [sending, setSending] = useState(false);
-  const [sendError, setSendError] = useState<string | null>(null);
 
   const canCreateOrder = hasPermission(principal, "order.create");
 
   const menuItems = menuItemsQuery.data ?? [];
   const menuCategories = menuCategoriesQuery.data ?? [];
+
+  // Recover this device's in-progress order exactly once, as soon as the
+  // menu is available to resolve line item names against (task requirement
+  // 2: "On startup, recover any DRAFT order for this outlet/device and
+  // restore it as the active cart"). `hydrate` itself is idempotent, so a
+  // re-render with a fresh `menuItems` array is harmless.
+  useEffect(() => {
+    if (menuItemsQuery.isSuccess) {
+      void hydrate(menuItems);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [menuItemsQuery.isSuccess]);
+
   const groups = useMemo(
     () => groupItemsByCategory(menuItems, menuCategories),
     [menuItems, menuCategories],
@@ -56,34 +75,18 @@ export function PosScreen() {
   }, [activeGroup, search]);
 
   const subtotalPaise = cartSubtotalPaise(lines);
-  const sendEnabled = canCreateOrder && canSendOrder(orderType, tableId, lines) && !sending;
+  const sendEnabled = canCreateOrder && canSendOrder(orderType, tableId, lines) && !cartPending;
+  // Order type/table are fixed the moment the first line is persisted —
+  // there is no command to amend them on an already-created order.
+  const canEditOrderShape = orderId === null;
 
-  async function handleSend() {
-    // Permission is enforced here, not just visually: an unauthorized
-    // cashier cannot reach `createOrder` at all (task requirement #8).
-    if (!canCreateOrder) return;
+  function handleSend() {
     if (!canSendOrder(orderType, tableId, lines)) return;
-    setSending(true);
-    setSendError(null);
-    try {
-      await createOrder(
-        orderType,
-        tableId,
-        lines.map((l) => ({
-          menu_item_id: l.menuItemId,
-          variant_id: l.variantId,
-          quantity: l.quantity,
-          unit_price_paise: l.unitPricePaise,
-          notes: l.notes,
-        })),
-      );
-      clearCart();
-      await queryClient.invalidateQueries({ queryKey: queryKeys.orders });
-    } catch (err) {
-      setSendError(isTauriCommandError(err) ? err.message : "Could not send order.");
-    } finally {
-      setSending(false);
-    }
+    // The order is already fully durable (every line landed on add) —
+    // nothing to write here. This only frees the cart for the next order
+    // and refreshes the Orders list, where it is confirmed/sent to kitchen.
+    clearAfterHandoff();
+    void queryClient.invalidateQueries({ queryKey: queryKeys.orders });
   }
 
   return (
@@ -102,6 +105,7 @@ export function PosScreen() {
               key={type}
               type="button"
               className={type === orderType ? "active" : ""}
+              disabled={!canEditOrderShape}
               onClick={() => setOrderType(type)}
             >
               {type}
@@ -112,6 +116,7 @@ export function PosScreen() {
           <select
             className="pos-table-select"
             value={tableId ?? ""}
+            disabled={!canEditOrderShape}
             onChange={(e) => setTableId(e.target.value || null)}
           >
             <option value="">Select table…</option>
@@ -141,22 +146,24 @@ export function PosScreen() {
       </nav>
 
       <section className="pos-menu-grid">
-        {menuItemsQuery.isLoading && <p>Loading menu…</p>}
+        {(menuItemsQuery.isLoading || !hydrated) && <p>Loading menu…</p>}
         {visibleItems.map((item) => (
           <button
             key={item.id}
             type="button"
             className="pos-menu-item"
-            disabled={!item.is_available || !canCreateOrder}
+            disabled={!item.is_available || !canCreateOrder || cartPending || !hydrated}
             onClick={() =>
-              addLine({
-                menuItemId: item.id,
-                menuItemName: item.name,
-                variantId: null,
-                unitPricePaise: item.base_price_paise,
-                quantity: 1,
-                notes: null,
-              })
+              void addItem(
+                {
+                  menuItemId: item.id,
+                  variantId: null,
+                  unitPricePaise: item.base_price_paise,
+                  quantity: 1,
+                  notes: null,
+                },
+                menuItems,
+              )
             }
           >
             <span className="name">{item.name}</span>
@@ -169,16 +176,15 @@ export function PosScreen() {
         {lines.map((line) => (
           <div className="pos-cart-line" key={line.lineId}>
             <span className="name">{line.menuItemName}</span>
-            <div className="qty-controls">
-              <button type="button" onClick={() => setQuantity(line.lineId, line.quantity - 1)}>
-                −
-              </button>
-              <span>{line.quantity}</span>
-              <button type="button" onClick={() => setQuantity(line.lineId, line.quantity + 1)}>
-                +
-              </button>
-            </div>
+            <span className="qty">{line.quantity}×</span>
             <span className="line-total">{formatPaiseAsRupees(lineTotal(line))}</span>
+            <button
+              type="button"
+              disabled={!canCreateOrder || cartPending}
+              onClick={() => void removeItem(line.lineId, menuItems)}
+            >
+              Remove
+            </button>
           </div>
         ))}
         {lines.length === 0 && <p className="pos-cart-empty">Cart is empty.</p>}
@@ -186,13 +192,13 @@ export function PosScreen() {
 
       <footer className="pos-bottom-bar">
         <span className="pos-subtotal">Subtotal: {formatPaiseAsRupees(subtotalPaise)}</span>
-        {sendError && (
+        {cartError && (
           <span className="pos-send-error" role="alert">
-            {sendError}
+            {cartError}
           </span>
         )}
-        <button type="button" className="pos-send" disabled={!sendEnabled} onClick={() => void handleSend()}>
-          {sending ? "Sending…" : "Send"}
+        <button type="button" className="pos-send" disabled={!sendEnabled} onClick={handleSend}>
+          Send
         </button>
       </footer>
     </main>

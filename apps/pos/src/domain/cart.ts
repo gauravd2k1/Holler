@@ -7,7 +7,13 @@ import { lineTotalPaise, sumPaise } from "./money";
 // never computed here.
 
 export interface CartLine {
-  /** Client-generated id, stable for this cart line until sent. */
+  /**
+   * The persisted `order_item.id` this line mirrors. Every `CartLine` the
+   * UI ever renders corresponds to a row already committed to the edge's
+   * SQLite database (docs/backlog-m2.md "POS cart persistence") — there is
+   * no client-only, not-yet-written cart state, so this is never a
+   * throwaway client-generated id.
+   */
   lineId: string;
   menuItemId: string;
   menuItemName: string;

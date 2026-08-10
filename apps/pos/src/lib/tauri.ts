@@ -147,6 +147,21 @@ export async function listOrders(): Promise<CanonicalOrder[]> {
   }
 }
 
+/** Recovers this device's active (DRAFT) in-progress order, if any
+ * (apps/pos/src-tauri/src/commands/orders.rs `get_active_draft_order`).
+ * Called once at startup so a crash mid-order restores the cashier's cart
+ * from whatever is actually durable in SQLite (docs/backlog-m2.md "POS
+ * cart persistence") rather than starting empty. Returns `null` when there
+ * is nothing to recover — not an error. */
+export async function getActiveDraftOrder(): Promise<CanonicalOrder | null> {
+  try {
+    const raw = await invoke("get_active_draft_order");
+    return raw === null ? null : CanonicalOrderSchema.parse(raw);
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
+
 /** The cashier's DRAFT -> CONFIRMED transition (apps/pos/src-tauri/src/commands/orders.rs
  * `confirm_order`). Rejects with `ORDER_NOT_CONFIRMABLE` if the order is not
  * currently DRAFT — the edge, not this layer, is authoritative for that

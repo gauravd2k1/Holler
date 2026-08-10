@@ -15,6 +15,7 @@ const {
   confirmOrder,
   addOrderItem,
   removeOrderItem,
+  getActiveDraftOrder,
   sendOrderToKitchen,
   listKotsForOrder,
   transitionKotStatus,
@@ -233,6 +234,26 @@ describe("add/removeOrderItem", () => {
         notes: null,
       }),
     ).rejects.toSatisfy((err: unknown) => isTauriCommandError(err));
+  });
+});
+
+describe("getActiveDraftOrder", () => {
+  it("invokes get_active_draft_order with no arguments and parses the response", async () => {
+    invokeMock.mockResolvedValue(VALID_ORDER);
+    const order = await getActiveDraftOrder();
+    expect(invokeMock).toHaveBeenCalledWith("get_active_draft_order");
+    expect(order?.holler_order_id).toBe(VALID_ORDER.holler_order_id);
+  });
+
+  it("returns null rather than throwing when there is nothing to recover", async () => {
+    invokeMock.mockResolvedValue(null);
+    const order = await getActiveDraftOrder();
+    expect(order).toBeNull();
+  });
+
+  it("rejects a malformed response rather than trusting the cast", async () => {
+    invokeMock.mockResolvedValue({ holler_order_id: "not-a-uuid" });
+    await expect(getActiveDraftOrder()).rejects.toBeTruthy();
   });
 });
 

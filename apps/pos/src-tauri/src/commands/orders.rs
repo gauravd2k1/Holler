@@ -6,10 +6,15 @@
 //! outbox entry.
 //!
 //! Add-item/remove-item on an already-persisted DRAFT order are wired
-//! through `Db::add_order_item_with_outbox`/`Db::remove_order_item_with_outbox`
-//! (docs/backlog-m2.md "POS cart persistence" — closed by this task): both
-//! reject a non-DRAFT order with `ORDER_NOT_DRAFT` rather than a silent
+//! through `Db::add_order_item_with_outbox`/`Db::remove_order_item_with_outbox`:
+//! both reject a non-DRAFT order with `ORDER_NOT_DRAFT` rather than a silent
 //! no-op, matching `confirm_order`'s enforcement.
+//!
+//! `get_active_draft_order` is the other half of "POS cart persistence"
+//! (docs/backlog-m2.md, reopened 2026-08-10): the frontend cart now writes
+//! every line through as it happens rather than buffering in memory until
+//! Send, and this command is what lets a freshly (re)started app recover
+//! whatever was durable at the moment it stopped.
 //!
 //! Each `#[tauri::command]` here is a one-line wrapper around an `*_impl`
 //! function that takes `&AppState` directly — the thin-boundary rule
@@ -125,6 +130,37 @@ pub fn list_orders_impl(state: &AppState) -> AppResult<Vec<CanonicalOrder>> {
         out.push(CanonicalOrder::from_order_and_items(order, items));
     }
     Ok(out)
+}
+
+/// Recovers the active in-progress order for *this device* — the crash
+/// recovery entry point (docs/backlog-m2.md "POS cart persistence",
+/// reopened 2026-08-10: the acceptance bar is "kill the POS with lines in
+/// the cart, reopen it, and the in-progress order is still there", not
+/// merely that a command exists). Called once at startup so the frontend
+/// can restore its cart from whatever is actually durable in SQLite instead
+/// of starting from empty in-memory state.
+///
+/// Scoped to `state.device_id`, not just `state.outlet_id`: `device_id` is
+/// on `holler_edge_database::model::Order` but deliberately not on the wire
+/// `CanonicalOrder` (no contract shape carries it), so the filter has to
+/// happen here against the raw row, before conversion. Most recent DRAFT
+/// order wins if more than one somehow exists for this device — normal
+/// operation only ever leaves at most one, since the POS clears its active
+/// order id once it is hitherto handed off (Send), but this must not panic
+/// or error if that invariant is ever violated.
+pub fn get_active_draft_order_impl(state: &AppState) -> AppResult<Option<CanonicalOrder>> {
+    let db = lock_db(state)?;
+    let orders =
+        holler_edge_database::repo::list_orders_for_outlet(db.connection(), &state.outlet_id)?;
+    let draft = orders
+        .into_iter()
+        .find(|o| o.device_id == state.device_id && o.status == "DRAFT");
+    let order = match draft {
+        Some(o) => o,
+        None => return Ok(None),
+    };
+    let items = holler_edge_database::repo::list_order_items(db.connection(), &order.id)?;
+    Ok(Some(CanonicalOrder::from_order_and_items(order, items)))
 }
 
 /// Adds one line item to an already-persisted `DRAFT` order (see
@@ -248,6 +284,11 @@ pub fn get_order(
 #[tauri::command]
 pub fn list_orders(state: State<'_, AppState>) -> AppResult<Vec<CanonicalOrder>> {
     list_orders_impl(&state)
+}
+
+#[tauri::command]
+pub fn get_active_draft_order(state: State<'_, AppState>) -> AppResult<Option<CanonicalOrder>> {
+    get_active_draft_order_impl(&state)
 }
 
 #[tauri::command]
