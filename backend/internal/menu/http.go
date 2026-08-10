@@ -1,22 +1,39 @@
 package menu
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/holler/backend/internal/auth"
 	"github.com/holler/backend/internal/platform/httpx"
+	contracts "github.com/holler/contracts"
 )
+
+// StationRouter is the narrow interface backend/internal/kitchen.Service
+// satisfies for the item→station routing route. Milestone 2 (ADR-014) put
+// this route's registration in backend/internal/menu — its path lives under
+// /menu/items/{itemId}/... — while its business logic (station membership,
+// config_version bump, audit) stays in backend/internal/kitchen next to the
+// station/printer domain it routes into. menu depends only on this small
+// interface, not on the kitchen package's full surface.
+type StationRouter interface {
+	ReplaceItemStations(ctx context.Context, tenantID, itemID string, stationIDs []string) ([]contracts.MenuItemStation, error)
+}
 
 // Handlers wires the menu HTTP surface onto a shared router. Endpoints match
 // packages/contracts/openapi/openapi.yaml exactly: GET/POST /menu/categories
 // and GET/POST /menu/items.
 type Handlers struct {
-	svc *Service
+	svc      *Service
+	stations StationRouter
 }
 
-func NewHandlers(svc *Service) *Handlers {
-	return &Handlers{svc: svc}
+// NewHandlers wires the menu HTTP surface. stations may be nil only in tests
+// that never exercise PUT /menu/items/{itemId}/stations.
+func NewHandlers(svc *Service, stations StationRouter) *Handlers {
+	return &Handlers{svc: svc, stations: stations}
 }
 
 // Mount registers the menu routes on r.
@@ -27,7 +44,42 @@ func (h *Handlers) Mount(r chi.Router) {
 		r.Get("/items", h.listItems)
 		r.Post("/items", h.createItem)
 		r.Post("/items/{itemId}/availability", h.setItemAvailability)
+		r.With(auth.RequirePermission(auth.PermissionMenuManage)).Put("/items/{itemId}/stations", h.replaceItemStations)
 	})
+}
+
+// replaceItemStations is ADR-014's item→station routing route (0.3.0):
+// PUT, not POST — routing is a set, replaced wholesale, never merged
+// (§50.1). The route lives here; the logic lives in backend/internal/kitchen
+// behind the StationRouter interface above.
+type replaceItemStationsRequest struct {
+	StationIDs []string `json:"station_ids"`
+}
+
+func (h *Handlers) replaceItemStations(w http.ResponseWriter, r *http.Request) {
+	if h.stations == nil {
+		httpx.Error(w, httpx.ErrNotFound)
+		return
+	}
+	principal, ok := auth.PrincipalFromContext(r.Context())
+	if !ok {
+		httpx.Error(w, httpx.ErrUnauthorized)
+		return
+	}
+	itemID := chi.URLParam(r, "itemId")
+
+	var req replaceItemStationsRequest
+	if err := httpx.DecodeJSON(r, &req); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+
+	out, err := h.stations.ReplaceItemStations(r.Context(), principal.TenantID, itemID, req.StationIDs)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, out)
 }
 
 func (h *Handlers) listCategories(w http.ResponseWriter, r *http.Request) {
@@ -144,12 +196,12 @@ type createItemModifierRequest struct {
 }
 
 type createItemRequest struct {
-	OutletID       string                       `json:"outlet_id"`
-	CategoryID     string                       `json:"category_id"`
-	Name           string                       `json:"name"`
-	BasePricePaise int64                        `json:"base_price_paise"`
-	Variants       []createItemVariantRequest   `json:"variants"`
-	Modifiers      []createItemModifierRequest  `json:"modifiers"`
+	OutletID       string                      `json:"outlet_id"`
+	CategoryID     string                      `json:"category_id"`
+	Name           string                      `json:"name"`
+	BasePricePaise int64                       `json:"base_price_paise"`
+	Variants       []createItemVariantRequest  `json:"variants"`
+	Modifiers      []createItemModifierRequest `json:"modifiers"`
 }
 
 type createItemResponse struct {
