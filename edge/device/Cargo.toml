@@ -1,0 +1,50 @@
+[package]
+name = "holler-edge-device"
+version = "0.1.0"
+edition = "2021"
+description = "Edge LAN realtime server: pushes KOT/kitchen state from the edge node to KDS screens over the outlet LAN (ADR-014 §6, docs/spec/kitchen.md)."
+
+[lib]
+name = "holler_edge_device"
+path = "src/lib.rs"
+
+[dependencies]
+# Reuses the edge SQLite connection, migrations and the `kot`/`transition_kot_status_with_outbox`
+# API rather than re-deriving any of it. The edge is the single authority for KOT state
+# (§50.1) — this crate never writes SQLite directly, it only calls into holler-edge-database.
+holler-edge-database = { path = "../database" }
+
+# Blocking, pure-Rust WebSocket protocol implementation. No TLS feature is
+# enabled: this is a plaintext LAN hop inside one outlet (ADR-013 — no
+# internet dependency, no OpenSSL/C toolchain requirement), the same posture
+# as ADR-014's framing of this hop as "not sync". Threaded/blocking rather
+# than an async runtime: a KDS fleet is a handful of screens per outlet, not
+# a scale that needs tokio, and staying blocking keeps this crate's
+# dependency graph (and the shipped binary) small on 4GB spinning-disk
+# hardware (ADR-013).
+tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+
+# Local id generation for kot_status_history/outbox rows minted when this
+# crate drives a transition (KDS -> edge intent), matching the "app-generated
+# UUIDv7" rule (§74) and holler-edge-database's own convention.
+uuid = { version = "1", features = ["v4", "v7"] }
+
+# Timestamps for `sent_at` on outgoing LAN messages and `occurred_at` fed to
+# `Db::transition_kot_status_with_outbox` — sourced from the edge's own
+# clock, never from the KDS screen (sync.md §50.1). Pure Rust, no OpenSSL/
+# system dependency (ADR-013), matching edge/printer's and edge/sync's own
+# choice of this crate for the same reason.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+
+# Minimal, sink-agnostic logging macros for observability (connect/disconnect,
+# rejected transitions, slow/dead client drops). No subscriber is bundled —
+# the hosting binary (apps/pos/src-tauri) wires a sink. Pure Rust, no extra
+# runtime dependency.
+log = "0.4"
+
+[dev-dependencies]
+tempfile = "3"
