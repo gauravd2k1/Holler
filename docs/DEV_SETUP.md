@@ -77,10 +77,20 @@ undecryptable; delete the file and re-run the bootstrap if you rotate it.
 `%APPDATA%\com.holler.pos\edge.db.enc` — Tauri's `app_data_dir()` for the
 `com.holler.pos` identifier in `tauri.conf.json`.
 
-Only the sealed file should ever be at rest there. A plaintext `edge.db`
-(or `-wal`/`-shm`) sitting in that directory means a process died without
-calling `Db::close`. Override the location for both the seeder and your own
-tooling with `HOLLER_EDGE_DATA_DIR`.
+Only the sealed file should ever be at rest there. While the POS is running you
+will also see `edge.db`, `-wal`, `-shm` and an `edge.db.open-marker` — that is
+the decrypted working copy, and it is expected for the lifetime of the process.
+
+After the POS exits, `edge.db.enc` should be the only file left. The database
+seals itself on a normal exit (the `RunEvent::Exit` hook) and on drop, so
+plaintext surviving an exit now means the process was killed outright — power
+loss, `Stop-Process -Force`, End Task. That is recoverable, not fatal: the next
+`Db::open` folds the committed data back into the sealed file and wipes the
+plaintext. Running `scripts\dev-bootstrap.ps1` again is the easiest way to
+trigger it.
+
+Override the location for both the seeder and your own tooling with
+`HOLLER_EDGE_DATA_DIR`.
 
 Never copy this file or its backups anywhere unencrypted (ADR-011).
 
@@ -102,7 +112,8 @@ enrollment and sync startup are wired up, it should be deleted, not extended.
 
 ## Known gaps this setup works around
 
-Five bootstrap problems have been found so far. Four are worked around here.
+Six problems have been found so far. Four are worked around here, one is fixed
+in the product (6), and one remains open (1).
 
 1. **`backend` compose service build is broken.** `docker compose up` including
    the `backend` service fails to produce a working image. Not diagnosed —
@@ -121,6 +132,12 @@ Five bootstrap problems have been found so far. Four are worked around here.
    (`cmd/api` is still the Milestone 0 health-only entrypoint and never calls
    `postgres.Migrate`), and the edge database had no rows. This document and
    `scripts/dev-bootstrap.ps1` are the fix.
+6. **The edge database was never sealed on exit.** Found while running the POS
+   for the first time: `Db::close` was the only thing that sealed and wiped,
+   and nothing called it — no `Drop` impl, no Tauri exit hook — so every exit,
+   including a clean window close, left the decrypted SQLite file and its
+   cached Argon2id hashes on disk, against ADR-011. Fixed in the product
+   (`RunEvent::Exit` hook plus seal-on-drop), not worked around here.
 
 ## Milestone 1 acceptance: pull the network cable
 
