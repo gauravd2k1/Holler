@@ -1,0 +1,14 @@
+{
+  "id": "018e5a2e-b001-7c3d-9f4e-1234567890ab",
+  "tenant_id": "018e5a2e-0001-7c3d-9f4e-1234567890ab",
+  "outlet_id": "018e5a2e-1a09-7c3d-9f4e-1234567890ab",
+  "email": "cashier@example.com",
+  "full_name": "Priya Nair",
+  "password_hash": "$argon2id$v=19$m=65536,t=3,p=4$c29tZXNhbHR2YWx1ZQ$3f8c1d2e4b5a697887a0b1c2d3e4f5061728394a5b6c7d8e9f0a1b2c3d4e5f60",
+  "pin_hash": "$argon2id$v=19$m=65536,t=3,p=4$cGluc2FsdHZhbHVlYWFh$9e8d7c6b5a4938271605f4e3d2c1b0a9988776655443322110ffeeddccbbaa99",
+  "is_active": true,
+  "permissions": ["order.create", "order.modify"],
+  "config_version": 7,
+  "updated_at": "2026-08-07T10:15:31Z",
+  "schema_version": 1
+}

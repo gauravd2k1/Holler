@@ -86,6 +86,44 @@ type AuthenticatedPrincipal struct {
 	SchemaVersion        int          `json:"schema_version"`
 }
 
+// EdgeUserCacheEntry is the ONE exception to this file's no-credential-material
+// header rule, added at 0.3.1 (ADR-015). Mirrors src/types/identity.ts.
+//
+// ADR-011 requires offline cashier login, which is only possible if the edge
+// holds verifiable credentials locally, so exactly one route ships them. This
+// mirror was deliberately absent until 0.3.1, which left /sync/config returning
+// an empty users array — offline login worked only against dev-seeded data.
+//
+// May carry Argon2id hashes and flattened permission claims, nothing else: no
+// refresh token, no TokenHash, no session id, no bearer material. Both hashes
+// are VERIFIERS, not bearers — holding one lets you check a secret, never
+// present it as proof of identity.
+//
+// Travels in the users array of GET /sync/config and nowhere else: no other
+// route, no event payload, no log line, no audit value. Deliberately NOT an
+// AggregateType — it never syncs up, and a direction would invite a replay path
+// that must not exist (the refresh_token precedent). The edge stores it only in
+// the encrypted-at-rest database.
+type EdgeUserCacheEntry struct {
+	ID           string `json:"id"`
+	TenantID     string `json:"tenant_id"`
+	OutletID     string `json:"outlet_id"`
+	Email        string `json:"email"`
+	FullName     string `json:"full_name"`
+	PasswordHash string `json:"password_hash"` // Argon2id encoded string; never logged
+	// Argon2id, nil when no PIN is set. A PIN pad — not an email box — is the
+	// primary offline login at a POS, so this field carries the shift and gets
+	// exactly the containment PasswordHash gets.
+	PinHash  *string `json:"pin_hash"`
+	IsActive bool    `json:"is_active"`
+	// Role claims, pre-flattened. The edge has no role table by design — the
+	// roles field was dropped from /sync/config at 0.2.2.
+	Permissions   []Permission `json:"permissions"`
+	ConfigVersion int          `json:"config_version"`
+	UpdatedAt     time.Time    `json:"updated_at"`
+	SchemaVersion int          `json:"schema_version"`
+}
+
 // AuditRedactedFields must never appear in AuditEvent OldValue/NewValue or on
 // the wire. Mirrors AUDIT_REDACTED_FIELDS in src/types/identity.ts; the audit
 // helper strips these keys before persisting (ADR-011).

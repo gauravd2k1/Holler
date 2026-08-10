@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Holler API — Vertical Slice
-  version: "0.3.0"
+  version: "0.3.1"
   description: >
     Covers only the §70 order endpoints needed for the Milestone 1–2 vertical
     slice (Menu → POS Order → Local SQLite → KOT → KDS → Cloud sync). Frozen
@@ -1152,7 +1152,7 @@ components:
       description: >
         Returned only by /sync/config, only over TLS, only to an enrolled edge
         node. Stored in the encrypted-at-rest edge database (ADR-011).
-      required: [id, tenant_id, outlet_id, email, full_name, password_hash, is_active, permissions, config_version, updated_at]
+      required: [id, tenant_id, outlet_id, email, full_name, password_hash, is_active, permissions, config_version, updated_at, schema_version]
       properties:
         id: { type: string, format: uuid }
         tenant_id: { type: string, format: uuid }
@@ -1174,6 +1174,16 @@ components:
             this the edge had to synthesize a wall-clock value on every pull.
             Not used for staleness comparison — config_version drives
             replace-or-ignore.
+        schema_version:
+          type: integer
+          enum: [1]
+          description: >
+            Added to the required list at 0.3.1 (ADR-015). Every sibling wire
+            type carries schema_version; this one did not, so the Go and
+            TypeScript mirrors written at 0.3.1 would have drifted from this
+            schema on their first field. Reconciled here rather than dropped
+            from the mirrors, which would have left this type as the only
+            unversioned shape on the wire.
 
     AuthenticatedPrincipal:
       type: object

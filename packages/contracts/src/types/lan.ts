@@ -14,6 +14,52 @@
 //
 // The edge is authoritative for KOT state (§50.1). A KDS screen sends status
 // intent and renders what it is told; it never becomes a second writer.
+//
+// ---------------------------------------------------------------------------
+// TRANSPORT (added 0.3.1, ADR-015)
+// ---------------------------------------------------------------------------
+// Frozen because two faithful, independent implementations of the message
+// shapes below — a Rust server in edge/device and a TypeScript client in
+// apps/kds — failed to connect. This file pinned payloads and said nothing
+// about the handshake, and a contract that does not pin the interface does not
+// pin the interface.
+//
+//   Endpoint   ws://<edge-lan-host>:<port>/kds
+//   Framing    one JSON text frame per message. No sub-protocol negotiation,
+//              no outer envelope, no handshake message beyond the socket
+//              opening. The first frame the server sends is always a snapshot.
+//   Params     outlet_id     required, UUID
+//              device_id     required, UUID — see IDENTITY vs AUTHENTICATION
+//              station       optional, station code; absent = all stations
+//              device_token  optional today, reserved — see below
+//   Rejection  HTTP 400 when a required param is missing or empty.
+//
+// IDENTITY vs AUTHENTICATION — do not conflate these, and do not read the
+// current implementation as something this contract blesses:
+//
+//   `device_id` IDENTIFIES a screen. It does NOT authenticate one. It is a
+//   UUID, not a secret, and today it travels in a query string that lands in
+//   proxy and access logs. The server currently accepts any device_id matching
+//   a registered row, so anyone who reaches the port with a captured id can
+//   drive ticket transitions. That is a known unclosed gap, tracked under
+//   Device enrollment in docs/backlog-m2.md, and it blocks any pilot
+//   deployment.
+//
+//   `device_token` is the authenticator. It is reserved here — optional and
+//   unverified — so that enrollment lands as a BEHAVIOUR change rather than a
+//   shape change: clients may send it today and servers may ignore it, and the
+//   day verification turns on, only the server's strictness changes. Because
+//   the parameter is already part of the frozen handshake, that transition
+//   needs a minor bump and an ADR note, not 0.4.0 and not a client rewrite.
+//
+//   When verification does turn on, `device_token` MUST move out of the query
+//   string — an Authorization header, or a first-frame auth message — for the
+//   logging reason named above. A secret in a query string is a secret in a
+//   log file. Query-string carriage is acceptable only while the value is
+//   unverified and therefore worthless.
+//
+// Still NOT sync: nothing here carries a SyncEnvelope or touches
+// AGGREGATE_AUTHORITY. This is one LAN hop.
 
 import { z } from "zod";
 import { KotSchema } from "./kot";

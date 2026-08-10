@@ -2,12 +2,17 @@
 // must parse cleanly through the Zod schemas and round-trip identically.
 // The mirrored Go check lives in go/drift_test.go.
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { CanonicalOrderSchema } from "./order";
 import { KotSchema } from "./kot";
 import { SyncEnvelopeSchema, AGGREGATE_AUTHORITY, AggregateTypeSchema } from "./sync";
-import { AppUserSchema, AuditEventSchema, AUDIT_REDACTED_FIELDS } from "./identity";
+import {
+  AppUserSchema,
+  AuditEventSchema,
+  AUDIT_REDACTED_FIELDS,
+  EdgeUserCacheEntrySchema,
+} from "./identity";
 import { RestaurantTableSchema, TableSessionSchema } from "./table";
 import { MenuItemSchema, MenuItemModifierSchema } from "./menu";
 import { StationSchema, MenuItemStationSchema } from "./station";
@@ -159,12 +164,67 @@ describe("contract drift", () => {
     expect([...AUDIT_REDACTED_FIELDS]).toEqual(["password_hash", "pin_hash", "token_hash"]);
   });
 
+  // EdgeUserCacheEntry (0.3.1, ADR-015) — the one deliberate credential
+  // carrier. Both hash states are pinned because nullable handling is exactly
+  // where a mirror silently drops a field, and until now that was a
+  // read-verified claim rather than an executed one.
+  it("edge_user_cache_entry.json round-trips with both hashes intact", () => {
+    const raw = loadFixture("edge_user_cache_entry.json") as Record<string, unknown>;
+    const parsed = EdgeUserCacheEntrySchema.parse(raw);
+    expect(JSON.parse(JSON.stringify(parsed))).toEqual(raw);
+    expect(parsed.password_hash).toBe(raw.password_hash);
+    expect(parsed.pin_hash).toBe(raw.pin_hash);
+    expect(parsed.pin_hash).toMatch(/^\$argon2id\$/);
+  });
+
+  // A PIN pad is the primary offline login at a POS, so the null case is not
+  // an edge case — it is every user who has not set one.
+  it("edge_user_cache_entry_no_pin.json round-trips with pin_hash null", () => {
+    const raw = loadFixture("edge_user_cache_entry_no_pin.json") as Record<string, unknown>;
+    const parsed = EdgeUserCacheEntrySchema.parse(raw);
+    expect(JSON.parse(JSON.stringify(parsed))).toEqual(raw);
+    expect(parsed.pin_hash).toBeNull();
+    // Present-and-null, never dropped: a mirror that omits the key round-trips
+    // to a different object, and this is the assertion that catches it.
+    expect(Object.hasOwn(JSON.parse(JSON.stringify(parsed)), "pin_hash")).toBe(true);
+  });
+
+  // The cache entry never becomes an aggregate: no sync direction, never
+  // edge→cloud. Same reasoning as print_job and refresh_token.
+  it("keeps the edge user cache out of AggregateType", () => {
+    expect(AggregateTypeSchema.options).not.toContain("edge_user_cache_entry");
+    expect(AggregateTypeSchema.options).not.toContain("app_user_credential");
+  });
+
   it("no wire fixture carries credential material", () => {
-    for (const name of ["app_user.json", "order.json", "table_session.json", "audit_event.json"]) {
+    // Every fixture EXCEPT the deliberate carriers. Naming them as exceptions
+    // rather than skipping the check keeps the rule enforceable: a second
+    // credential-bearing fixture fails here until someone justifies it in an
+    // ADR. Sweeping the whole directory also means a NEW fixture is covered
+    // automatically, which the previous hard-coded four-name list did not do.
+    const CREDENTIAL_BEARING = new Set([
+      "edge_user_cache_entry.json",
+      "edge_user_cache_entry_no_pin.json",
+    ]);
+    const all = readdirSync(resolve(__dirname, "../../fixtures")).filter((f) => f.endsWith(".json"));
+    expect(all.length).toBeGreaterThan(CREDENTIAL_BEARING.size); // the sweep is not vacuous
+    for (const name of all.filter((f) => !CREDENTIAL_BEARING.has(f))) {
       const serialized = JSON.stringify(loadFixture(name));
       for (const field of AUDIT_REDACTED_FIELDS) {
         expect(serialized).not.toContain(field);
       }
+    }
+  });
+
+  // The exception is exactly as wide as it claims to be: the carriers hold
+  // password_hash and pin_hash, and never token_hash or any bearer material.
+  it("the credential carriers hold verifiers only, never a token", () => {
+    for (const name of ["edge_user_cache_entry.json", "edge_user_cache_entry_no_pin.json"]) {
+      const serialized = JSON.stringify(loadFixture(name));
+      expect(serialized).not.toContain("token_hash");
+      expect(serialized).not.toContain("refresh_token");
+      expect(serialized).not.toContain("access_token");
+      expect(serialized).not.toContain("session");
     }
   });
 });

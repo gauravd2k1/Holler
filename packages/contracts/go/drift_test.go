@@ -196,16 +196,91 @@ func TestAuditEventFixtureRoundTrip(t *testing.T) {
 	roundTrip(t, "audit_event.json", &event)
 }
 
-func TestWireFixturesCarryNoCredentials(t *testing.T) {
-	for _, fixture := range []string{"app_user.json", "order.json", "table_session.json", "audit_event.json"} {
+// credentialBearingFixtures are the ONLY fixtures permitted to contain
+// credential material (0.3.1, ADR-015). Naming them as exceptions rather than
+// skipping the sweep keeps the rule enforceable: a second credential-bearing
+// fixture fails until someone justifies it in an ADR.
+var credentialBearingFixtures = map[string]bool{
+	"edge_user_cache_entry.json":        true,
+	"edge_user_cache_entry_no_pin.json": true,
+}
+
+func TestEdgeUserCacheEntryFixtureRoundTrip(t *testing.T) {
+	var entry EdgeUserCacheEntry
+	roundTrip(t, "edge_user_cache_entry.json", &entry)
+	if entry.PinHash == nil {
+		t.Fatal("pin_hash must survive the round trip as a non-nil value")
+	}
+	if !strings.HasPrefix(*entry.PinHash, "$argon2id$") {
+		t.Fatalf("pin_hash must be an Argon2id encoded string, got %q", *entry.PinHash)
+	}
+	if !strings.HasPrefix(entry.PasswordHash, "$argon2id$") {
+		t.Fatalf("password_hash must be an Argon2id encoded string, got %q", entry.PasswordHash)
+	}
+}
+
+// A PIN pad is the primary offline login at a POS, so the null case is not an
+// edge case — it is every user who has not set one. Nullable handling is also
+// exactly where a mirror silently drops a field, so roundTrip's strict
+// comparison (which fails if the key vanishes) is the point of this test.
+func TestEdgeUserCacheEntryFixtureRoundTripWithoutPin(t *testing.T) {
+	var entry EdgeUserCacheEntry
+	roundTrip(t, "edge_user_cache_entry_no_pin.json", &entry)
+	if entry.PinHash != nil {
+		t.Fatalf("pin_hash must round-trip as nil, got %q", *entry.PinHash)
+	}
+}
+
+// The exception is exactly as wide as it claims: verifiers only, never a
+// bearer. A cache entry that could be replayed as a session would defeat the
+// containment the whole design rests on.
+func TestCredentialCarriersHoldVerifiersOnly(t *testing.T) {
+	for fixture := range credentialBearingFixtures {
 		raw, err := os.ReadFile(filepath.Join("..", "fixtures", fixture))
 		if err != nil {
 			t.Fatalf("reading fixture %s: %v", fixture, err)
 		}
-		for _, field := range AuditRedactedFields {
-			if strings.Contains(string(raw), field) {
-				t.Fatalf("%s contains credential field %q", fixture, field)
+		for _, forbidden := range []string{"token_hash", "refresh_token", "access_token", "session"} {
+			if strings.Contains(string(raw), forbidden) {
+				t.Fatalf("%s contains bearer material %q — it may carry verifiers only", fixture, forbidden)
 			}
 		}
+	}
+}
+
+func TestEdgeUserCacheIsNotAnAggregate(t *testing.T) {
+	for _, forbidden := range []AggregateType{"edge_user_cache_entry", "app_user_credential"} {
+		if _, listed := AggregateAuthority[forbidden]; listed {
+			t.Fatalf("%q must not be an AggregateType: it never syncs up", forbidden)
+		}
+	}
+}
+
+// Sweeps every fixture except the named carriers, so a NEW fixture is covered
+// automatically — the previous hard-coded four-name list did not do that.
+func TestWireFixturesCarryNoCredentials(t *testing.T) {
+	entries, err := os.ReadDir(filepath.Join("..", "fixtures"))
+	if err != nil {
+		t.Fatalf("reading fixtures directory: %v", err)
+	}
+	swept := 0
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".json") || credentialBearingFixtures[name] {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join("..", "fixtures", name))
+		if err != nil {
+			t.Fatalf("reading fixture %s: %v", name, err)
+		}
+		for _, field := range AuditRedactedFields {
+			if strings.Contains(string(raw), field) {
+				t.Fatalf("%s contains credential field %q", name, field)
+			}
+		}
+		swept++
+	}
+	if swept == 0 {
+		t.Fatal("credential sweep matched no fixtures — the check is vacuous")
 	}
 }

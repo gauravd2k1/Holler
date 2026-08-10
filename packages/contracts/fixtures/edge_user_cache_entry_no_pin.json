@@ -1,0 +1,14 @@
+{
+  "id": "018e5a2e-b002-7c3d-9f4e-1234567890ab",
+  "tenant_id": "018e5a2e-0001-7c3d-9f4e-1234567890ab",
+  "outlet_id": "018e5a2e-1a09-7c3d-9f4e-1234567890ab",
+  "email": "manager@example.com",
+  "full_name": "Arjun Rao",
+  "password_hash": "$argon2id$v=19$m=65536,t=3,p=4$bWdyc2FsdHZhbHVlYWE$1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809",
+  "pin_hash": null,
+  "is_active": true,
+  "permissions": ["order.create", "order.modify", "order.cancel", "menu.manage", "user.manage"],
+  "config_version": 7,
+  "updated_at": "2026-08-07T10:15:31Z",
+  "schema_version": 1
+}
