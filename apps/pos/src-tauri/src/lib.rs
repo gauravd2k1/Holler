@@ -44,6 +44,32 @@ pub fn run() {
             commands::orders::remove_order_item,
             commands::orders::confirm_order,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running the Holler POS application");
+        .build(tauri::generate_context!())
+        .expect("error while building the Holler POS application")
+        .run(|app_handle, event| {
+            // Seal the edge database before the process goes away (ADR-011).
+            // Without this the decrypted SQLite file — which caches Argon2id
+            // credential hashes — is left on disk after every normal exit.
+            //
+            // `Db` also seals on drop as a fallback, but Tauri does not
+            // guarantee managed state is dropped on exit, so the shutdown is
+            // driven explicitly here. Both paths are idempotent.
+            if let tauri::RunEvent::Exit = event {
+                // `inner()` reborrows from the app handle rather than from
+                // the temporary `State` guard, so the lock may outlive it.
+                let state: &AppState = app_handle.state::<AppState>().inner();
+                match state.db.lock() {
+                    Ok(mut db) => {
+                        if let Err(e) = db.shutdown_in_place() {
+                            eprintln!("failed to seal the edge database on exit: {e}");
+                        }
+                    }
+                    Err(_) => {
+                        eprintln!(
+                            "edge database lock poisoned on exit; relying on seal-on-drop"
+                        );
+                    }
+                }
+            }
+        });
 }

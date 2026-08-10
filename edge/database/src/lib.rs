@@ -30,7 +30,11 @@ use crate::model::{
 /// this handle exists on disk only between [`Db::open`] and [`Db::close`]
 /// (see `src/crypto.rs` for why, and the limitation that implies).
 pub struct Db {
-    conn: Connection,
+    /// `None` once the handle has been shut down. Optional rather than a bare
+    /// `Connection` so that both [`Db::close`] and the [`Drop`] fallback can
+    /// take ownership of it: a type implementing `Drop` cannot have fields
+    /// moved out of it, and the seal-on-drop guarantee requires exactly that.
+    conn: Option<Connection>,
     plaintext_path: PathBuf,
     sealed_path: PathBuf,
     key: EncryptionKey,
@@ -66,7 +70,7 @@ impl Db {
         std::fs::write(crypto::marker_path(plaintext_path), b"").map_err(DbError::Io)?;
 
         Ok(Self {
-            conn,
+            conn: Some(conn),
             plaintext_path: plaintext_path.to_path_buf(),
             sealed_path: sealed_path.to_path_buf(),
             key,
@@ -82,7 +86,7 @@ impl Db {
         pragma::configure_connection(&conn)?;
         migrations::apply_all(&conn)?;
         Ok(Self {
-            conn,
+            conn: Some(conn),
             plaintext_path: PathBuf::new(),
             sealed_path: PathBuf::new(),
             key: EncryptionKey::new([0u8; 32]),
@@ -93,18 +97,37 @@ impl Db {
     /// with a fresh nonce, and wipes the plaintext working copy and its
     /// `-wal`/`-shm` siblings. Must be the only way this crate's plaintext
     /// file is ever left on disk after use.
-    pub fn close(self) -> DbResult<()> {
+    ///
+    /// Prefer this over relying on [`Drop`]: it is the only variant that can
+    /// report a sealing failure to the caller. Drop reseals as a fallback but
+    /// can only log.
+    pub fn close(mut self) -> DbResult<()> {
+        self.shutdown_in_place()
+    }
+
+    /// Seals and wipes without consuming the handle, so a caller holding a
+    /// `Db` behind a mutex (as the POS does in its Tauri-managed state) can
+    /// shut it down on application exit without moving it out.
+    ///
+    /// Idempotent: a second call is a no-op, which is what makes the [`Drop`]
+    /// fallback safe after an explicit [`Db::close`].
+    pub fn shutdown_in_place(&mut self) -> DbResult<()> {
+        let conn = match self.conn.take() {
+            Some(conn) => conn,
+            // Already shut down.
+            None => return Ok(()),
+        };
+
         if self.plaintext_path.as_os_str().is_empty() {
             // In-memory test handle: nothing on disk to seal or wipe.
             return Ok(());
         }
 
-        self.conn
-            .pragma_update(None, "wal_checkpoint", "TRUNCATE")?;
+        conn.pragma_update(None, "wal_checkpoint", "TRUNCATE")?;
         // rusqlite's Connection::close returns the connection back on
-        // failure; we only hold owned self here so a failure can't leave a
-        // half-closed handle for a caller to misuse.
-        self.conn.close().map_err(|(_, e)| DbError::Sqlite(e))?;
+        // failure; we own it here so a failure can't leave a half-closed
+        // handle for a caller to misuse.
+        conn.close().map_err(|(_, e)| DbError::Sqlite(e))?;
 
         crypto::seal_file(&self.plaintext_path, &self.sealed_path, &self.key)?;
         // Same wipe treatment (.db + -wal + -shm) as the crash-recovery
@@ -123,8 +146,41 @@ impl Db {
     /// read functions in [`repo`]. Not exposed as `pub` beyond this crate's
     /// modules — callers use the typed `Db` methods and `repo::get_*`/
     /// `repo::list_*` functions, never raw SQL.
+    ///
+    /// Panics if the handle has already been shut down; that is a caller bug
+    /// (using a `Db` after `shutdown_in_place`), not a runtime condition.
     pub fn connection(&self) -> &Connection {
-        &self.conn
+        self.conn
+            .as_ref()
+            .expect("edge database handle used after shutdown")
+    }
+
+    fn connection_mut(&mut self) -> &mut Connection {
+        self.conn
+            .as_mut()
+            .expect("edge database handle used after shutdown")
+    }
+
+    /// Whether this handle has already been sealed and wiped. Used by tests
+    /// and by callers that want to avoid a redundant shutdown.
+    pub fn is_shut_down(&self) -> bool {
+        self.conn.is_none()
+    }
+
+    /// Test-only: models a process killed mid-session (power loss, SIGKILL,
+    /// task-manager End Task) — the plaintext file, its `-wal`/`-shm`
+    /// siblings and the unclean marker are all left on disk, with nothing
+    /// sealed.
+    ///
+    /// It drops the SQLite `Connection` first so the OS file handle is
+    /// released; `std::mem::forget` would model a crash more literally but
+    /// would keep the handle open and make the next `Db::open` fail with a
+    /// Windows sharing violation instead of exercising recovery. Taking the
+    /// connection also disarms the `Drop` seal, which is the behaviour under
+    /// test here.
+    #[cfg(test)]
+    fn simulate_crash_for_tests(&mut self) {
+        drop(self.conn.take());
     }
 
     /// Creates an order together with its items, writing the
@@ -140,7 +196,7 @@ impl Db {
         items: &[NewOrderItem],
         outbox: &NewOutboxEntry,
     ) -> DbResult<()> {
-        let tx = self.conn.transaction()?;
+        let tx = self.connection_mut().transaction()?;
         repo::insert_order(&tx, order)?;
         for item in items {
             repo::insert_order_item(&tx, item)?;
@@ -181,7 +237,7 @@ impl Db {
         modifiers: &[OrderItemModifier],
         meta: &OrderItemAddedMeta,
     ) -> DbResult<()> {
-        let tx = self.conn.transaction()?;
+        let tx = self.connection_mut().transaction()?;
         let outlet_id = repo::require_draft_order(&tx, &item.order_id)?;
 
         let line_total_paise =
@@ -231,7 +287,7 @@ impl Db {
         order_item_id: &str,
         meta: &OrderItemRemovedMeta,
     ) -> DbResult<()> {
-        let tx = self.conn.transaction()?;
+        let tx = self.connection_mut().transaction()?;
         let existing = repo::get_order_item_in_tx(&tx, order_item_id)?
             .ok_or(DbError::NotFound("order_item"))?;
         let outlet_id = repo::require_draft_order(&tx, &existing.order_id)?;
@@ -282,7 +338,7 @@ impl Db {
         order_id: &str,
         meta: &OrderConfirmedMeta,
     ) -> DbResult<()> {
-        let tx = self.conn.transaction()?;
+        let tx = self.connection_mut().transaction()?;
         let outlet_id = repo::require_draft_order_for_confirm(&tx, order_id)?;
         repo::stamp_order_confirmed(&tx, order_id, &meta.confirmed_at, &meta.occurred_at)?;
         repo::insert_order_confirmed_outbox(&tx, &outlet_id, order_id, meta)?;
@@ -297,7 +353,7 @@ impl Db {
         session: &NewTableSession,
         outbox: &NewOutboxEntry,
     ) -> DbResult<()> {
-        let tx = self.conn.transaction()?;
+        let tx = self.connection_mut().transaction()?;
         repo::insert_table_session(&tx, session)?;
         repo::insert_outbox_entry(&tx, outbox)?;
         tx.commit()?;
@@ -318,7 +374,7 @@ impl Db {
         updated_at: &str,
         outbox: &NewOutboxEntry,
     ) -> DbResult<()> {
-        let tx = self.conn.transaction()?;
+        let tx = self.connection_mut().transaction()?;
         repo::update_table_session(
             &tx,
             id,
@@ -334,11 +390,42 @@ impl Db {
     }
 
     pub fn get_order(&self, id: &str) -> DbResult<Option<Order>> {
-        repo::get_order(&self.conn, id)
+        repo::get_order(self.connection(), id)
     }
 
     pub fn get_table_session(&self, id: &str) -> DbResult<Option<TableSession>> {
-        repo::get_table_session(&self.conn, id)
+        repo::get_table_session(self.connection(), id)
+    }
+}
+
+/// Last-resort seal-on-drop (ADR-011). Without this, any exit path that does
+/// not explicitly call [`Db::close`] or [`Db::shutdown_in_place`] — an early
+/// `return`, a `?`, a panic unwind, or an application that simply never wires
+/// a shutdown hook — leaves the decrypted SQLite file and its `-wal`/`-shm`
+/// siblings on disk indefinitely, holding cached credential hashes in the
+/// clear.
+///
+/// This is a safety net, not the intended path: `Drop` cannot return an error,
+/// so a sealing failure here can only be logged. Callers that need to know
+/// whether the seal succeeded must call [`Db::close`].
+impl Drop for Db {
+    fn drop(&mut self) {
+        // No-op when close()/shutdown_in_place() already ran — that is what
+        // makes the explicit path and this fallback safe to combine.
+        if self.conn.is_none() {
+            return;
+        }
+
+        if let Err(e) = self.shutdown_in_place() {
+            // Deliberately not a panic: unwinding out of Drop during another
+            // unwind aborts the process, which would be a worse outcome than
+            // a logged failure. The plaintext left behind is recovered by
+            // crypto::recover_crash_leftovers on the next open.
+            eprintln!(
+                "edge database: sealing on drop failed ({e}); plaintext may remain at {}",
+                self.plaintext_path.display()
+            );
+        }
     }
 }
 
@@ -347,6 +434,85 @@ mod tests {
     use super::*;
     use crate::model::{NewOrder, NewOrderItem, NewOutboxEntry};
     use tempfile::tempdir;
+
+    /// The plaintext artifacts that must never outlive an open handle.
+    fn plaintext_artifacts(dir: &std::path::Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .expect("read app data dir")
+            .map(|e| e.expect("entry").file_name().to_string_lossy().to_string())
+            .filter(|n| n != "edge.db.enc")
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// Dropping a handle without calling close() must still seal and wipe.
+    /// This is the regression test for the POS leaving a decrypted database
+    /// on disk after every exit.
+    #[test]
+    fn dropping_without_close_seals_and_wipes_plaintext() {
+        let dir = tempdir().expect("tempdir");
+        let sealed = dir.path().join("edge.db.enc");
+        let plaintext = dir.path().join("edge.db");
+        {
+            let db = Db::open(&sealed, &plaintext, EncryptionKey::new([7u8; 32])).expect("open");
+            // Touch the database so there is real committed content to seal.
+            db.connection()
+                .execute_batch("CREATE TABLE IF NOT EXISTS drop_probe (x INTEGER)")
+                .expect("write");
+            // No close() — the handle goes out of scope here.
+        }
+
+        assert!(sealed.exists(), "sealed file must exist after drop");
+        assert_eq!(
+            plaintext_artifacts(dir.path()),
+            Vec::<String>::new(),
+            "drop must leave nothing but edge.db.enc on disk"
+        );
+    }
+
+    /// Drop after an explicit close must be a harmless no-op, not a second
+    /// seal attempt against an already-wiped plaintext file.
+    #[test]
+    fn close_then_drop_is_safe() {
+        let dir = tempdir().expect("tempdir");
+        let sealed = dir.path().join("edge.db.enc");
+        let plaintext = dir.path().join("edge.db");
+        // EncryptionKey is deliberately not Clone (it is key material), so
+        // each open constructs the same bytes afresh.
+        let db = Db::open(&sealed, &plaintext, EncryptionKey::new([9u8; 32])).expect("open");
+        db.close().expect("explicit close must succeed");
+        // `db` was consumed by close(); its Drop ran immediately afterwards
+        // and must not have errored or resurrected the plaintext file.
+
+        assert!(sealed.exists());
+        assert_eq!(plaintext_artifacts(dir.path()), Vec::<String>::new());
+
+        // The sealed file must still be openable, i.e. close+drop did not
+        // corrupt it by sealing twice.
+        let reopened = Db::open(&sealed, &plaintext, EncryptionKey::new([9u8; 32]))
+            .expect("reopen after close+drop");
+        reopened.close().expect("second close");
+    }
+
+    /// shutdown_in_place is the path the POS exit hook uses; calling it twice
+    /// must be safe because Drop will call it again.
+    #[test]
+    fn shutdown_in_place_is_idempotent() {
+        let dir = tempdir().expect("tempdir");
+        let sealed = dir.path().join("edge.db.enc");
+        let plaintext = dir.path().join("edge.db");
+        let key = EncryptionKey::new([3u8; 32]);
+
+        let mut db = Db::open(&sealed, &plaintext, key).expect("open");
+        assert!(!db.is_shut_down());
+
+        db.shutdown_in_place().expect("first shutdown");
+        assert!(db.is_shut_down());
+        db.shutdown_in_place().expect("second shutdown is a no-op");
+
+        assert_eq!(plaintext_artifacts(dir.path()), Vec::<String>::new());
+    }
 
     fn sample_order(id: &str, outlet_id: &str, device_id: &str) -> NewOrder {
         NewOrder {
@@ -1319,8 +1485,10 @@ mod tests {
             let outbox = sample_outbox("order-crash");
             db.create_order_with_outbox(&order, &[], &outbox)
                 .expect("commit before crash");
-            // `db` drops here at end of scope without `close()` ever being
-            // called: that is the crash.
+            // The crash. Note this is NOT the same as letting `db` drop:
+            // `Drop` now seals and wipes (ADR-011), so a plain drop would
+            // leave no crash artifacts to recover from.
+            db.simulate_crash_for_tests();
         }
 
         // Crash artifacts must actually be present, or this test would
@@ -1366,9 +1534,11 @@ mod tests {
         let key_bytes = [12u8; 32];
 
         {
-            let _db =
+            let mut db =
                 Db::open(&sealed, &plaintext, EncryptionKey::new(key_bytes)).expect("first open");
-            // `_db` drops here without `close()`: the crash.
+            // The crash — see the note in the test above on why this is not
+            // simply a drop.
+            db.simulate_crash_for_tests();
         }
         assert!(crypto::marker_path(&plaintext).exists());
 
@@ -1733,7 +1903,7 @@ mod tests {
         // module of the crate root that defines `Db`).
         {
             let fixture_modifiers = fixture_item["modifiers"].as_array().unwrap().clone();
-            let tx = db.conn.transaction().expect("begin tx");
+            let tx = db.connection_mut().transaction().expect("begin tx");
             for (i, m) in fixture_modifiers.iter().enumerate() {
                 repo::insert_order_item_modifier(
                     &tx,
