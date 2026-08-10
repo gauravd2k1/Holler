@@ -35,6 +35,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::auth::login,
             commands::menu::list_menu_items,
+            commands::menu::list_menu_categories,
             commands::tables::list_tables,
             commands::tables::get_open_table_session,
             commands::orders::create_order,
@@ -43,6 +44,12 @@ pub fn run() {
             commands::orders::add_order_item,
             commands::orders::remove_order_item,
             commands::orders::confirm_order,
+            commands::kitchen::send_order_to_kitchen,
+            commands::kitchen::list_kots_for_order,
+            commands::kitchen::transition_kot_status,
+            commands::kitchen::list_stations,
+            commands::kitchen::list_failed_print_jobs,
+            commands::kitchen::retry_failed_print_jobs,
         ])
         .build(tauri::generate_context!())
         .expect("error while building the Holler POS application")

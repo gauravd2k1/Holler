@@ -5,16 +5,11 @@
 //! (ADR-007), so there is no path here that can produce an order without its
 //! outbox entry.
 //!
-//! Add-item/remove-item on an already-persisted DRAFT order are part of
-//! this task's assigned deliverables, but `holler_edge_database` exposes no
-//! way to mutate `order_item` rows on an existing order together with an
-//! outbox entry: `repo::insert_order_item` is `pub(crate)`-only inside that
-//! crate, and there is no delete/remove function for `order_item` at all.
-//! Reaching around that (raw SQL, or making the function public from here)
-//! would violate "nothing outside this crate touches the SQLite file
-//! directly" (edge/database's own doc comment) and this task's directory
-//! boundary. These two commands are therefore not implemented; see the task
-//! report for the exact gap and the two ways to close it.
+//! Add-item/remove-item on an already-persisted DRAFT order are wired
+//! through `Db::add_order_item_with_outbox`/`Db::remove_order_item_with_outbox`
+//! (docs/backlog-m2.md "POS cart persistence" — closed by this task): both
+//! reject a non-DRAFT order with `ORDER_NOT_DRAFT` rather than a silent
+//! no-op, matching `confirm_order`'s enforcement.
 //!
 //! Each `#[tauri::command]` here is a one-line wrapper around an `*_impl`
 //! function that takes `&AppState` directly — the thin-boundary rule
@@ -132,19 +127,52 @@ pub fn list_orders_impl(state: &AppState) -> AppResult<Vec<CanonicalOrder>> {
     Ok(out)
 }
 
-/// Not implemented — see module doc comment. Returns a typed, honest error
-/// rather than silently no-op'ing or panicking.
+/// Adds one line item to an already-persisted `DRAFT` order (see
+/// `Db::add_order_item_with_outbox`). Milestone 1/2 scope: this app's cart
+/// carries no modifiers yet, so `modifiers` is always empty here — the crate
+/// still recomputes `line_total_paise` itself rather than trusting a caller
+/// value either way.
 pub fn add_order_item_impl(
-    _state: &AppState,
-    _order_id: &str,
-    _item: NewOrderItemRequest,
+    state: &AppState,
+    order_id: &str,
+    item: NewOrderItemRequest,
 ) -> AppResult<CanonicalOrder> {
-    Err(AppError {
-        code: "UNSUPPORTED_DB_OPERATION",
-        message:
-            "holler_edge_database exposes no add-item-with-outbox API for an existing order; see task report"
-                .to_string(),
-    })
+    if item.quantity <= 0 {
+        return Err(AppError {
+            code: "INVALID_QUANTITY",
+            message: "quantity must be a positive integer".into(),
+        });
+    }
+
+    let now = now_iso();
+    let new_item = holler_edge_database::model::NewOrderItem {
+        id: new_id(),
+        order_id: order_id.to_string(),
+        menu_item_id: item.menu_item_id,
+        variant_id: item.variant_id,
+        quantity: item.quantity,
+        unit_price_paise: item.unit_price_paise,
+        // Recomputed inside the crate from unit_price_paise/quantity/
+        // modifiers — this value is never trusted, but the field must be
+        // populated to construct the struct.
+        line_total_paise: item.unit_price_paise * item.quantity,
+        notes: item.notes,
+        created_at: now.clone(),
+    };
+    let meta = holler_edge_database::model::OrderItemAddedMeta {
+        outbox_id: new_id(),
+        occurred_at: now,
+    };
+
+    let mut db = lock_db(state)?;
+    db.add_order_item_with_outbox(&new_item, &[], &meta)?;
+
+    let order = db.get_order(order_id)?.ok_or_else(|| AppError {
+        code: "NOT_FOUND",
+        message: format!("order {order_id} not found after add-item"),
+    })?;
+    let items = holler_edge_database::repo::list_order_items(db.connection(), order_id)?;
+    Ok(CanonicalOrder::from_order_and_items(order, items))
 }
 
 /// Confirms a `DRAFT` order (the cashier's DRAFT -> CONFIRMED transition).
@@ -173,18 +201,30 @@ pub fn confirm_order_impl(state: &AppState, order_id: &str) -> AppResult<Canonic
     Ok(CanonicalOrder::from_order_and_items(order, items))
 }
 
-/// Not implemented — see module doc comment.
+/// Removes one line item from an already-persisted `DRAFT` order (see
+/// `Db::remove_order_item_with_outbox`). `order_id` is caller-supplied
+/// (rather than derived from the deleted row) purely so this function can
+/// re-fetch the order afterwards for the return value — the crate itself
+/// resolves and enforces the owning order's status independently.
 pub fn remove_order_item_impl(
-    _state: &AppState,
-    _order_id: &str,
-    _order_item_id: &str,
+    state: &AppState,
+    order_id: &str,
+    order_item_id: &str,
 ) -> AppResult<CanonicalOrder> {
-    Err(AppError {
-        code: "UNSUPPORTED_DB_OPERATION",
-        message:
-            "holler_edge_database exposes no remove-item-with-outbox API for an existing order; see task report"
-                .to_string(),
-    })
+    let meta = holler_edge_database::model::OrderItemRemovedMeta {
+        outbox_id: new_id(),
+        occurred_at: now_iso(),
+    };
+
+    let mut db = lock_db(state)?;
+    db.remove_order_item_with_outbox(order_item_id, &meta)?;
+
+    let order = db.get_order(order_id)?.ok_or_else(|| AppError {
+        code: "NOT_FOUND",
+        message: format!("order {order_id} not found after remove-item"),
+    })?;
+    let items = holler_edge_database::repo::list_order_items(db.connection(), order_id)?;
+    Ok(CanonicalOrder::from_order_and_items(order, items))
 }
 
 #[tauri::command]

@@ -34,6 +34,11 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 # never touches the SQLite file directly.
 holler-edge-database = { path = "../../../edge/database" }
 
+# KOT print queueing/spool/retry (ADR-014, docs/spec/hardware-printing.md).
+# This crate consumes that API only — never touches `print_job`/`printer`
+# SQL directly.
+holler-edge-printer = { path = "../../../edge/printer" }
+
 [dev-dependencies]
 tempfile = "3"
 argon2 = { version = "0.5", default-features = false, features = ["alloc"] }

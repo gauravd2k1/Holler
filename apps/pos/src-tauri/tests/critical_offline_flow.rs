@@ -12,9 +12,14 @@ use base64::Engine as _;
 use holler_edge_database::{model, repo, Db};
 
 use holler_pos_lib::commands::auth::login_impl;
-use holler_pos_lib::commands::menu::list_menu_items_impl;
+use holler_pos_lib::commands::kitchen::{
+    list_failed_print_jobs_impl, list_kots_for_order_impl, list_stations_impl,
+    send_order_to_kitchen_impl, transition_kot_status_impl,
+};
+use holler_pos_lib::commands::menu::{list_menu_categories_impl, list_menu_items_impl};
 use holler_pos_lib::commands::orders::{
-    create_order_impl, get_order_impl, list_orders_impl, NewOrderItemRequest,
+    add_order_item_impl, create_order_impl, get_order_impl, list_orders_impl,
+    remove_order_item_impl, NewOrderItemRequest,
 };
 use holler_pos_lib::commands::tables::list_tables_impl;
 use holler_pos_lib::state::AppState;
@@ -132,6 +137,53 @@ fn seed(db: &Db) {
         },
     )
     .expect("seed table");
+}
+
+/// Extends `seed` with a station, a network printer routed to it, and that
+/// station wired as `item-1`'s route — the minimal config a KOT test needs
+/// (ADR-014 §1-2). Kept separate from `seed` so tests that do not touch the
+/// kitchen stay unaffected.
+fn seed_kitchen(db: &Db) {
+    let conn = db.connection();
+    repo::upsert_station(
+        conn,
+        &model::Station {
+            id: "station-1".to_string(),
+            outlet_id: OUTLET_ID.to_string(),
+            code: "MAIN_KITCHEN".to_string(),
+            name: "Main Kitchen".to_string(),
+            sort_order: 1,
+            is_active: true,
+            config_version: 1,
+        },
+    )
+    .expect("seed station");
+
+    repo::replace_menu_item_stations(conn, "item-1", &["station-1".to_string()], 1)
+        .expect("seed menu_item_station");
+
+    repo::upsert_printer(
+        conn,
+        &model::Printer {
+            id: "printer-1".to_string(),
+            outlet_id: OUTLET_ID.to_string(),
+            name: "Kitchen Printer".to_string(),
+            connection_kind: "ESCPOS_NETWORK".to_string(),
+            // Deliberately unreachable: no listener exists in this test
+            // process, so the immediate print attempt fails and lands the
+            // job in FAILED — exactly the case `list_failed_print_jobs`
+            // exists to surface. Nothing here opens a real socket to the
+            // network; connect failure is local and instant.
+            address: "127.0.0.1:1".to_string(),
+            paper_width_mm: 80,
+            is_active: true,
+            config_version: 1,
+        },
+    )
+    .expect("seed printer");
+
+    repo::replace_station_printers(conn, "station-1", &["printer-1".to_string()], 1)
+        .expect("seed station_printer");
 }
 
 fn seeded_state() -> AppState {
@@ -356,4 +408,215 @@ fn totals_arithmetic_is_integer_paise_and_rejects_non_positive_quantity() {
         1,
         "the rejected order must not have been written"
     );
+}
+
+// --------------------------------------------------------------- menu read --
+
+#[test]
+fn menu_categories_are_readable_for_the_outlet() {
+    let state = seeded_state();
+    let categories = list_menu_categories_impl(&state).expect("list categories");
+    assert_eq!(categories.len(), 1);
+    assert_eq!(categories[0].name, "Starters");
+}
+
+// ------------------------------------------------ add/remove item (cart persistence) --
+
+#[test]
+fn add_and_remove_item_on_a_draft_order_round_trip_through_storage() {
+    let state = seeded_state();
+    let order = create_order_impl(
+        &state,
+        "DINE_IN".to_string(),
+        None,
+        vec![NewOrderItemRequest {
+            menu_item_id: "item-1".to_string(),
+            variant_id: None,
+            quantity: 1,
+            unit_price_paise: 25000,
+            notes: None,
+        }],
+    )
+    .expect("create order");
+    assert_eq!(order.items.len(), 1);
+
+    let after_add = add_order_item_impl(
+        &state,
+        &order.holler_order_id,
+        NewOrderItemRequest {
+            menu_item_id: "item-1".to_string(),
+            variant_id: None,
+            quantity: 2,
+            unit_price_paise: 25000,
+            notes: Some("no onions".to_string()),
+        },
+    )
+    .expect("add item to draft order");
+    assert_eq!(after_add.items.len(), 2);
+    assert_eq!(after_add.subtotal_paise, 25000 + 50000);
+    assert_eq!(after_add.total_paise, after_add.subtotal_paise);
+
+    let added_item_id = after_add
+        .items
+        .iter()
+        .find(|i| i.notes.as_deref() == Some("no onions"))
+        .expect("added line present")
+        .id
+        .clone();
+
+    let after_remove =
+        remove_order_item_impl(&state, &order.holler_order_id, &added_item_id).expect("remove item");
+    assert_eq!(after_remove.items.len(), 1);
+    assert_eq!(after_remove.subtotal_paise, 25000);
+}
+
+#[test]
+fn add_item_rejects_a_non_draft_order() {
+    let state = seeded_state();
+    let order = create_order_impl(
+        &state,
+        "DINE_IN".to_string(),
+        None,
+        vec![NewOrderItemRequest {
+            menu_item_id: "item-1".to_string(),
+            variant_id: None,
+            quantity: 1,
+            unit_price_paise: 25000,
+            notes: None,
+        }],
+    )
+    .expect("create order");
+
+    holler_pos_lib::commands::orders::confirm_order_impl(&state, &order.holler_order_id)
+        .expect("confirm order");
+
+    let err = add_order_item_impl(
+        &state,
+        &order.holler_order_id,
+        NewOrderItemRequest {
+            menu_item_id: "item-1".to_string(),
+            variant_id: None,
+            quantity: 1,
+            unit_price_paise: 25000,
+            notes: None,
+        },
+    )
+    .expect_err("must reject amendment of a confirmed order");
+    assert_eq!(err.code, "ORDER_NOT_DRAFT");
+}
+
+// ---------------------------------------------------------------- kitchen --
+
+fn seeded_kitchen_state() -> AppState {
+    let db = Db::open_in_memory_for_tests().expect("open in-memory db");
+    seed(&db);
+    seed_kitchen(&db);
+    AppState::new(db, OUTLET_ID.to_string(), DEVICE_ID.to_string())
+}
+
+#[test]
+fn send_to_kitchen_produces_one_ticket_per_routed_station_and_it_is_listable() {
+    let state = seeded_kitchen_state();
+    let order = create_order_impl(
+        &state,
+        "DINE_IN".to_string(),
+        Some("table-1".to_string()),
+        vec![NewOrderItemRequest {
+            menu_item_id: "item-1".to_string(),
+            variant_id: None,
+            quantity: 2,
+            unit_price_paise: 25000,
+            notes: None,
+        }],
+    )
+    .expect("create order");
+
+    holler_pos_lib::commands::orders::confirm_order_impl(&state, &order.holler_order_id)
+        .expect("confirm order");
+    let kots =
+        send_order_to_kitchen_impl(&state, &order.holler_order_id).expect("send to kitchen");
+    assert_eq!(kots.len(), 1, "item-1 routes to exactly one station");
+    assert_eq!(kots[0].station, "MAIN_KITCHEN");
+    assert_eq!(kots[0].status, "NEW");
+    assert_eq!(kots[0].items.len(), 1);
+    assert_eq!(kots[0].items[0].quantity, 2);
+
+    let listed =
+        list_kots_for_order_impl(&state, &order.holler_order_id).expect("list kots for order");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, kots[0].id);
+}
+
+#[test]
+fn kot_status_transitions_through_the_state_machine_and_rejects_illegal_moves() {
+    let state = seeded_kitchen_state();
+    let order = create_order_impl(
+        &state,
+        "DINE_IN".to_string(),
+        None,
+        vec![NewOrderItemRequest {
+            menu_item_id: "item-1".to_string(),
+            variant_id: None,
+            quantity: 1,
+            unit_price_paise: 25000,
+            notes: None,
+        }],
+    )
+    .expect("create order");
+    holler_pos_lib::commands::orders::confirm_order_impl(&state, &order.holler_order_id)
+        .expect("confirm order");
+    let kots = send_order_to_kitchen_impl(&state, &order.holler_order_id).expect("send");
+    let kot_id = kots[0].id.clone();
+
+    let after_ack = transition_kot_status_impl(
+        &state,
+        &order.holler_order_id,
+        &kot_id,
+        "ACKNOWLEDGED",
+    )
+    .expect("NEW -> ACKNOWLEDGED");
+    assert_eq!(after_ack[0].status, "ACKNOWLEDGED");
+
+    let err = transition_kot_status_impl(&state, &order.holler_order_id, &kot_id, "SERVED")
+        .expect_err("ACKNOWLEDGED -> SERVED is illegal (must pass through PREPARING/READY)");
+    assert_eq!(err.code, "ILLEGAL_KOT_STATUS_TRANSITION");
+}
+
+#[test]
+fn stations_are_readable_for_the_outlet() {
+    let state = seeded_kitchen_state();
+    let stations = list_stations_impl(&state).expect("list stations");
+    assert_eq!(stations.len(), 1);
+    assert_eq!(stations[0].code, "MAIN_KITCHEN");
+}
+
+/// The staff-visible failure view (docs/spec/hardware-printing.md): the
+/// seeded printer's address is unreachable, so send-to-kitchen's own
+/// best-effort print attempt fails and the job must show up here — a
+/// silently swallowed print failure is exactly the bug this proves absent.
+#[test]
+fn a_print_failure_is_visible_to_staff_after_send_to_kitchen() {
+    let state = seeded_kitchen_state();
+    let order = create_order_impl(
+        &state,
+        "DINE_IN".to_string(),
+        None,
+        vec![NewOrderItemRequest {
+            menu_item_id: "item-1".to_string(),
+            variant_id: None,
+            quantity: 1,
+            unit_price_paise: 25000,
+            notes: None,
+        }],
+    )
+    .expect("create order");
+    holler_pos_lib::commands::orders::confirm_order_impl(&state, &order.holler_order_id)
+        .expect("confirm order");
+    send_order_to_kitchen_impl(&state, &order.holler_order_id).expect("send to kitchen");
+
+    let failed = list_failed_print_jobs_impl(&state).expect("list failed print jobs");
+    assert_eq!(failed.len(), 1);
+    assert_eq!(failed[0].printer_name, "Kitchen Printer");
+    assert_eq!(failed[0].kot_station, "MAIN_KITCHEN");
+    assert!(failed[0].last_error.is_some());
 }

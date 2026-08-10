@@ -1359,6 +1359,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "holler-edge-printer"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "holler-edge-database",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "holler-pos"
 version = "0.1.0"
 dependencies = [
@@ -1366,6 +1378,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "holler-edge-database",
+ "holler-edge-printer",
  "rand",
  "serde",
  "serde_json",

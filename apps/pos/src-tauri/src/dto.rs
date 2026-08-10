@@ -9,6 +9,9 @@
 //! defines their shape. The menu DTOs below use that schema's column names
 //! verbatim rather than inventing a wire shape, so a future contract mirror
 //! is a trivial rename-free addition. This is a contract gap, reported.
+//!
+//! Kot/Station/PrintJob DTOs below mirror `packages/contracts/src/types/`
+//! `kot.ts`/`station.ts`/`printer.ts` exactly (ADR-014, contracts 0.3.0).
 
 use serde::Serialize;
 
@@ -76,6 +79,7 @@ pub struct MenuItem {
     pub base_price_paise: i64,
     pub is_available: bool,
     pub config_version: i64,
+    pub schema_version: u8,
 }
 
 impl From<db::MenuItem> for MenuItem {
@@ -88,6 +92,7 @@ impl From<db::MenuItem> for MenuItem {
             base_price_paise: m.base_price_paise,
             is_available: m.is_available,
             config_version: m.config_version,
+            schema_version: 1,
         }
     }
 }
@@ -388,6 +393,142 @@ impl CanonicalOrder {
                 .as_deref()
                 .and_then(|s| serde_json::from_str(s).ok()),
             schema_version: order.schema_version as u8,
+        }
+    }
+}
+
+// ------------------------------------------------------------ kitchen (M2) --
+// Mirrors packages/contracts/src/types/kot.ts, station.ts, printer.ts
+// field-for-field (ADR-014, contracts 0.3.0).
+
+#[derive(Debug, Clone, Serialize)]
+pub struct KotTicketItem {
+    pub order_item_id: String,
+    pub name: String,
+    pub quantity: i64,
+    pub modifiers: Vec<String>,
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Kot {
+    pub id: String,
+    pub order_id: String,
+    pub station: String,
+    pub sequence: i64,
+    pub status: String,
+    pub items: Vec<KotTicketItem>,
+    pub created_by_device_id: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub schema_version: u8,
+}
+
+/// Fails loudly (rather than silently dropping the ticket's items) if
+/// `items_json` does not parse as the frozen `KotTicketItem[]` shape — a
+/// malformed row here means the edge wrote something that cannot be shown
+/// to the cashier or the kitchen, and that must not pass silently.
+impl TryFrom<db::Kot> for Kot {
+    type Error = serde_json::Error;
+
+    fn try_from(k: db::Kot) -> Result<Self, Self::Error> {
+        #[derive(serde::Deserialize)]
+        struct RawItem {
+            order_item_id: String,
+            name: String,
+            quantity: i64,
+            #[serde(default)]
+            modifiers: Vec<String>,
+            notes: Option<String>,
+        }
+        let raw: Vec<RawItem> = serde_json::from_str(&k.items_json)?;
+        Ok(Self {
+            id: k.id,
+            order_id: k.order_id,
+            station: k.station,
+            sequence: k.sequence,
+            status: k.status,
+            items: raw
+                .into_iter()
+                .map(|i| KotTicketItem {
+                    order_item_id: i.order_item_id,
+                    name: i.name,
+                    quantity: i.quantity,
+                    modifiers: i.modifiers,
+                    notes: i.notes,
+                })
+                .collect(),
+            created_by_device_id: k.created_by_device_id,
+            created_at: k.created_at,
+            updated_at: k.updated_at,
+            schema_version: 1,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Station {
+    pub id: String,
+    pub outlet_id: String,
+    pub code: String,
+    pub name: String,
+    pub sort_order: i64,
+    pub is_active: bool,
+    pub config_version: i64,
+    pub schema_version: u8,
+}
+
+impl From<db::Station> for Station {
+    fn from(s: db::Station) -> Self {
+        Self {
+            id: s.id,
+            outlet_id: s.outlet_id,
+            code: s.code,
+            name: s.name,
+            sort_order: s.sort_order,
+            is_active: s.is_active,
+            config_version: s.config_version,
+            schema_version: 1,
+        }
+    }
+}
+
+/// A failed `print_job`, joined with the printer name and the KOT's station
+/// so the POS's staff-visible failure view (docs/spec/hardware-printing.md
+/// "Print failures must be visible to staff") does not need a second round
+/// trip per row. `print_job` itself has no wire shape in
+/// `packages/contracts` beyond `PrintJobSchema` — this view type layers the
+/// two extra display fields on top, which the frontend validates against
+/// `PrintJobSchema.extend(...)`.
+#[derive(Debug, Clone, Serialize)]
+pub struct FailedPrintJob {
+    pub id: String,
+    pub kot_id: String,
+    pub printer_id: String,
+    pub status: String,
+    pub attempt_count: i64,
+    pub last_error: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub printer_name: String,
+    pub kot_station: String,
+    pub schema_version: u8,
+}
+
+impl From<holler_edge_printer::model::FailedPrintJobView> for FailedPrintJob {
+    fn from(v: holler_edge_printer::model::FailedPrintJobView) -> Self {
+        Self {
+            id: v.job.id,
+            kot_id: v.job.kot_id,
+            printer_id: v.job.printer_id,
+            status: v.job.status.as_db_str().to_string(),
+            attempt_count: v.job.attempt_count,
+            last_error: v.job.last_error,
+            created_at: v.job.created_at,
+            updated_at: v.job.updated_at,
+            printer_name: v.printer_name,
+            kot_station: v.kot_station,
+            schema_version: 1,
         }
     }
 }

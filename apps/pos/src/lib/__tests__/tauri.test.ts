@@ -6,9 +6,23 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 // Imported after the mock so the module under test picks it up.
-const { login, listMenuItems, listTables, createOrder, confirmOrder, isTauriCommandError } = await import(
-  "../tauri"
-);
+const {
+  login,
+  listMenuItems,
+  listMenuCategories,
+  listTables,
+  createOrder,
+  confirmOrder,
+  addOrderItem,
+  removeOrderItem,
+  sendOrderToKitchen,
+  listKotsForOrder,
+  transitionKotStatus,
+  listStations,
+  listFailedPrintJobs,
+  retryFailedPrintJobs,
+  isTauriCommandError,
+} = await import("../tauri");
 
 beforeEach(() => {
   invokeMock.mockReset();
@@ -86,7 +100,7 @@ describe("login", () => {
 });
 
 describe("listMenuItems", () => {
-  it("patches in the missing schema_version and parses against the real contract schema", async () => {
+  it("parses against the real contract schema, including schema_version from the Rust DTO", async () => {
     invokeMock.mockResolvedValue([
       {
         id: "00000000-0000-7000-8000-000000000006",
@@ -96,12 +110,27 @@ describe("listMenuItems", () => {
         base_price_paise: 25000,
         is_available: true,
         config_version: 1,
-        // schema_version intentionally absent — matches the real Rust DTO.
+        schema_version: 1,
       },
     ]);
     const items = await listMenuItems();
     expect(items).toHaveLength(1);
     expect(items[0]?.base_price_paise).toBe(25000);
+  });
+
+  it("rejects a response missing schema_version rather than inventing it", async () => {
+    invokeMock.mockResolvedValue([
+      {
+        id: "00000000-0000-7000-8000-000000000006",
+        outlet_id: "00000000-0000-7000-8000-000000000003",
+        category_id: "00000000-0000-7000-8000-000000000007",
+        name: "Paneer Tikka",
+        base_price_paise: 25000,
+        is_available: true,
+        config_version: 1,
+      },
+    ]);
+    await expect(listMenuItems()).rejects.toBeTruthy();
   });
 });
 
@@ -149,5 +178,164 @@ describe("confirmOrder", () => {
   it("rejects a malformed response rather than trusting the cast", async () => {
     invokeMock.mockResolvedValue({ holler_order_id: "not-a-uuid" });
     await expect(confirmOrder(VALID_ORDER.holler_order_id)).rejects.toBeTruthy();
+  });
+});
+
+describe("listMenuCategories", () => {
+  it("parses categories from the local schema (no @holler/contracts mirror yet)", async () => {
+    invokeMock.mockResolvedValue([
+      {
+        id: "00000000-0000-7000-8000-000000000007",
+        outlet_id: "00000000-0000-7000-8000-000000000003",
+        name: "Starters",
+        sort_order: 1,
+        config_version: 1,
+      },
+    ]);
+    const categories = await listMenuCategories();
+    expect(categories[0]?.name).toBe("Starters");
+  });
+});
+
+describe("add/removeOrderItem", () => {
+  it("addOrderItem invokes add_order_item with the order id and item, and parses the response", async () => {
+    invokeMock.mockResolvedValue(VALID_ORDER);
+    const order = await addOrderItem(VALID_ORDER.holler_order_id, {
+      menu_item_id: "00000000-0000-7000-8000-000000000006",
+      variant_id: null,
+      quantity: 1,
+      unit_price_paise: 25000,
+      notes: null,
+    });
+    expect(invokeMock).toHaveBeenCalledWith("add_order_item", expect.objectContaining({
+      orderId: VALID_ORDER.holler_order_id,
+    }));
+    expect(order.holler_order_id).toBe(VALID_ORDER.holler_order_id);
+  });
+
+  it("removeOrderItem invokes remove_order_item with the order and item ids", async () => {
+    invokeMock.mockResolvedValue(VALID_ORDER);
+    await removeOrderItem(VALID_ORDER.holler_order_id, "item-1");
+    expect(invokeMock).toHaveBeenCalledWith("remove_order_item", {
+      orderId: VALID_ORDER.holler_order_id,
+      orderItemId: "item-1",
+    });
+  });
+
+  it("normalizes an ORDER_NOT_DRAFT rejection", async () => {
+    invokeMock.mockRejectedValue({ code: "ORDER_NOT_DRAFT", message: "not draft" });
+    await expect(
+      addOrderItem(VALID_ORDER.holler_order_id, {
+        menu_item_id: "x",
+        variant_id: null,
+        quantity: 1,
+        unit_price_paise: 100,
+        notes: null,
+      }),
+    ).rejects.toSatisfy((err: unknown) => isTauriCommandError(err));
+  });
+});
+
+const VALID_KOT = {
+  id: "00000000-0000-7000-8000-000000000009",
+  order_id: VALID_ORDER.holler_order_id,
+  station: "MAIN_KITCHEN",
+  sequence: 1,
+  status: "NEW",
+  items: [
+    {
+      order_item_id: "00000000-0000-7000-8000-00000000000a",
+      name: "Paneer Tikka",
+      quantity: 2,
+      modifiers: [],
+      notes: null,
+    },
+  ],
+  created_by_device_id: "00000000-0000-7000-8000-00000000000b",
+  created_at: "2026-08-10T10:00:00.000Z",
+  updated_at: "2026-08-10T10:00:00.000Z",
+  schema_version: 1,
+};
+
+describe("sendOrderToKitchen / listKotsForOrder / transitionKotStatus", () => {
+  it("sendOrderToKitchen parses the returned KOTs against the frozen contract schema", async () => {
+    invokeMock.mockResolvedValue([VALID_KOT]);
+    const kots = await sendOrderToKitchen(VALID_ORDER.holler_order_id);
+    expect(kots).toHaveLength(1);
+    expect(kots[0]?.station).toBe("MAIN_KITCHEN");
+  });
+
+  it("listKotsForOrder invokes list_kots_for_order with the order id", async () => {
+    invokeMock.mockResolvedValue([VALID_KOT]);
+    await listKotsForOrder(VALID_ORDER.holler_order_id);
+    expect(invokeMock).toHaveBeenCalledWith("list_kots_for_order", {
+      orderId: VALID_ORDER.holler_order_id,
+    });
+  });
+
+  it("transitionKotStatus invokes transition_kot_status with all three ids/status", async () => {
+    invokeMock.mockResolvedValue([{ ...VALID_KOT, status: "ACKNOWLEDGED" }]);
+    const kots = await transitionKotStatus(VALID_ORDER.holler_order_id, VALID_KOT.id, "ACKNOWLEDGED");
+    expect(invokeMock).toHaveBeenCalledWith("transition_kot_status", {
+      orderId: VALID_ORDER.holler_order_id,
+      kotId: VALID_KOT.id,
+      newStatus: "ACKNOWLEDGED",
+    });
+    expect(kots[0]?.status).toBe("ACKNOWLEDGED");
+  });
+
+  it("rejects a malformed KOT rather than trusting the cast", async () => {
+    invokeMock.mockResolvedValue([{ id: "not-a-uuid" }]);
+    await expect(listKotsForOrder(VALID_ORDER.holler_order_id)).rejects.toBeTruthy();
+  });
+});
+
+describe("listStations", () => {
+  it("parses stations against the frozen contract schema", async () => {
+    invokeMock.mockResolvedValue([
+      {
+        id: "00000000-0000-7000-8000-00000000000c",
+        outlet_id: "00000000-0000-7000-8000-000000000003",
+        code: "MAIN_KITCHEN",
+        name: "Main Kitchen",
+        sort_order: 1,
+        is_active: true,
+        config_version: 1,
+        schema_version: 1,
+      },
+    ]);
+    const stations = await listStations();
+    expect(stations[0]?.code).toBe("MAIN_KITCHEN");
+  });
+});
+
+describe("listFailedPrintJobs / retryFailedPrintJobs", () => {
+  const VALID_FAILED_JOB = {
+    id: "00000000-0000-7000-8000-00000000000d",
+    kot_id: VALID_KOT.id,
+    printer_id: "00000000-0000-7000-8000-00000000000e",
+    status: "FAILED",
+    attempt_count: 2,
+    last_error: "connect refused",
+    created_at: "2026-08-10T10:00:00.000Z",
+    updated_at: "2026-08-10T10:00:05.000Z",
+    printer_name: "Kitchen Printer",
+    kot_station: "MAIN_KITCHEN",
+    schema_version: 1,
+  };
+
+  it("listFailedPrintJobs parses the extended PrintJobSchema view", async () => {
+    invokeMock.mockResolvedValue([VALID_FAILED_JOB]);
+    const failed = await listFailedPrintJobs();
+    expect(failed).toHaveLength(1);
+    expect(failed[0]?.printer_name).toBe("Kitchen Printer");
+    expect(failed[0]?.last_error).toBe("connect refused");
+  });
+
+  it("retryFailedPrintJobs invokes retry_failed_print_jobs and returns the still-failing set", async () => {
+    invokeMock.mockResolvedValue([]);
+    const failed = await retryFailedPrintJobs();
+    expect(invokeMock).toHaveBeenCalledWith("retry_failed_print_jobs");
+    expect(failed).toEqual([]);
   });
 });

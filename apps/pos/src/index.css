@@ -163,6 +163,42 @@ button {
   color: #888;
 }
 
+/* ------------------------------------------------ print failure banner -- */
+/* docs/spec/hardware-printing.md: "Print failures must be visible to
+   staff." Fixed overlay, not a badge tucked into a corner — it sits above
+   every other screen element and states the failure in text (station,
+   printer, attempt count, error), never relying on colour alone. */
+.print-failure-banner {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  padding: 0.5rem 1rem;
+  background: #611;
+  border-top: 3px solid #f66;
+  color: #fff;
+}
+.print-failure-summary {
+  font-weight: bold;
+}
+.print-failure-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+  flex: 1;
+}
+.print-failure-retry-error {
+  color: #fcc;
+}
+
 /* --------------------------------------------------------- order list -- */
 .order-list-screen {
   padding: 1rem;
@@ -175,5 +211,32 @@ button {
 .order-list-screen td {
   border-bottom: 1px solid #333;
   padding: 0.5rem;
+  text-align: left;
+}
+.order-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.order-confirm-error {
+  color: #f66;
+}
+
+/* ------------------------------------------------------------ kots panel -- */
+.kots-panel {
+  padding: 0.5rem 0;
+}
+.kots-stations {
+  font-weight: bold;
+  margin: 0 0 0.5rem;
+}
+.kots-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.kots-table th,
+.kots-table td {
+  border-bottom: 1px solid #222;
+  padding: 0.4rem;
   text-align: left;
 }

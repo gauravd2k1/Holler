@@ -71,7 +71,29 @@ impl From<holler_edge_database::DbError> for AppError {
             DbError::InvalidInput(msg) => AppError::new("INVALID_INPUT", msg),
             DbError::OrderNotAmendable { .. } => AppError::new("ORDER_NOT_DRAFT", message),
             DbError::OrderNotConfirmable { .. } => AppError::new("ORDER_NOT_CONFIRMABLE", message),
+            DbError::OrderNotSendableToKitchen { .. } => {
+                AppError::new("ORDER_NOT_SENDABLE_TO_KITCHEN", message)
+            }
+            DbError::NothingToSendToKitchen { .. } => {
+                AppError::new("NOTHING_TO_SEND_TO_KITCHEN", message)
+            }
+            DbError::IllegalKotStatusTransition { .. } => {
+                AppError::new("ILLEGAL_KOT_STATUS_TRANSITION", message)
+            }
             _other => AppError::new("STORAGE_ERROR", message),
+        }
+    }
+}
+
+impl From<holler_edge_printer::PrinterError> for AppError {
+    fn from(e: holler_edge_printer::PrinterError) -> Self {
+        use holler_edge_printer::PrinterError;
+        let message = e.to_string();
+        match e {
+            PrinterError::NoPrinterRouted { .. } => AppError::new("NO_PRINTER_ROUTED", message),
+            PrinterError::NotFound(what) => AppError::new("NOT_FOUND", format!("{what} not found")),
+            PrinterError::Db(db_err) => AppError::from(db_err),
+            _other => AppError::new("PRINTER_ERROR", message),
         }
     }
 }

@@ -7,14 +7,19 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   AuthenticatedPrincipalSchema,
   CanonicalOrderSchema,
+  KotSchema,
   MenuItemSchema,
+  PrintJobSchema,
   RestaurantTableSchema,
+  StationSchema,
   TableSessionSchema,
   type AuthenticatedPrincipal,
   type CanonicalOrder,
+  type Kot,
   type MenuItem,
   type OrderType,
   type RestaurantTable,
+  type Station,
   type TableSession,
 } from "@holler/contracts";
 import { z } from "zod";
@@ -59,27 +64,35 @@ export async function login(email: string, password: string): Promise<Authentica
   }
 }
 
-/**
- * KNOWN CONTRACT GAP (reported, not worked around): the Tauri `MenuItem` DTO
- * (apps/pos/src-tauri/src/dto.rs) omits `schema_version`, which
- * `@holler/contracts`'s `MenuItemSchema` requires as `z.literal(1)`. Every
- * other DTO in that file includes it. Rather than hand-roll a second,
- * looser menu-item type here, this patches in the one constant the schema
- * requires (always `1` for a schema at version 1 — no business data is
- * invented) so the real contract schema is still the thing validating the
- * rest of the shape. See task report for the exact fix needed on the Rust
- * side (add `schema_version: 1` to `dto::MenuItem`).
- */
-function parseMenuItem(raw: unknown): MenuItem {
-  const withSchemaVersion =
-    typeof raw === "object" && raw !== null ? { schema_version: 1, ...raw } : raw;
-  return MenuItemSchema.parse(withSchemaVersion);
-}
-
 export async function listMenuItems(): Promise<MenuItem[]> {
   try {
     const raw = await invoke<unknown[]>("list_menu_items");
-    return raw.map(parseMenuItem);
+    return raw.map((i) => MenuItemSchema.parse(i));
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
+
+/**
+ * `packages/contracts` has no TS+Zod mirror for `menu_category` yet (see
+ * `apps/pos/src-tauri/src/dto.rs` module doc comment — a contract gap, not
+ * worked around here). This local schema matches the Rust DTO's field set
+ * verbatim rather than inventing a wire shape, so it is a trivial
+ * rename-free swap once a contract mirror exists.
+ */
+const MenuCategorySchema = z.object({
+  id: z.string(),
+  outlet_id: z.string(),
+  name: z.string(),
+  sort_order: z.number().int(),
+  config_version: z.number().int(),
+});
+export type MenuCategory = z.infer<typeof MenuCategorySchema>;
+
+export async function listMenuCategories(): Promise<MenuCategory[]> {
+  try {
+    const raw = await invoke<unknown[]>("list_menu_categories");
+    return raw.map((c) => MenuCategorySchema.parse(c));
   } catch (err) {
     throw toCommandError(err);
   }
@@ -147,13 +160,121 @@ export async function confirmOrder(orderId: string): Promise<CanonicalOrder> {
   }
 }
 
-// `add_order_item` / `remove_order_item` Tauri commands exist but always
-// reject with `UNSUPPORTED_DB_OPERATION` (see
-// apps/pos/src-tauri/src/commands/orders.rs module doc comment: the edge
-// database crate exposes no add/remove-item-with-outbox API for an
-// already-persisted order). This app therefore never calls them: the cart
-// is assembled entirely in frontend state (`store/cart.ts`) and sent to
-// `create_order` once, atomically, when the cashier presses Send. This is
-// not a workaround invented here — it is the only order-creation path the
-// Rust layer actually implements, and it matches ordering.md's DRAFT ->
-// SENT flow for a cart that has not yet touched storage.
+/** Adds one line to an already-persisted `DRAFT` order
+ * (apps/pos/src-tauri/src/commands/orders.rs `add_order_item`). Rejects with
+ * `ORDER_NOT_DRAFT` once the order has moved past DRAFT. */
+export async function addOrderItem(
+  orderId: string,
+  item: NewOrderItemRequest,
+): Promise<CanonicalOrder> {
+  try {
+    const raw = await invoke("add_order_item", { orderId, item });
+    return CanonicalOrderSchema.parse(raw);
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
+
+/** Removes one line from an already-persisted `DRAFT` order
+ * (apps/pos/src-tauri/src/commands/orders.rs `remove_order_item`). */
+export async function removeOrderItem(
+  orderId: string,
+  orderItemId: string,
+): Promise<CanonicalOrder> {
+  try {
+    const raw = await invoke("remove_order_item", { orderId, orderItemId });
+    return CanonicalOrderSchema.parse(raw);
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
+
+// ------------------------------------------------------------- kitchen (M2) --
+// ADR-014, docs/spec/kitchen.md, docs/spec/hardware-printing.md.
+
+/** Generates and returns the station tickets for an order's send-to-kitchen
+ * moment (apps/pos/src-tauri/src/commands/kitchen.rs `send_order_to_kitchen`).
+ * Rejects with `ORDER_NOT_SENDABLE_TO_KITCHEN` (order not CONFIRMED/
+ * SENT_TO_KITCHEN/PREPARING) or `NOTHING_TO_SEND_TO_KITCHEN` (nothing new to
+ * ticket). Also best-effort queues and attempts to print every ticket — a
+ * print failure there never fails this call; see `listFailedPrintJobs`. */
+export async function sendOrderToKitchen(orderId: string): Promise<Kot[]> {
+  try {
+    const raw = await invoke<unknown[]>("send_order_to_kitchen", { orderId });
+    return raw.map((k) => KotSchema.parse(k));
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
+
+export async function listKotsForOrder(orderId: string): Promise<Kot[]> {
+  try {
+    const raw = await invoke<unknown[]>("list_kots_for_order", { orderId });
+    return raw.map((k) => KotSchema.parse(k));
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
+
+/** Transitions one KOT's status (NEW -> ACKNOWLEDGED -> PREPARING -> READY ->
+ * SERVED, or CANCELLED from any non-terminal status) and returns the order's
+ * refreshed ticket list. Rejects illegal transitions with
+ * `ILLEGAL_KOT_STATUS_TRANSITION` rather than silently no-op'ing. */
+export async function transitionKotStatus(
+  orderId: string,
+  kotId: string,
+  newStatus: Kot["status"],
+): Promise<Kot[]> {
+  try {
+    const raw = await invoke<unknown[]>("transition_kot_status", {
+      orderId,
+      kotId,
+      newStatus,
+    });
+    return raw.map((k) => KotSchema.parse(k));
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
+
+export async function listStations(): Promise<Station[]> {
+  try {
+    const raw = await invoke<unknown[]>("list_stations");
+    return raw.map((s) => StationSchema.parse(s));
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
+
+/** A failed `print_job` joined with the printer name and the KOT's station —
+ * the staff-visible failure view (docs/spec/hardware-printing.md: "Print
+ * failures must be visible to staff"). `PrintJobSchema` has no wire mirror
+ * for the two extra display fields (`print_job` never crosses a sync
+ * boundary, ADR-014 §3), so this extends it locally rather than inventing a
+ * second, looser schema. */
+const FailedPrintJobSchema = PrintJobSchema.extend({
+  printer_name: z.string(),
+  kot_station: z.string(),
+});
+export type FailedPrintJob = z.infer<typeof FailedPrintJobSchema>;
+
+export async function listFailedPrintJobs(): Promise<FailedPrintJob[]> {
+  try {
+    const raw = await invoke<unknown[]>("list_failed_print_jobs");
+    return raw.map((j) => FailedPrintJobSchema.parse(j));
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
+
+/** Manually re-attempts every print job currently due (queued, or failed and
+ * past its backoff window) and returns the still-failing set — the
+ * staff-facing "retry" action next to the failure banner. */
+export async function retryFailedPrintJobs(): Promise<FailedPrintJob[]> {
+  try {
+    const raw = await invoke<unknown[]>("retry_failed_print_jobs");
+    return raw.map((j) => FailedPrintJobSchema.parse(j));
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}

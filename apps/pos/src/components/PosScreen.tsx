@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import type { MenuItem } from "@holler/contracts";
-import { useMenuItemsQuery, useTablesQuery, queryKeys } from "../lib/queries";
+import { useMenuCategoriesQuery, useMenuItemsQuery, useTablesQuery, queryKeys } from "../lib/queries";
 import { groupItemsByCategory } from "../domain/menu";
 import { SUPPORTED_ORDER_TYPES, cartSubtotalPaise, canSendOrder, requiresTable, lineTotal } from "../domain/cart";
 import { formatPaiseAsRupees } from "../domain/money";
@@ -10,6 +10,7 @@ import { hasPermission } from "../domain/permissions";
 import { useAuthStore } from "../store/auth";
 import { useCartStore } from "../store/cart";
 import { createOrder, isTauriCommandError } from "../lib/tauri";
+import { PrintFailureBanner } from "./PrintFailureBanner";
 
 // docs/spec/ordering.md §POS layout: TOP search + order-type + table,
 // LEFT categories, CENTER menu grid, RIGHT cart, BOTTOM subtotal/send.
@@ -20,6 +21,7 @@ export function PosScreen() {
   const queryClient = useQueryClient();
   const principal = useAuthStore((s) => s.principal);
   const menuItemsQuery = useMenuItemsQuery();
+  const menuCategoriesQuery = useMenuCategoriesQuery();
   const tablesQuery = useTablesQuery();
 
   const orderType = useCartStore((s) => s.orderType);
@@ -39,7 +41,11 @@ export function PosScreen() {
   const canCreateOrder = hasPermission(principal, "order.create");
 
   const menuItems = menuItemsQuery.data ?? [];
-  const groups = useMemo(() => groupItemsByCategory(menuItems), [menuItems]);
+  const menuCategories = menuCategoriesQuery.data ?? [];
+  const groups = useMemo(
+    () => groupItemsByCategory(menuItems, menuCategories),
+    [menuItems, menuCategories],
+  );
   const activeGroup = groups.find((g) => g.categoryId === activeCategoryId) ?? groups[0] ?? null;
 
   const visibleItems: MenuItem[] = useMemo(() => {
@@ -82,6 +88,7 @@ export function PosScreen() {
 
   return (
     <main className="pos-screen">
+      <PrintFailureBanner />
       <header className="pos-top-bar">
         <input
           className="pos-search"
@@ -128,7 +135,7 @@ export function PosScreen() {
             className={group.categoryId === activeGroup?.categoryId ? "active" : ""}
             onClick={() => setActiveCategoryId(group.categoryId)}
           >
-            {group.categoryId}
+            {group.categoryName}
           </button>
         ))}
       </nav>
