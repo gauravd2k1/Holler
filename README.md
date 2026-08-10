@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="imgs/holler_no_bg.png" alt="Holler" width="180">
+</p>
+
 # Holler
 
 A local-first Restaurant Operating System for India. See `docs/vision.md` for product vision and `CLAUDE.md` for the agent working context.
@@ -17,8 +21,15 @@ holler/
 ├── packages/contracts/    # source of truth for cross-boundary shapes (frozen after Milestone 0.5)
 ├── docs/                  # vision, spec/, architecture/, domain/, adr/
 ├── deployments/           # docker, kubernetes, terraform
+├── imgs/                  # brand assets (source of truth for logo/icons)
 └── tests/                 # integration, e2e, load
 ```
+
+## Brand assets
+`imgs/` holds the source artwork: `holler_no_bg.png` (transparent logo),
+`Holler_best icon_copy.png` (full-resolution icon), and the generated favicon /
+touch-icon set. Treat these as the source of truth — generate app icons and
+web favicons from them rather than adding new one-off copies elsewhere.
 
 ## Deployment target
 Outlet machines run **bare Windows 10 (64-bit, 4GB RAM)** with no WSL, no Docker and no database server. The POS is a single native executable over a statically-linked SQLite file, and works fully offline. See `docs/adr/ADR-013-outlet-deployment-target.md` — the dev tooling below is for the **cloud** side and never runs at a restaurant.
