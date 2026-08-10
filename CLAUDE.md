@@ -75,7 +75,13 @@ v0.3.0 (ADR-014) added the Milestone 2 kitchen shapes. Four rules bind every bui
 ## Current milestone: MILESTONE 2 — Kitchen
 Scope: KOT, station routing, printer abstraction, KDS, LAN realtime delivery, order status — all built against the frozen `packages/contracts/` shapes.
 
-Acceptance: POS → kitchen propagation below target latency on LAN (<250ms, `docs/spec/kitchen.md`).
+Acceptance — every item is an observed behaviour, not an implemented API. None of these count as met by a passing unit suite:
+1. POS → kitchen propagation below target latency on LAN (<250ms, `docs/spec/kitchen.md`), measured over a real network between two machines — not loopback.
+2. **Crash mid-order → the cart survives.** Kill the POS with lines in the cart and reopen: the in-progress order is still there. An API capable of preventing the loss does not count; the loss not happening counts (see `docs/retro.md`, 2026-08-10).
+3. Cloud sync round-trip: an order and its KOTs created at the edge reach the cloud and read back correctly.
+4. The `HOLLER_TEST_DATABASE_URL` suites actually execute — including T7's `TestBuildRouter_SyncConfigEndToEnd`. These have never run; a skip is not a pass.
+5. One real KDS↔edge socket session: the Rust server and the TypeScript client connected to each other, a ticket appearing and transitioning. Both ends are currently tested only against their own fakes.
+6. Offline login from synced credentials — a cashier authenticating against users pulled through `/sync/config`, **not** dev-seeded data.
 
 **EXCLUDES:** aggregator KOTs, expo screen polish, label printers, waiter app.
 
