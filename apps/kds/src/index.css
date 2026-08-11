@@ -13,6 +13,31 @@ body {
   font-size: 18px;
 }
 
+.kds-connection-indicator {
+  position: fixed;
+  top: 8px;
+  right: 12px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  background: #333;
+  z-index: 10;
+}
+
+.kds-connection-indicator--connected {
+  background: #1b5e20;
+}
+
+.kds-connection-indicator--stale {
+  background: #b58900;
+  color: #111;
+}
+
+.kds-connection-indicator--disconnected {
+  background: #b00020;
+}
+
 .connection-banner {
   padding: 16px;
   text-align: center;

@@ -48,7 +48,8 @@ export function App() {
       setConfigError(err instanceof Error ? err.message : String(err));
       return null;
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // Intentionally runs once on mount only — see the config-load try/catch
+    // above; there is no dependency that should retrigger it.
   }, []);
 
   useEffect(() => {
@@ -81,6 +82,22 @@ export function App() {
 
   return (
     <main className="kds-screen">
+      {/* Permanent status indicator, unlike `ConnectionBanner` (which hides
+          itself once connected so a healthy screen isn't cluttered). This one
+          stays in the DOM in every state, including "connected", so a smoke
+          test — or a cook glancing at the corner — can always confirm the
+          screen believes it is live without waiting for a problem to show a
+          banner. See docs/retro.md 2026-08-11: nothing in the pipeline could
+          previously observe "the app actually reached its connected state in
+          a real browser". */}
+      <div
+        className={`kds-connection-indicator kds-connection-indicator--${connectionStatus}`}
+        data-testid="connection-status"
+        data-status={connectionStatus}
+        role="status"
+      >
+        {connectionStatus === "connected" ? "● Connected" : `● ${connectionStatus}`}
+      </div>
       <ConnectionBanner status={connectionStatus} />
       <div className="kds-board">
         {tickets.map((kot) => (

@@ -54,8 +54,10 @@ export class ConnectionController {
         onInvalidMessage: (raw, error) => {
           // A contract violation on the wire must be visible in
           // observability, not swallowed — logged, not thrown, so one bad
-          // frame does not take the whole screen down.
-          // eslint-disable-next-line no-console
+          // frame does not take the whole screen down. (No eslint-disable
+          // needed here: this app's minimal eslint.config.js does not enable
+          // `no-console` — see that file for why the rule set is deliberately
+          // narrow.)
           console.error("KDS LAN: received message that failed KdsLanMessageSchema", {
             raw,
             error,

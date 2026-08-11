@@ -102,6 +102,18 @@ jobs:
         run: cd apps/pos && pnpm install --frozen-lockfile
       - name: typecheck
         run: cd apps/pos && pnpm exec tsc --noEmit
+      # @typescript-eslint/unbound-method (T13, docs/retro.md 2026-08-11):
+      # catches an unbound *class method* reference (e.g. `const fn =
+      # this.doThing`), which silently loses `this` when called later. It
+      # does NOT catch a bare global builtin (setInterval/fetch/WebSocket/...)
+      # stored on a field without `.bind` — verified directly against the
+      # sibling KDS bug: `lib.dom.d.ts` declares those globals as functions,
+      # not interface methods, so the rule has no receiver to reason about.
+      # See apps/pos/eslint.config.js for the full explanation. This app has
+      # no browser smoke test, so that failure class is currently unguarded
+      # here.
+      - name: lint
+        run: cd apps/pos && pnpm lint
       - name: test
         run: cd apps/pos && pnpm test
       - name: build
@@ -121,10 +133,51 @@ jobs:
         run: cd apps/kds && pnpm install --frozen-lockfile
       - name: typecheck
         run: cd apps/kds && pnpm exec tsc --noEmit
+      # @typescript-eslint/unbound-method (T13, docs/retro.md 2026-08-11):
+      # catches an unbound *class method* reference (e.g. `const fn =
+      # this.doThing`), which silently loses `this` when called later. It
+      # does NOT catch the actual bug this task exists because of — a bare
+      # global builtin (setInterval/fetch/WebSocket/...) stored on a field
+      # without `.bind`. Verified directly: reverting connectionController.ts's
+      # `.bind(globalThis)` fix and re-running this lint produces zero errors.
+      # `lib.dom.d.ts` declares those globals as functions, not interface
+      # methods, so the rule has no receiver to reason about — see
+      # apps/kds/eslint.config.js for the full explanation. The
+      # `kds-browser-smoke` job below is what actually guards that bug, not
+      # this step.
+      - name: lint
+        run: cd apps/kds && pnpm lint
       - name: test
         run: cd apps/kds && pnpm test
       - name: build
         run: cd apps/kds && pnpm build
+
+  # Real-browser smoke test (T13, docs/retro.md 2026-08-11: "The KDS crashed
+  # in every browser while every test passed"). Every other KDS check above
+  # runs under Node — vitest/jsdom timers, and lan-integration below drives
+  # the real client modules from a Node process against a real compiled Rust
+  # server. Both prove protocol; neither can observe a browser-only failure
+  # mode like a detached global builtin. This job launches headless Chromium
+  # against the built app and a small in-test stub WebSocket server (not
+  # edge/device — that pairing is lan-integration's job) and fails on any
+  # console error, which is the assertion that would have caught the
+  # original bug.
+  kds-browser-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - name: install
+        run: cd apps/kds && pnpm install --frozen-lockfile
+      - name: install chromium
+        run: cd apps/kds && pnpm exec playwright install --with-deps chromium
+      - name: browser smoke test
+        run: cd apps/kds && pnpm test:e2e
 
   # The KDS and the edge node are written in different languages and are
   # otherwise tested only against their own fakes. They already failed to

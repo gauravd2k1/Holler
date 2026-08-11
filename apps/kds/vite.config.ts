@@ -15,5 +15,9 @@ export default defineConfig({
     environment: "jsdom",
     globals: false,
     setupFiles: [],
+    // tests/ holds the Playwright browser smoke suite (T13), which has its
+    // own runner (`pnpm test:e2e`) and must never run under vitest/jsdom —
+    // the whole point of that suite is a real browser.
+    exclude: ["**/node_modules/**", "tests/**"],
   },
 });

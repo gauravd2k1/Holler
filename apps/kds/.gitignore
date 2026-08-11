@@ -1,0 +1,6 @@
+# Playwright smoke test output (T13) — regenerated on every run, never
+# committed. The root .gitignore already covers node_modules/dist/.vite.
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
