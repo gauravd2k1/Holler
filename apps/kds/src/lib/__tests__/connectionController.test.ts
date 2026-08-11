@@ -200,4 +200,43 @@ describe("ConnectionController", () => {
     expect(useKdsStore.getState().pendingByKotId[BASE_KOT.id]).toBeUndefined();
     controller.stop();
   });
+
+  // Regression: the KDS crashed on mount in every real browser with
+  // "Illegal invocation" while this whole suite — and the cross-language
+  // socket harness — passed. `setInterval` is a method on the global object in
+  // a browser and checks its receiver; storing the bare global on an instance
+  // field detaches it, so `this.setIntervalFn(...)` invoked it with the
+  // controller as `this`. Node's timers are plain functions and do not care,
+  // so nothing running under Node could ever have caught it.
+  //
+  // This test installs a global that enforces the receiver check the way a
+  // browser does. It fails without the `.bind(globalThis)` in the constructor.
+  it("binds the timer globals, so start() survives a receiver-checking host", () => {
+    const realSetInterval = globalThis.setInterval;
+    const realClearInterval = globalThis.clearInterval;
+    let scheduled = 0;
+
+    try {
+      globalThis.setInterval = function (this: unknown, ...args: unknown[]) {
+        if (this !== globalThis) throw new TypeError("Illegal invocation");
+        scheduled += 1;
+        return (realSetInterval as (...a: unknown[]) => unknown).apply(globalThis, args);
+      } as unknown as typeof setInterval;
+
+      globalThis.clearInterval = function (this: unknown, ...args: unknown[]) {
+        if (this !== globalThis) throw new TypeError("Illegal invocation");
+        return (realClearInterval as (...a: unknown[]) => unknown).apply(globalThis, args);
+      } as unknown as typeof clearInterval;
+
+      // Constructed AFTER the strict globals are installed: the controller
+      // captures them in its constructor, which is where the binding happens.
+      const controller = makeController([]);
+      expect(() => controller.start()).not.toThrow();
+      expect(scheduled).toBe(1);
+      expect(() => controller.stop()).not.toThrow();
+    } finally {
+      globalThis.setInterval = realSetInterval;
+      globalThis.clearInterval = realClearInterval;
+    }
+  });
 });

@@ -113,3 +113,48 @@ Contributing: the orchestrator relayed both gaps from the builder's own report (
 ### Note
 
 The `m2-complete` annotation already recorded item 1 as outstanding and the build as not shippable, so the tag did not overclaim. But it described the gap as *unmeasured latency*, when in fact the path being measured did not exist. Recording a criterion as unmet is not the same as knowing why.
+
+---
+
+## 2026-08-11 — The KDS crashed in every browser while every test passed
+
+**Severity:** medium (caught on first real-device use; nothing shipped). The third instance of one pattern in as many days.
+
+### What happened
+
+With the LAN wiring finally in place, the KDS was opened in a real browser — on the laptop and on a phone — and crashed on mount:
+
+```
+Uncaught TypeError: Illegal invocation
+    at ConnectionController.start (connectionController.ts:64)
+```
+
+The cause is one line in the constructor:
+
+```ts
+this.setIntervalFn = deps.setIntervalFn ?? setInterval;
+```
+
+`setInterval` in a browser is a method on the global object and checks its receiver. Storing the bare global on an instance field detaches it, so `this.setIntervalFn(...)` invoked it with the `ConnectionController` as `this`, and the browser rejected it. `clearInterval` had the identical defect, which would have fired on `stop()`.
+
+**Node's timers are plain functions and do not care.** So the KDS unit suite passed, and so did the cross-language socket harness — which is a genuine WebSocket against a genuine compiled Rust server, and still ran the client under Node.
+
+### Root cause
+
+**Every automated check for this app runs in Node; the app runs in a browser.** `vitest` uses jsdom, whose timers are Node's. The `kds-lan` harness imports the real client modules into a Node process. Both are valuable — the harness caught two real interop breaks — but neither can observe a browser-only failure mode, and nothing in the pipeline could.
+
+The existing tests were also structurally blind here: `makeController` never injects `setIntervalFn`, so the default path *was* exercised — but under `vi.useFakeTimers()`, which replaces the global with a plain function and erases the receiver check that constitutes the bug.
+
+This is the same shape as the two entries above. Something passed, and the passing thing was not the thing that ships. Wiring, then binaries, now runtime.
+
+### What went right
+
+The fix is one `.bind(globalThis)` on each line, and it is now guarded by a test that installs a receiver-checking global to reproduce browser semantics under Node. That test was verified to fail — with the exact `TypeError: Illegal invocation` — before the fix was restored.
+
+### Rules adopted
+
+1. **A Node-based harness proves protocol, not browser runtime.** The `kds-lan` suite is a real WebSocket against a real compiled Rust server and it is worth having — it caught two genuine interop breaks. But it answers "do these two ends agree on the wire?" and cannot answer "does this app run?". Never let the first stand in for the second.
+2. **Every UI app carries one real-browser smoke test in CI.** Headless Chromium, mount the app, assert it reaches its working state with no console errors. One test, permanently, per app — this class of failure is invisible to every other check we run. — `.github/workflows/ci.yml`
+3. **A test report states the runtime it ran in.** "26 tests passed" concealed the fact that all 26 ran under Node against a browser app. A report that says *jsdom/Node* invites the question that was never asked. Builders and verifiers name the environment, not just the count. — `.claude/commands/milestone.md`
+4. **Never store a bare global builtin on an object field.** `setTimeout`, `setInterval`, `fetch`, `WebSocket`, `crypto.*` and friends are receiver-bound in browsers. Bind at capture, or call them free. Enforced by `@typescript-eslint/unbound-method`. — `CLAUDE.md`
+5. **When a test injects a fake for a builtin, the default path stays untested.** Fake-timer helpers replace the very semantics a default-path test would be checking. If a default matters, assert it against something that behaves like the real host.

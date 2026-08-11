@@ -36,8 +36,15 @@ export class ConnectionController {
     this.config = deps.config;
     this.store = deps.store;
     this.now = deps.now ?? (() => Date.now());
-    this.setIntervalFn = deps.setIntervalFn ?? setInterval;
-    this.clearIntervalFn = deps.clearIntervalFn ?? clearInterval;
+    // `.bind(globalThis)` is load-bearing, not defensive style. Storing the
+    // bare global on an instance field detaches it from its receiver, so
+    // `this.setIntervalFn(...)` invokes it with the controller as `this`. Node
+    // tolerates that — its timers are plain functions — but a browser's
+    // `setInterval` is a WindowOrWorkerGlobalScope method and throws
+    // "Illegal invocation" the moment `start()` runs. The Node-based socket
+    // harness therefore passed while every real browser crashed on mount.
+    this.setIntervalFn = deps.setIntervalFn ?? setInterval.bind(globalThis);
+    this.clearIntervalFn = deps.clearIntervalFn ?? clearInterval.bind(globalThis);
 
     this.client = new LanClient(
       deps.config,

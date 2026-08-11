@@ -37,6 +37,7 @@ The split that matters: WSL2 hosts the **cloud** dependencies for local developm
 
 ## Coding rules
 - Strict typing, no `any`. Business logic outside UI components; DB logic outside HTTP handlers.
+- Never store a bare global builtin on an object field. `setTimeout`, `setInterval`, `fetch`, `WebSocket`, `crypto.*` are receiver-bound in browsers and throw `Illegal invocation` when detached — bind at capture or call them free. Node tolerates it, so no Node-based test will catch it (`docs/retro.md`, 2026-08-11).
 - Provider-specific code (aggregators, payments, printers) behind interfaces — never leak into core domain.
 - No magic numbers, no hard-coded tax rates/restaurant IDs/URLs, no secrets committed.
 - Contracts (`packages/contracts/`) are edited only by the orchestrator/architect session — never by a builder agent.
