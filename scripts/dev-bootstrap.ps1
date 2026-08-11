@@ -7,7 +7,7 @@
 #   1. starts the cloud infra containers (Postgres/Redis/NATS)
 #   2. applies the frozen Postgres migrations and seeds cloud fixtures
 #   3. seeds the encrypted edge SQLite database the POS reads (now including
-#      a KDS device row and a kitchen station — T12)
+#      a KDS device row and a kitchen station -- T12)
 #   4. writes apps\pos\.env.dev and apps\kds\.env.dev
 #
 # Re-running is safe: both seeders upsert against fixed development ids.
@@ -28,7 +28,7 @@ param(
     [string]$EdgeDataDir = (Join-Path $env:APPDATA "com.holler.pos"),
 
     # Seeded KDS device row (edge/database/src/bin/devseed.rs KDS_DEVICE_ID).
-    # Fixed like every other devseed id — re-stated here rather than parsed
+    # Fixed like every other devseed id -- re-stated here rather than parsed
     # out of the Rust seeder's output because it prints nothing today.
     [string]$KdsDeviceId = "0191a000-0000-7000-8000-00000000000d",
 
@@ -42,7 +42,7 @@ param(
 )
 
 # Best-effort LAN IPv4 address for this machine, used to build
-# apps/kds/.env.dev's VITE_KDS_LAN_URL — a second machine must reach this
+# apps/kds/.env.dev's VITE_KDS_LAN_URL -- a second machine must reach this
 # over the LAN, so localhost/127.0.0.1 is never right here. Picks the first
 # non-loopback, non-link-local (169.254.x.x) IPv4 address; on a machine with
 # several NICs this may not be the one a KDS device is actually on, so
@@ -153,7 +153,7 @@ $envLines = @(
 $envLines | Out-File -FilePath $envFile -Encoding ascii
 Write-Host "`n[4/4] wrote $envFile" -ForegroundColor Cyan
 
-# apps/kds/.env.dev (T12). Vite does NOT load this by itself — it is read
+# apps/kds/.env.dev (T12). Vite does NOT load this by itself -- it is read
 # only with `--mode dev`, which every documented KDS launch command below
 # passes; see apps/kds/.env.dev.example for why the name does not change
 # Vite's default-mode behaviour.

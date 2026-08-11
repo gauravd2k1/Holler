@@ -10,14 +10,14 @@
 # T12: this is also how the KDS LAN server starts in development. The POS
 # process embeds it (apps/pos/src-tauri/src/state.rs::AppState::open calls
 # holler_edge_device::server::start over the POS's own Arc<Mutex<Db>>) rather
-# than this script launching a second OS process for it — chosen because
+# than this script launching a second OS process for it -- chosen because
 # every KOT-notification call site (commands/kitchen.rs) lives in the same
 # process that mutates kot state, and the wire protocol has no message for
 # "another process changed something, please rebroadcast", so the process
 # that writes kot state and the process holding the Hub must be the same one.
 # `edge/device`'s standalone `kds-lan-server` bin still exists (for
 # connectivity testing without a full POS build) but must never run at the
-# same time as the POS against the same edge.db.enc — see docs/DEV_SETUP.md.
+# same time as the POS against the same edge.db.enc -- see docs/DEV_SETUP.md.
 #
 # Usage (from anywhere):
 #   .\apps\pos\run-dev.ps1
@@ -30,7 +30,7 @@ param(
     [string]$EnvFile = (Join-Path $PSScriptRoot ".env.dev"),
 
     # Suppress the informational note about an already-running Vite server.
-    # No longer skips a gate — `tauri dev` starts Vite itself now.
+    # No longer skips a gate -- `tauri dev` starts Vite itself now.
     [switch]$SkipViteCheck
 )
 
@@ -75,11 +75,11 @@ if ($loaded["HOLLER_DB_KEY_HEX"].Length -ne 64) {
 }
 
 # tauri.conf.json's beforeDevCommand is now `pnpm dev`, so `tauri dev` starts
-# Vite itself and this check no longer gates anything — it is informational.
+# Vite itself and this check no longer gates anything -- it is informational.
 #
 # It still earns its place: if Vite is ALREADY answering on 5173, `tauri dev`
 # will start a second one, Vite will fall back to 5174 (or fail under
-# strictPort), and the window then loads whatever the FIRST server is serving —
+# strictPort), and the window then loads whatever the FIRST server is serving --
 # possibly a stale build from another branch. That is confusing enough to be
 # worth a line of output, but not worth refusing to launch over.
 if (-not $SkipViteCheck) {
@@ -91,7 +91,7 @@ if (-not $SkipViteCheck) {
         $viteAlreadyUp = $false
     }
     if ($viteAlreadyUp) {
-        Write-Host "note   : Vite is already serving http://localhost:5173 — tauri dev will not start its own." -ForegroundColor Yellow
+        Write-Host "note   : Vite is already serving http://localhost:5173 -- tauri dev will not start its own." -ForegroundColor Yellow
         Write-Host "         The window loads THAT server. Stop it first if you want a clean one." -ForegroundColor Yellow
     }
 }

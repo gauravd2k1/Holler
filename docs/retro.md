@@ -158,3 +158,48 @@ The fix is one `.bind(globalThis)` on each line, and it is now guarded by a test
 3. **A test report states the runtime it ran in.** "26 tests passed" concealed the fact that all 26 ran under Node against a browser app. A report that says *jsdom/Node* invites the question that was never asked. Builders and verifiers name the environment, not just the count. — `.claude/commands/milestone.md`
 4. **Never store a bare global builtin on an object field.** `setTimeout`, `setInterval`, `fetch`, `WebSocket`, `crypto.*` and friends are receiver-bound in browsers. Bind at capture, or call them free. Enforced by `@typescript-eslint/unbound-method`. — `CLAUDE.md`
 5. **When a test injects a fake for a builtin, the default path stays untested.** Fake-timer helpers replace the very semantics a default-path test would be checking. If a default matters, assert it against something that behaves like the real host.
+
+---
+
+## 2026-08-11 — "Passes the PowerShell parser" was not the same as "runs"
+
+**Severity:** low (one broken dev script, caught immediately). Recorded because the mistake is the same one as the entry above, made while writing up the entry above.
+
+### What happened
+
+`run-dev.ps1` was edited to close DEV_SETUP gap 4. It was validated with:
+
+```powershell
+[System.Management.Automation.Language.Parser]::ParseFile(...)
+```
+
+which reported no errors, and the change was committed as verified. On the user's machine `powershell.exe -File` failed immediately:
+
+```
+The string is missing the terminator: ".
+At apps\pos\run-dev.ps1:104 char:105
+```
+
+### Root cause
+
+Two things compounded.
+
+**The content.** The edits introduced em-dashes (U+2014). One landed inside a double-quoted string on line 94. Neither `.ps1` in this repo carries a UTF-8 BOM, so Windows PowerShell 5.1 reads them as Windows-1252, and the em-dash's three UTF-8 bytes `E2 80 94` decode to `â`, `€`, `”`. That third character is U+201D, which **PowerShell accepts as a double-quote delimiter** — so the string closed early, the rest of the file parsed as code, and the parser gave up 10 lines later. The reported line is where it failed, not where it broke.
+
+**The check.** `Parser::ParseFile` decodes the file the way .NET chooses, not the way `powershell.exe -File` does. It read the same bytes as UTF-8, saw a valid em-dash inside a string, and passed. The validation and the failure disagreed because they were not reading the same file in the same way.
+
+Worse: the BOM that would have prevented this appeared in the working tree, and I discarded it as stray debris without asking what had put it there. It was load-bearing.
+
+### Root cause behind the root cause
+
+This is the same error as the browser entry above, in a different language: **a check that resembles the real thing was accepted in place of the real thing.** There, Node timers stood in for browser timers. Here, a .NET parser API stood in for the interpreter that actually runs the script. Both passed. Neither ran what ships.
+
+### Rules adopted
+
+1. **Parser-validation is not execution-validation.** A syntax check that does not go through the real interpreter, with the real file-reading path, proves nothing about whether the thing runs. For a script, invoke it — with arguments that make it exit early and harmlessly if it has side effects (`-EnvFile <nonexistent>` here; an unknown parameter name for `dev-bootstrap.ps1`, which forces a binding failure *after* the whole file has parsed).
+2. **Keep `.ps1` files pure ASCII.** Windows PowerShell 5.1 reads BOM-less files as the system ANSI codepage, and a mojibaked smart quote is a string delimiter. Both scripts are now ASCII-only, which makes the encoding question moot rather than answered.
+3. **Do not discard an unexplained file change as debris.** A BOM appearing in a `.ps1` is a signal about how something else reads that file. Find out what wrote it before reverting it.
+
+### Note
+
+The fix was falsified before being accepted: restoring one em-dash into a scratch copy reproduced the user's error at the same line with the same message, and the ASCII version executed to its intended early exit. That is the standard this entry exists to enforce.
