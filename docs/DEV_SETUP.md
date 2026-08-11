@@ -20,13 +20,13 @@ enrollment that does not exist yet.
 #    apps\kds\.env.dev
 .\scripts\dev-bootstrap.ps1
 
-# 2. frontend dev server (leave running)
+# 2. install frontend deps once
 cd apps\pos
 pnpm install
-pnpm dev
 
-# 3. in a SECOND terminal: the blessed launch command. This also starts the
-#    KDS LAN server (embedded in the POS process — see "Milestone 2" below).
+# 3. the blessed launch command. ONE terminal: tauri's beforeDevCommand starts
+#    Vite for you (gap 4, closed), and this also starts the KDS LAN server
+#    (embedded in the POS process — see "Milestone 2" below).
 .\apps\pos\run-dev.ps1
 ```
 
@@ -200,8 +200,8 @@ receiving `kot_upserted` within about a second).
 
 ```powershell
 .\scripts\dev-bootstrap.ps1     # writes apps\pos\.env.dev and apps\kds\.env.dev
-cd apps\pos; pnpm install; pnpm dev      # terminal 1 -- leave running
-.\apps\pos\run-dev.ps1                   # terminal 2 -- POS + embedded LAN server on :9310
+cd apps\pos; pnpm install                # once
+.\apps\pos\run-dev.ps1                   # POS + Vite + embedded LAN server on :9310
 ```
 
 Find this machine's LAN IP (`ipconfig`, look for the adapter your KDS device
@@ -249,8 +249,8 @@ kitchen. The KDS screen should show the ticket within about a second —
 
 ## Known gaps this setup works around
 
-Seven problems have been found so far. Four are worked around here, one is
-fixed in the product (6), and two remain open (1, 7).
+Seven problems have been found so far. Three are worked around here (2, 3, 5),
+two are fixed in the product (4, 6), and two remain open (1, 7).
 
 1. **`backend` compose service build is broken.** `docker compose up` including
    the `backend` service fails to produce a working image. Not diagnosed —
@@ -263,12 +263,17 @@ fixed in the product (6), and two remain open (1, 7).
 3. **Vite watcher looped on Rust rebuilds.** `vite.config.ts` now sets
    `server.watch.ignored: ["**/src-tauri/**"]` so Rust build artifacts do not
    retrigger the frontend. Committed.
-4. **`beforeDevCommand` is empty** in `tauri.conf.json`, so `tauri dev` does
-   **not** start Vite for you. Run `pnpm dev` in its own terminal first, or
-   `tauri dev` opens a window pointed at a dead `localhost:5173`.
-   `run-dev.ps1` checks for this and refuses to launch rather than opening a
-   blank window, but it does not start Vite for you either — starting a
-   background process the caller did not ask for is worse than a clear error.
+4. ~~**`beforeDevCommand` is empty**~~ **CLOSED.** `tauri.conf.json` now sets
+   `beforeDevCommand: "pnpm dev"` and `beforeBuildCommand: "pnpm build"`, so
+   `tauri dev` starts Vite itself and there is no second terminal to remember.
+   Verified by running `pnpm exec tauri dev` and observing
+   `Running BeforeDevCommand ('pnpm dev')` followed by Vite ready on 5173;
+   Vite also shuts down with Tauri, leaving no orphan.
+   `run-dev.ps1`'s pre-flight check is now **informational**: it no longer
+   refuses to launch, but it does warn when Vite is *already* serving 5173,
+   because in that case `tauri dev` will not start its own and the window
+   loads whatever that other server is serving — possibly a stale build from
+   another branch.
 5. **Nothing seeded the databases.** Postgres had no migrations applied
    (`cmd/api` is still the Milestone 0 health-only entrypoint and never calls
    `postgres.Migrate`), and the edge database had no rows. This document and
@@ -305,7 +310,7 @@ Milestone 2 builds on, not for this acceptance run.
 | POS panics: `HOLLER_OUTLET_ID ... required` | Env vars not set in *this* terminal. They are read by the Rust process, so they must be set where `tauri dev` runs, not where Vite runs. |
 | Login fails with correct credentials | Edge DB seeded at a different path, or `HOLLER_OUTLET_ID` does not match the seeded outlet. `app_user` is unique per `(outlet_id, email)`. |
 | `HOLLER_DB_KEY_HEX must be exactly 64 hex characters` | Key is not 32 bytes hex-encoded. |
-| Blank POS window | Vite is not running. See gap 4. |
+| Blank POS window | Since gap 4 closed, `tauri dev` starts Vite itself, so this now means Vite failed to start rather than that you forgot it — check `run-dev.ps1`'s output for the `BeforeDevCommand` line and any Vite error under it. If a *different* Vite was already serving 5173 (the script warns about this), the window is showing that server's build, not yours. |
 | `docker compose` warns about obsolete `version` | Harmless; the `version:` key in `docker-compose.yml` is a no-op in current Compose. |
 | KDS shows "connecting..." forever, or throws `VITE_KDS_LAN_URL is not configured` | You ran plain `pnpm dev` — Vite ignored `.env.dev` because the mode was `development`, not `dev`. Re-run with `pnpm dev --host 0.0.0.0 --mode dev`. |
 | KDS never receives a snapshot even though it connected | `VITE_KDS_LAN_URL`'s host is wrong for this network (common on a laptop with a VPN/Docker virtual adapter — `dev-bootstrap.ps1`'s IP guess can pick the wrong one). Check `ipconfig` on the POS machine and fix the host in `apps\kds\.env.dev`. |

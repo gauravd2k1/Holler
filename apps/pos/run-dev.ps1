@@ -29,7 +29,8 @@ param(
     # Alternate env file, e.g. to run a second till against another outlet.
     [string]$EnvFile = (Join-Path $PSScriptRoot ".env.dev"),
 
-    # Skip the check that the Vite dev server is up.
+    # Suppress the informational note about an already-running Vite server.
+    # No longer skips a gate — `tauri dev` starts Vite itself now.
     [switch]$SkipViteCheck
 )
 
@@ -73,29 +74,25 @@ if ($loaded["HOLLER_DB_KEY_HEX"].Length -ne 64) {
     throw "HOLLER_DB_KEY_HEX must be exactly 64 hex characters (32 bytes); got $($loaded['HOLLER_DB_KEY_HEX'].Length)."
 }
 
-# tauri.conf.json has an empty beforeDevCommand, so `tauri dev` does not start
-# Vite. Without it the window opens on a dead localhost:5173 and renders blank.
+# tauri.conf.json's beforeDevCommand is now `pnpm dev`, so `tauri dev` starts
+# Vite itself and this check no longer gates anything — it is informational.
+#
+# It still earns its place: if Vite is ALREADY answering on 5173, `tauri dev`
+# will start a second one, Vite will fall back to 5174 (or fail under
+# strictPort), and the window then loads whatever the FIRST server is serving —
+# possibly a stale build from another branch. That is confusing enough to be
+# worth a line of output, but not worth refusing to launch over.
 if (-not $SkipViteCheck) {
-    $viteUp = $false
+    $viteAlreadyUp = $false
     try {
         $null = Invoke-WebRequest -Uri "http://localhost:5173" -UseBasicParsing -TimeoutSec 3
-        $viteUp = $true
+        $viteAlreadyUp = $true
     } catch {
-        $viteUp = $false
+        $viteAlreadyUp = $false
     }
-    if (-not $viteUp) {
-        # Literal here-string: a double-quoted one would treat the backticks
-        # around `tauri dev` as escape characters and emit a tab.
-        throw @'
-The Vite dev server is not answering on http://localhost:5173.
-
-Start it in its own terminal first:
-    cd apps\pos
-    pnpm dev
-
-(tauri.conf.json's beforeDevCommand is empty, so `tauri dev` will not start it
-for you -- see docs/DEV_SETUP.md, Known gaps.) Pass -SkipViteCheck to bypass.
-'@
+    if ($viteAlreadyUp) {
+        Write-Host "note   : Vite is already serving http://localhost:5173 — tauri dev will not start its own." -ForegroundColor Yellow
+        Write-Host "         The window loads THAT server. Stop it first if you want a clean one." -ForegroundColor Yellow
     }
 }
 
