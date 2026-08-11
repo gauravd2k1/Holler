@@ -28,6 +28,10 @@ apps/waiter/.dart_tool/
 # Written by scripts/dev-bootstrap.ps1; carries the edge encryption key.
 # apps/pos/.env.dev.example documents its shape and IS tracked.
 .env.dev
+# Vite's own convention: `.env.[mode].local` is what a plain `pnpm dev` reads
+# (mode defaults to `development`), so it is where per-machine KDS config
+# actually lives. Never tracked; `.env.dev.example` documents the shape.
+.env.*.local
 
 # Personal notes, never shared with developers or committed.
 priv_docs/
