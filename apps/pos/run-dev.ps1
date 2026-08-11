@@ -7,6 +7,18 @@
 # gitignored because it carries a database encryption key; .env.dev.example
 # documents its shape.
 #
+# T12: this is also how the KDS LAN server starts in development. The POS
+# process embeds it (apps/pos/src-tauri/src/state.rs::AppState::open calls
+# holler_edge_device::server::start over the POS's own Arc<Mutex<Db>>) rather
+# than this script launching a second OS process for it — chosen because
+# every KOT-notification call site (commands/kitchen.rs) lives in the same
+# process that mutates kot state, and the wire protocol has no message for
+# "another process changed something, please rebroadcast", so the process
+# that writes kot state and the process holding the Hub must be the same one.
+# `edge/device`'s standalone `kds-lan-server` bin still exists (for
+# connectivity testing without a full POS build) but must never run at the
+# same time as the POS against the same edge.db.enc — see docs/DEV_SETUP.md.
+#
 # Usage (from anywhere):
 #   .\apps\pos\run-dev.ps1
 #
@@ -87,9 +99,12 @@ for you -- see docs/DEV_SETUP.md, Known gaps.) Pass -SkipViteCheck to bypass.
     }
 }
 
+$lanAddr = if ($loaded.ContainsKey('HOLLER_LAN_BIND_ADDR')) { $loaded['HOLLER_LAN_BIND_ADDR'] } else { "0.0.0.0:9310 (default)" }
+
 Write-Host "outlet : $($loaded['HOLLER_OUTLET_ID'])"
 Write-Host "device : $($loaded['HOLLER_DEVICE_ID'])"
 Write-Host "env    : $EnvFile"
+Write-Host "KDS LAN server will bind $lanAddr on this machine (unauthenticated -- see docs/DEV_SETUP.md)"
 Write-Host ""
 
 Push-Location $PSScriptRoot

@@ -66,6 +66,7 @@ pub fn run() {
                 // `inner()` reborrows from the app handle rather than from
                 // the temporary `State` guard, so the lock may outlive it.
                 let state: &AppState = app_handle.state::<AppState>().inner();
+                state.shutdown_lan_server();
                 match state.db.lock() {
                     Ok(mut db) => {
                         if let Err(e) = db.shutdown_in_place() {

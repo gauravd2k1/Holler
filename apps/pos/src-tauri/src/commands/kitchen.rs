@@ -12,11 +12,44 @@ use chrono::Utc;
 use tauri::State;
 
 use holler_edge_database::Db;
+use holler_edge_device::contract::{Kot as WireKot, KotStatus as WireKotStatus};
+use holler_edge_device::Hub;
 
 use crate::dto::{FailedPrintJob, Kot, Station};
 use crate::error::{AppError, AppResult};
 use crate::ids::{new_id, now_iso};
 use crate::state::AppState;
+
+/// Pushes one KOT's current state to every subscribed KDS screen — the same
+/// upsert/removed split `edge/device/src/server.rs::handle_command` uses for
+/// a KDS-driven transition, applied here for the POS-driven paths (send to
+/// kitchen, POS-driven status transitions). A KOT whose status is terminal
+/// (SERVED/CANCELLED) is announced as `kot_removed`, never `kot_upserted`
+/// (ADR-014 §6 / lan.ts) — it must leave the active set on every screen, not
+/// appear to update in place.
+///
+/// `hub` is `None` when the embedded LAN server never bound (see
+/// `state.rs`'s module doc) — this is a silent no-op in that case, by
+/// design: a missing KDS screen must never block or fail a kitchen command.
+fn notify_kot(hub: Option<&Hub>, outlet_id: &str, kot: &holler_edge_database::model::Kot) {
+    let Some(hub) = hub else {
+        return;
+    };
+    let sent_at = now_iso();
+    let Some(status) = WireKotStatus::from_db_str(&kot.status) else {
+        // Unknown status: fail closed on wire conversion (this is exactly
+        // what WireKot::from_db already enforces below), not on notifying.
+        return;
+    };
+    if status.is_terminal() {
+        hub.notify_kot_removed(outlet_id, &kot.id, &sent_at);
+        return;
+    }
+    match WireKot::from_db(kot) {
+        Ok(wire) => hub.notify_kot_upserted(outlet_id, &wire, &sent_at),
+        Err(e) => eprintln!("holler-pos: could not convert kot {} for LAN notify: {e}", kot.id),
+    }
+}
 
 fn lock_db(state: &AppState) -> AppResult<std::sync::MutexGuard<'_, Db>> {
     state.db.lock().map_err(|_| AppError {
@@ -109,6 +142,15 @@ pub fn send_order_to_kitchen_impl(state: &AppState, order_id: &str) -> AppResult
     }) {
         eprintln!("print sweep after send-to-kitchen failed: {e}");
     }
+    drop(db);
+
+    // New tickets: every one just created is, by construction, freshly
+    // active (never terminal), so this always reaches KDS screens as
+    // `kot_upserted` — the case a cashier pressing send-to-kitchen exists to
+    // produce.
+    for kot in &kots {
+        notify_kot(state.hub.as_deref(), &state.outlet_id, kot);
+    }
 
     to_kot_dtos(kots)
 }
@@ -143,6 +185,17 @@ pub fn transition_kot_status_impl(
     db.transition_kot_status_with_outbox(kot_id, new_status, &meta)?;
 
     let kots = db.list_kots_for_order(order_id)?;
+    drop(db);
+
+    // A POS-driven transition must reach every KDS screen exactly like a
+    // KDS-driven one does (edge/device/src/server.rs::handle_command) — a
+    // screen showing a stale status after another station/device moved it
+    // on is the failure mode this exists to close. Terminal statuses
+    // (SERVED/CANCELLED) fall out as `kot_removed` inside `notify_kot`.
+    if let Some(kot) = kots.iter().find(|k| k.id == kot_id) {
+        notify_kot(state.hub.as_deref(), &state.outlet_id, kot);
+    }
+
     to_kot_dtos(kots)
 }
 

@@ -11,6 +11,8 @@ use argon2::{Algorithm, Argon2, Params, Version};
 use base64::Engine as _;
 use holler_edge_database::crypto::EncryptionKey;
 use holler_edge_database::{model, repo, Db};
+use holler_edge_device::contract::KdsLanMessage;
+use holler_edge_device::Hub;
 
 use holler_pos_lib::commands::auth::login_impl;
 use holler_pos_lib::commands::kitchen::{
@@ -191,6 +193,19 @@ fn seeded_state() -> AppState {
     let db = Db::open_in_memory_for_tests().expect("open in-memory db");
     seed(&db);
     AppState::new(db, OUTLET_ID.to_string(), DEVICE_ID.to_string())
+}
+
+/// Same seeded kitchen fixture as `seeded_kitchen_state`, but wired to a
+/// caller-supplied `Hub` (no real socket bound) so T12's notify wiring
+/// (`commands::kitchen::notify_kot`) can be asserted directly — proves the
+/// wiring exists and fires, independent of the actual WebSocket transport
+/// already covered by `edge/device`'s own tests and the cross-language
+/// `tests/integration/kds-lan` suite.
+fn seeded_kitchen_state_with_hub(hub: std::sync::Arc<Hub>) -> AppState {
+    let db = Db::open_in_memory_for_tests().expect("open in-memory db");
+    seed(&db);
+    seed_kitchen(&db);
+    AppState::new_with_hub(db, OUTLET_ID.to_string(), DEVICE_ID.to_string(), hub)
 }
 
 // ------------------------------------------------------------ offline login --
@@ -732,6 +747,104 @@ fn kot_status_transitions_through_the_state_machine_and_rejects_illegal_moves() 
     let err = transition_kot_status_impl(&state, &order.holler_order_id, &kot_id, "SERVED")
         .expect_err("ACKNOWLEDGED -> SERVED is illegal (must pass through PREPARING/READY)");
     assert_eq!(err.code, "ILLEGAL_KOT_STATUS_TRANSITION");
+}
+
+// ------------------------------------------------------- T12: LAN notify --
+
+#[test]
+fn send_to_kitchen_notifies_the_hub_with_an_upserted_kot() {
+    let hub = std::sync::Arc::new(Hub::new());
+    let subscription = hub.subscribe(OUTLET_ID, None);
+    let state = seeded_kitchen_state_with_hub(hub);
+
+    let order = create_order_impl(
+        &state,
+        "DINE_IN".to_string(),
+        None,
+        vec![NewOrderItemRequest {
+            menu_item_id: "item-1".to_string(),
+            variant_id: None,
+            quantity: 1,
+            unit_price_paise: 25000,
+            notes: None,
+        }],
+    )
+    .expect("create order");
+    holler_pos_lib::commands::orders::confirm_order_impl(&state, &order.holler_order_id)
+        .expect("confirm order");
+    let kots = send_order_to_kitchen_impl(&state, &order.holler_order_id).expect("send");
+
+    let message = subscription
+        .receiver
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("hub must publish a message after send-to-kitchen");
+    match message {
+        KdsLanMessage::KotUpserted { kot, outlet_id, .. } => {
+            assert_eq!(kot.id, kots[0].id);
+            assert_eq!(outlet_id, OUTLET_ID);
+        }
+        other => panic!("expected kot_upserted, got {other:?}"),
+    }
+}
+
+#[test]
+fn transition_kot_status_notifies_upserted_then_removed_on_terminal_status() {
+    let hub = std::sync::Arc::new(Hub::new());
+    let subscription = hub.subscribe(OUTLET_ID, None);
+    let state = seeded_kitchen_state_with_hub(hub);
+
+    let order = create_order_impl(
+        &state,
+        "DINE_IN".to_string(),
+        None,
+        vec![NewOrderItemRequest {
+            menu_item_id: "item-1".to_string(),
+            variant_id: None,
+            quantity: 1,
+            unit_price_paise: 25000,
+            notes: None,
+        }],
+    )
+    .expect("create order");
+    holler_pos_lib::commands::orders::confirm_order_impl(&state, &order.holler_order_id)
+        .expect("confirm order");
+    let kots = send_order_to_kitchen_impl(&state, &order.holler_order_id).expect("send");
+    let kot_id = kots[0].id.clone();
+
+    // Drain the kot_upserted from send-to-kitchen itself.
+    subscription
+        .receiver
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("send-to-kitchen notification");
+
+    // NEW -> ACKNOWLEDGED -> PREPARING -> READY -> SERVED: a POS-driven walk
+    // through the full legal state machine, mirroring
+    // kot_status_transitions_through_the_state_machine_and_rejects_illegal_moves.
+    for status in ["ACKNOWLEDGED", "PREPARING", "READY"] {
+        transition_kot_status_impl(&state, &order.holler_order_id, &kot_id, status)
+            .unwrap_or_else(|e| panic!("transition to {status} failed: {e:?}"));
+        let message = subscription
+            .receiver
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap_or_else(|_| panic!("expected a hub notification for {status}"));
+        match message {
+            KdsLanMessage::KotUpserted { kot, .. } => assert_eq!(kot.status.as_db_str(), status),
+            other => panic!("expected kot_upserted for {status}, got {other:?}"),
+        }
+    }
+
+    transition_kot_status_impl(&state, &order.holler_order_id, &kot_id, "SERVED")
+        .expect("READY -> SERVED");
+    let message = subscription
+        .receiver
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("expected a hub notification for SERVED");
+    match message {
+        KdsLanMessage::KotRemoved {
+            kot_id: removed_id, ..
+        } => assert_eq!(removed_id, kot_id, "a terminal status must announce kot_removed, not kot_upserted"),
+        other => panic!("expected kot_removed for SERVED, got {other:?}"),
+    }
 }
 
 #[test]
