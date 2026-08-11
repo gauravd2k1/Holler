@@ -587,6 +587,54 @@ pub(crate) fn stamp_order_confirmed(
     Ok(())
 }
 
+/// Sets `order_type`/`table_id`, bumps `version` and `updated_at` on the
+/// order row. Must only ever be called after [`require_draft_order`] has
+/// passed in the same transaction — this function itself does not check
+/// status, matching the split already used by `stamp_order_confirmed`/
+/// `recompute_and_persist_order_totals`.
+pub(crate) fn update_order_shape(
+    tx: &Transaction,
+    order_id: &str,
+    order_type: &str,
+    table_id: Option<&str>,
+    updated_at: &str,
+) -> DbResult<()> {
+    let changed = tx.execute(
+        "UPDATE \"order\" SET order_type = ?1, table_id = ?2, version = version + 1, updated_at = ?3
+         WHERE id = ?4",
+        params![order_type, table_id, updated_at, order_id],
+    )?;
+    if changed == 0 {
+        return Err(crate::error::DbError::NotFound("order"));
+    }
+    Ok(())
+}
+
+/// Best-effort correction of the still-unpublished `OrderCreated`
+/// `local_outbox` row for this order, called from
+/// [`crate::Db::update_order_shape_with_outbox`]. `order_type`/`table_id`
+/// are part of the `OrderCreated` snapshot; the frozen event catalog
+/// (`packages/contracts/src/types/events.ts`) has no separate "order shape
+/// changed" event, so this crate does not invent one — instead, while that
+/// specific event has not yet left the device (`published_at IS NULL`), its
+/// payload is corrected in place so the cloud never observes the
+/// pre-correction shape. A no-op (0 rows touched) once the event has
+/// already published — see the doc comment on
+/// [`crate::Db::update_order_shape_with_outbox`] for the residual gap that
+/// leaves.
+pub(crate) fn update_pending_order_created_payload(
+    tx: &Transaction,
+    order_id: &str,
+    payload_json: &str,
+) -> DbResult<()> {
+    tx.execute(
+        "UPDATE local_outbox SET payload_json = ?1
+         WHERE aggregate_id = ?2 AND event_type = ?3 AND published_at IS NULL",
+        params![payload_json, order_id, EVENT_TYPE_ORDER_CREATED],
+    )?;
+    Ok(())
+}
+
 pub(crate) fn get_order_item_in_tx(tx: &Transaction, id: &str) -> DbResult<Option<OrderItem>> {
     tx.query_row(
         "SELECT id, order_id, menu_item_id, variant_id, quantity, unit_price_paise, line_total_paise, notes, created_at
@@ -711,6 +759,11 @@ pub(crate) fn compute_line_total_paise(
 const EVENT_TYPE_ITEM_ADDED: &str = "ItemAdded";
 const EVENT_TYPE_ITEM_REMOVED: &str = "ItemRemoved";
 const EVENT_TYPE_ORDER_CONFIRMED: &str = "OrderConfirmed";
+/// Referenced (not written) by [`update_pending_order_created_payload`] —
+/// this crate never originates a second `OrderCreated` row, only corrects
+/// the one [`crate::Db::create_order_with_outbox`] already wrote, while it
+/// is still unpublished.
+const EVENT_TYPE_ORDER_CREATED: &str = "OrderCreated";
 
 /// Builds the contract's `OrderItem` shape (`packages/contracts/src/types/order.ts`
 /// `OrderItemSchema`) as JSON: `{ id, menu_item_id, variant_id, quantity,
@@ -1983,6 +2036,28 @@ pub fn list_unpublished_outbox(conn: &Connection, limit: i64) -> DbResult<Vec<Ou
         })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
+}
+
+/// The still-unpublished `local_outbox` payload for one `(aggregate_id,
+/// event_type)` pair, if any — a targeted lookup for callers (the Tauri
+/// order-shape command) that need to correct a specific queued event's
+/// payload rather than scan the whole pending set. `None` both when no such
+/// row exists and when it exists but has already published; the caller
+/// cannot tell those apart from this alone, which is intentional — either
+/// way there is nothing left for it to correct locally.
+pub fn get_unpublished_outbox_payload(
+    conn: &Connection,
+    aggregate_id: &str,
+    event_type: &str,
+) -> DbResult<Option<String>> {
+    conn.query_row(
+        "SELECT payload_json FROM local_outbox
+         WHERE aggregate_id = ?1 AND event_type = ?2 AND published_at IS NULL",
+        params![aggregate_id, event_type],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(crate::error::DbError::from)
 }
 
 /// Marks an outbox row published (ack'd by cloud). Never deletes the row —

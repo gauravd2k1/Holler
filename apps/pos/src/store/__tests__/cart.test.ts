@@ -8,6 +8,7 @@ const getActiveDraftOrderMock = vi.fn();
 const createOrderMock = vi.fn();
 const addOrderItemMock = vi.fn();
 const removeOrderItemMock = vi.fn();
+const updateOrderShapeMock = vi.fn();
 
 vi.mock("../../lib/tauri", async () => {
   const actual = await vi.importActual<typeof import("../../lib/tauri")>("../../lib/tauri");
@@ -17,6 +18,7 @@ vi.mock("../../lib/tauri", async () => {
     createOrder: (...args: unknown[]) => createOrderMock(...args),
     addOrderItem: (...args: unknown[]) => addOrderItemMock(...args),
     removeOrderItem: (...args: unknown[]) => removeOrderItemMock(...args),
+    updateOrderShape: (...args: unknown[]) => updateOrderShapeMock(...args),
   };
 });
 
@@ -74,8 +76,10 @@ beforeEach(() => {
   createOrderMock.mockReset();
   addOrderItemMock.mockReset();
   removeOrderItemMock.mockReset();
+  updateOrderShapeMock.mockReset();
   useCartStore.setState({
     orderId: null,
+    orderStatus: null,
     orderType: "DINE_IN",
     tableId: null,
     lines: [],
@@ -243,12 +247,102 @@ describe("cart store — write-through mutations", () => {
   });
 });
 
-describe("cart store — order shape is locked once a line has landed", () => {
-  it("ignores setOrderType/setTableId once orderId is set", () => {
-    useCartStore.setState({ orderId: "order-1", orderType: "DINE_IN", tableId: "table-1" });
-    useCartStore.getState().setOrderType("TAKEAWAY");
-    useCartStore.getState().setTableId(null);
+// docs/retro.md P0 regression (task T14): the order's shape must stay
+// editable for the order's whole DRAFT lifetime — these are the regression
+// tests, and must fail against the pre-fix behaviour (setOrderType/
+// setTableId silently ignored once orderId was set at all).
+describe("cart store — order shape stays editable through DRAFT", () => {
+  it("persists an order-type change through update_order_shape once a line has landed", async () => {
+    useCartStore.setState({
+      orderId: "order-1",
+      orderStatus: "DRAFT",
+      orderType: "DINE_IN",
+      tableId: "table-1",
+    });
+    updateOrderShapeMock.mockResolvedValue({
+      ...persistedOrder([]),
+      order_type: "TAKEAWAY",
+      table_id: "table-1",
+      status: "DRAFT",
+    });
+
+    await useCartStore.getState().setOrderType("TAKEAWAY");
+
+    expect(updateOrderShapeMock).toHaveBeenCalledWith("order-1", "TAKEAWAY", "table-1");
+    expect(useCartStore.getState().orderType).toBe("TAKEAWAY");
+  });
+
+  it("persists a table selection through update_order_shape and the order becomes sendable", async () => {
+    useCartStore.setState({
+      orderId: "order-1",
+      orderStatus: "DRAFT",
+      orderType: "DINE_IN",
+      tableId: null,
+      lines: [
+        {
+          lineId: "oi-1",
+          menuItemId: "item-1",
+          menuItemName: "Paneer Tikka",
+          variantId: null,
+          unitPricePaise: 25000,
+          quantity: 1,
+          notes: null,
+        },
+      ],
+    });
+    updateOrderShapeMock.mockResolvedValue({
+      ...persistedOrder([]),
+      order_type: "DINE_IN",
+      table_id: "table-9",
+      status: "DRAFT",
+    });
+
+    await useCartStore.getState().setTableId("table-9");
+
+    expect(updateOrderShapeMock).toHaveBeenCalledWith("order-1", "DINE_IN", "table-9");
+    const state = useCartStore.getState();
+    expect(state.tableId).toBe("table-9");
+    // The stuck-cashier escape: DINE_IN + a table + a line is sendable.
+    expect(state.orderType).toBe("DINE_IN");
+    expect(state.lines).toHaveLength(1);
+  });
+
+  it("does not call update_order_shape and reports nothing changed once the order has left DRAFT", async () => {
+    useCartStore.setState({
+      orderId: "order-1",
+      orderStatus: "CONFIRMED",
+      orderType: "DINE_IN",
+      tableId: "table-1",
+    });
+
+    await useCartStore.getState().setOrderType("TAKEAWAY");
+    await useCartStore.getState().setTableId(null);
+
+    expect(updateOrderShapeMock).not.toHaveBeenCalled();
     expect(useCartStore.getState().orderType).toBe("DINE_IN");
+    expect(useCartStore.getState().tableId).toBe("table-1");
+  });
+
+  it("startup-hydrate: a recovered DRAFT order's shape can be changed and persists", async () => {
+    getActiveDraftOrderMock.mockResolvedValue({
+      ...persistedOrder([]),
+      order_type: "DINE_IN",
+      table_id: null,
+      status: "DRAFT",
+    });
+    await useCartStore.getState().hydrate(MENU_ITEMS);
+    expect(useCartStore.getState().orderId).toBe("order-1");
+    expect(useCartStore.getState().orderStatus).toBe("DRAFT");
+
+    updateOrderShapeMock.mockResolvedValue({
+      ...persistedOrder([]),
+      order_type: "DINE_IN",
+      table_id: "table-1",
+      status: "DRAFT",
+    });
+    await useCartStore.getState().setTableId("table-1");
+
+    expect(updateOrderShapeMock).toHaveBeenCalledWith("order-1", "DINE_IN", "table-1");
     expect(useCartStore.getState().tableId).toBe("table-1");
   });
 });

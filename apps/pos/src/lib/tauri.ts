@@ -204,6 +204,27 @@ export async function removeOrderItem(
   }
 }
 
+/** Sets `order_type`/`table_id` on an already-persisted `DRAFT` order
+ * (apps/pos/src-tauri/src/commands/orders.rs `update_order_shape`). This is
+ * the fix for the M2 P0 order-shape lock (docs/retro.md, task T14): a DRAFT
+ * order is created on the first cart line for crash durability, and its
+ * shape must stay editable for the order's whole DRAFT lifetime, not just
+ * before it existed. Rejects with `ORDER_NOT_DRAFT` once the order has left
+ * DRAFT — the cart store must not pretend a shape edit succeeded locally
+ * when it did not persist. */
+export async function updateOrderShape(
+  orderId: string,
+  orderType: OrderType,
+  tableId: string | null,
+): Promise<CanonicalOrder> {
+  try {
+    const raw = await invoke("update_order_shape", { orderId, orderType, tableId });
+    return CanonicalOrderSchema.parse(raw);
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
+
 // ------------------------------------------------------------- kitchen (M2) --
 // ADR-014, docs/spec/kitchen.md, docs/spec/hardware-printing.md.
 

@@ -22,7 +22,7 @@ use holler_pos_lib::commands::kitchen::{
 use holler_pos_lib::commands::menu::{list_menu_categories_impl, list_menu_items_impl};
 use holler_pos_lib::commands::orders::{
     add_order_item_impl, create_order_impl, get_active_draft_order_impl, get_order_impl,
-    list_orders_impl, remove_order_item_impl, NewOrderItemRequest,
+    list_orders_impl, remove_order_item_impl, update_order_shape_impl, NewOrderItemRequest,
 };
 use holler_pos_lib::commands::tables::list_tables_impl;
 use holler_pos_lib::state::AppState;
@@ -670,6 +670,197 @@ fn add_item_rejects_a_non_draft_order() {
     )
     .expect_err("must reject amendment of a confirmed order");
     assert_eq!(err.code, "ORDER_NOT_DRAFT");
+}
+
+// ------------------------------------------- T14: order-shape lock (P0) --
+// docs/retro.md P0 regression: the DRAFT order created on the first tapped
+// item locked order_type/table_id at whatever they were at that moment
+// (DINE_IN/no table by default), and the POS had no command to correct
+// them — Send could never enable. These tests are the regression: they must
+// fail against the pre-fix behaviour (no `update_order_shape` existed at
+// all) and pass once the shape stays editable through DRAFT.
+
+/// The cashier's exact stuck path: tap an item (DRAFT locks in at the
+/// default DINE_IN/no table), then correct the order type — must persist to
+/// SQLite, not just an in-memory intention.
+#[test]
+fn order_type_can_be_changed_after_the_first_item_lands_and_it_persists() {
+    let state = seeded_state();
+    let order = create_order_impl(
+        &state,
+        "DINE_IN".to_string(),
+        None,
+        vec![NewOrderItemRequest {
+            menu_item_id: "item-1".to_string(),
+            variant_id: None,
+            quantity: 1,
+            unit_price_paise: 25000,
+            notes: None,
+        }],
+    )
+    .expect("first tap creates the draft order");
+    assert_eq!(order.order_type, "DINE_IN");
+
+    let updated = update_order_shape_impl(
+        &state,
+        &order.holler_order_id,
+        "TAKEAWAY".to_string(),
+        None,
+    )
+    .expect("shape change on a DRAFT order must succeed");
+    assert_eq!(updated.order_type, "TAKEAWAY");
+    assert_eq!(updated.table_id, None);
+
+    // Read back from storage directly — not just the call's return value —
+    // proving the change actually landed in SQLite.
+    let fetched = get_order_impl(&state, &order.holler_order_id)
+        .expect("get_order")
+        .expect("order exists");
+    assert_eq!(fetched.order_type, "TAKEAWAY");
+}
+
+/// The exact escape from the stuck-DINE_IN-with-no-table bug: add an item on
+/// the default DINE_IN, set a table, and the order becomes sendable
+/// (sendability itself is a frontend concern, but the table must actually
+/// land on the order for that frontend check to ever pass).
+#[test]
+fn setting_a_table_after_the_first_item_lands_makes_the_order_carry_it() {
+    let state = seeded_state();
+    let order = create_order_impl(
+        &state,
+        "DINE_IN".to_string(),
+        None,
+        vec![NewOrderItemRequest {
+            menu_item_id: "item-1".to_string(),
+            variant_id: None,
+            quantity: 1,
+            unit_price_paise: 25000,
+            notes: None,
+        }],
+    )
+    .expect("first tap creates the draft order with no table");
+    assert_eq!(order.table_id, None);
+
+    let updated = update_order_shape_impl(
+        &state,
+        &order.holler_order_id,
+        "DINE_IN".to_string(),
+        Some("table-1".to_string()),
+    )
+    .expect("setting a table on a DRAFT order must succeed");
+    assert_eq!(updated.table_id.as_deref(), Some("table-1"));
+}
+
+/// Once the order has left DRAFT (confirmed / with the kitchen), the shape
+/// is history — this must be a rejection, not a silent no-op.
+#[test]
+fn order_shape_cannot_be_changed_once_the_order_leaves_draft() {
+    let state = seeded_state();
+    let order = create_order_impl(
+        &state,
+        "DINE_IN".to_string(),
+        Some("table-1".to_string()),
+        vec![NewOrderItemRequest {
+            menu_item_id: "item-1".to_string(),
+            variant_id: None,
+            quantity: 1,
+            unit_price_paise: 25000,
+            notes: None,
+        }],
+    )
+    .expect("create order");
+
+    holler_pos_lib::commands::orders::confirm_order_impl(&state, &order.holler_order_id)
+        .expect("confirm order");
+
+    let err = update_order_shape_impl(
+        &state,
+        &order.holler_order_id,
+        "TAKEAWAY".to_string(),
+        None,
+    )
+    .expect_err("shape must be immutable once the order has left DRAFT");
+    assert_eq!(err.code, "ORDER_NOT_DRAFT");
+
+    let fetched = get_order_impl(&state, &order.holler_order_id)
+        .expect("get_order")
+        .expect("order exists");
+    assert_eq!(
+        fetched.order_type, "DINE_IN",
+        "the rejected attempt must not have changed the stored shape"
+    );
+    assert_eq!(fetched.table_id.as_deref(), Some("table-1"));
+}
+
+/// The startup-hydrate case: a DRAFT order recovered after a fresh process
+/// start (crash / restart) must still be shape-editable, and the correction
+/// must survive a second reopen of the same encrypted file — proving the
+/// fix actually rescues the cashier already stuck with this bug, not just a
+/// freshly created order in the same process.
+#[test]
+fn a_recovered_draft_orders_shape_can_be_corrected_and_it_survives_reopening() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let sealed = dir.path().join("edge.db.enc");
+    let plaintext = dir.path().join("edge.db");
+
+    let order_id: String;
+
+    // ---- "session 1": cashier taps an item, gets stuck at DINE_IN/no table. ----
+    {
+        let db = Db::open(&sealed, &plaintext, EncryptionKey::new([9u8; 32])).expect("open db");
+        seed(&db);
+        let state = AppState::new(db, OUTLET_ID.to_string(), DEVICE_ID.to_string());
+
+        let order = create_order_impl(
+            &state,
+            "DINE_IN".to_string(),
+            None,
+            vec![NewOrderItemRequest {
+                menu_item_id: "item-1".to_string(),
+                variant_id: None,
+                quantity: 1,
+                unit_price_paise: 25000,
+                notes: None,
+            }],
+        )
+        .expect("first tap creates the draft order");
+        order_id = order.holler_order_id.clone();
+        // Process ends here without the cashier ever fixing the shape or
+        // sending — models the crash/restart this bug left cashiers stuck
+        // behind.
+    }
+
+    // ---- "session 2": a fresh process recovers the stuck draft and fixes it. ----
+    {
+        let db2 = Db::open(&sealed, &plaintext, EncryptionKey::new([9u8; 32]))
+            .expect("reopen must succeed");
+        let state2 = AppState::new(db2, OUTLET_ID.to_string(), DEVICE_ID.to_string());
+
+        let recovered = get_active_draft_order_impl(&state2)
+            .expect("recovery read must succeed")
+            .expect("the stuck draft must be recoverable");
+        assert_eq!(recovered.holler_order_id, order_id);
+        assert_eq!(recovered.order_type, "DINE_IN");
+        assert_eq!(recovered.table_id, None);
+
+        update_order_shape_impl(
+            &state2,
+            &recovered.holler_order_id,
+            "DINE_IN".to_string(),
+            Some("table-1".to_string()),
+        )
+        .expect("the recovered draft's shape must be editable");
+    }
+
+    // ---- "session 3": the correction itself must be durable. ----
+    let db3 =
+        Db::open(&sealed, &plaintext, EncryptionKey::new([9u8; 32])).expect("reopen must succeed");
+    let state3 = AppState::new(db3, OUTLET_ID.to_string(), DEVICE_ID.to_string());
+    let fetched = get_order_impl(&state3, &order_id)
+        .expect("get_order")
+        .expect("order still exists");
+    assert_eq!(fetched.order_type, "DINE_IN");
+    assert_eq!(fetched.table_id.as_deref(), Some("table-1"));
 }
 
 // ---------------------------------------------------------------- kitchen --

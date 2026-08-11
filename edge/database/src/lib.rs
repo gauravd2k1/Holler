@@ -348,6 +348,60 @@ impl Db {
         Ok(())
     }
 
+    /// Sets `order_type`/`table_id` on a `DRAFT` order — the cashier
+    /// correcting the order's shape before Send. This is the fix for the M2
+    /// P0 regression (docs/retro.md): a DRAFT order is created on the first
+    /// cart line for crash durability, but its shape must stay editable for
+    /// the order's *entire* DRAFT lifetime, not just before it existed.
+    /// Rejects with `DbError::OrderNotAmendable` once the order has left
+    /// DRAFT — same enforcement, and the same transaction-scoped check, as
+    /// [`Db::add_order_item_with_outbox`]/[`Db::remove_order_item_with_outbox`]:
+    /// once a ticket is with the kitchen the shape is history, and that
+    /// must be a rejection, not a silent no-op.
+    ///
+    /// **No new `local_outbox` row is written for this transition.** The
+    /// frozen event catalog (`packages/contracts/src/types/events.ts`,
+    /// `OUTBOX_EVENT_TYPES`) has no "order shape changed"/"order amended"
+    /// event, and this crate never originates a wire event outside that
+    /// catalog (ADR-008) — contracts are read-only to builder agents, and
+    /// adding one requires an ADR the orchestrator session owns, not this
+    /// task. `order_type`/`table_id` are already part of the `OrderCreated`
+    /// snapshot `Db::create_order_with_outbox` queued when the order was
+    /// first persisted, so this is a correction of that same
+    /// not-yet-observed-by-the-cloud fact, not a second fact needing a
+    /// second event: `corrected_order_created_payload_json`, when supplied,
+    /// overwrites that queued row's `payload_json` in place *only* while it
+    /// is still unpublished (`repo::update_pending_order_created_payload`).
+    /// Nothing has left the device for that event yet, so this is not
+    /// rewriting delivered history.
+    ///
+    /// Residual gap, called out rather than hidden: if the outlet is online
+    /// and the sync worker has already published this order's
+    /// `OrderCreated` event by the time the cashier fixes the shape, the
+    /// cloud's copy stays stale until a future milestone adds a proper
+    /// `OrderShapeChanged`-style event (needs a contract ADR). The realistic
+    /// window is small — this only matters between "first item tapped" and
+    /// "shape corrected", normally seconds — but it is a real desync, not
+    /// merely a theoretical one, and is out of this crate's authority to
+    /// close today.
+    pub fn update_order_shape_with_outbox(
+        &mut self,
+        order_id: &str,
+        order_type: &str,
+        table_id: Option<&str>,
+        updated_at: &str,
+        corrected_order_created_payload_json: Option<&str>,
+    ) -> DbResult<()> {
+        let tx = self.connection_mut().transaction()?;
+        repo::require_draft_order(&tx, order_id)?;
+        repo::update_order_shape(&tx, order_id, order_type, table_id, updated_at)?;
+        if let Some(payload) = corrected_order_created_payload_json {
+            repo::update_pending_order_created_payload(&tx, order_id, payload)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Opens a new table session together with its `local_outbox` row, in
     /// one transaction.
     pub fn open_table_session_with_outbox(
@@ -1641,6 +1695,153 @@ mod tests {
         assert!(pending
             .iter()
             .all(|e| e.aggregate_id != "order-confirm-fail" || e.event_type != "OrderConfirmed"));
+    }
+
+    /// The regression this crate exists to fix (task T14, docs/retro.md P0):
+    /// a DRAFT order's shape must stay editable for its whole DRAFT
+    /// lifetime, not just before it existed.
+    #[test]
+    fn update_order_shape_persists_order_type_and_table_id() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+
+        let order = sample_order("order-shape-1", "outlet-1", "device-1");
+        db.create_order_with_outbox(&order, &[], &sample_outbox("order-shape-1"))
+            .expect("create draft order");
+
+        db.update_order_shape_with_outbox(
+            "order-shape-1",
+            "TAKEAWAY",
+            None,
+            "2026-08-11T09:00:00Z",
+            None,
+        )
+        .expect("update shape");
+
+        let stored = db
+            .get_order("order-shape-1")
+            .unwrap()
+            .expect("order exists");
+        assert_eq!(stored.order_type, "TAKEAWAY");
+        assert_eq!(stored.table_id, None);
+        assert_eq!(stored.version, 2, "version must bump on shape change");
+        assert_eq!(stored.updated_at, "2026-08-11T09:00:00Z");
+    }
+
+    #[test]
+    fn update_order_shape_persists_dine_in_table_selection() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+
+        let order = sample_order("order-shape-2", "outlet-1", "device-1");
+        db.create_order_with_outbox(&order, &[], &sample_outbox("order-shape-2"))
+            .expect("create draft order");
+
+        db.update_order_shape_with_outbox(
+            "order-shape-2",
+            "DINE_IN",
+            Some("table-1"),
+            "2026-08-11T09:00:00Z",
+            None,
+        )
+        .expect("update shape");
+
+        let stored = db
+            .get_order("order-shape-2")
+            .unwrap()
+            .expect("order exists");
+        assert_eq!(stored.order_type, "DINE_IN");
+        assert_eq!(stored.table_id.as_deref(), Some("table-1"));
+    }
+
+    #[test]
+    fn update_order_shape_rejects_non_draft_order_and_writes_nothing() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+
+        let mut order = sample_order("order-shape-reject", "outlet-1", "device-1");
+        order.status = "CONFIRMED".to_string();
+        db.create_order_with_outbox(&order, &[], &sample_outbox("order-shape-reject"))
+            .expect("create already-confirmed order");
+
+        let result = db.update_order_shape_with_outbox(
+            "order-shape-reject",
+            "TAKEAWAY",
+            None,
+            "2026-08-11T09:00:00Z",
+            None,
+        );
+
+        assert!(matches!(result, Err(DbError::OrderNotAmendable { .. })));
+
+        let stored = db
+            .get_order("order-shape-reject")
+            .unwrap()
+            .expect("order exists");
+        assert_eq!(
+            stored.order_type, "DINE_IN",
+            "order_type must be untouched by the rejected attempt"
+        );
+        assert_eq!(stored.version, 1, "version must not bump on rejection");
+    }
+
+    #[test]
+    fn update_order_shape_rejects_nonexistent_order() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+
+        let result = db.update_order_shape_with_outbox(
+            "does-not-exist",
+            "TAKEAWAY",
+            None,
+            "2026-08-11T09:00:00Z",
+            None,
+        );
+
+        assert!(matches!(result, Err(DbError::NotFound("order"))));
+    }
+
+    /// When a corrected `OrderCreated` payload is supplied and that event is
+    /// still unpublished, the queued row is corrected in place rather than
+    /// a second event being written — see the doc comment on
+    /// `Db::update_order_shape_with_outbox` for why.
+    #[test]
+    fn update_order_shape_corrects_unpublished_order_created_payload_in_place() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+
+        let order = sample_order("order-shape-payload", "outlet-1", "device-1");
+        db.create_order_with_outbox(&order, &[], &sample_outbox("order-shape-payload"))
+            .expect("create draft order");
+
+        db.update_order_shape_with_outbox(
+            "order-shape-payload",
+            "TAKEAWAY",
+            None,
+            "2026-08-11T09:00:00Z",
+            Some(r#"{"event_type":"OrderCreated","data":{"order":{"order_type":"TAKEAWAY"}}}"#),
+        )
+        .expect("update shape");
+
+        let pending = repo::list_unpublished_outbox(db.connection(), 100).unwrap();
+        let event = pending
+            .iter()
+            .find(|e| e.aggregate_id == "order-shape-payload" && e.event_type == "OrderCreated")
+            .expect("OrderCreated event must still exist");
+        assert_eq!(
+            event.payload_json,
+            r#"{"event_type":"OrderCreated","data":{"order":{"order_type":"TAKEAWAY"}}}"#,
+            "unpublished OrderCreated payload must be corrected in place"
+        );
+        // Still exactly one OrderCreated row — a correction, not a second event.
+        assert_eq!(
+            pending
+                .iter()
+                .filter(|e| e.aggregate_id == "order-shape-payload"
+                    && e.event_type == "OrderCreated")
+                .count(),
+            1
+        );
     }
 
     #[test]

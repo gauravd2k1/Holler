@@ -15,6 +15,7 @@ const {
   confirmOrder,
   addOrderItem,
   removeOrderItem,
+  updateOrderShape,
   getActiveDraftOrder,
   sendOrderToKitchen,
   listKotsForOrder,
@@ -233,6 +234,26 @@ describe("add/removeOrderItem", () => {
         unit_price_paise: 100,
         notes: null,
       }),
+    ).rejects.toSatisfy((err: unknown) => isTauriCommandError(err));
+  });
+});
+
+describe("updateOrderShape", () => {
+  it("invokes update_order_shape with the order id, order type and table id, and parses the response", async () => {
+    invokeMock.mockResolvedValue(VALID_ORDER);
+    const order = await updateOrderShape(VALID_ORDER.holler_order_id, "TAKEAWAY", null);
+    expect(invokeMock).toHaveBeenCalledWith("update_order_shape", {
+      orderId: VALID_ORDER.holler_order_id,
+      orderType: "TAKEAWAY",
+      tableId: null,
+    });
+    expect(order.holler_order_id).toBe(VALID_ORDER.holler_order_id);
+  });
+
+  it("normalizes an ORDER_NOT_DRAFT rejection once the order has left DRAFT", async () => {
+    invokeMock.mockRejectedValue({ code: "ORDER_NOT_DRAFT", message: "not draft" });
+    await expect(
+      updateOrderShape(VALID_ORDER.holler_order_id, "DINE_IN", "table-1"),
     ).rejects.toSatisfy((err: unknown) => isTauriCommandError(err));
   });
 });

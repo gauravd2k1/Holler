@@ -237,6 +237,94 @@ pub fn confirm_order_impl(state: &AppState, order_id: &str) -> AppResult<Canonic
     Ok(CanonicalOrder::from_order_and_items(order, items))
 }
 
+/// Sets `order_type`/`table_id` on an already-persisted `DRAFT` order — the
+/// fix for the M2 P0 regression (docs/retro.md, task T14): a DRAFT order is
+/// created on the first cart line (crash durability), and its shape must
+/// stay editable for the order's whole DRAFT lifetime, not just before it
+/// existed. Rejects with `ORDER_NOT_DRAFT` once the order has left DRAFT —
+/// same enforcement family as `add_order_item`/`remove_order_item`.
+///
+/// Also best-effort corrects this order's still-unpublished `OrderCreated`
+/// `local_outbox` payload in place, so a cloud that has not yet observed
+/// this order sees the corrected shape rather than whatever it was at the
+/// first tap. See `holler_edge_database::Db::update_order_shape_with_outbox`'s
+/// doc comment for the reasoning and the residual gap it leaves (an
+/// already-*published* `OrderCreated` event is not retroactively
+/// correctable without a new contract event — out of this crate's
+/// authority).
+pub fn update_order_shape_impl(
+    state: &AppState,
+    order_id: &str,
+    order_type: String,
+    table_id: Option<String>,
+) -> AppResult<CanonicalOrder> {
+    let now = now_iso();
+    let mut db = lock_db(state)?;
+
+    let corrected_payload = holler_edge_database::repo::get_unpublished_outbox_payload(
+        db.connection(),
+        order_id,
+        "OrderCreated",
+    )?
+    .and_then(|payload_json| {
+        correct_order_created_payload(&payload_json, &order_type, table_id.as_deref(), &now)
+    });
+
+    db.update_order_shape_with_outbox(
+        order_id,
+        &order_type,
+        table_id.as_deref(),
+        &now,
+        corrected_payload.as_deref(),
+    )?;
+
+    let order = db.get_order(order_id)?.ok_or_else(|| AppError {
+        code: "NOT_FOUND",
+        message: format!("order {order_id} not found after shape update"),
+    })?;
+    let items = holler_edge_database::repo::list_order_items(db.connection(), order_id)?;
+    Ok(CanonicalOrder::from_order_and_items(order, items))
+}
+
+/// Rewrites `data.order.order_type`/`data.order.table_id`/
+/// `data.order.timestamps.updated_at` inside an already-serialized
+/// `OrderCreated` envelope, leaving `event_id`/`occurred_at`/every other
+/// field untouched — a correction of that one still-pending fact, not a
+/// fresh event. Returns `None` (and the caller then leaves the queued
+/// payload alone) if the stored payload does not parse as the expected
+/// shape; a malformed queued payload is a pre-existing data problem this
+/// command must not compound by writing something worse over it.
+fn correct_order_created_payload(
+    payload_json: &str,
+    order_type: &str,
+    table_id: Option<&str>,
+    updated_at: &str,
+) -> Option<String> {
+    let mut value: serde_json::Value = serde_json::from_str(payload_json).ok()?;
+    let order_value = value.get_mut("data")?.get_mut("order")?;
+    let order_object = order_value.as_object_mut()?;
+    order_object.insert(
+        "order_type".to_string(),
+        serde_json::Value::String(order_type.to_string()),
+    );
+    order_object.insert(
+        "table_id".to_string(),
+        table_id.map_or(serde_json::Value::Null, |t| {
+            serde_json::Value::String(t.to_string())
+        }),
+    );
+    if let Some(timestamps) = order_object
+        .get_mut("timestamps")
+        .and_then(|t| t.as_object_mut())
+    {
+        timestamps.insert(
+            "updated_at".to_string(),
+            serde_json::Value::String(updated_at.to_string()),
+        );
+    }
+    serde_json::to_string(&value).ok()
+}
+
 /// Removes one line item from an already-persisted `DRAFT` order (see
 /// `Db::remove_order_item_with_outbox`). `order_id` is caller-supplied
 /// (rather than derived from the deleted row) purely so this function can
@@ -312,4 +400,14 @@ pub fn remove_order_item(
     order_item_id: String,
 ) -> AppResult<CanonicalOrder> {
     remove_order_item_impl(&state, &order_id, &order_item_id)
+}
+
+#[tauri::command]
+pub fn update_order_shape(
+    state: State<'_, AppState>,
+    order_id: String,
+    order_type: String,
+    table_id: Option<String>,
+) -> AppResult<CanonicalOrder> {
+    update_order_shape_impl(&state, &order_id, order_type, table_id)
 }

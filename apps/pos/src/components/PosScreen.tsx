@@ -28,6 +28,7 @@ export function PosScreen() {
   const tablesQuery = useTablesQuery();
 
   const orderId = useCartStore((s) => s.orderId);
+  const orderStatus = useCartStore((s) => s.orderStatus);
   const orderType = useCartStore((s) => s.orderType);
   const setOrderType = useCartStore((s) => s.setOrderType);
   const tableId = useCartStore((s) => s.tableId);
@@ -58,7 +59,9 @@ export function PosScreen() {
     if (menuItemsQuery.isSuccess) {
       void hydrate(menuItems);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // Intentionally depends on isSuccess only — see the comment above: this
+    // must run exactly once when the menu becomes available, not on every
+    // `menuItems` array identity change.
   }, [menuItemsQuery.isSuccess]);
 
   const groups = useMemo(
@@ -76,9 +79,13 @@ export function PosScreen() {
 
   const subtotalPaise = cartSubtotalPaise(lines);
   const sendEnabled = canCreateOrder && canSendOrder(orderType, tableId, lines) && !cartPending;
-  // Order type/table are fixed the moment the first line is persisted —
-  // there is no command to amend them on an already-created order.
-  const canEditOrderShape = orderId === null;
+  // Order type/table stay editable for the order's entire DRAFT lifetime —
+  // not merely before it existed (docs/retro.md P0 regression, task T14).
+  // `orderId === null` means no order has been persisted yet (also
+  // editable); once one exists, `orderStatus` is the actual gate, since a
+  // DRAFT order created on the first tapped item must not lock the cashier
+  // out of correcting its type/table before Send.
+  const canEditOrderShape = orderId === null || orderStatus === "DRAFT";
 
   function handleSend() {
     if (!canSendOrder(orderType, tableId, lines)) return;
@@ -105,8 +112,8 @@ export function PosScreen() {
               key={type}
               type="button"
               className={type === orderType ? "active" : ""}
-              disabled={!canEditOrderShape}
-              onClick={() => setOrderType(type)}
+              disabled={!canEditOrderShape || cartPending}
+              onClick={() => void setOrderType(type)}
             >
               {type}
             </button>
@@ -116,8 +123,8 @@ export function PosScreen() {
           <select
             className="pos-table-select"
             value={tableId ?? ""}
-            disabled={!canEditOrderShape}
-            onChange={(e) => setTableId(e.target.value || null)}
+            disabled={!canEditOrderShape || cartPending}
+            onChange={(e) => void setTableId(e.target.value || null)}
           >
             <option value="">Select table…</option>
             {(tablesQuery.data ?? []).map((table) => (
