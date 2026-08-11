@@ -77,3 +77,39 @@ The builder volunteered the limitation instead of reporting a clean close. The v
 ### Note
 
 The item is reopened in `docs/backlog-m2.md` with the distinction written into it, so the next reader judges it against the crash rather than the API surface.
+
+---
+
+## 2026-08-11 — Two milestones of components that passed, and wiring that did not exist
+
+**Severity:** high (no data lost; two milestones' acceptance evidence weaker than reported).
+
+### What happened
+
+Milestone 2 was reported with five of six acceptance criteria met and a `m2-complete` tag. Then a request for the item-1 runbook — the plain question *"what do I type to run this on two machines?"* — turned up three facts in about ten minutes:
+
+1. **`edge/device` is a library with no binary.** The only caller of `server::start` in the entire repository is `tests/integration/kds-lan-bridge/src/main.rs`, a test harness. `apps/pos/src-tauri` does not depend on the crate at all.
+2. **The only launcher binds loopback on an ephemeral port** (`127.0.0.1:0`), so nothing could reach it from another machine even by accident.
+3. **Nothing connects the edge database to the broadcast hub.** `grep -rn "notify_kot_upserted\|Hub" apps/ edge/` outside `edge/device/src` returns nothing. A cashier pressing send-to-kitchen could never have reached a KDS screen.
+
+Every component test passed. The cross-language socket test passed, and it was a genuine socket — it just started the server itself, because it was the only thing that could.
+
+**This is the second milestone with the same shape.** Milestone 1 shipped seven bounded contexts, all tested, none mounted: `main.go` served `/health` and nothing else, so no context was reachable over HTTP by any caller. That was found the same way — by trying to use the thing rather than by any test.
+
+### Root cause
+
+**Acceptance was verified against harnesses, not against what ships.** Each track's Definition of Done was scoped to its own directory, and every track satisfied it. Nobody owned the seams *between* directories, so the seams were never built, and no gate was positioned to notice: a verifier checks the track in front of it, and every track was individually correct.
+
+The harness made it worse rather than better. A test that constructs its own server proves the protocol and hides the absence of a launcher. It is genuinely valuable — it caught two real interop breaks — but it answers "do these two pieces agree?" and was read as answering "does this work?"
+
+Contributing: the orchestrator relayed both gaps from the builder's own report ("not wired into `apps/pos/src-tauri`") into the milestone report as remaining work, rather than recognising that a deliverable with no caller is not delivered.
+
+### Rules adopted
+
+1. **An acceptance run exercises shipped binaries end to end. Harnesses do not count as evidence for it.** If the only thing that starts a component is a test, the component is not wired, whatever its tests say. — `CLAUDE.md`
+2. **Every new component names its caller before its track closes.** A builder reporting "not wired into X yet" is reporting an unfinished deliverable, not a follow-up, unless X is explicitly out of the milestone. The orchestrator treats that sentence as a gate failure. — `.claude/commands/milestone.md`
+3. **The runbook is written during the milestone, not after it.** "What do I type to see this work?" is the cheapest possible integration test, and both times it was asked, it found in minutes what a full milestone of green suites had not. — `docs/DEV_SETUP.md`
+
+### Note
+
+The `m2-complete` annotation already recorded item 1 as outstanding and the build as not shippable, so the tag did not overclaim. But it described the gap as *unmeasured latency*, when in fact the path being measured did not exist. Recording a criterion as unmet is not the same as knowing why.

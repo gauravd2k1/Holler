@@ -75,7 +75,7 @@ v0.3.0 (ADR-014) added the Milestone 2 kitchen shapes. Four rules bind every bui
 ## Current milestone: MILESTONE 2 — Kitchen
 Scope: KOT, station routing, printer abstraction, KDS, LAN realtime delivery, order status — all built against the frozen `packages/contracts/` shapes.
 
-Acceptance — every item is an observed behaviour, not an implemented API. None of these count as met by a passing unit suite:
+Acceptance — every item is an observed behaviour, not an implemented API. None of these count as met by a passing unit suite, and **none may be evidenced by a test harness**: an acceptance run exercises the binaries that ship. If the only thing that starts a component is a test, that component is not wired, whatever its tests say (`docs/retro.md`, 2026-08-11 — this has now happened twice).
 1. POS → kitchen propagation below target latency on LAN (<250ms, `docs/spec/kitchen.md`), measured over a real network between two machines — not loopback.
 2. **Crash mid-order → the cart survives.** Kill the POS with lines in the cart and reopen: the in-progress order is still there. An API capable of preventing the loss does not count; the loss not happening counts (see `docs/retro.md`, 2026-08-10).
 3. Cloud sync round-trip: an order and its KOTs created at the edge reach the cloud and read back correctly.
