@@ -127,6 +127,15 @@ const (
 	EventTypeOrderCancelled      = "OrderCancelled"
 	EventTypeTableSessionOpened  = "TableSessionOpened"
 	EventTypeTableSessionUpdated = "TableSessionUpdated"
+
+	// Milestone 3 billing events (ADR-016). §53 names InvoiceCreated,
+	// PaymentReceived and PaymentRefunded as immutable business events; the two
+	// shift events complete the cash-drawer trail §39 requires.
+	EventTypeInvoiceCreated  = "InvoiceCreated"
+	EventTypePaymentReceived = "PaymentReceived"
+	EventTypePaymentRefunded = "PaymentRefunded"
+	EventTypeCashShiftOpened = "CashShiftOpened"
+	EventTypeCashShiftClosed = "CashShiftClosed"
 )
 
 // OutboxEventTypes mirrors OUTBOX_EVENT_TYPES in src/types/events.ts, in the
@@ -143,4 +152,9 @@ var OutboxEventTypes = []string{
 	EventTypeOrderCancelled,
 	EventTypeTableSessionOpened,
 	EventTypeTableSessionUpdated,
+	EventTypeInvoiceCreated,
+	EventTypePaymentReceived,
+	EventTypePaymentRefunded,
+	EventTypeCashShiftOpened,
+	EventTypeCashShiftClosed,
 }

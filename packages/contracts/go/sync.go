@@ -25,6 +25,19 @@ const (
 	// see printer.go and sqlite/0005 for why.
 	AggregateTypeStation AggregateType = "station"
 	AggregateTypePrinter AggregateType = "printer"
+
+	// Milestone 3 additions (ADR-016). tax_rule, invoice_line,
+	// payment_allocation, cash_movement and outlet_fiscal_profile are
+	// deliberately absent: they are child rows travelling inside their parent's
+	// payload or config bundle, as menu_item_variant and station_printer do.
+	// invoice_sequence is absent for the opposite reason — it is edge-local and
+	// must never sync, the print_job precedent (see invoice.go).
+	AggregateTypeInvoice            AggregateType = "invoice"
+	AggregateTypeCashShift          AggregateType = "cash_shift"
+	AggregateTypeTaxProfile         AggregateType = "tax_profile"
+	AggregateTypeComplianceVersion  AggregateType = "compliance_version"
+	AggregateTypeInvoiceSeries      AggregateType = "invoice_series"
+	AggregateTypeDiscountDefinition AggregateType = "discount_definition"
 )
 
 type SyncDirection string
@@ -60,6 +73,19 @@ var AggregateAuthority = map[AggregateType]SyncDirection{
 	// printer's definition is config; its live work is an edge-local print_job.
 	AggregateTypeStation: SyncDirectionCloudToEdge,
 	AggregateTypePrinter: SyncDirectionCloudToEdge,
+
+	// Milestone 3 (ADR-016). The outlet issues bills and takes money with the
+	// uplink down, so both are edge-authoritative and the cloud only replays.
+	AggregateTypeInvoice:   SyncDirectionEdgeToCloud,
+	AggregateTypeCashShift: SyncDirectionEdgeToCloud,
+	// Tax rules, numbering format and discount policy are management
+	// decisions, so they are cloud-owned config. The same cut as station/kot:
+	// the series' definition is config, the number it issued lives on an
+	// edge-authoritative invoice, and the counter between them never syncs.
+	AggregateTypeTaxProfile:         SyncDirectionCloudToEdge,
+	AggregateTypeComplianceVersion:  SyncDirectionCloudToEdge,
+	AggregateTypeInvoiceSeries:      SyncDirectionCloudToEdge,
+	AggregateTypeDiscountDefinition: SyncDirectionCloudToEdge,
 }
 
 type SyncEnvelope struct {

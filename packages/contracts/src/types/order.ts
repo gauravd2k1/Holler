@@ -69,6 +69,20 @@ export const CanonicalOrderSchema = z.object({
   source: OrderSourceSchema,
   outlet_id: z.string().uuid(),
 
+  // Short human-facing number ('#A184'), minted edge-side alongside the order.
+  // Added at 0.4.0 (ADR-016) to close the M2 finding that a printed KOT
+  // carried the raw UUID — a cook cannot read one aloud across a kitchen.
+  // CLAUDE.md §Money/time/identifiers requires human-facing numbers be short
+  // and forbids exposing sequential PKs as security identifiers, so this is a
+  // display string, never a key.
+  //
+  // Nullable ONLY for rows written before 0.4.0: SQLite cannot add a NOT NULL
+  // column to a populated table without rebuilding "order", and a rebuild of
+  // a table that order_item, kot and invoice all reference is the worse risk.
+  // Every create path populates it; readers fall back to the id for legacy
+  // rows alone.
+  display_number: z.string().nullable(),
+
   order_type: OrderTypeSchema,
   status: OrderStatusSchema,
   table_id: z.string().uuid().nullable(),
@@ -123,6 +137,37 @@ export const OrderCommandSchema = z.discriminatedUnion("type", [
     type: z.literal("CANCEL_ORDER"),
     order_id: z.string().uuid(),
     reason: z.string(),
+  }),
+
+  // Milestone 3 additions (ADR-016).
+  //
+  // SET_ORDER_ITEM_QUANTITY is a single command by design. Quantity must NOT
+  // be implemented as remove-then-add: that is two durable writes with a crash
+  // window between them, which is precisely the loss the durable-cart work
+  // eliminated (docs/backlog-m2.md, docs/retro.md 2026-08-10). One command,
+  // one write.
+  z.object({
+    type: z.literal("SET_ORDER_ITEM_QUANTITY"),
+    order_id: z.string().uuid(),
+    order_item_id: z.string().uuid(),
+    quantity: z.number().int().positive(),
+  }),
+  z.object({
+    type: z.literal("APPLY_DISCOUNT"),
+    order_id: z.string().uuid(),
+    discount_definition_id: z.string().uuid(),
+    // LINE scope targets one line; BILL scope leaves this null.
+    order_item_id: z.string().uuid().nullable(),
+    // Required when the discount definition sets requires_reason.
+    reason: z.string().nullable(),
+  }),
+  z.object({
+    type: z.literal("PAY_ORDER"),
+    order_id: z.string().uuid(),
+  }),
+  z.object({
+    type: z.literal("CLOSE_ORDER"),
+    order_id: z.string().uuid(),
   }),
 ]);
 export type OrderCommand = z.infer<typeof OrderCommandSchema>;

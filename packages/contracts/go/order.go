@@ -96,6 +96,16 @@ type CanonicalOrder struct {
 	Source           OrderSource `json:"source"`
 	OutletID         string      `json:"outlet_id"`
 
+	// Short human-facing number ("#A184"), minted edge-side alongside the
+	// order. Added at 0.4.0 (ADR-016) to close the M2 finding that a printed
+	// KOT carried the raw UUID — a cook cannot read one aloud across a
+	// kitchen. A display string, never a key: CLAUDE.md forbids exposing
+	// sequential PKs as security identifiers.
+	//
+	// Nullable ONLY for rows written before 0.4.0; every create path
+	// populates it.
+	DisplayNumber *string `json:"display_number"`
+
 	OrderType OrderType   `json:"order_type"`
 	Status    OrderStatus `json:"status"`
 	TableID   *string     `json:"table_id"`

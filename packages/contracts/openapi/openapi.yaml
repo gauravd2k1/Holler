@@ -175,6 +175,127 @@ paths:
         "422":
           $ref: "#/components/responses/EnvelopeRouteMismatch"
 
+  /invoices:
+    post:
+      summary: >
+        Replay a GST invoice issued at the edge. Added at 0.4.0 (ADR-016).
+
+        The invoice is edge-authoritative (§50.1): the outlet issues bills with
+        the uplink down, and this route only ever REPLAYS one. No cloud handler
+        mints an invoice number, renumbers a bill, or transitions its status —
+        the rule ADR-014 set for kot.status, applied to money.
+
+        The counter that produced invoice_number is edge-local and never syncs
+        (sqlite invoice_sequence has no Postgres mirror and no AggregateType).
+        Mirroring it would make the cloud a second writer of invoice numbers,
+        which §33's "never generate duplicate invoice numbers" forbids.
+
+        Rejects with 422 when the payload violates the ADR-016 rounding policy:
+        components must sum to the grand total through round_off, |round_off|
+        must not exceed 50 paise, and the total must settle in whole rupees.
+        The same rule is a CHECK in both stores — this returns a reason rather
+        than surfacing a driver-level constraint error.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InvoiceEnvelope"
+      responses:
+        "200":
+          description: Invoice stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Invoice"
+        "409":
+          description: >
+            An invoice with this number already exists for the outlet and
+            series. Uniqueness is scoped to (outlet, series, number), never
+            global — two outlets issuing FY26/.../000001 on one day is correct.
+        "422":
+          $ref: "#/components/responses/EnvelopeRouteMismatch"
+
+  /payments:
+    post:
+      summary: >
+        Replay a tender taken at the edge (PaymentReceived / PaymentRefunded).
+        Added at 0.4.0 (ADR-016).
+
+        APPEND-ONLY (§53, docs/spec/payments.md §Conflict policy). This route
+        never updates a captured payment: a void or refund arrives as a NEW
+        payment carrying reverses_payment_id and a non-positive amount.
+        Financial transactions are never last-write-wins.
+
+        §34: a ₹2,000 bill settled as ₹500 cash + ₹1,000 UPI + ₹500 card
+        arrives as three calls here, not one payment_method field.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PaymentEnvelope"
+      responses:
+        "200":
+          description: Payment stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Payment"
+        "422":
+          $ref: "#/components/responses/EnvelopeRouteMismatch"
+
+  /cash-shifts:
+    post:
+      summary: >
+        Replay a cash shift opened at the edge (CashShiftOpened). Added at
+        0.4.0 (ADR-016). Edge-authoritative: the drawer is at the outlet.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CashShiftEnvelope"
+      responses:
+        "200":
+          description: Shift stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CashShift"
+        "422":
+          $ref: "#/components/responses/EnvelopeRouteMismatch"
+
+  /cash-shifts/{shiftId}/close:
+    post:
+      summary: >
+        Replay a shift close recorded at the edge (CashShiftClosed).
+
+        Rejects with 422 a CLOSED shift that does not carry closed_at,
+        expected, actual and variance — a register closed without its count can
+        never be reconciled afterwards — or a non-zero variance with no reason,
+        which §39 requires.
+      parameters:
+        - name: shiftId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CashShiftEnvelope"
+      responses:
+        "200":
+          description: Shift close recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CashShift"
+        "422":
+          $ref: "#/components/responses/EnvelopeRouteMismatch"
+
   /orders/{id}/send-to-kitchen:
     post:
       summary: >
@@ -791,9 +912,42 @@ paths:
                 type: object
                 required:
                   [config_version, users, tables, categories, items,
-                   stations, item_stations, printers, station_printers]
+                   stations, item_stations, printers, station_printers,
+                   compliance_versions, tax_profiles, tax_rules,
+                   invoice_series, discount_definitions, fiscal_profile]
                 properties:
                   config_version: { type: integer }
+                  compliance_versions:
+                    type: array
+                    items: { $ref: "#/components/schemas/ComplianceVersion" }
+                  tax_profiles:
+                    type: array
+                    items: { $ref: "#/components/schemas/TaxProfile" }
+                  tax_rules:
+                    type: array
+                    description: >
+                      Child rows of tax_profile, shipped flat in the bundle as
+                      item_stations and station_printers already are.
+                    items: { $ref: "#/components/schemas/TaxRule" }
+                  invoice_series:
+                    type: array
+                    description: >
+                      Series DEFINITIONS. The counters stay at the outlet — an
+                      edge that pulls config never receives or reports a next
+                      number, because the cloud is not a writer of one (§33).
+                    items: { $ref: "#/components/schemas/InvoiceSeries" }
+                  discount_definitions:
+                    type: array
+                    items: { $ref: "#/components/schemas/DiscountDefinition" }
+                  fiscal_profile:
+                    description: >
+                      The outlet's current seller identity, or null before one
+                      is configured — in which case the edge cannot issue a
+                      compliant GST invoice and must say so rather than print
+                      an incomplete bill (§33).
+                    nullable: true
+                    allOf:
+                      - $ref: "#/components/schemas/OutletFiscalProfile"
                   users:
                     type: array
                     description: >
@@ -1031,6 +1185,414 @@ components:
             aggregate_type: { enum: [kot] }
             direction: { enum: [EDGE_TO_CLOUD] }
             payload: { $ref: "#/components/schemas/Kot" }
+
+    Invoice:
+      type: object
+      description: >
+        A GST invoice (§33). Split bills are N invoices over one order sharing
+        split_group_id — each part is independently numbered and independently
+        payable, because that is what the customer physically receives. There
+        is deliberately no BillSplit entity.
+
+        tax_snapshot and fiscal_profile are the rules and seller identity AS
+        THEY STOOD AT ISSUE TIME (§31), so reprinting a six-month-old bill
+        after a rate or GSTIN change reproduces the original document rather
+        than recomputing it.
+      required:
+        [id, outlet_id, order_id, series_id, invoice_number, invoice_date,
+         business_date, status, place_of_supply_state_code, lines,
+         subtotal_paise, taxable_value_paise, grand_total_paise,
+         compliance_version_id, tax_snapshot, fiscal_profile, channel,
+         tax_liability_party, created_by_user_id, created_at, updated_at,
+         version, schema_version]
+      properties:
+        id: { type: string, format: uuid }
+        outlet_id: { type: string, format: uuid }
+        order_id: { type: string, format: uuid }
+        split_group_id: { type: string, format: uuid, nullable: true }
+        split_index: { type: integer, minimum: 1, default: 1 }
+        split_count: { type: integer, minimum: 1, default: 1 }
+        series_id: { type: string, format: uuid }
+        invoice_number:
+          type: string
+          description: >
+            Issued by the edge-local counter. Unique per (outlet, series),
+            never globally.
+        invoice_date: { type: string, format: date-time }
+        business_date:
+          type: string
+          description: Outlet-local YYYY-MM-DD; the business day may cross midnight.
+        status: { type: string, enum: [ISSUED, CANCELLED] }
+        cancelled_reason: { type: string, nullable: true }
+        cancelled_at: { type: string, format: date-time, nullable: true }
+        customer_name: { type: string, nullable: true }
+        customer_phone: { type: string, nullable: true }
+        customer_gstin: { type: string, nullable: true }
+        place_of_supply_state_code: { type: string }
+        lines:
+          type: array
+          items: { $ref: "#/components/schemas/InvoiceLine" }
+        subtotal_paise: { type: integer }
+        discount_paise: { type: integer, default: 0 }
+        taxable_value_paise: { type: integer }
+        cgst_paise: { type: integer, default: 0 }
+        sgst_paise: { type: integer, default: 0 }
+        igst_paise: { type: integer, default: 0 }
+        cess_paise: { type: integer, default: 0 }
+        round_off_paise:
+          type: integer
+          minimum: -50
+          maximum: 50
+          default: 0
+          description: >
+            ADR-016: rounding to the nearest rupee can never move a total by
+            more than half a rupee. A larger value means round-off is absorbing
+            an arithmetic error.
+        grand_total_paise:
+          type: integer
+          multipleOf: 100
+          description: >
+            ADR-016: equals taxable_value + cgst + sgst + igst + cess +
+            round_off, and settles in whole rupees.
+        compliance_version_id: { type: string, format: uuid }
+        tax_snapshot: { type: object, additionalProperties: true }
+        fiscal_profile: { type: object, additionalProperties: true }
+        channel: { type: string }
+        tax_liability_party: { type: string, enum: [RESTAURANT, ECO] }
+        eco_operator_name: { type: string, nullable: true }
+        eco_operator_gstin: { type: string, nullable: true }
+        supply_classification: { type: string, nullable: true }
+        created_by_user_id: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        version: { type: integer }
+        schema_version: { type: integer, enum: [1] }
+
+    InvoiceLine:
+      type: object
+      description: >
+        order_item_id is what makes the split conservation property checkable:
+        across a split group every order line must appear exactly once in total
+        quantity — no loss, no duplication, no double-tax.
+      required:
+        [id, invoice_id, order_item_id, line_no, description, quantity,
+         unit_price_paise, gross_paise, taxable_value_paise, tax_profile_id,
+         total_paise, schema_version]
+      properties:
+        id: { type: string, format: uuid }
+        invoice_id: { type: string, format: uuid }
+        order_item_id: { type: string, format: uuid }
+        line_no: { type: integer, minimum: 1 }
+        description:
+          type: string
+          description: Snapshot at issue time — never re-read from the live menu.
+        hsn_sac: { type: string, nullable: true }
+        quantity: { type: integer, minimum: 1 }
+        unit_price_paise: { type: integer }
+        gross_paise: { type: integer }
+        discount_paise: { type: integer, default: 0 }
+        taxable_value_paise: { type: integer }
+        tax_profile_id: { type: string, format: uuid }
+        cgst_rate_bps: { type: integer, minimum: 0, default: 0 }
+        cgst_paise: { type: integer, default: 0 }
+        sgst_rate_bps: { type: integer, minimum: 0, default: 0 }
+        sgst_paise: { type: integer, default: 0 }
+        igst_rate_bps: { type: integer, minimum: 0, default: 0 }
+        igst_paise: { type: integer, default: 0 }
+        cess_rate_bps: { type: integer, minimum: 0, default: 0 }
+        cess_paise: { type: integer, default: 0 }
+        total_paise: { type: integer }
+        schema_version: { type: integer, enum: [1] }
+
+    Payment:
+      type: object
+      description: >
+        One tender (§34). APPEND-ONLY: a void or refund is a new Payment
+        carrying reverses_payment_id and a non-positive amount, never an update.
+
+        status is the capture lifecycle of THIS tender, deliberately distinct
+        from CanonicalOrder.payment_status, which is the order's overall
+        standing. An order can sit at PARTIALLY_PAID while one tender is
+        CAPTURED, another FAILED and a third PENDING.
+      required:
+        [id, outlet_id, order_id, method, status, amount_paise,
+         created_by_user_id, created_at, updated_at, version, schema_version]
+      properties:
+        id: { type: string, format: uuid }
+        outlet_id: { type: string, format: uuid }
+        order_id: { type: string, format: uuid }
+        cash_shift_id: { type: string, format: uuid, nullable: true }
+        method:
+          type: string
+          enum: [CASH, UPI, CREDIT_CARD, DEBIT_CARD, WALLET, GIFT_CARD,
+                 LOYALTY_POINTS, BANK_TRANSFER, AGGREGATOR_PAID, HOUSE_ACCOUNT,
+                 CREDIT]
+        status:
+          type: string
+          enum: [PENDING, CAPTURED, FAILED, VOIDED, REFUNDED]
+          description: >
+            Milestone 3 delivers CASH and split tenders only; gateway capture
+            lands in Milestone 7. The states are modelled now so a Razorpay
+            attempt has somewhere to go without a contract change.
+        amount_paise:
+          type: integer
+          description: Negative on a reversal row.
+        tendered_paise:
+          type: integer
+          nullable: true
+          description: >
+            CASH only — set on any other method it corrupts the shift's
+            expected-cash derivation.
+        change_paise: { type: integer, nullable: true }
+        reference: { type: string, nullable: true }
+        external_id: { type: string, nullable: true }
+        reverses_payment_id: { type: string, format: uuid, nullable: true }
+        captured_at: { type: string, format: date-time, nullable: true }
+        allocations:
+          type: array
+          items: { $ref: "#/components/schemas/PaymentAllocation" }
+        created_by_user_id: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        version: { type: integer }
+        schema_version: { type: integer, enum: [1] }
+
+    PaymentAllocation:
+      type: object
+      description: >
+        How one tender settles against one or more invoices. This is what lets
+        split payment and split bill compose: one card swipe can settle two
+        parts of a split group, and one part can be settled by three tenders.
+      required: [id, payment_id, invoice_id, amount_paise, schema_version]
+      properties:
+        id: { type: string, format: uuid }
+        payment_id: { type: string, format: uuid }
+        invoice_id: { type: string, format: uuid }
+        amount_paise: { type: integer }
+        schema_version: { type: integer, enum: [1] }
+
+    CashShift:
+      type: object
+      description: >
+        Cashier-specific register (§39). Expected cash is derived from
+        movements; actual is counted by a human; variance is the difference and
+        requires a reason.
+      required:
+        [id, outlet_id, device_id, cashier_user_id, status, opened_at,
+         opening_cash_paise, business_date, created_at, updated_at, version,
+         schema_version]
+      properties:
+        id: { type: string, format: uuid }
+        outlet_id: { type: string, format: uuid }
+        device_id: { type: string, format: uuid }
+        cashier_user_id: { type: string, format: uuid }
+        status: { type: string, enum: [OPEN, CLOSED] }
+        opened_at: { type: string, format: date-time }
+        opening_cash_paise: { type: integer, minimum: 0 }
+        closed_at: { type: string, format: date-time, nullable: true }
+        expected_cash_paise: { type: integer, nullable: true }
+        actual_cash_paise: { type: integer, nullable: true }
+        variance_paise: { type: integer, nullable: true }
+        variance_reason:
+          type: string
+          nullable: true
+          description: Required by §39 whenever variance_paise is non-zero.
+        business_date: { type: string }
+        movements:
+          type: array
+          items: { $ref: "#/components/schemas/CashMovement" }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        version: { type: integer }
+        schema_version: { type: integer, enum: [1] }
+
+    CashMovement:
+      type: object
+      description: Append-only — a correction is another movement, never an edit.
+      required:
+        [id, cash_shift_id, kind, amount_paise, created_by_user_id, created_at,
+         schema_version]
+      properties:
+        id: { type: string, format: uuid }
+        cash_shift_id: { type: string, format: uuid }
+        kind:
+          type: string
+          enum: [OPENING_FLOAT, CASH_SALE, CASH_REFUND, PAID_IN, PAID_OUT]
+        amount_paise:
+          type: integer
+          description: "Signed: PAID_OUT and CASH_REFUND are negative."
+        reason:
+          type: string
+          nullable: true
+          description: Required for PAID_IN and PAID_OUT.
+        payment_id: { type: string, format: uuid, nullable: true }
+        created_by_user_id: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+        schema_version: { type: integer, enum: [1] }
+
+    TaxProfile:
+      type: object
+      description: >
+        CONFIG (cloud→edge). §31: every rate in the product resolves through a
+        profile — no percentage is scattered onto a menu item.
+      required:
+        [id, outlet_id, code, name, pricing_mode, is_default, is_active,
+         config_version, schema_version]
+      properties:
+        id: { type: string, format: uuid }
+        outlet_id: { type: string, format: uuid }
+        code:
+          type: string
+          description: Stable machine code, unique per outlet, never global.
+        name: { type: string }
+        pricing_mode: { type: string, enum: [INCLUSIVE, EXCLUSIVE] }
+        is_default: { type: boolean }
+        is_active: { type: boolean }
+        config_version: { type: integer }
+        schema_version: { type: integer, enum: [1] }
+
+    TaxRule:
+      type: object
+      description: >
+        A component rate inside a profile, effective-dated. Child row travelling
+        in its parent's config bundle — not an aggregate of its own.
+      required:
+        [id, tax_profile_id, compliance_version_id, component, rate_bps,
+         effective_from, config_version, schema_version]
+      properties:
+        id: { type: string, format: uuid }
+        tax_profile_id: { type: string, format: uuid }
+        compliance_version_id: { type: string, format: uuid }
+        component: { type: string, enum: [CGST, SGST, IGST, CESS] }
+        rate_bps:
+          type: integer
+          minimum: 0
+          maximum: 10000
+          description: >
+            Integer basis points, never a float: 2.5% = 250. A rate that
+            multiplies money obeys the same no-floating-point rule money does.
+        effective_from: { type: string, format: date-time }
+        effective_to: { type: string, format: date-time, nullable: true }
+        config_version: { type: integer }
+        schema_version: { type: integer, enum: [1] }
+
+    ComplianceVersion:
+      type: object
+      description: >
+        The versioned ruleset an invoice pins itself to, so historical bills
+        stay reproducible after the rules change (§31).
+      required: [id, outlet_id, label, effective_from, config_version, schema_version]
+      properties:
+        id: { type: string, format: uuid }
+        outlet_id: { type: string, format: uuid }
+        label: { type: string }
+        effective_from: { type: string, format: date-time }
+        notes: { type: string, nullable: true }
+        config_version: { type: integer }
+        schema_version: { type: integer, enum: [1] }
+
+    InvoiceSeries:
+      type: object
+      description: >
+        The series DEFINITION only. The counter that issues the next number is
+        edge-local, has no representation here, and never syncs (§33).
+      required:
+        [id, outlet_id, code, prefix_template, reset_policy, padding_width,
+         is_active, config_version, schema_version]
+      properties:
+        id: { type: string, format: uuid }
+        outlet_id: { type: string, format: uuid }
+        code: { type: string }
+        prefix_template:
+          type: string
+          description: "Tokens: {FY} {YYYY} {MM} {DD} {OUTLET}."
+        reset_policy: { type: string, enum: [NEVER, FY, MONTH, DAY] }
+        padding_width: { type: integer, minimum: 1, maximum: 12 }
+        is_active: { type: boolean }
+        config_version: { type: integer }
+        schema_version: { type: integer, enum: [1] }
+
+    DiscountDefinition:
+      type: object
+      description: >
+        Exactly one of value_bps and value_paise is set, decided by method. A
+        half-populated row asks a question with no defined answer — "20% or
+        ₹50?" — so both stores CHECK it and Zod refines it.
+      required:
+        [id, outlet_id, code, name, scope, method, requires_reason, is_active,
+         effective_from, config_version, schema_version]
+      properties:
+        id: { type: string, format: uuid }
+        outlet_id: { type: string, format: uuid }
+        code: { type: string }
+        name: { type: string }
+        scope: { type: string, enum: [LINE, BILL] }
+        method: { type: string, enum: [PERCENT, AMOUNT] }
+        value_bps: { type: integer, minimum: 0, maximum: 10000, nullable: true }
+        value_paise: { type: integer, minimum: 0, nullable: true }
+        max_discount_paise: { type: integer, nullable: true }
+        required_permission: { type: string, nullable: true }
+        requires_reason: { type: boolean }
+        is_active: { type: boolean }
+        effective_from: { type: string, format: date-time }
+        effective_to: { type: string, format: date-time, nullable: true }
+        config_version: { type: integer }
+        schema_version: { type: integer, enum: [1] }
+
+    OutletFiscalProfile:
+      type: object
+      description: >
+        The seller identity printed on a GST invoice (§33). Effective-dated: a
+        reprinted historical invoice carries the identity current when it was
+        issued, not today's.
+      required:
+        [id, outlet_id, legal_name, trade_name, address_line1, city, state_code,
+         state_name, pincode, gstin, effective_from, config_version,
+         schema_version]
+      properties:
+        id: { type: string, format: uuid }
+        outlet_id: { type: string, format: uuid }
+        legal_name: { type: string }
+        trade_name: { type: string }
+        address_line1: { type: string }
+        address_line2: { type: string, nullable: true }
+        city: { type: string }
+        state_code: { type: string }
+        state_name: { type: string }
+        pincode: { type: string }
+        gstin: { type: string }
+        fssai_number: { type: string, nullable: true }
+        invoice_footer_text: { type: string, nullable: true }
+        effective_from: { type: string, format: date-time }
+        config_version: { type: integer }
+        schema_version: { type: integer, enum: [1] }
+
+    InvoiceEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/SyncEnvelope"
+        - type: object
+          properties:
+            aggregate_type: { enum: [invoice] }
+            direction: { enum: [EDGE_TO_CLOUD] }
+            payload: { $ref: "#/components/schemas/Invoice" }
+
+    PaymentEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/SyncEnvelope"
+        - type: object
+          properties:
+            aggregate_type: { enum: [payment] }
+            direction: { enum: [EDGE_TO_CLOUD] }
+            payload: { $ref: "#/components/schemas/Payment" }
+
+    CashShiftEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/SyncEnvelope"
+        - type: object
+          properties:
+            aggregate_type: { enum: [cash_shift] }
+            direction: { enum: [EDGE_TO_CLOUD] }
+            payload: { $ref: "#/components/schemas/CashShift" }
 
     KotStatusEnvelope:
       allOf:

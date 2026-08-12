@@ -10,3 +10,7 @@ export * from "./types/menu";
 export * from "./types/station";
 export * from "./types/printer";
 export * from "./types/lan";
+// Milestone 3 additions (0.4.0, ADR-016).
+export * from "./types/tax";
+export * from "./types/invoice";
+export * from "./types/payment";

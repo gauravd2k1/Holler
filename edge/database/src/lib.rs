@@ -2511,6 +2511,16 @@ mod tests {
             "order_type": stored_order.order_type,
             "status": stored_order.status,
             "table_id": stored_order.table_id,
+            // display_number: the column landed at contracts 0.4.0 (ADR-016)
+            // but NOTHING MINTS ONE YET. Synthesized as null, and pinned below
+            // exactly like the deferred M6 fields, so the Milestone 3 track
+            // that adds per-outlet short-number minting fails this assertion
+            // instead of drifting quietly past it.
+            //
+            // Until that lands, a printed KOT still shows the raw UUID — the
+            // defect docs/backlog-m2.md raised. The contract is a prerequisite
+            // for the fix, not the fix.
+            "display_number": serde_json::Value::Null,
             // Deferred to Milestone 6 (ADR-011 0.2.4 addendum) — no column
             // exists yet; synthesized rather than persisted.
             "customer": serde_json::Value::Null,

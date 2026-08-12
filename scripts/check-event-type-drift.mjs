@@ -47,7 +47,23 @@ const RUST_ROOTS = [
 // type is live, so the backward check no longer has an exemption to grant —
 // which is the state this map exists to drive toward, not a reason to delete it.
 // A future contract addition lands here with a reason, or it fails the check.
-const NOT_YET_EMITTED = {};
+// Milestone 3 (contracts 0.4.0, ADR-016) adds the five billing events ahead of
+// the tracks that emit them. Each entry names the track that must remove it —
+// an entry that outlives its track is the signal this map exists to produce.
+const NOT_YET_EMITTED = {
+  InvoiceCreated:
+    "Contract landed at 0.4.0; emitted once the edge billing track (T7) issues invoices.",
+  PaymentReceived:
+    "Contract landed at 0.4.0; emitted once the edge billing track (T7) captures tenders.",
+  PaymentRefunded:
+    "Contract landed at 0.4.0; emitted once T7 appends reversal rows. Refund is an appended " +
+    "payment, never a mutation, so this cannot be emitted before the append path exists.",
+  CashShiftOpened:
+    "Contract landed at 0.4.0; emitted once the cash-shift track (T7/T9) opens a register.",
+  CashShiftClosed:
+    "Contract landed at 0.4.0; emitted once the cash-shift track (T7/T9) closes a register " +
+    "with its counted total and variance reason.",
+};
 
 function frozenEventTypes() {
   const source = readFileSync(EVENTS_TS, "utf-8");

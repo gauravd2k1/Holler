@@ -18,6 +18,9 @@ import { MenuItemSchema, MenuItemModifierSchema } from "./menu";
 import { StationSchema, MenuItemStationSchema } from "./station";
 import { PrinterSchema, StationPrinterSchema, PrintJobSchema } from "./printer";
 import { OUTBOX_EVENT_TYPES } from "./events";
+import { TaxProfileSchema } from "./tax";
+import { InvoiceSchema } from "./invoice";
+import { PaymentSchema, CashShiftSchema } from "./payment";
 
 function loadFixture(name: string): unknown {
   return JSON.parse(readFileSync(resolve(__dirname, "../../fixtures", name), "utf-8"));
@@ -157,7 +160,109 @@ describe("contract drift", () => {
       "OrderCancelled",
       "TableSessionOpened",
       "TableSessionUpdated",
+      "InvoiceCreated",
+      "PaymentReceived",
+      "PaymentRefunded",
+      "CashShiftOpened",
+      "CashShiftClosed",
     ]);
+  });
+
+  it("invoice.json round-trips through InvoiceSchema", () => {
+    const raw = loadFixture("invoice.json");
+    const parsed = InvoiceSchema.parse(raw);
+    expect(JSON.parse(JSON.stringify(parsed))).toEqual(raw);
+  });
+
+  it("payment.json round-trips through PaymentSchema", () => {
+    const raw = loadFixture("payment.json");
+    const parsed = PaymentSchema.parse(raw);
+    expect(JSON.parse(JSON.stringify(parsed))).toEqual(raw);
+  });
+
+  it("cash_shift.json round-trips through CashShiftSchema", () => {
+    const raw = loadFixture("cash_shift.json");
+    const parsed = CashShiftSchema.parse(raw);
+    expect(JSON.parse(JSON.stringify(parsed))).toEqual(raw);
+  });
+
+  it("tax_profile.json round-trips through TaxProfileSchema", () => {
+    const raw = loadFixture("tax_profile.json");
+    const parsed = TaxProfileSchema.parse(raw);
+    expect(JSON.parse(JSON.stringify(parsed))).toEqual(raw);
+  });
+
+  // Milestone 3 (ADR-016). The outlet issues bills and takes money offline, so
+  // both are edge-authoritative; the rules governing them are management
+  // decisions, so those are cloud config. Same cut as station/kot.
+  it("Milestone 3 billing authority follows §50.1", () => {
+    expect(AGGREGATE_AUTHORITY.invoice).toBe("EDGE_TO_CLOUD");
+    expect(AGGREGATE_AUTHORITY.cash_shift).toBe("EDGE_TO_CLOUD");
+    expect(AGGREGATE_AUTHORITY.payment).toBe("EDGE_TO_CLOUD");
+    expect(AGGREGATE_AUTHORITY.tax_profile).toBe("CLOUD_TO_EDGE");
+    expect(AGGREGATE_AUTHORITY.compliance_version).toBe("CLOUD_TO_EDGE");
+    expect(AGGREGATE_AUTHORITY.invoice_series).toBe("CLOUD_TO_EDGE");
+    expect(AGGREGATE_AUTHORITY.discount_definition).toBe("CLOUD_TO_EDGE");
+  });
+
+  // invoice_sequence is the counter behind a series. Giving it a sync
+  // direction would make the cloud a second writer of invoice numbers, which
+  // is exactly what §33's "never generate duplicate invoice numbers" forbids.
+  // The print_job precedent, applied to numbering. Child rows are absent for
+  // the ordinary reason: they travel inside their parent's payload.
+  it("keeps the invoice counter and billing child rows out of AggregateType", () => {
+    expect(AggregateTypeSchema.options).not.toContain("invoice_sequence");
+    expect(AggregateTypeSchema.options).not.toContain("invoice_line");
+    expect(AggregateTypeSchema.options).not.toContain("payment_allocation");
+    expect(AggregateTypeSchema.options).not.toContain("cash_movement");
+    expect(AggregateTypeSchema.options).not.toContain("tax_rule");
+  });
+
+  // The ADR-016 rounding policy, asserted at the type layer. It is also a
+  // CHECK in sqlite/0006 and postgres/0007 — three layers, because a bill that
+  // does not add up must be unrepresentable everywhere, not merely untested.
+  it("rejects a bill whose grand total does not equal its parts", () => {
+    const bill = loadFixture("invoice.json") as Record<string, unknown>;
+    expect(() =>
+      InvoiceSchema.parse({ ...bill, grand_total_paise: 106000 }),
+    ).toThrow();
+  });
+
+  it("rejects a round-off larger than half a rupee", () => {
+    const bill = loadFixture("invoice.json") as Record<string, unknown>;
+    // Keep the sum self-consistent so ONLY the round-off bound can fail.
+    expect(() =>
+      InvoiceSchema.parse({
+        ...bill,
+        taxable_value_paise: 99940,
+        round_off_paise: 60,
+        grand_total_paise: 105000,
+      }),
+    ).toThrow();
+  });
+
+  it("rejects a grand total that does not settle in whole rupees", () => {
+    const bill = loadFixture("invoice.json") as Record<string, unknown>;
+    expect(() =>
+      InvoiceSchema.parse({
+        ...bill,
+        taxable_value_paise: 99999,
+        round_off_paise: 0,
+        grand_total_paise: 104999,
+      }),
+    ).toThrow();
+  });
+
+  it("rejects cash-drawer fields on a non-cash tender", () => {
+    const pay = loadFixture("payment.json") as Record<string, unknown>;
+    expect(() => PaymentSchema.parse({ ...pay, method: "UPI" })).toThrow();
+  });
+
+  it("rejects a closed shift with no counted cash", () => {
+    const shift = loadFixture("cash_shift.json") as Record<string, unknown>;
+    expect(() =>
+      CashShiftSchema.parse({ ...shift, status: "CLOSED", actual_cash_paise: null }),
+    ).toThrow();
   });
 
   it("redacts exactly the credential fields Go redacts (ADR-011)", () => {

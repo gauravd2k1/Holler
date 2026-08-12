@@ -9,6 +9,8 @@ import { z } from "zod";
 import { CanonicalOrderSchema } from "./order";
 import { KotSchema, KotStatusSchema } from "./kot";
 import { TableSessionSchema } from "./table";
+import { InvoiceSchema } from "./invoice";
+import { CashShiftSchema, PaymentSchema } from "./payment";
 
 const EventEnvelope = <T extends z.ZodTypeAny>(eventType: string, dataSchema: T) =>
   z.object({
@@ -128,6 +130,42 @@ export const TableSessionUpdatedEventSchema = EventEnvelope(
 );
 export type TableSessionUpdatedEvent = z.infer<typeof TableSessionUpdatedEventSchema>;
 
+// Milestone 3 billing events (ADR-016). §53 names InvoiceCreated,
+// PaymentReceived and PaymentRefunded as immutable business events; the two
+// shift events complete the cash-drawer trail §39 requires.
+export const InvoiceCreatedEventSchema = EventEnvelope(
+  "InvoiceCreated",
+  z.object({ invoice: InvoiceSchema }),
+);
+export type InvoiceCreatedEvent = z.infer<typeof InvoiceCreatedEventSchema>;
+
+export const PaymentReceivedEventSchema = EventEnvelope(
+  "PaymentReceived",
+  z.object({ payment: PaymentSchema }),
+);
+export type PaymentReceivedEvent = z.infer<typeof PaymentReceivedEventSchema>;
+
+// A refund is an appended reversal, never a mutation of the original payment
+// (docs/spec/payments.md §Conflict policy). The event carries the reversal row
+// and the id of what it reverses.
+export const PaymentRefundedEventSchema = EventEnvelope(
+  "PaymentRefunded",
+  z.object({ payment: PaymentSchema, reverses_payment_id: z.string().uuid() }),
+);
+export type PaymentRefundedEvent = z.infer<typeof PaymentRefundedEventSchema>;
+
+export const CashShiftOpenedEventSchema = EventEnvelope(
+  "CashShiftOpened",
+  z.object({ shift: CashShiftSchema }),
+);
+export type CashShiftOpenedEvent = z.infer<typeof CashShiftOpenedEventSchema>;
+
+export const CashShiftClosedEventSchema = EventEnvelope(
+  "CashShiftClosed",
+  z.object({ shift: CashShiftSchema }),
+);
+export type CashShiftClosedEvent = z.infer<typeof CashShiftClosedEventSchema>;
+
 export const OutboxEventSchema = z.discriminatedUnion("event_type", [
   OrderCreatedEventSchema,
   ItemAddedEventSchema,
@@ -140,6 +178,11 @@ export const OutboxEventSchema = z.discriminatedUnion("event_type", [
   OrderCancelledEventSchema,
   TableSessionOpenedEventSchema,
   TableSessionUpdatedEventSchema,
+  InvoiceCreatedEventSchema,
+  PaymentReceivedEventSchema,
+  PaymentRefundedEventSchema,
+  CashShiftOpenedEventSchema,
+  CashShiftClosedEventSchema,
 ]);
 export type OutboxEvent = z.infer<typeof OutboxEventSchema>;
 
@@ -160,5 +203,10 @@ export const OUTBOX_EVENT_TYPES = [
   "OrderCancelled",
   "TableSessionOpened",
   "TableSessionUpdated",
+  "InvoiceCreated",
+  "PaymentReceived",
+  "PaymentRefunded",
+  "CashShiftOpened",
+  "CashShiftClosed",
 ] as const;
 export type OutboxEventType = (typeof OUTBOX_EVENT_TYPES)[number];

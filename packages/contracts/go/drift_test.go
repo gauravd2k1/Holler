@@ -185,6 +185,12 @@ func TestOutboxEventTypes(t *testing.T) {
 		"OrderCancelled",
 		"TableSessionOpened",
 		"TableSessionUpdated",
+		// Milestone 3 billing (0.4.0, ADR-016).
+		"InvoiceCreated",
+		"PaymentReceived",
+		"PaymentRefunded",
+		"CashShiftOpened",
+		"CashShiftClosed",
 	}
 	if !reflect.DeepEqual(OutboxEventTypes, want) {
 		t.Fatalf("OutboxEventTypes drifted from TypeScript: got %v want %v", OutboxEventTypes, want)
@@ -282,5 +288,127 @@ func TestWireFixturesCarryNoCredentials(t *testing.T) {
 	}
 	if swept == 0 {
 		t.Fatal("credential sweep matched no fixtures — the check is vacuous")
+	}
+}
+
+// ----------------------------------------------------------------------------
+// Milestone 3 billing (0.4.0, ADR-016)
+// ----------------------------------------------------------------------------
+
+func TestInvoiceFixtureRoundTrip(t *testing.T) {
+	var invoice Invoice
+	roundTrip(t, "invoice.json", &invoice)
+}
+
+func TestPaymentFixtureRoundTrip(t *testing.T) {
+	var payment Payment
+	roundTrip(t, "payment.json", &payment)
+}
+
+func TestCashShiftFixtureRoundTrip(t *testing.T) {
+	var shift CashShift
+	roundTrip(t, "cash_shift.json", &shift)
+}
+
+func TestTaxProfileFixtureRoundTrip(t *testing.T) {
+	var profile TaxProfile
+	roundTrip(t, "tax_profile.json", &profile)
+}
+
+// ADR-016: the outlet issues bills and takes money with the uplink down, so
+// both are edge-authoritative and the cloud only replays. The rules governing
+// them are management decisions, so those are cloud config — the same cut
+// ADR-014 drew between a station's definition and the ticket at it.
+func TestMilestone3AggregateAuthority(t *testing.T) {
+	expected := map[AggregateType]SyncDirection{
+		AggregateTypeInvoice:            SyncDirectionEdgeToCloud,
+		AggregateTypeCashShift:          SyncDirectionEdgeToCloud,
+		AggregateTypePayment:            SyncDirectionEdgeToCloud,
+		AggregateTypeTaxProfile:         SyncDirectionCloudToEdge,
+		AggregateTypeComplianceVersion:  SyncDirectionCloudToEdge,
+		AggregateTypeInvoiceSeries:      SyncDirectionCloudToEdge,
+		AggregateTypeDiscountDefinition: SyncDirectionCloudToEdge,
+	}
+	for aggregate, direction := range expected {
+		if AggregateAuthority[aggregate] != direction {
+			t.Fatalf("%s must be %s per §50.1 (ADR-016)", aggregate, direction)
+		}
+	}
+}
+
+// The invoice counter is edge-local. Giving it a sync direction would make the
+// cloud a second writer of invoice numbers, which is exactly what §33's "never
+// generate duplicate invoice numbers" forbids — the print_job precedent
+// applied to numbering. Child rows are absent for the ordinary reason: they
+// travel inside their parent's payload.
+func TestBillingCounterAndChildRowsAreNotAggregates(t *testing.T) {
+	for _, forbidden := range []AggregateType{
+		"invoice_sequence",
+		"invoice_line",
+		"payment_allocation",
+		"cash_movement",
+		"tax_rule",
+		"outlet_fiscal_profile",
+	} {
+		if _, exists := AggregateAuthority[forbidden]; exists {
+			t.Fatalf("%s must not be an aggregate: it is edge-local or a child row (ADR-016)", forbidden)
+		}
+	}
+}
+
+// The ADR-016 rounding policy, asserted against the Go mirror. The same rule
+// is a CHECK in both stores and a refine in Zod; this is the layer an ingest
+// handler consults before writing, so that a malformed replay is refused with
+// a reason rather than a driver-level constraint error.
+func TestInvoiceRoundingPolicy(t *testing.T) {
+	var valid Invoice
+	roundTrip(t, "invoice.json", &valid)
+	if !valid.SumsCorrectly() {
+		t.Fatalf("the invoice fixture must satisfy the ADR-016 rounding policy")
+	}
+
+	cases := []struct {
+		name   string
+		mutate func(Invoice) Invoice
+	}{
+		{"grand total drifting from its parts", func(i Invoice) Invoice {
+			i.GrandTotalPaise = 106000
+			return i
+		}},
+		{"round-off absorbing an arithmetic error", func(i Invoice) Invoice {
+			i.TaxableValuePaise, i.RoundOffPaise, i.GrandTotalPaise = 99940, 60, 105000
+			return i
+		}},
+		{"a total that never settled in whole rupees", func(i Invoice) Invoice {
+			i.TaxableValuePaise, i.GrandTotalPaise = 99999, 104999
+			return i
+		}},
+	}
+	for _, tc := range cases {
+		if tc.mutate(valid).SumsCorrectly() {
+			t.Fatalf("SumsCorrectly must reject: %s", tc.name)
+		}
+	}
+}
+
+// §39: a register closed without its count can never be reconciled afterwards,
+// and a variance with no reason is an unexplained cash difference.
+func TestCashShiftAccounting(t *testing.T) {
+	var shift CashShift
+	roundTrip(t, "cash_shift.json", &shift)
+	if !shift.IsFullyAccounted() {
+		t.Fatalf("the cash_shift fixture must be fully accounted")
+	}
+
+	missingCount := shift
+	missingCount.ActualCashPaise = nil
+	if missingCount.IsFullyAccounted() {
+		t.Fatalf("a CLOSED shift with no counted cash must not be accepted")
+	}
+
+	noReason := shift
+	noReason.VarianceReason = nil
+	if noReason.IsFullyAccounted() {
+		t.Fatalf("a non-zero variance with no reason must not be accepted (§39)")
 	}
 }

@@ -1,0 +1,29 @@
+{
+  "id": "018e5a2e-a001-7c3d-9f4e-1234567890ab",
+  "outlet_id": "018e5a2e-1a09-7c3d-9f4e-1234567890ab",
+  "order_id": "018e5a2e-2b10-7c3d-9f4e-1234567890ab",
+  "cash_shift_id": "018e5a2e-b001-7c3d-9f4e-1234567890ab",
+  "method": "CASH",
+  "status": "CAPTURED",
+  "amount_paise": 105000,
+  "tendered_paise": 200000,
+  "change_paise": 95000,
+  "reference": null,
+  "external_id": null,
+  "reverses_payment_id": null,
+  "captured_at": "2026-08-12T14:32:00Z",
+  "allocations": [
+    {
+      "id": "018e5a2e-a101-7c3d-9f4e-1234567890ab",
+      "payment_id": "018e5a2e-a001-7c3d-9f4e-1234567890ab",
+      "invoice_id": "018e5a2e-9001-7c3d-9f4e-1234567890ab",
+      "amount_paise": 105000,
+      "schema_version": 1
+    }
+  ],
+  "created_by_user_id": "018e5a2e-3d12-7c3d-9f4e-1234567890ab",
+  "created_at": "2026-08-12T14:32:00Z",
+  "updated_at": "2026-08-12T14:32:00Z",
+  "version": 1,
+  "schema_version": 1
+}

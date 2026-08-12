@@ -1,0 +1,11 @@
+{
+  "id": "018e5a2e-9301-7c3d-9f4e-1234567890ab",
+  "outlet_id": "018e5a2e-1a09-7c3d-9f4e-1234567890ab",
+  "code": "GST_5_RESTAURANT",
+  "name": "GST 5% (restaurant supply)",
+  "pricing_mode": "EXCLUSIVE",
+  "is_default": true,
+  "is_active": true,
+  "config_version": 11,
+  "schema_version": 1
+}
