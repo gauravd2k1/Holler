@@ -292,6 +292,48 @@ two are fixed in the product (4, 6), and two remain open (1, 7).
    kitchen cancellation ticket cannot reach a screen because there is no path
    that produces one yet (see "What reaches a screen" above).
 
+## e2e-scenario-harness: the randomized POS<->kitchen lifecycle harness
+
+`tests/e2e-scenario/` is an autonomous, seeded, randomized scenario harness
+covering the full order lifecycle end to end — the same shipped layers this
+whole file exercises by hand: the Tauri command `*_impl` functions in
+`apps/pos/src-tauri`, the real embedded `edge/device` LAN server, and the
+real `apps/kds` client modules over a genuine WebSocket. It exists because
+five separate defects in one week passed every other green suite and were
+found only by a human using the product (`docs/retro.md`); its job is to be
+the thing that would have caught them.
+
+CI runs a fixed-seed, reduced 50-scenario pass on every push (the
+`e2e-scenario` job in `.github/workflows/ci.yml`, `windows-latest` — the one
+CI job that builds `apps/pos/src-tauri`, because it is this track's direct
+dependency and Windows/MSVC is the correct environment for that, per
+ADR-013). The full randomized run is a manual command:
+
+```powershell
+cd tests\e2e-scenario\orchestrator
+pnpm install
+pnpm run:full -- --seed 12345 --count 200
+```
+
+`--seed` is optional (defaults to the current time); every run prints its
+base seed, and any failure it finds is reproducible by re-running with that
+same `--seed`. Every run — CI's and the manual one — writes
+`tests/e2e-scenario/REPORT.md`: pass/fail counts per invariant, the full
+replayable action sequence for every scenario that broke one, a Findings
+section listing every lifecycle action that is unreachable from the shipped
+command surface (not the same thing as a passing test — a run that silently
+skipped half the lifecycle would still show green invariant counts), and the
+invariant-3/8 latency distribution.
+
+First run pays a real cargo compile of the whole dependency graph
+(`holler_pos_lib`, `holler-edge-database`, `holler-edge-device`) — several
+minutes. Subsequent runs reuse the incremental build cache.
+
+Nothing here ever touches `%APPDATA%` or a real `edge.db.enc`: every run
+seeds a fresh scratch database via the real `devseed` binary pointed at a
+temp directory (`HOLLER_E2E_DATA_DIR`), the same way this file's own
+Quick-start section does for a developer session.
+
 ## Milestone 1 acceptance: pull the network cable
 
 The acceptance criterion is that the cashier can still create orders with the

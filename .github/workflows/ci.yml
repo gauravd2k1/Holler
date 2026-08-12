@@ -209,3 +209,51 @@ jobs:
         run: cd tests/integration/kds-lan-bridge && cargo build
       - name: real socket session
         run: cd tests/integration/kds-lan && pnpm test
+
+  # e2e-scenario-harness: an autonomous, randomized end-to-end scenario
+  # harness for the full POS<->kitchen lifecycle (docs/retro.md, five
+  # defects found by a human in one week that every green suite above
+  # missed). Drives the real Tauri command *_impl functions in
+  # apps/pos/src-tauri (holler_pos_lib), the real edge/device LAN server,
+  # and the real apps/kds client modules over a genuine WebSocket — see
+  # tests/e2e-scenario/README.md.
+  #
+  # Runs on windows-latest, unlike every other Rust/TS job in this file:
+  # apps/pos/src-tauri (holler_pos_lib) is this job's direct dependency, and
+  # the `pos` job's own comment is explicit that Tauri needs Windows/MSVC
+  # (ADR-013) and a Linux runner cannot honestly stand in for it. This job
+  # does not try to make that untrue; it is the one place a Windows runner
+  # is the correct choice, not a deviation from it.
+  #
+  # This is the CI-*reduced* run only: 50 fixed-seed randomized scenarios
+  # plus the 4 named regression cases (tests/e2e-scenario/orchestrator/src/
+  # scenario.test.ts). It does not gate on every invariant passing — some
+  # invariant failures here are KNOWN, already-diagnosed product defects
+  # (see that file's own comment) that this track exists to surface, not to
+  # fix; it gates on the harness itself staying green (no process-level
+  # fatal error). The full 200+ scenario randomized run is a manual command
+  # (docs/DEV_SETUP.md), not part of CI.
+  e2e-scenario:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tests/e2e-scenario/harness -> target
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      # The suite imports the real apps/kds client modules directly, so
+      # their deps (including the @holler/contracts workspace package they
+      # resolve against) must be installed even though the test lives
+      # elsewhere — same reasoning as lan-integration's "install kds deps".
+      - name: install kds deps
+        run: cd apps/kds && pnpm install --frozen-lockfile
+      - name: install orchestrator deps
+        run: cd tests/e2e-scenario/orchestrator && pnpm install --frozen-lockfile
+      - name: reduced randomized run (fixed seed, CI)
+        run: cd tests/e2e-scenario/orchestrator && pnpm test

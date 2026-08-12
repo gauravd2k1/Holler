@@ -1,0 +1,16 @@
+{
+  "name": "@holler/tests-e2e-scenario",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Autonomous, randomized end-to-end scenario harness for the POS<->kitchen lifecycle. Drives the real holler_pos_lib Tauri command impls and the real edge/device LAN server through the Rust bridge in tests/e2e-scenario/harness, and the real apps/kds client modules over a genuine WebSocket. See README.md.",
+  "scripts": {
+    "test": "vitest run --reporter=verbose",
+    "run:full": "tsx src/cli.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.15.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  }
+}

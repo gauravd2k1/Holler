@@ -1,0 +1,5 @@
+# pnpm 10+ reads build-script approval here, not from package.json.
+# vitest's esbuild binary must be allowed to run its postinstall or this
+# suite cannot start. Mirrors tests/integration/kds-lan/pnpm-workspace.yaml.
+allowBuilds:
+  esbuild: true

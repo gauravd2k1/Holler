@@ -1,0 +1,28 @@
+[package]
+name = "e2e-scenario-harness"
+version = "0.1.0"
+edition = "2021"
+description = """
+Test-only bridge for the e2e-scenario-harness track. Extends the
+tests/integration/kds-lan-bridge pattern: links holler_pos_lib (the same
+Tauri command *_impl functions the POS UI's IPC calls), holler-edge-database
+and holler-edge-device (the real embedded KDS LAN server) directly, and
+speaks a line-delimited JSON-RPC protocol over stdio to a TypeScript/vitest
+orchestrator (tests/e2e-scenario/orchestrator) that drives the real
+apps/kds client modules over a genuine WebSocket.
+
+Not shipped: exists only under tests/, not a workspace member of any product
+crate, not referenced by edge/device, edge/database or apps/pos/src-tauri.
+"""
+
+[[bin]]
+name = "e2e-scenario-harness"
+path = "src/main.rs"
+
+[dependencies]
+holler_pos_lib = { path = "../../../apps/pos/src-tauri", package = "holler-pos" }
+holler-edge-database = { path = "../../../edge/database" }
+holler-edge-device = { path = "../../../edge/device" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v7"] }
