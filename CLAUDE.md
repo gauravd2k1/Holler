@@ -77,7 +77,8 @@ v0.3.0 (ADR-014) added the Milestone 2 kitchen shapes. Four rules bind every bui
 Scope: KOT, station routing, printer abstraction, KDS, LAN realtime delivery, order status — all built against the frozen `packages/contracts/` shapes.
 
 Acceptance — every item is an observed behaviour, not an implemented API. None of these count as met by a passing unit suite, and **none may be evidenced by a test harness**: an acceptance run exercises the binaries that ship. If the only thing that starts a component is a test, that component is not wired, whatever its tests say (`docs/retro.md`, 2026-08-11 — this has now happened twice).
-1. POS → kitchen propagation below target latency on LAN (<250ms, `docs/spec/kitchen.md`), measured over a real network between two machines — not loopback.
+1. ~~POS → kitchen propagation below target latency on LAN~~ **MET 2026-08-12**: 150–183ms across multiple sends, POS on the laptop → KDS on a phone over real WiFi, against the <250ms target (`docs/spec/kitchen.md`). Status round-trip confirmed in the same session.
+   Note the margin honestly: the e2e harness measures P50 13ms / P95 24ms over a real TCP socket on one machine, so **real WiFi adds roughly 140ms** — the pass is genuine but the headroom is ~30%, not an order of magnitude. A busier network, more screens, or weaker hardware could erode it, so this is a criterion to re-measure at an outlet rather than treat as settled.
 2. **Crash mid-order → the cart survives.** Kill the POS with lines in the cart and reopen: the in-progress order is still there. An API capable of preventing the loss does not count; the loss not happening counts (see `docs/retro.md`, 2026-08-10).
 3. Cloud sync round-trip: an order and its KOTs created at the edge reach the cloud and read back correctly.
 4. The `HOLLER_TEST_DATABASE_URL` suites actually execute — including T7's `TestBuildRouter_SyncConfigEndToEnd`. These have never run; a skip is not a pass.
