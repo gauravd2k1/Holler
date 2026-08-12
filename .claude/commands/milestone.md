@@ -14,6 +14,7 @@ Execute milestone $ARGUMENTS end to end. You are the orchestrator: you plan, ser
 - Apply approved shared changes and commit before dispatching any builder.
 
 ## 3. Dispatch builders
+- **A brief carries the PURPOSE, not just the task text.** When forwarding a backlog item, forward why it exists, so a builder can tell when the literal instruction falls short of the condition. A Milestone 2 item was closed by satisfying its wording while its purpose went unmet, because the dispatch inherited the entry's framing (docs/retro.md, 2026-08-10).
 - Max 3 concurrent subagents (hardware limit).
 - Each dispatch includes: task description, assigned spec file path(s), owned directory list, the milestone EXCLUDES list verbatim, and the instruction to report in its defined format.
 - Independent tasks run in parallel; dependent tasks wait for their dependency's PASS.
@@ -22,6 +23,10 @@ Execute milestone $ARGUMENTS end to end. You are the orchestrator: you plan, ser
 - When a builder reports done, dispatch verifier with the module name and claimed changed paths.
 - On FAIL: send the verifier's verdict back to the SAME builder for one retry. On second FAIL: stop that track and surface it to me with both reports.
 - A builder's own success claim is never sufficient — only verifier PASS gates a merge.
+- **"Not wired into X yet" is an unfinished deliverable, not a follow-up** — unless X is explicitly out of the milestone. Treat that sentence in a builder report as a gate failure. Two milestones shipped components whose only caller was a test; both were found by a human trying to use the product, not by any suite (docs/retro.md, 2026-08-11).
+- **Every test figure must state its runtime environment.** "27 tests passed" concealed that all 27 ran under Node against a browser app. Require "27, vitest/jsdom (Node)" and "1, Playwright/headless Chromium" from builders and verifiers alike.
+- **Ask a verifier to JUDGE disclosures, not just record them.** Several of this milestone's most valuable findings came from a verifier being told to rule on a builder's self-declared limitation rather than log it.
+- **Falsify before trusting green.** A new test or harness must be shown to fail against the defect it targets — in a scratch copy outside the repo, never by mutating the working tree. Where a track adds its own guard, the verifier falsifies it independently, targeting a different property than the builder did.
 - **Commit before the next gate.** Never leave one track's completed work unstaged while another agent runs. Either commit it after its PASS, or `git add` it so it is recoverable from the index. A whole track was once destroyed because it existed only as unstaged changes when another agent touched the tree (see docs/retro.md, 2026-08-07). Unstaged work is unrecoverable; staged or committed work is not.
 
 ## 5. Merge and integrate

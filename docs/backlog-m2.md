@@ -8,6 +8,10 @@ Items deferred from Milestone 1 with a decision behind each. This is not a wish 
 Review docs/competitive.md during M2 planning — one open decision (waiter app
 milestone) and four spec additions already filed to their landing milestones.
 
+**For Milestone 3, see `docs/m3-planning.md`** — device enrollment as first
+track (pilot blocker), Tracks A and B folded into the M3 graph with B ahead of
+any billing math, and UI polish deferred post-M3.
+
 ## Gating — must clear before M2 ships
 
 ### Clean Windows 10 VM validation (ADR-013)
