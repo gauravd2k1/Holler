@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatPaiseAsRupees, lineTotalPaise, sumPaise } from "../money";
+import { formatPaiseAsRupees, lineTotalPaise, parseRupeesToPaise, sumPaise } from "../money";
 
 describe("formatPaiseAsRupees", () => {
   it("formats zero", () => {
@@ -50,5 +50,44 @@ describe("lineTotalPaise", () => {
   it("rejects zero or negative quantity", () => {
     expect(() => lineTotalPaise(100, 0)).toThrow();
     expect(() => lineTotalPaise(100, -1)).toThrow();
+  });
+});
+
+describe("parseRupeesToPaise", () => {
+  it("parses a whole number of rupees", () => {
+    expect(parseRupeesToPaise("25")).toBe(2500);
+  });
+
+  it("parses two decimal places exactly, without float drift", () => {
+    expect(parseRupeesToPaise("12.50")).toBe(1250);
+    // A value float multiplication is known to mis-round (0.1 + 0.2-class
+    // drift): 0.29 * 100 in native float is 28.999999999999996.
+    expect(parseRupeesToPaise("0.29")).toBe(29);
+  });
+
+  it("pads a single decimal place", () => {
+    expect(parseRupeesToPaise("5.5")).toBe(550);
+  });
+
+  it("parses a negative amount", () => {
+    expect(parseRupeesToPaise("-10")).toBe(-1000);
+  });
+
+  it("parses zero", () => {
+    expect(parseRupeesToPaise("0")).toBe(0);
+  });
+
+  it("trims surrounding whitespace", () => {
+    expect(parseRupeesToPaise("  25.00  ")).toBe(2500);
+  });
+
+  it("rejects more than two decimal places rather than truncating a typo", () => {
+    expect(parseRupeesToPaise("12.505")).toBeNull();
+  });
+
+  it("rejects non-numeric input", () => {
+    expect(parseRupeesToPaise("abc")).toBeNull();
+    expect(parseRupeesToPaise("")).toBeNull();
+    expect(parseRupeesToPaise("12.")).toBeNull();
   });
 });

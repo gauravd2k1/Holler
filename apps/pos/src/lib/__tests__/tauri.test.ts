@@ -16,6 +16,7 @@ const {
   addOrderItem,
   removeOrderItem,
   updateOrderShape,
+  updateOrderItemQuantity,
   getActiveDraftOrder,
   sendOrderToKitchen,
   listKotsForOrder,
@@ -53,6 +54,7 @@ const VALID_TABLE = {
 
 const VALID_ORDER = {
   holler_order_id: "00000000-0000-7000-8000-000000000005",
+  display_number: "A1",
   external_order_id: null,
   source: "POS",
   outlet_id: "00000000-0000-7000-8000-000000000003",
@@ -234,6 +236,58 @@ describe("add/removeOrderItem", () => {
         unit_price_paise: 100,
         notes: null,
       }),
+    ).rejects.toSatisfy((err: unknown) => isTauriCommandError(err));
+  });
+
+  it("addOrderItem forwards modifiers when present, so a delta actually reaches the wire", async () => {
+    invokeMock.mockResolvedValue(VALID_ORDER);
+    await addOrderItem(VALID_ORDER.holler_order_id, {
+      menu_item_id: "00000000-0000-7000-8000-000000000006",
+      variant_id: null,
+      quantity: 1,
+      unit_price_paise: 25000,
+      notes: null,
+      modifiers: [
+        {
+          modifier_id: "00000000-0000-7000-8000-000000000099",
+          group_name: "Extras",
+          option_name: "Extra cheese",
+          price_delta_paise: 3000,
+        },
+      ],
+    });
+    expect(invokeMock).toHaveBeenCalledWith(
+      "add_order_item",
+      expect.objectContaining({
+        item: expect.objectContaining({
+          modifiers: [
+            expect.objectContaining({ option_name: "Extra cheese", price_delta_paise: 3000 }),
+          ],
+        }),
+      }),
+    );
+  });
+});
+
+describe("updateOrderItemQuantity", () => {
+  it("invokes update_order_item_quantity with orderId/orderItemId/quantity and parses the response", async () => {
+    invokeMock.mockResolvedValue(VALID_ORDER);
+    const order = await updateOrderItemQuantity(VALID_ORDER.holler_order_id, "item-1", 5);
+    expect(invokeMock).toHaveBeenCalledWith("update_order_item_quantity", {
+      orderId: VALID_ORDER.holler_order_id,
+      orderItemId: "item-1",
+      quantity: 5,
+    });
+    expect(order.holler_order_id).toBe(VALID_ORDER.holler_order_id);
+  });
+
+  it("normalizes an ORDER_ITEM_ALREADY_TICKETED rejection", async () => {
+    invokeMock.mockRejectedValue({
+      code: "ORDER_ITEM_ALREADY_TICKETED",
+      message: "already ticketed at the kitchen",
+    });
+    await expect(
+      updateOrderItemQuantity(VALID_ORDER.holler_order_id, "item-1", 5),
     ).rejects.toSatisfy((err: unknown) => isTauriCommandError(err));
   });
 });

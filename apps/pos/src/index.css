@@ -110,6 +110,35 @@ button {
 .pos-menu-item .price {
   opacity: 0.8;
 }
+/* Functional-only per docs/m3-planning.md §3 (UI polish deferred): just
+   enough layout that the modifier control and its form are reachable and
+   legible, nothing decorative. */
+.pos-menu-item-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.pos-menu-item-modifier-toggle {
+  min-height: 32px;
+  font-size: 0.85rem;
+}
+.pos-modifier-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.5rem;
+  background: #1a1a1a;
+  border: 1px solid #333;
+}
+.pos-modifier-form input {
+  min-height: 36px;
+  font-size: 0.9rem;
+}
+.pos-modifier-form-error {
+  color: #f66;
+  margin: 0;
+  font-size: 0.85rem;
+}
 
 .pos-cart {
   grid-area: cart;
@@ -126,6 +155,13 @@ button {
 }
 .pos-cart-line .name {
   flex: 1;
+}
+.pos-cart-line-modifiers {
+  margin: 0;
+  padding: 0 0 0 0.75rem;
+  font-size: 0.85rem;
+  opacity: 0.85;
+  flex-basis: 100%;
 }
 .qty-controls {
   display: flex;

@@ -2,14 +2,20 @@ import { describe, expect, it } from "vitest";
 import { cartSubtotalPaise, canSendOrder, requiresTable, type CartLine } from "../cart";
 
 function line(overrides: Partial<CartLine> = {}): CartLine {
+  const unitPricePaise = overrides.unitPricePaise ?? 25000;
+  const quantity = overrides.quantity ?? 2;
   return {
     lineId: "l1",
     menuItemId: "m1",
     menuItemName: "Paneer Tikka",
     variantId: null,
-    unitPricePaise: 25000,
-    quantity: 2,
+    unitPricePaise,
+    quantity,
     notes: null,
+    modifiers: [],
+    // Mirrors what the edge actually computes — see domain/cart.ts's
+    // comment on why `lineTotal` no longer recomputes this client-side.
+    lineTotalPaise: unitPricePaise * quantity,
     ...overrides,
   };
 }
@@ -23,6 +29,22 @@ describe("cartSubtotalPaise", () => {
 
   it("is zero for an empty cart", () => {
     expect(cartSubtotalPaise([])).toBe(0);
+  });
+
+  it("includes a modifier's price delta in the line total, not just unit price * quantity", () => {
+    // The exact fiction docs/m3-planning.md called out: "204/204 scenarios
+    // without ever exercising a modifier price delta". `lineTotalPaise` is
+    // the edge's own computed value, so a modifier delta baked into it here
+    // must be reflected without this module recomputing anything.
+    const withModifier = line({
+      unitPricePaise: 25000,
+      quantity: 2,
+      modifiers: [
+        { modifierId: "mod-1", groupName: "Extras", optionName: "Extra cheese", priceDeltaPaise: 3000 },
+      ],
+      lineTotalPaise: (25000 + 3000) * 2,
+    });
+    expect(cartSubtotalPaise([withModifier])).toBe(56000);
   });
 });
 

@@ -38,6 +38,13 @@ export function orderToCartLines(
     unitPricePaise: item.unit_price_paise,
     quantity: item.quantity,
     notes: item.notes,
+    modifiers: item.modifiers.map((m) => ({
+      modifierId: m.modifier_id,
+      groupName: m.group_name,
+      optionName: m.option_name,
+      priceDeltaPaise: m.price_delta_paise,
+    })),
+    lineTotalPaise: item.line_total_paise,
   }));
 }
 

@@ -45,3 +45,27 @@ export function lineTotalPaise(unitPricePaise: number, quantity: number): number
   }
   return unitPricePaise * quantity;
 }
+
+/**
+ * Parses a cashier-typed rupees string (e.g. "12.50", "-5", "0") into
+ * integer paise via string manipulation only — never `Number(x) * 100`,
+ * which is a float multiplication on a decimal that is frequently not
+ * exactly representable (e.g. 0.1 + 0.2 problems). This is the one place a
+ * decimal rupee amount typed at a keyboard is allowed to become paise; every
+ * other function in this module already assumes paise going in.
+ *
+ * Returns `null` for anything that is not a valid amount with at most two
+ * decimal places, rather than silently truncating or rounding a typo into
+ * real money.
+ */
+export function parseRupeesToPaise(input: string): number | null {
+  const trimmed = input.trim();
+  const match = /^(-?)(\d+)(?:\.(\d{1,2}))?$/.exec(trimmed);
+  if (!match) return null;
+  const [, sign, rupeesPart, decimalPart = ""] = match;
+  const paiseDecimal = decimalPart.padEnd(2, "0");
+  const rupees = Number.parseInt(rupeesPart, 10);
+  const paise = Number.parseInt(paiseDecimal, 10);
+  const total = rupees * PAISE_PER_RUPEE + paise;
+  return sign === "-" ? -total : total;
+}
