@@ -22,14 +22,18 @@ func NewHandlers(svc *Service) *Handlers {
 	return &Handlers{svc: svc}
 }
 
-// Mount registers every tables route — both RestaurantTable config
-// endpoints and the TableSession envelope-ingest endpoints — on r.
+// Mount registers the RestaurantTable config endpoints and the
+// TableSession READ endpoints — both HUMAN-authenticated. The TableSession
+// WRITE endpoints (the envelope-ingest replay path) are registered
+// separately by MountEnvelopeIngest, which backend/cmd/api mounts under
+// outlet.DeviceAuthenticate instead (ADR-017 0.4.3 amendment) — see
+// http_envelope.go's doc comments for why.
 func (h *Handlers) Mount(r chi.Router) {
 	r.Route("/outlets/{outletId}/tables", func(r chi.Router) {
 		r.Get("/", h.listTables)
 		r.Post("/", h.createTable)
 	})
-	h.MountEnvelopeIngest(r)
+	h.MountEnvelopeRead(r)
 }
 
 type tableWire struct {

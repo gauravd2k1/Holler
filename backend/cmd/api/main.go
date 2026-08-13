@@ -22,6 +22,7 @@ import (
 	"github.com/holler/backend/internal/menu"
 	"github.com/holler/backend/internal/ordering"
 	"github.com/holler/backend/internal/outlet"
+	"github.com/holler/backend/internal/payments"
 	"github.com/holler/backend/internal/platform/config"
 	"github.com/holler/backend/internal/platform/httpx"
 	"github.com/holler/backend/internal/platform/postgres"
@@ -132,6 +133,16 @@ func buildRouter(pool postgres.Pool, cfg config.Config) *chi.Mux {
 	orderingSvc := ordering.NewService(orderingRepo)
 	orderingHandler := ordering.NewHandler(orderingSvc)
 
+	// --- payments (ADR-016; T8) ---------------------------------------------
+	// invoice, payment and cash_shift are edge-authoritative replay-only
+	// aggregates with no human-authored write path at all (unlike
+	// ordering/kitchen/tables, there is nothing here to split into a
+	// human-auth Mount — every route paymentsHandler.Mount registers belongs
+	// in the device-authenticated group below).
+	paymentsRepo := payments.NewPostgresRepository(pool)
+	paymentsSvc := payments.NewService(paymentsRepo)
+	paymentsHandler := payments.NewHandler(paymentsSvc)
+
 	// --- composite GET /sync/config ---------------------------------------
 	syncConfig := newSyncConfigHandler(outletSvc, menuSvc, tablesSvc, kitchenSvc, authSvc)
 
@@ -150,6 +161,12 @@ func buildRouter(pool postgres.Pool, cfg config.Config) *chi.Mux {
 	// outlet|menu|tables.PrincipalFromContext) — this group is the ONE place
 	// that resolves it, per ADR-012's tenant-resolution rule and the auth
 	// package's own Authenticate/RequirePermission split.
+	//
+	// This group carries HUMAN-authenticated routes only: config
+	// (tables/stations/printers/menu/outlet) and reads (GET orders,
+	// GET table-sessions). It deliberately excludes every edge->cloud
+	// ingest write — those are mounted below under
+	// outlet.DeviceAuthenticate (ADR-017's 0.4.3 amendment).
 	router.Group(func(r chi.Router) {
 		r.Use(auth.Authenticate(tokens))
 		r.Use(bridgeDownstreamPrincipals)
@@ -169,19 +186,28 @@ func buildRouter(pool postgres.Pool, cfg config.Config) *chi.Mux {
 		})
 	})
 
-	// /sync/config serves an enrolled edge node, not a browser session
-	// (ADR-017 §2). It is deliberately OUTSIDE the human-bearer-token group
-	// above: outlet.DeviceAuthenticate is the only middleware guarding it,
-	// resolving tenant_id/outlet_id from the verified device_credential row
-	// rather than from anything the caller supplied. A request carrying a
-	// valid human access token but no device credential gets the same 401 as
-	// one carrying nothing at all — that break is intentional (ADR-017
-	// "Consequences": "GET /sync/config stops accepting a human bearer
-	// token. Any existing caller relying on that is broken deliberately; it
-	// was the hole.").
+	// /sync/config, and every edge->cloud INGEST route, serve an enrolled
+	// edge node, not a browser session (ADR-017 §2, and the 0.4.3
+	// amendment extending that rule to order/table_session/kot/invoice/
+	// payment/cash_shift ingest). outlet.DeviceAuthenticate is the ONLY
+	// middleware guarding this group, resolving tenant_id/outlet_id from
+	// the verified device_credential row rather than from anything the
+	// caller supplied — an envelope's own tenant_id/outlet_id claims are
+	// checked against that resolved identity downstream, never trusted on
+	// their own. A request carrying a valid human access token but no
+	// device credential gets the same 401 as one carrying nothing at all —
+	// that break is intentional (ADR-017 "Consequences": "Any existing
+	// caller relying on [a human bearer token here] is broken deliberately;
+	// it was the hole.").
 	router.Group(func(r chi.Router) {
 		r.Use(outlet.DeviceAuthenticate(deviceSvc))
+
 		r.Get("/sync/config", syncConfig.ServeHTTP)
+
+		orderingHandler.MountIngest(r)
+		kitchenHandler.MountIngest(r)
+		tablesHandlers.MountEnvelopeIngest(r)
+		paymentsHandler.Mount(r)
 	})
 
 	return router

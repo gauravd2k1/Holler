@@ -10,12 +10,16 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/holler/backend/internal/auth"
+	"github.com/holler/backend/internal/outlet"
 	contracts "github.com/holler/contracts"
 )
 
-// newTestRouter mounts the ordering handler behind a principal carrying
-// every Milestone 1 order permission, mirroring how backend/cmd wires
-// auth.Authenticate + auth.RequirePermission in front of each context.
+// newTestRouter mounts the ordering handler's read routes behind a human
+// principal and its ingest routes behind a device principal, mirroring how
+// backend/cmd/api/main.go splits auth.Authenticate from
+// outlet.DeviceAuthenticate across the two Mount methods (ADR-017 0.4.3
+// amendment). Every write route this test suite exercises goes through
+// MountIngest and therefore the device principal, not the human one.
 func newTestRouter(t *testing.T) (*chi.Mux, *fakeRepo) {
 	t.Helper()
 	repo := newFakeRepo()
@@ -29,14 +33,22 @@ func newTestRouter(t *testing.T) (*chi.Mux, *fakeRepo) {
 		OutletID:    testOutletID,
 		Permissions: []auth.Permission{auth.PermissionOrderCreate, auth.PermissionOrderModify, auth.PermissionOrderCancel},
 	}
+	devicePrincipal := outlet.DevicePrincipal{
+		DeviceID: testDeviceID,
+		TenantID: testTenantID,
+		OutletID: testOutletID,
+	}
 
 	r := chi.NewRouter()
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-			next.ServeHTTP(w, req.WithContext(auth.WithPrincipal(req.Context(), principal)))
+			ctx := auth.WithPrincipal(req.Context(), principal)
+			ctx = outlet.WithDevicePrincipal(ctx, devicePrincipal)
+			next.ServeHTTP(w, req.WithContext(ctx))
 		})
 	})
 	h.Mount(r)
+	h.MountIngest(r)
 	return r, repo
 }
 

@@ -11,24 +11,43 @@ import (
 	"github.com/go-chi/chi/v5"
 	contracts "github.com/holler/contracts"
 
+	"github.com/holler/backend/internal/outlet"
 	"github.com/holler/backend/internal/platform/httpx"
 )
 
-// MountEnvelopeIngest registers the envelope-wrapped table_session routes
-// (contracts 0.2.1, ADR-011 addendum §1-2): POST/GET
+// MountEnvelopeIngest registers the envelope-wrapped table_session WRITE
+// routes (contracts 0.2.1, ADR-011 addendum §1-2): POST
 // /outlets/{outletId}/table-sessions and
 // /outlets/{outletId}/table-sessions/{sessionId}. table_session rides the
 // single edge→cloud replay pattern — there is no bespoke unwrapped write
-// route. GET stays unwrapped: it returns the aggregate, not an envelope.
+// route.
+//
+// These are edge->cloud replay by definition (§50.1) — the caller is always
+// an enrolled device, never a browser — so backend/cmd/api mounts this under
+// outlet.DeviceAuthenticate rather than auth.Authenticate (ADR-017's 0.4.3
+// amendment, the same fix applied to backend/internal/ordering and
+// backend/internal/kitchen). The read side lives in MountEnvelopeRead,
+// mounted separately under the human-auth group.
+// Deliberately NOT r.Route(): chi.Mux.Route() always calls Mount(), which
+// claims its pattern for ALL HTTP methods in the routing tree (see
+// go-chi/chi/v5 mux.go's own comment: "if you define two Mount() routes on
+// the exact same pattern the mount will panic"). MountEnvelopeIngest and
+// MountEnvelopeRead register different HTTP methods on the SAME pattern from
+// two different middleware groups in backend/cmd/api/main.go, which would
+// collide if either used Route() — plain method-specific registration
+// (r.Post/r.Get) has no such conflict, which is exactly REST routing.
 func (h *Handlers) MountEnvelopeIngest(r chi.Router) {
-	r.Route("/outlets/{outletId}/table-sessions", func(r chi.Router) {
-		r.Post("/", h.replayOpenSession)
-		r.Get("/", h.listOpenSessions)
-		r.Route("/{sessionId}", func(r chi.Router) {
-			r.Post("/", h.replaySessionTransition)
-			r.Get("/", h.getSession)
-		})
-	})
+	r.Post("/outlets/{outletId}/table-sessions", h.replayOpenSession)
+	r.Post("/outlets/{outletId}/table-sessions/{sessionId}", h.replaySessionTransition)
+}
+
+// MountEnvelopeRead registers the unwrapped GET side of the table_session
+// surface: it returns the aggregate, not an envelope, and is HUMAN-
+// authenticated (there is no protocol reason to gate a read behind a device
+// credential).
+func (h *Handlers) MountEnvelopeRead(r chi.Router) {
+	r.Get("/outlets/{outletId}/table-sessions", h.listOpenSessions)
+	r.Get("/outlets/{outletId}/table-sessions/{sessionId}", h.getSession)
 }
 
 // envelopeWire mirrors contracts.SyncEnvelope (packages/contracts/go/sync.go)
@@ -119,8 +138,29 @@ func decodeTableSessionEnvelope(r *http.Request) (env envelopeWire, payload tabl
 	return env, payload, "", nil
 }
 
+// requireDeviceOutlet resolves the caller's verified device credential
+// (outlet.DeviceAuthenticate) and rejects a request whose route outletID
+// does not match the outlet that credential resolves to. Per ADR-017's
+// 0.4.3 amendment, outlet_id is never trusted from the route or the
+// envelope on its own — it must agree with what the device credential
+// resolves to.
+func requireDeviceOutlet(r *http.Request, outletID string) error {
+	principal, ok := outlet.DevicePrincipalFromContext(r.Context())
+	if !ok {
+		return httpx.ErrUnauthorized
+	}
+	if principal.OutletID != outletID {
+		return fmt.Errorf("%w: this device is not enrolled at outlet %s", httpx.ErrForbidden, outletID)
+	}
+	return nil
+}
+
 func (h *Handlers) replayOpenSession(w http.ResponseWriter, r *http.Request) {
 	outletID := chi.URLParam(r, "outletId")
+	if err := requireDeviceOutlet(r, outletID); err != nil {
+		httpx.Error(w, err)
+		return
+	}
 
 	env, payload, mismatch, err := decodeTableSessionEnvelope(r)
 	if err != nil {
@@ -159,6 +199,10 @@ func (h *Handlers) replayOpenSession(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) replaySessionTransition(w http.ResponseWriter, r *http.Request) {
 	outletID := chi.URLParam(r, "outletId")
 	sessionID := chi.URLParam(r, "sessionId")
+	if err := requireDeviceOutlet(r, outletID); err != nil {
+		httpx.Error(w, err)
+		return
+	}
 
 	env, payload, mismatch, err := decodeTableSessionEnvelope(r)
 	if err != nil {

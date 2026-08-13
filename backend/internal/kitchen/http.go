@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/holler/backend/internal/auth"
+	"github.com/holler/backend/internal/outlet"
 	"github.com/holler/backend/internal/platform/httpx"
 	contracts "github.com/holler/contracts"
 )
@@ -24,16 +25,14 @@ func NewHandler(svc *Service) *Handler {
 	return &Handler{svc: svc}
 }
 
-// Mount registers this context's routes per
-// packages/contracts/openapi/openapi.yaml: POST /orders/{id}/kots,
-// POST /kots/{kotId}/status, GET/POST /stations, GET/POST /printers,
-// PUT /stations/{stationId}/printers. PUT /menu/items/{itemId}/stations is
-// registered by backend/internal/menu (ADR-014 task split) against this
-// package's Service.
+// Mount registers this context's HUMAN-authenticated config routes per
+// packages/contracts/openapi/openapi.yaml: GET/POST /stations, GET/POST
+// /printers, PUT /stations/{stationId}/printers. PUT
+// /menu/items/{itemId}/stations is registered by backend/internal/menu
+// (ADR-014 task split) against this package's Service. The KOT ingest
+// routes are registered separately by MountIngest — see that method's doc
+// comment for why (ADR-017 0.4.3 amendment).
 func (h *Handler) Mount(r chi.Router) {
-	r.With(auth.RequirePermission(auth.PermissionOrderModify)).Post("/orders/{id}/kots", h.ingestKot)
-	r.With(auth.RequirePermission(auth.PermissionOrderModify)).Post("/kots/{kotId}/status", h.ingestKotStatus)
-
 	r.Get("/stations", h.listStations)
 	r.With(auth.RequirePermission(auth.PermissionMenuManage)).Post("/stations", h.createStation)
 
@@ -41,6 +40,39 @@ func (h *Handler) Mount(r chi.Router) {
 	r.With(auth.RequirePermission(auth.PermissionOutletManage)).Post("/printers", h.createPrinter)
 
 	r.With(auth.RequirePermission(auth.PermissionOutletManage)).Put("/stations/{stationId}/printers", h.replaceStationPrinters)
+}
+
+// MountIngest registers POST /orders/{id}/kots and POST
+// /kots/{kotId}/status: edge->cloud replay by definition (§50.1) — the
+// caller is always an enrolled device, never a browser — so
+// backend/cmd/api mounts this under outlet.DeviceAuthenticate rather than
+// auth.Authenticate (ADR-017's 0.4.3 amendment, the same fix applied to
+// backend/internal/ordering). No auth.RequirePermission wrap: a verified
+// device credential IS the authorization for these routes.
+func (h *Handler) MountIngest(r chi.Router) {
+	r.Post("/orders/{id}/kots", h.ingestKot)
+	r.Post("/kots/{kotId}/status", h.ingestKotStatus)
+}
+
+// deviceCaller resolves the tenant_id/outlet_id an ingest caller is
+// authorized to act as from the verified device credential, never from the
+// envelope or any request parameter (ADR-017 0.4.3 amendment).
+func deviceCaller(r *http.Request) (tenantID, outletID string, ok bool) {
+	p, ok := outlet.DevicePrincipalFromContext(r.Context())
+	if !ok {
+		return "", "", false
+	}
+	return p.TenantID, p.OutletID, true
+}
+
+// requireEnvelopeOutletMatch mirrors backend/internal/ordering's own helper:
+// an envelope whose outlet_id disagrees with the device credential's
+// resolved outlet is rejected rather than trusted.
+func requireEnvelopeOutletMatch(envOutletID, callerOutletID string) error {
+	if envOutletID != "" && envOutletID != callerOutletID {
+		return fmt.Errorf("%w: envelope outlet_id does not match the authenticated device's outlet", httpx.ErrForbidden)
+	}
+	return nil
 }
 
 // --- envelope plumbing, mirroring backend/internal/ordering/http.go --------
@@ -130,7 +162,7 @@ func (h *Handler) principalTenant(r *http.Request) (string, bool) {
 }
 
 func (h *Handler) ingestKot(w http.ResponseWriter, r *http.Request) {
-	tenantID, ok := h.principalTenant(r)
+	tenantID, outletID, ok := deviceCaller(r)
 	if !ok {
 		httpx.Error(w, httpx.ErrUnauthorized)
 		return
@@ -139,6 +171,10 @@ func (h *Handler) ingestKot(w http.ResponseWriter, r *http.Request) {
 
 	env, payload, err := decodeEnvelope(r)
 	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if err := requireEnvelopeOutletMatch(env.OutletID, outletID); err != nil {
 		httpx.Error(w, err)
 		return
 	}
@@ -170,7 +206,7 @@ type kotStatusPayload struct {
 }
 
 func (h *Handler) ingestKotStatus(w http.ResponseWriter, r *http.Request) {
-	tenantID, ok := h.principalTenant(r)
+	tenantID, outletID, ok := deviceCaller(r)
 	if !ok {
 		httpx.Error(w, httpx.ErrUnauthorized)
 		return
@@ -179,6 +215,10 @@ func (h *Handler) ingestKotStatus(w http.ResponseWriter, r *http.Request) {
 
 	env, payload, err := decodeEnvelope(r)
 	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	if err := requireEnvelopeOutletMatch(env.OutletID, outletID); err != nil {
 		httpx.Error(w, err)
 		return
 	}

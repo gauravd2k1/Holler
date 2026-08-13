@@ -11,9 +11,14 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/holler/backend/internal/auth"
+	"github.com/holler/backend/internal/outlet"
 	contracts "github.com/holler/contracts"
 )
 
+// newTestRouter mounts config routes (stations/printers) behind a human
+// principal and KOT ingest routes behind a device principal, mirroring how
+// backend/cmd/api/main.go splits auth.Authenticate from
+// outlet.DeviceAuthenticate (ADR-017 0.4.3 amendment).
 func newTestRouter(t *testing.T) (*chi.Mux, *fakeRepository) {
 	t.Helper()
 	repo := newFakeRepository()
@@ -29,14 +34,22 @@ func newTestRouter(t *testing.T) (*chi.Mux, *fakeRepository) {
 			auth.PermissionOrderModify, auth.PermissionMenuManage, auth.PermissionOutletManage,
 		},
 	}
+	devicePrincipal := outlet.DevicePrincipal{
+		DeviceID: testDeviceID,
+		TenantID: testTenantID,
+		OutletID: testOutletID,
+	}
 
 	r := chi.NewRouter()
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-			next.ServeHTTP(w, req.WithContext(auth.WithPrincipal(req.Context(), principal)))
+			ctx := auth.WithPrincipal(req.Context(), principal)
+			ctx = outlet.WithDevicePrincipal(ctx, devicePrincipal)
+			next.ServeHTTP(w, req.WithContext(ctx))
 		})
 	})
 	h.Mount(r)
+	h.MountIngest(r)
 	return r, repo
 }
 

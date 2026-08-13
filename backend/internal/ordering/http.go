@@ -3,11 +3,13 @@ package ordering
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/holler/backend/internal/auth"
+	"github.com/holler/backend/internal/outlet"
 	"github.com/holler/backend/internal/platform/httpx"
 	contracts "github.com/holler/contracts"
 )
@@ -22,18 +24,61 @@ func NewHandler(svc *Service) *Handler {
 	return &Handler{svc: svc}
 }
 
-// Mount registers this context's routes per
-// packages/contracts/openapi/openapi.yaml: POST /orders, GET /orders,
-// GET /orders/{id}, POST /orders/{id}/items, POST /orders/{id}/confirm,
-// POST /orders/{id}/send-to-kitchen, POST /orders/{id}/cancel.
+// Mount registers this context's HUMAN-authenticated read routes: GET
+// /orders, GET /orders/{id}. The write routes are ingest-only edge->cloud
+// replay and are registered separately by MountIngest — see that method's
+// doc comment for why (ADR-017 0.4.3 amendment).
 func (h *Handler) Mount(r chi.Router) {
-	r.With(auth.RequirePermission(auth.PermissionOrderCreate)).Post("/orders", h.createOrder)
 	r.Get("/orders", h.listOrders)
 	r.Get("/orders/{id}", h.getOrder)
-	r.With(auth.RequirePermission(auth.PermissionOrderModify)).Post("/orders/{id}/items", h.appendItem)
-	r.With(auth.RequirePermission(auth.PermissionOrderModify)).Post("/orders/{id}/confirm", h.confirmOrder)
-	r.With(auth.RequirePermission(auth.PermissionOrderModify)).Post("/orders/{id}/send-to-kitchen", h.sendToKitchen)
-	r.With(auth.RequirePermission(auth.PermissionOrderCancel)).Post("/orders/{id}/cancel", h.cancelOrder)
+}
+
+// MountIngest registers the envelope-wrapped write routes per
+// packages/contracts/openapi/openapi.yaml: POST /orders,
+// POST /orders/{id}/items, POST /orders/{id}/confirm,
+// POST /orders/{id}/send-to-kitchen, POST /orders/{id}/cancel.
+//
+// These are edge->cloud replay by definition (§50.1) — the caller is always
+// an enrolled device, never a browser — so backend/cmd/api mounts this under
+// outlet.DeviceAuthenticate rather than auth.Authenticate (ADR-017's 0.4.3
+// amendment: "a correctly enrolled edge node could pull config and then have
+// every envelope push rejected" — the fix is gating ingest on the device
+// credential, not a human bearer token, ever). There is no
+// auth.RequirePermission wrap here: a verified device credential IS the
+// authorization for these routes, mirroring outlet.DeviceAuthenticate's own
+// doc comment for GET /sync/config.
+func (h *Handler) MountIngest(r chi.Router) {
+	r.Post("/orders", h.createOrder)
+	r.Post("/orders/{id}/items", h.appendItem)
+	r.Post("/orders/{id}/confirm", h.confirmOrder)
+	r.Post("/orders/{id}/send-to-kitchen", h.sendToKitchen)
+	r.Post("/orders/{id}/cancel", h.cancelOrder)
+}
+
+// deviceCaller resolves the tenant_id/outlet_id an ingest caller is
+// authorized to act as from the verified device credential
+// (outlet.DeviceAuthenticate put it in the request context) — never from the
+// envelope, the request body, or a query/path parameter (ADR-017 0.4.3
+// amendment, closing the rest of ADR-017 hole 1: "an envelope's claimed
+// tenant_id is checked against what the credential actually resolves to
+// rather than trusted").
+func deviceCaller(r *http.Request) (tenantID, outletID string, ok bool) {
+	p, ok := outlet.DevicePrincipalFromContext(r.Context())
+	if !ok {
+		return "", "", false
+	}
+	return p.TenantID, p.OutletID, true
+}
+
+// requireEnvelopeOutletMatch rejects an envelope whose own outlet_id claim
+// disagrees with the device credential's resolved outlet. Empty is
+// tolerated (see decodeEnvelope: outlet_id is not itself validated
+// non-empty at the HTTP layer) — Service.requireEnvelope enforces presence.
+func requireEnvelopeOutletMatch(envOutletID, callerOutletID string) error {
+	if envOutletID != "" && envOutletID != callerOutletID {
+		return fmt.Errorf("%w: envelope outlet_id does not match the authenticated device's outlet", httpx.ErrForbidden)
+	}
+	return nil
 }
 
 // envelopeWire is the wire shape of contracts.SyncEnvelope with Payload kept
@@ -128,7 +173,7 @@ func toOrderResponse(o StoredOrder) contracts.CanonicalOrder {
 }
 
 func (h *Handler) createOrder(w http.ResponseWriter, r *http.Request) {
-	principal, ok := auth.PrincipalFromContext(r.Context())
+	tenantID, outletID, ok := deviceCaller(r)
 	if !ok {
 		httpx.Error(w, httpx.ErrUnauthorized)
 		return
@@ -139,13 +184,17 @@ func (h *Handler) createOrder(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, err)
 		return
 	}
+	if err := requireEnvelopeOutletMatch(env.OutletID, outletID); err != nil {
+		httpx.Error(w, err)
+		return
+	}
 	var order contracts.CanonicalOrder
 	if err := json.Unmarshal(payload, &order); err != nil {
 		httpx.Error(w, httpx.ErrInvalidInput)
 		return
 	}
 
-	stored, err := h.svc.IngestOrder(r.Context(), principal.TenantID, env, order)
+	stored, err := h.svc.IngestOrder(r.Context(), tenantID, env, order)
 	if err != nil {
 		writeIngestError(w, err)
 		return
@@ -190,7 +239,7 @@ func (h *Handler) listOrders(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) appendItem(w http.ResponseWriter, r *http.Request) {
-	principal, ok := auth.PrincipalFromContext(r.Context())
+	tenantID, outletID, ok := deviceCaller(r)
 	if !ok {
 		httpx.Error(w, httpx.ErrUnauthorized)
 		return
@@ -202,13 +251,17 @@ func (h *Handler) appendItem(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, err)
 		return
 	}
+	if err := requireEnvelopeOutletMatch(env.OutletID, outletID); err != nil {
+		httpx.Error(w, err)
+		return
+	}
 	var item contracts.OrderItem
 	if err := json.Unmarshal(payload, &item); err != nil {
 		httpx.Error(w, httpx.ErrInvalidInput)
 		return
 	}
 
-	stored, err := h.svc.AppendItem(r.Context(), principal.TenantID, env, orderID, item)
+	stored, err := h.svc.AppendItem(r.Context(), tenantID, env, orderID, item)
 	if err != nil {
 		writeIngestError(w, err)
 		return
@@ -224,7 +277,7 @@ type confirmPayload struct {
 }
 
 func (h *Handler) confirmOrder(w http.ResponseWriter, r *http.Request) {
-	principal, ok := auth.PrincipalFromContext(r.Context())
+	tenantID, outletID, ok := deviceCaller(r)
 	if !ok {
 		httpx.Error(w, httpx.ErrUnauthorized)
 		return
@@ -236,13 +289,17 @@ func (h *Handler) confirmOrder(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, err)
 		return
 	}
+	if err := requireEnvelopeOutletMatch(env.OutletID, outletID); err != nil {
+		httpx.Error(w, err)
+		return
+	}
 	var body confirmPayload
 	if err := json.Unmarshal(payload, &body); err != nil {
 		httpx.Error(w, httpx.ErrInvalidInput)
 		return
 	}
 
-	stored, err := h.svc.Confirm(r.Context(), principal.TenantID, env, orderID, body.ConfirmedAt)
+	stored, err := h.svc.Confirm(r.Context(), tenantID, env, orderID, body.ConfirmedAt)
 	if err != nil {
 		writeIngestError(w, err)
 		return
@@ -251,7 +308,7 @@ func (h *Handler) confirmOrder(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) sendToKitchen(w http.ResponseWriter, r *http.Request) {
-	principal, ok := auth.PrincipalFromContext(r.Context())
+	tenantID, outletID, ok := deviceCaller(r)
 	if !ok {
 		httpx.Error(w, httpx.ErrUnauthorized)
 		return
@@ -263,8 +320,12 @@ func (h *Handler) sendToKitchen(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, err)
 		return
 	}
+	if err := requireEnvelopeOutletMatch(env.OutletID, outletID); err != nil {
+		httpx.Error(w, err)
+		return
+	}
 
-	stored, err := h.svc.SendToKitchen(r.Context(), principal.TenantID, env, orderID)
+	stored, err := h.svc.SendToKitchen(r.Context(), tenantID, env, orderID)
 	if err != nil {
 		writeIngestError(w, err)
 		return
@@ -280,7 +341,7 @@ type cancelPayload struct {
 }
 
 func (h *Handler) cancelOrder(w http.ResponseWriter, r *http.Request) {
-	principal, ok := auth.PrincipalFromContext(r.Context())
+	tenantID, outletID, ok := deviceCaller(r)
 	if !ok {
 		httpx.Error(w, httpx.ErrUnauthorized)
 		return
@@ -292,6 +353,10 @@ func (h *Handler) cancelOrder(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, err)
 		return
 	}
+	if err := requireEnvelopeOutletMatch(env.OutletID, outletID); err != nil {
+		httpx.Error(w, err)
+		return
+	}
 	var body cancelPayload
 	if len(payload) > 0 {
 		if err := json.Unmarshal(payload, &body); err != nil {
@@ -300,7 +365,7 @@ func (h *Handler) cancelOrder(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	stored, err := h.svc.Cancel(r.Context(), principal.TenantID, env, orderID, body.Reason)
+	stored, err := h.svc.Cancel(r.Context(), tenantID, env, orderID, body.Reason)
 	if err != nil {
 		writeIngestError(w, err)
 		return

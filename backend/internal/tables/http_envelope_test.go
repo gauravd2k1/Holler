@@ -5,17 +5,57 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/holler/backend/internal/outlet"
 	"github.com/holler/backend/internal/platform/id"
 )
 
+// outletIDFromPath extracts {outletId} from a "/outlets/{outletId}/..."
+// path directly, deliberately NOT via chi.URLParam: chi only populates URL
+// params once its routing tree traversal reaches the matched node, which
+// happens INSIDE the middleware chain a root-level r.Use() wraps — so a
+// root middleware sees no params yet. A plain path split sidesteps that
+// ordering entirely and is sufficient for this test-only device-principal
+// stand-in.
+func outletIDFromPath(path string) string {
+	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	if len(parts) >= 2 && parts[0] == "outlets" {
+		return parts[1]
+	}
+	return ""
+}
+
+// newTestRouter mounts both the human-authenticated config/read routes and
+// the device-authenticated table_session ingest routes (ADR-017 0.4.3
+// amendment splits these in backend/cmd/api/main.go). Since every test in
+// this file uses a fresh random outletID per call, the device-principal
+// middleware below resolves its OutletID from the request's own path rather
+// than a fixed constant, so it always matches whatever outlet the test
+// under it is exercising — mirroring production, where
+// outlet.DeviceAuthenticate resolves this from the verified credential, not
+// a caller-supplied value.
 func newTestRouter(svc *Service) *chi.Mux {
 	r := chi.NewRouter()
-	NewHandlers(svc).Mount(r)
+	h := NewHandlers(svc)
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			outletID := outletIDFromPath(req.URL.Path)
+			ctx := req.Context()
+			if outletID != "" {
+				ctx = outlet.WithDevicePrincipal(ctx, outlet.DevicePrincipal{
+					DeviceID: "test-device", TenantID: "test-tenant", OutletID: outletID,
+				})
+			}
+			next.ServeHTTP(w, req.WithContext(ctx))
+		})
+	})
+	h.Mount(r)
+	h.MountEnvelopeIngest(r)
 	return r
 }
 
