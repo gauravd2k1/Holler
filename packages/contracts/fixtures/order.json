@@ -3,7 +3,7 @@
   "external_order_id": null,
   "source": "POS",
   "outlet_id": "018e5a2e-1111-7c3d-9f4e-1234567890ab",
-  "display_number": null,
+  "display_number": "#A184",
   "order_type": "DINE_IN",
   "status": "SENT_TO_KITCHEN",
   "table_id": "018e5a2e-2222-7c3d-9f4e-1234567890ab",

@@ -313,6 +313,7 @@ mod tests {
             sync_status: "PENDING".into(),
             created_at: "2026-08-07T10:00:00.000Z".into(),
             updated_at: "2026-08-07T10:00:00.000Z".into(),
+            display_number: None,
         };
         assert!(matches!(
             assert_draft(&order),

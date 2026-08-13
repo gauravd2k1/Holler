@@ -150,6 +150,14 @@ pub struct Order {
     pub sync_status: String,
     pub created_at: String,
     pub updated_at: String,
+    /// Short per-outlet human-facing number (`#A184` shape), contracts 0.4.0
+    /// (ADR-016 §6). Minted internally by `repo::insert_order` for every
+    /// order this crate creates — never accepted from a caller, so a
+    /// caller cannot mint a duplicate or out-of-sequence number — hence its
+    /// absence from `NewOrder`. `Option` only because a row written before
+    /// this crate started minting (pre-0.4.1) has none; every row this crate
+    /// writes going forward always has one.
+    pub display_number: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -211,15 +219,17 @@ pub struct OrderItemRemovedMeta {
 
 /// Caller-supplied fields for
 /// [`crate::Db::update_order_item_quantity_with_outbox`] — the single-write
-/// `SET_ORDER_ITEM_QUANTITY` command (contracts 0.4.0, ADR-016). No
-/// `outbox_id` field: unlike [`OrderItemAddedMeta`]/[`OrderItemRemovedMeta`],
-/// this write mints no new `local_outbox` row (the frozen event catalog has
-/// no "item quantity changed" event) — it only *may* correct an already
-/// still-unpublished `ItemAdded` row in place. See the doc comment on
-/// [`crate::Db::update_order_item_quantity_with_outbox`] for the reasoning
-/// and the residual gap that leaves.
+/// `SET_ORDER_ITEM_QUANTITY` command (contracts 0.4.0, ADR-016). Carries
+/// `outbox_id` since contracts 0.4.1 (ADR-016 addendum): every quantity
+/// change now mints a fresh `ItemQuantityChanged` `local_outbox` row (in
+/// addition to correcting an already still-unpublished `ItemAdded` row in
+/// place, which stays harmless and keeps a not-yet-observed snapshot
+/// consistent). See the doc comment on
+/// [`crate::Db::update_order_item_quantity_with_outbox`] for the full
+/// reasoning.
 #[derive(Debug, Clone)]
 pub struct OrderItemQuantitySetMeta {
+    pub outbox_id: String,
     pub occurred_at: String,
 }
 

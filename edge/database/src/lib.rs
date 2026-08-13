@@ -29,6 +29,26 @@ use crate::model::{
 };
 use std::collections::BTreeMap;
 
+/// Returns `outbox` unchanged unless it describes the frozen `OrderCreated`
+/// event, in which case its `payload_json` is patched to carry the
+/// `display_number` `repo::insert_order` just minted (contracts 0.4.0,
+/// ADR-016 §6) — the caller-built DTO cannot know that value, since it is
+/// only assigned transactionally at insert time. Scoped to `OrderCreated`
+/// specifically so a future caller of these two methods with a different
+/// event type is never silently rewritten.
+fn patch_display_number_if_order_created(
+    outbox: &NewOutboxEntry,
+    display_number: &str,
+) -> NewOutboxEntry {
+    if outbox.event_type != "OrderCreated" {
+        return outbox.clone();
+    }
+    NewOutboxEntry {
+        payload_json: repo::patch_order_created_display_number(&outbox.payload_json, display_number),
+        ..outbox.clone()
+    }
+}
+
 /// An open handle to the edge database. The plaintext SQLite file backing
 /// this handle exists on disk only between [`Db::open`] and [`Db::close`]
 /// (see `src/crypto.rs` for why, and the limitation that implies).
@@ -200,11 +220,11 @@ impl Db {
         outbox: &NewOutboxEntry,
     ) -> DbResult<()> {
         let tx = self.connection_mut().transaction()?;
-        repo::insert_order(&tx, order)?;
+        let display_number = repo::insert_order(&tx, order)?;
         for item in items {
             repo::insert_order_item(&tx, item)?;
         }
-        repo::insert_outbox_entry(&tx, outbox)?;
+        repo::insert_outbox_entry(&tx, &patch_display_number_if_order_created(outbox, &display_number))?;
         tx.commit()?;
         Ok(())
     }
@@ -244,7 +264,7 @@ impl Db {
             "caller must supply exactly one modifier list per item"
         );
         let tx = self.connection_mut().transaction()?;
-        repo::insert_order(&tx, order)?;
+        let display_number = repo::insert_order(&tx, order)?;
         for (item, modifiers) in items.iter().zip(item_modifiers.iter()) {
             let line_total_paise =
                 repo::compute_line_total_paise(item.unit_price_paise, item.quantity, modifiers);
@@ -257,7 +277,7 @@ impl Db {
                 repo::insert_order_item_modifier(&tx, modifier)?;
             }
         }
-        repo::insert_outbox_entry(&tx, outbox)?;
+        repo::insert_outbox_entry(&tx, &patch_display_number_if_order_created(outbox, &display_number))?;
         tx.commit()?;
         Ok(())
     }
@@ -381,14 +401,18 @@ impl Db {
     /// this crate uses, so a quantity-only change can never desync the line
     /// total from its modifiers.
     ///
-    /// **No new `local_outbox` row is written.** The frozen event catalog
-    /// has no "item quantity changed" event as of contracts 0.4.0 — see
-    /// `repo::correct_pending_item_added_quantity`'s doc comment for the
-    /// full reasoning and the residual gap this leaves for an
-    /// already-published `ItemAdded` event. While that line's `ItemAdded`
-    /// event has not yet left the device, this folds the new quantity into
-    /// it in place, matching the pattern `Db::update_order_shape_with_outbox`
-    /// already uses for order-shape corrections.
+    /// **Writes an `ItemQuantityChanged` `local_outbox` row** (contracts
+    /// 0.4.1, ADR-016 addendum) carrying the full corrected line plus
+    /// `previous_quantity` — see `repo::insert_item_quantity_changed_outbox`.
+    /// This closes the gap the original (0.4.0) implementation left: while
+    /// that line's `ItemAdded` event has not yet left the device, this also
+    /// folds the new quantity into it in place
+    /// (`repo::correct_pending_item_added_quantity`, matching the pattern
+    /// `Db::update_order_shape_with_outbox` uses for order-shape
+    /// corrections), so a not-yet-observed snapshot never carries a
+    /// pre-change quantity even transiently. The `ItemQuantityChanged` row
+    /// is written unconditionally, so the cloud stays correct regardless of
+    /// whether `ItemAdded` had already published.
     pub fn update_order_item_quantity_with_outbox(
         &mut self,
         order_item_id: &str,
@@ -404,7 +428,7 @@ impl Db {
         let tx = self.connection_mut().transaction()?;
         let existing = repo::get_order_item_in_tx(&tx, order_item_id)?
             .ok_or(DbError::NotFound("order_item"))?;
-        repo::require_amendable_for_item_changes(&tx, &existing.order_id)?;
+        let outlet_id = repo::require_amendable_for_item_changes(&tx, &existing.order_id)?;
 
         let already_ticketed = repo::already_ticketed_order_item_ids(&tx, &existing.order_id)?;
         if already_ticketed.contains(order_item_id) {
@@ -417,6 +441,7 @@ impl Db {
         let modifiers = repo::list_order_item_modifiers_in_tx(&tx, order_item_id)?;
         let line_total_paise =
             repo::compute_line_total_paise(existing.unit_price_paise, quantity, &modifiers);
+        let previous_quantity = existing.quantity;
 
         repo::update_order_item_quantity(&tx, order_item_id, quantity, line_total_paise)?;
         repo::recompute_and_persist_order_totals(&tx, &existing.order_id, &meta.occurred_at)?;
@@ -426,6 +451,21 @@ impl Db {
             order_item_id,
             quantity,
             line_total_paise,
+        )?;
+        repo::insert_item_quantity_changed_outbox(
+            &tx,
+            &outlet_id,
+            &existing.order_id,
+            order_item_id,
+            &existing.menu_item_id,
+            existing.variant_id.as_deref(),
+            quantity,
+            existing.unit_price_paise,
+            line_total_paise,
+            existing.notes.as_deref(),
+            &modifiers,
+            previous_quantity,
+            meta,
         )?;
         tx.commit()?;
         Ok(())
@@ -1499,6 +1539,7 @@ mod tests {
 
     fn quantity_meta(occurred_at: &str) -> model::OrderItemQuantitySetMeta {
         model::OrderItemQuantitySetMeta {
+            outbox_id: format!("outbox-qty-{occurred_at}"),
             occurred_at: occurred_at.to_string(),
         }
     }
@@ -1899,6 +1940,76 @@ mod tests {
         assert_eq!(
             payload["data"]["item"]["line_total_paise"], 40000,
             "the corrected payload's line_total_paise must match the new quantity"
+        );
+    }
+
+    /// Contracts 0.4.1 (ADR-016 addendum): a quantity change must emit a
+    /// real `ItemQuantityChanged` `local_outbox` row — carrying the full
+    /// corrected item plus `previous_quantity`, never a delta — regardless
+    /// of whether the line's `ItemAdded` event has already published. This
+    /// is the money-staleness hole `correct_pending_item_added_quantity`
+    /// alone could not close (`docs/adr/ADR-016-m3-billing-contracts.md`
+    /// §0.4.1), and the entry `scripts/check-event-type-drift.mjs` names
+    /// this track to remove.
+    #[test]
+    fn update_order_item_quantity_emits_item_quantity_changed_event() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+        let (_, menu_item_id, _) = seed_menu(&db, "outlet-1");
+
+        let order = sample_order("order-qty-evt", "outlet-1", "device-1");
+        db.create_order_with_outbox(&order, &[], &sample_outbox("order-qty-evt"))
+            .expect("create empty draft order");
+        let item = sample_order_item("item-qty-evt", "order-qty-evt", &menu_item_id, 10000);
+        let modifiers = vec![sample_modifier("mod-evt-1", "item-qty-evt", 1500)];
+        db.add_order_item_with_outbox(&item, &modifiers, &item_added_meta("item-qty-evt"))
+            .expect("add line with modifier");
+
+        // Simulate the ItemAdded event already having published, so the
+        // in-place correction path is a no-op and ItemQuantityChanged is the
+        // *only* mechanism left to keep the cloud correct.
+        db.connection()
+            .execute(
+                "UPDATE local_outbox SET published_at = '2026-08-12T10:29:00Z'
+                 WHERE aggregate_id = 'order-qty-evt' AND event_type = 'ItemAdded'",
+                [],
+            )
+            .unwrap();
+
+        db.update_order_item_quantity_with_outbox(
+            "item-qty-evt",
+            3,
+            &quantity_meta("2026-08-12T10:30:00Z"),
+        )
+        .expect("quantity update");
+
+        let all = repo::list_unpublished_outbox(db.connection(), 100).unwrap();
+        let qty_changed_rows: Vec<_> = all
+            .iter()
+            .filter(|e| {
+                e.aggregate_id == "order-qty-evt" && e.event_type == "ItemQuantityChanged"
+            })
+            .collect();
+        assert_eq!(
+            qty_changed_rows.len(),
+            1,
+            "exactly one ItemQuantityChanged row, even though ItemAdded already published"
+        );
+
+        let payload: serde_json::Value =
+            serde_json::from_str(&qty_changed_rows[0].payload_json).unwrap();
+        assert_eq!(payload["event_type"], "ItemQuantityChanged");
+        assert_eq!(payload["data"]["order_id"], "order-qty-evt");
+        assert_eq!(payload["data"]["previous_quantity"], 1);
+        assert_eq!(payload["data"]["item"]["id"], "item-qty-evt");
+        assert_eq!(payload["data"]["item"]["quantity"], 3);
+        assert_eq!(
+            payload["data"]["item"]["line_total_paise"], 34500,
+            "(unit_price_paise 10000 + modifier delta 1500) * quantity 3 = 34500"
+        );
+        assert_eq!(
+            payload["data"]["item"]["modifiers"][0]["modifier_id"], "modifier-1",
+            "the full item, including its real modifiers, travels in the payload"
         );
     }
 
@@ -3236,16 +3347,18 @@ mod tests {
             "order_type": stored_order.order_type,
             "status": stored_order.status,
             "table_id": stored_order.table_id,
-            // display_number: the column landed at contracts 0.4.0 (ADR-016)
-            // but NOTHING MINTS ONE YET. Synthesized as null, and pinned below
-            // exactly like the deferred M6 fields, so the Milestone 3 track
-            // that adds per-outlet short-number minting fails this assertion
-            // instead of drifting quietly past it.
+            // display_number is MINTED by `repo::insert_order` (ADR-016 §6),
+            // not supplied by the caller — so it cannot round-trip a fixture
+            // value byte-for-byte any more than a database-assigned id could.
+            // The fixture carries "#A184" to document the SHAPE for other
+            // consumers; a fresh database legitimately mints "#A1" here.
             //
-            // Until that lands, a printed KOT still shows the raw UUID — the
-            // defect docs/backlog-m2.md raised. The contract is a prerequisite
-            // for the fix, not the fix.
-            "display_number": serde_json::Value::Null,
+            // Substituting the fixture's value keeps this assertion about what
+            // it is actually for — that every persisted field survives the
+            // round trip — while the minted value gets its own, stronger
+            // assertion below: it must exist and match the documented format.
+            // Asserting equality with the fixture would test the test data.
+            "display_number": fixture["display_number"].clone(),
             // Deferred to Milestone 6 (ADR-011 0.2.4 addendum) — no column
             // exists yet; synthesized rather than persisted.
             "customer": serde_json::Value::Null,
@@ -3296,12 +3409,32 @@ mod tests {
             serde_json::Value::Null
         );
 
+        // The minted display number gets its own assertion, because the
+        // round-trip above deliberately substitutes the fixture's value. This
+        // is the half that would catch minting silently breaking: closing the
+        // UUID-on-KOT defect means a cook reads a SHORT number aloud, so an
+        // empty, null, or UUID-shaped value here is the defect returning.
+        let minted = stored_order
+            .display_number
+            .as_deref()
+            .expect("every persisted order must carry a minted display number (ADR-016 §6)");
+        assert!(
+            minted.starts_with('#') && minted.len() >= 3 && minted.len() <= 6,
+            "display number must be short and human-facing, got {minted:?}"
+        );
+        assert!(
+            minted[1..2].chars().all(|c| c.is_ascii_uppercase())
+                && minted[2..].chars().all(|c| c.is_ascii_digit()),
+            "display number must be #<LETTER><digits>, got {minted:?}"
+        );
+
         let reconstructed_bytes = serde_json::to_string(&reconstructed).unwrap();
         let fixture_bytes = serde_json::to_string(&fixture).unwrap();
         assert_eq!(
             reconstructed_bytes, fixture_bytes,
             "the full CanonicalOrder envelope must round-trip the fixture byte-for-byte, \
-             modulo the eight fields pinned above that have no column as of contracts 0.2.4"
+             modulo the deferred fields pinned above that have no column, and
+             display_number which is minted rather than supplied"
         );
     }
 

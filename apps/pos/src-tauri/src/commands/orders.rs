@@ -188,7 +188,7 @@ pub fn create_order_impl(
     let outbox = NewOutboxEntry {
         id: new_id(),
         aggregate_type: "order".to_string(),
-        aggregate_id: order_id,
+        aggregate_id: order_id.clone(),
         event_type: "OrderCreated".to_string(),
         payload_json,
         created_at: now,
@@ -197,7 +197,22 @@ pub fn create_order_impl(
     let mut db = lock_db(state)?;
     db.create_order_with_outbox_and_modifiers(&new_order, &new_items, &item_modifiers, &outbox)?;
 
-    Ok(canonical)
+    // The DTO built above (`canonical`) predates the insert and so cannot
+    // carry the `display_number` `Db::create_order_with_outbox_and_modifiers`
+    // minted transactionally — re-read the persisted row rather than return
+    // a response with a null number a screen would otherwise have to paper
+    // over (contracts 0.4.0, ADR-016 §6).
+    let persisted_order = db.get_order(&order_id)?.ok_or_else(|| AppError {
+        code: "NOT_FOUND",
+        message: format!("order {order_id} not found immediately after create"),
+    })?;
+    let persisted_items = holler_edge_database::repo::list_order_items(db.connection(), &order_id)?;
+    let modifiers_map = modifiers_by_item(&db, &order_id)?;
+    Ok(CanonicalOrder::from_order_and_items(
+        persisted_order,
+        persisted_items,
+        &modifiers_map,
+    ))
 }
 
 /// Reads back one order together with every line's real modifiers, keyed by
@@ -347,6 +362,7 @@ pub fn update_order_item_quantity_impl(
     }
 
     let meta = holler_edge_database::model::OrderItemQuantitySetMeta {
+        outbox_id: new_id(),
         occurred_at: now_iso(),
     };
 

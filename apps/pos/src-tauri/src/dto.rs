@@ -295,6 +295,13 @@ pub struct CanonicalOrder {
     pub source: String,
     pub outlet_id: String,
 
+    /// Short per-outlet human-facing number (`#A184` shape, contracts 0.4.0
+    /// ADR-016 §6). `None` when this DTO was built pre-persist
+    /// (`from_new_order_and_items`, before `Db::insert_order` has minted
+    /// one) or for a legacy row written before this crate started minting
+    /// (pre-0.4.1).
+    pub display_number: Option<String>,
+
     pub order_type: String,
     pub status: String,
     pub table_id: Option<String>,
@@ -351,6 +358,13 @@ impl CanonicalOrder {
             external_order_id: order.external_order_id.clone(),
             source: order.source.clone(),
             outlet_id: order.outlet_id.clone(),
+            // Not yet minted — this DTO is built before the order row is
+            // persisted. `Db::create_order_with_outbox[_and_modifiers]`
+            // patches the real value into the OrderCreated event payload
+            // separately (`repo::patch_order_created_display_number`); a
+            // caller that needs the real number back re-reads the order
+            // after the create call, as `create_order_impl` does.
+            display_number: None,
             order_type: order.order_type.clone(),
             status: order.status.clone(),
             table_id: order.table_id.clone(),
@@ -411,6 +425,7 @@ impl CanonicalOrder {
             external_order_id: order.external_order_id,
             source: order.source,
             outlet_id: order.outlet_id,
+            display_number: order.display_number,
             order_type: order.order_type,
             status: order.status,
             table_id: order.table_id,

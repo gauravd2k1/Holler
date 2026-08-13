@@ -185,13 +185,26 @@ impl AppState {
 /// bind its port — logs and returns `(None, None)` instead of propagating an
 /// error.
 fn start_lan_server(addr: SocketAddr, db: Arc<Mutex<Db>>) -> (Option<Arc<Hub>>, Option<LanServerHandle>) {
-    match server::start(addr, db, server::DEFAULT_HEARTBEAT_INTERVAL) {
+    // Local-first verification, with NO cloud fallback (ADR-017 amendment).
+    // The standalone kds-lan-server binary requires HOLLER_CLOUD_BASE_URL for a
+    // fallback path; the POS deliberately does not, because requiring a cloud
+    // URL to start would make the POS's own startup depend on the uplink —
+    // exactly what ADR-013 and Milestone 1's acceptance forbid.
+    //
+    // The consequence is honest and fail-closed: a device credential that has
+    // never synced to this node cannot connect until it does. Absence is
+    // treated as unknown, never as revoked.
+    let verifier: Arc<dyn holler_edge_device::DeviceTokenVerifier> = Arc::new(
+        holler_edge_device::CachedCredentialVerifier::new(db.clone(), "KDS", None),
+    );
+
+    match server::start(addr, db, server::DEFAULT_HEARTBEAT_INTERVAL, verifier) {
         Ok(handle) => {
             if addr.ip().is_unspecified() {
                 eprintln!(
                     "holler-pos: KDS LAN server listening on {} (0.0.0.0 — reachable from \
-                     anywhere on this LAN, with NO AUTHENTICATION; see docs/DEV_SETUP.md and \
-                     docs/backlog-m2.md 'Device enrollment')",
+                     anywhere on this LAN; connections must present an enrolled device \
+                     credential, verified against the local cache)",
                     handle.local_addr()
                 );
             } else {

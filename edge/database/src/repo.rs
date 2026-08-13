@@ -461,15 +461,52 @@ pub fn list_menu_item_modifiers_for_outlet(
 // Reserved word: quoted in every statement, including inside format!
 // strings, per the schema comment in 0001_init.sql.
 
-pub(crate) fn insert_order(tx: &Transaction, o: &NewOrder) -> DbResult<()> {
+/// Formats a 1-based per-outlet order sequence index as the short
+/// human-facing `#A184`-shaped string (contracts 0.4.0, ADR-016 §6):
+/// `#` + a letter (cycling A-Z as blocks of 999 are exhausted) + a
+/// 1-999 number within that block. Never a raw sequential id — CLAUDE.md
+/// forbids exposing a sequential PK as an identifier, and this is a
+/// display string derived from a count, not a key.
+fn format_order_display_number(sequence_index: i64) -> String {
+    let zero_based = sequence_index - 1;
+    let block = zero_based / 999;
+    let num = zero_based % 999 + 1;
+    let letter = (b'A' + (block % 26) as u8) as char;
+    format!("#{letter}{num}")
+}
+
+/// Mints the next short display number for `outlet_id`, inside the same
+/// transaction as the order insert it backs — the count-then-insert runs
+/// on the one write-serialized SQLite connection this outlet's edge process
+/// owns (ADR-013: a single writer over one file), so no two orders can ever
+/// mint the same index. Counting `"order"` rows for the outlet is
+/// deliberately used rather than a dedicated counter table: `packages/contracts`
+/// is frozen and read-only to this crate (ADR-008), and no sequence table
+/// for order numbering exists in it, so this stays entirely inside the one
+/// column the contract actually added (`display_number`).
+pub(crate) fn mint_order_display_number(tx: &Transaction, outlet_id: &str) -> DbResult<String> {
+    let existing: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM \"order\" WHERE outlet_id = ?1",
+        params![outlet_id],
+        |row| row.get(0),
+    )?;
+    Ok(format_order_display_number(existing + 1))
+}
+
+/// Inserts the `"order"` row, minting its `display_number` internally, and
+/// returns the number minted so the caller can patch it into the
+/// `OrderCreated` outbox payload built before the insert ran — see
+/// [`patch_order_created_display_number`].
+pub(crate) fn insert_order(tx: &Transaction, o: &NewOrder) -> DbResult<String> {
+    let display_number = mint_order_display_number(tx, &o.outlet_id)?;
     tx.execute(
         "INSERT INTO \"order\"
             (id, outlet_id, device_id, order_type, status, table_id,
              subtotal_paise, discount_paise, taxes_paise, total_paise,
              source, external_order_id, payment_status, payment_source,
              confirmed_at, source_payload_json, schema_version,
-             created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+             created_at, updated_at, display_number)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
         params![
             o.id,
             o.outlet_id,
@@ -490,9 +527,37 @@ pub(crate) fn insert_order(tx: &Transaction, o: &NewOrder) -> DbResult<()> {
             o.schema_version,
             o.created_at,
             o.updated_at,
+            display_number,
         ],
     )?;
-    Ok(())
+    Ok(display_number)
+}
+
+/// Best-effort patch of an `OrderCreated` outbox payload's
+/// `data.order.display_number`, called by [`crate::Db::create_order_with_outbox`]
+/// / [`crate::Db::create_order_with_outbox_and_modifiers`] after
+/// [`insert_order`] has minted the real number — the DTO the caller built the
+/// payload from (`CanonicalOrder::from_new_order_and_items` in
+/// `apps/pos/src-tauri`) is constructed *before* the row is persisted, so it
+/// cannot know the minted value itself. Mirrors the lenient
+/// parse-or-leave-unchanged shape `correct_pending_item_added_quantity`
+/// already uses: a malformed payload is a caller bug elsewhere, not
+/// something this patch step should mask by erroring the whole create.
+pub(crate) fn patch_order_created_display_number(payload_json: &str, display_number: &str) -> String {
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(payload_json) else {
+        return payload_json.to_string();
+    };
+    if let Some(order) = value
+        .get_mut("data")
+        .and_then(|d| d.get_mut("order"))
+        .and_then(|o| o.as_object_mut())
+    {
+        order.insert(
+            "display_number".to_string(),
+            serde_json::json!(display_number),
+        );
+    }
+    serde_json::to_string(&value).unwrap_or_else(|_| payload_json.to_string())
 }
 
 pub(crate) fn insert_order_item(tx: &Transaction, i: &NewOrderItem) -> DbResult<()> {
@@ -887,6 +952,9 @@ pub(crate) fn compute_line_total_paise(
 /// these strings without updating that list first.
 const EVENT_TYPE_ITEM_ADDED: &str = "ItemAdded";
 const EVENT_TYPE_ITEM_REMOVED: &str = "ItemRemoved";
+/// Added at contracts 0.4.1 (ADR-016 addendum) — see
+/// [`insert_item_quantity_changed_outbox`].
+const EVENT_TYPE_ITEM_QUANTITY_CHANGED: &str = "ItemQuantityChanged";
 const EVENT_TYPE_ORDER_CONFIRMED: &str = "OrderConfirmed";
 /// Referenced (not written) by [`update_pending_order_created_payload`] —
 /// this crate never originates a second `OrderCreated` row, only corrects
@@ -1095,6 +1163,112 @@ pub(crate) fn correct_pending_item_added_quantity(
     Ok(())
 }
 
+/// Builds the `ItemQuantityChanged` event envelope + `data` payload from the
+/// `order_item` row's *post-update* state, matching
+/// `ItemQuantityChangedEventSchema` in
+/// `packages/contracts/src/types/events.ts` exactly (`{ event_id,
+/// event_type, occurred_at, outlet_id, schema_version, data: { order_id,
+/// item, previous_quantity } }`, contracts 0.4.1, ADR-016 addendum). The
+/// full corrected line travels in the payload, not a quantity delta — see
+/// the schema's own doc comment for the §50.1 reasoning: the edge computes
+/// money, the cloud only stores what it is told.
+#[allow(clippy::too_many_arguments)]
+fn build_item_quantity_changed_payload(
+    outlet_id: &str,
+    order_id: &str,
+    item_id: &str,
+    menu_item_id: &str,
+    variant_id: Option<&str>,
+    quantity: i64,
+    unit_price_paise: i64,
+    line_total_paise: i64,
+    notes: Option<&str>,
+    modifiers: &[OrderItemModifier],
+    previous_quantity: i64,
+    event_id: &str,
+    occurred_at: &str,
+) -> String {
+    let item_value = item_json(
+        item_id,
+        menu_item_id,
+        variant_id,
+        quantity,
+        unit_price_paise,
+        line_total_paise,
+        notes,
+        modifiers,
+    );
+    serde_json::json!({
+        "event_id": event_id,
+        "event_type": EVENT_TYPE_ITEM_QUANTITY_CHANGED,
+        "occurred_at": occurred_at,
+        "outlet_id": outlet_id,
+        "schema_version": 1,
+        "data": {
+            "order_id": order_id,
+            "item": item_value,
+            "previous_quantity": previous_quantity,
+        }
+    })
+    .to_string()
+}
+
+/// Writes the `local_outbox` row for a `SET_ORDER_ITEM_QUANTITY` command —
+/// the frozen `ItemQuantityChanged` event (contracts 0.4.1, ADR-016
+/// addendum), which closes the money-staleness hole
+/// `correct_pending_item_added_quantity` alone could not: once a line's
+/// `ItemAdded` event has actually published, nothing else corrected the
+/// cloud's `quantity`/`line_total_paise` for a later quantity change. This
+/// event is emitted on *every* quantity change, published or not — a replay
+/// applies `ItemAdded` (old quantity) then `ItemQuantityChanged` (the
+/// correction) in order, so it is correct regardless of whether the
+/// `ItemAdded` row happened to still be in-flight. `event_type`/`payload_json`
+/// are derived here, not accepted from the caller, matching every other
+/// outbox writer in this module.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn insert_item_quantity_changed_outbox(
+    tx: &Transaction,
+    outlet_id: &str,
+    order_id: &str,
+    item_id: &str,
+    menu_item_id: &str,
+    variant_id: Option<&str>,
+    quantity: i64,
+    unit_price_paise: i64,
+    line_total_paise: i64,
+    notes: Option<&str>,
+    modifiers: &[OrderItemModifier],
+    previous_quantity: i64,
+    meta: &OrderItemQuantitySetMeta,
+) -> DbResult<()> {
+    let payload = build_item_quantity_changed_payload(
+        outlet_id,
+        order_id,
+        item_id,
+        menu_item_id,
+        variant_id,
+        quantity,
+        unit_price_paise,
+        line_total_paise,
+        notes,
+        modifiers,
+        previous_quantity,
+        &meta.outbox_id,
+        &meta.occurred_at,
+    );
+    insert_outbox_entry(
+        tx,
+        &NewOutboxEntry {
+            id: meta.outbox_id.clone(),
+            aggregate_type: "order".to_string(),
+            aggregate_id: order_id.to_string(),
+            event_type: EVENT_TYPE_ITEM_QUANTITY_CHANGED.to_string(),
+            payload_json: payload,
+            created_at: meta.occurred_at.clone(),
+        },
+    )
+}
+
 /// Builds the `ItemRemoved` event envelope + `data` payload from the
 /// `order_item` row about to be deleted (with its modifier snapshots read
 /// *before* the delete — `order_item_modifier` cascades on delete, so they
@@ -1270,7 +1444,7 @@ const ORDER_COLUMNS: &str = "id, outlet_id, device_id, order_type, status, table
                 subtotal_paise, discount_paise, taxes_paise, total_paise,
                 source, external_order_id, payment_status, payment_source,
                 confirmed_at, source_payload_json, schema_version,
-                version, sync_status, created_at, updated_at";
+                version, sync_status, created_at, updated_at, display_number";
 
 fn order_from_row(row: &rusqlite::Row) -> rusqlite::Result<Order> {
     Ok(Order {
@@ -1295,6 +1469,7 @@ fn order_from_row(row: &rusqlite::Row) -> rusqlite::Result<Order> {
         sync_status: row.get(18)?,
         created_at: row.get(19)?,
         updated_at: row.get(20)?,
+        display_number: row.get(21)?,
     })
 }
 
