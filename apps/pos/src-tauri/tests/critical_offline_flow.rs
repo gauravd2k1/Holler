@@ -1024,6 +1024,10 @@ fn send_to_kitchen_rejects_a_mixed_order_and_names_the_unrouted_item() {
                 quantity: 1,
                 unit_price_paise: 25000,
                 notes: None,
+                // Added when T3's modifier support merged with this T2 test.
+                // Empty is the point: this scenario is about station routing,
+                // not modifier pricing.
+                modifiers: Vec::new(),
             },
             NewOrderItemRequest {
                 menu_item_id: "item-unrouted".to_string(),
@@ -1031,6 +1035,7 @@ fn send_to_kitchen_rejects_a_mixed_order_and_names_the_unrouted_item() {
                 quantity: 1,
                 unit_price_paise: 8000,
                 notes: None,
+                modifiers: Vec::new(),
             },
         ],
     )
