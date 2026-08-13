@@ -144,14 +144,18 @@ func TestResolveRates_EffectiveDatedComponentChange(t2 *testing.T) {
 	}
 }
 
-func TestResolveTaxProfile_DefaultActiveOnly(t2 *testing.T) {
+// TestResolveTaxProfile_NilFallsBackToOutletDefault is the single-rate
+// restaurant's path: a MenuItem with TaxProfileID == nil (the common case,
+// and the ONLY case before 0.4.2) must resolve to the outlet's active
+// default profile with no per-item configuration at all.
+func TestResolveTaxProfile_NilFallsBackToOutletDefault(t2 *testing.T) {
 	outlet := "outlet-1"
 	profiles := []contracts.TaxProfile{
 		{ID: "p-inactive", OutletID: outlet, Code: "OLD", IsDefault: true, IsActive: false},
 		{ID: "p-nondefault", OutletID: outlet, Code: "SPECIAL", IsDefault: false, IsActive: true},
 		{ID: "p-default", OutletID: outlet, Code: "GST_5_RESTAURANT", IsDefault: true, IsActive: true},
 	}
-	got, err := ResolveTaxProfile(profiles, outlet, "any-item", parseTime("2026-01-01T00:00:00Z"))
+	got, err := ResolveTaxProfile(profiles, outlet, nil, parseTime("2026-01-01T00:00:00Z"))
 	if err != nil {
 		t2.Fatalf("unexpected error: %v", err)
 	}
@@ -159,8 +163,57 @@ func TestResolveTaxProfile_DefaultActiveOnly(t2 *testing.T) {
 		t2.Fatalf("expected the active default profile, got %q", got.ID)
 	}
 
-	if _, err := ResolveTaxProfile(profiles, "outlet-with-no-profiles", "any-item", parseTime("2026-01-01T00:00:00Z")); err == nil {
+	if _, err := ResolveTaxProfile(profiles, "outlet-with-no-profiles", nil, parseTime("2026-01-01T00:00:00Z")); err == nil {
 		t2.Fatalf("expected an error when no active default profile exists")
+	}
+}
+
+// TestResolveTaxProfile_ItemPinOverridesDefault covers 0.4.2: a MenuItem
+// with a non-nil TaxProfileID must resolve to THAT profile, not the outlet
+// default, even though a default also exists — e.g. a liquor item pinned to
+// an 18% profile on an outlet whose default is the 5% food rate.
+func TestResolveTaxProfile_ItemPinOverridesDefault(t2 *testing.T) {
+	outlet := "outlet-1"
+	profiles := []contracts.TaxProfile{
+		{ID: "p-default", OutletID: outlet, Code: "GST_5_FOOD", IsDefault: true, IsActive: true},
+		{ID: "p-liquor", OutletID: outlet, Code: "GST_18_LIQUOR", IsDefault: false, IsActive: true},
+	}
+	pinned := "p-liquor"
+
+	got, err := ResolveTaxProfile(profiles, outlet, &pinned, parseTime("2026-01-01T00:00:00Z"))
+	if err != nil {
+		t2.Fatalf("unexpected error: %v", err)
+	}
+	if got.ID != "p-liquor" {
+		t2.Fatalf("item's own tax_profile_id must override the outlet default, got %q", got.ID)
+	}
+}
+
+// TestResolveTaxProfile_ItemPinToUnknownProfileErrors covers the "must not
+// silently fall back" half of 0.4.2: a non-nil TaxProfileID that does not
+// resolve (wrong outlet, inactive, or absent) is a config error, not a quiet
+// substitution of the outlet default — a misconfigured item should be loud.
+func TestResolveTaxProfile_ItemPinToUnknownProfileErrors(t2 *testing.T) {
+	outlet := "outlet-1"
+	profiles := []contracts.TaxProfile{
+		{ID: "p-default", OutletID: outlet, Code: "GST_5_FOOD", IsDefault: true, IsActive: true},
+		{ID: "p-inactive", OutletID: outlet, Code: "RETIRED", IsDefault: false, IsActive: false},
+		{ID: "p-other-outlet", OutletID: "outlet-2", Code: "GST_5_FOOD", IsDefault: true, IsActive: true},
+	}
+
+	missing := "no-such-profile"
+	if _, err := ResolveTaxProfile(profiles, outlet, &missing, parseTime("2026-01-01T00:00:00Z")); err == nil {
+		t2.Fatalf("expected an error for an item pinned to a profile that doesn't exist")
+	}
+
+	inactive := "p-inactive"
+	if _, err := ResolveTaxProfile(profiles, outlet, &inactive, parseTime("2026-01-01T00:00:00Z")); err == nil {
+		t2.Fatalf("expected an error for an item pinned to an inactive profile")
+	}
+
+	wrongOutlet := "p-other-outlet"
+	if _, err := ResolveTaxProfile(profiles, outlet, &wrongOutlet, parseTime("2026-01-01T00:00:00Z")); err == nil {
+		t2.Fatalf("expected an error for an item pinned to another outlet's profile")
 	}
 }
 

@@ -56,6 +56,30 @@ func (s TaxSnapshot) ToMap() (map[string]interface{}, error) {
 	return out, nil
 }
 
+// RenderTaxSnapshots renders every entry of a BuildTaxSnapshots result into
+// the map[string]interface{} shape packages/contracts/go/invoice.go's
+// Invoice.TaxSnapshot requires: {tax_profile_id: {...that profile's
+// TaxSnapshot as a map...}, ...}.
+//
+// This is the piece that keeps a mixed-rate bill reproducible in fact, not
+// just in name (§31): since 0.4.2 let different lines resolve to different
+// profiles, a snapshot naming only ONE of them would silently lose the
+// rules for every other line on the same invoice. Storing every profile
+// BuildTaxSnapshots found, keyed by id, is what makes a reprint six months
+// later able to show the correct historical rate for EVERY line, not just
+// whichever profile happened to be resolved last.
+func RenderTaxSnapshots(snapshots map[string]TaxSnapshot) (map[string]interface{}, error) {
+	out := make(map[string]interface{}, len(snapshots))
+	for profileID, snap := range snapshots {
+		m, err := snap.ToMap()
+		if err != nil {
+			return nil, err
+		}
+		out[profileID] = m
+	}
+	return out, nil
+}
+
 // BuildTaxSnapshots resolves and renders one TaxSnapshot per distinct
 // tax_profile_id used across lines, keyed by TaxProfileID so the invoice
 // track can look one up per line when assembling the final invoice. Every

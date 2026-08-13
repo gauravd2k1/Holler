@@ -62,6 +62,73 @@ func TestBuildTaxSnapshots_ReproducesHistoricalRules(t *testing.T) {
 	}
 }
 
+// TestBuildTaxSnapshots_CapturesEveryProfileOnMixedRateInvoice is the check
+// the orchestrator asked for directly: since 0.4.2 lets different lines
+// resolve to different tax profiles, the snapshot an invoice stores must
+// name EVERY profile actually used, not just one — otherwise a mixed-rate
+// bill is "reproducible" in name only, and a reprint after a rate change on
+// the profile that wasn't captured would silently show the wrong rules.
+func TestBuildTaxSnapshots_CapturesEveryProfileOnMixedRateInvoice(t *testing.T) {
+	outlet := "outlet-1"
+	at := parseTime("2026-06-01T00:00:00Z")
+	versions := []contracts.ComplianceVersion{
+		{ID: "v1", OutletID: outlet, Label: "FY26 rates", EffectiveFrom: parseTime("2026-01-01T00:00:00Z")},
+	}
+	profiles := []contracts.TaxProfile{
+		{ID: "p-food", OutletID: outlet, Code: "GST_5_FOOD", PricingMode: contracts.PricingModeExclusive, IsDefault: true, IsActive: true},
+		{ID: "p-liquor", OutletID: outlet, Code: "GST_18_LIQUOR", PricingMode: contracts.PricingModeExclusive, IsActive: true},
+		{ID: "p-cess", OutletID: outlet, Code: "GST_12_CESS", PricingMode: contracts.PricingModeExclusive, IsActive: true},
+	}
+	rules := []contracts.TaxRule{
+		{ID: "r1", TaxProfileID: "p-food", ComplianceVersionID: "v1", Component: contracts.TaxComponentCGST, RateBps: 250, EffectiveFrom: parseTime("2026-01-01T00:00:00Z")},
+		{ID: "r2", TaxProfileID: "p-food", ComplianceVersionID: "v1", Component: contracts.TaxComponentSGST, RateBps: 250, EffectiveFrom: parseTime("2026-01-01T00:00:00Z")},
+		{ID: "r3", TaxProfileID: "p-liquor", ComplianceVersionID: "v1", Component: contracts.TaxComponentCGST, RateBps: 900, EffectiveFrom: parseTime("2026-01-01T00:00:00Z")},
+		{ID: "r4", TaxProfileID: "p-liquor", ComplianceVersionID: "v1", Component: contracts.TaxComponentSGST, RateBps: 900, EffectiveFrom: parseTime("2026-01-01T00:00:00Z")},
+		{ID: "r5", TaxProfileID: "p-cess", ComplianceVersionID: "v1", Component: contracts.TaxComponentCGST, RateBps: 600, EffectiveFrom: parseTime("2026-01-01T00:00:00Z")},
+		{ID: "r6", TaxProfileID: "p-cess", ComplianceVersionID: "v1", Component: contracts.TaxComponentSGST, RateBps: 600, EffectiveFrom: parseTime("2026-01-01T00:00:00Z")},
+		{ID: "r7", TaxProfileID: "p-cess", ComplianceVersionID: "v1", Component: contracts.TaxComponentCess, RateBps: 280, EffectiveFrom: parseTime("2026-01-01T00:00:00Z")},
+	}
+	// A real mixed bill: a food line, a liquor line, and a cess-bearing line.
+	lines := []Line{
+		{OrderItemID: "food-item", TaxProfileID: "p-food"},
+		{OrderItemID: "liquor-item", TaxProfileID: "p-liquor"},
+		{OrderItemID: "sweet-beverage", TaxProfileID: "p-cess"},
+	}
+
+	snapshots, err := BuildTaxSnapshots(versions, profiles, rules, outlet, lines, at)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(snapshots) != 3 {
+		t.Fatalf("expected a snapshot for all 3 profiles used on the invoice, got %d: %+v", len(snapshots), snapshots)
+	}
+	if rateFor(snapshots["p-food"].Rates, contracts.TaxComponentCGST) != 250 {
+		t.Fatalf("food profile snapshot has the wrong CGST rate: %+v", snapshots["p-food"])
+	}
+	if rateFor(snapshots["p-liquor"].Rates, contracts.TaxComponentCGST) != 900 {
+		t.Fatalf("liquor profile snapshot has the wrong CGST rate: %+v", snapshots["p-liquor"])
+	}
+	if rateFor(snapshots["p-cess"].Rates, contracts.TaxComponentCess) != 280 {
+		t.Fatalf("cess profile snapshot is missing its cess rate: %+v", snapshots["p-cess"])
+	}
+
+	// Rendered to the invoice's wire shape (map[string]interface{}), all
+	// three profiles must still be present as distinct keys.
+	rendered, err := RenderTaxSnapshots(snapshots)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, id := range []string{"p-food", "p-liquor", "p-cess"} {
+		entry, ok := rendered[id].(map[string]interface{})
+		if !ok {
+			t.Fatalf("rendered tax_snapshot is missing profile %q entirely: %+v", id, rendered)
+		}
+		if entry["tax_profile_id"] != id {
+			t.Fatalf("rendered snapshot for %q carries the wrong tax_profile_id: %v", id, entry["tax_profile_id"])
+		}
+	}
+}
+
 func TestTaxSnapshot_ToMap_RendersWireShape(t *testing.T) {
 	snap := TaxSnapshot{
 		ComplianceVersionID:    "v1",

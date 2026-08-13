@@ -44,15 +44,43 @@ func ResolveComplianceVersion(versions []contracts.ComplianceVersion, outletID s
 }
 
 // ResolveTaxProfile returns the tax profile that applies for outletID at
-// `at`. itemID is accepted for interface stability: the frozen contracts
-// (packages/contracts/go/menu.go) carry no menu_item -> tax_profile mapping
-// yet, so every item on an outlet currently resolves to that outlet's single
-// default active profile. A later contracts change adding a per-item
-// override would let this function branch on itemID without changing its
-// signature or any caller.
-func ResolveTaxProfile(profiles []contracts.TaxProfile, outletID, itemID string, at time.Time) (contracts.TaxProfile, error) {
-	_ = itemID // reserved: see doc comment above
-	_ = at     // TaxProfile itself is not effective-dated; its TaxRules are
+// `at`, given itemTaxProfileID — the item's OWN pinned profile
+// (contracts.MenuItem.TaxProfileID, 0.4.2). This is a pure function: the
+// caller (whoever already loaded the MenuItem) passes its TaxProfileID
+// straight through rather than this function looking an item up itself.
+//
+// Fallback is explicit and is the WHOLE function, deliberately not buried in
+// a longer branch: nil means "use the outlet's default profile" (0.4.2's own
+// wording), which is what keeps the common single-rate restaurant
+// configuration-free — nothing to set on any item, every line resolves to
+// the one outlet-wide profile with no per-item data at all.
+//
+// A NON-nil itemTaxProfileID that names a profile which doesn't resolve
+// (wrong outlet, inactive, or simply absent from profiles) is a config
+// error and returns one — it must never silently fall back to the outlet
+// default, which would hide exactly the kind of misconfiguration a mixed-
+// rate menu (e.g. a liquor item pinned to the wrong profile) most needs
+// surfaced.
+//
+// itemTaxProfileID is resolution INPUT only. The result feeds a Line's
+// TaxProfileID, which computeLineBase/finishInclusiveLine snapshot into
+// LineComputation/InvoiceLine at billing time — re-pointing the menu item to
+// a different profile tomorrow never touches a bill already issued today
+// (§31; see reproducibility_test.go's pinning test).
+func ResolveTaxProfile(profiles []contracts.TaxProfile, outletID string, itemTaxProfileID *string, at time.Time) (contracts.TaxProfile, error) {
+	_ = at // TaxProfile itself is not effective-dated; its TaxRules are.
+
+	if itemTaxProfileID != nil {
+		for _, p := range profiles {
+			if p.ID == *itemTaxProfileID && p.OutletID == outletID && p.IsActive {
+				return p, nil
+			}
+		}
+		return contracts.TaxProfile{}, fmt.Errorf(
+			"%w: item's tax_profile_id %s is not an active tax profile for outlet %s",
+			httpx.ErrInvalidInput, *itemTaxProfileID, outletID)
+	}
+
 	for _, p := range profiles {
 		if p.OutletID == outletID && p.IsDefault && p.IsActive {
 			return p, nil
