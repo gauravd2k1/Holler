@@ -175,6 +175,74 @@ paths:
         "422":
           $ref: "#/components/responses/EnvelopeRouteMismatch"
 
+  /devices/enroll:
+    post:
+      summary: >
+        Enrol a device against an outlet and issue its credential. Frozen at
+        0.4.1 (ADR-017).
+
+        Returns the plaintext token EXACTLY ONCE. No route anywhere reads a
+        token back — that is a structural guarantee, not a policy, and the
+        absence of any such route is part of this contract.
+
+        Only the credential issued here authenticates GET /sync/config, the one
+        route carrying Argon2id password and PIN hashes. Before ADR-017 that
+        route accepted an ordinary human bearer token, so an enrolled edge node
+        and a logged-in browser session were indistinguishable to the backend.
+
+        Credential rotation and revocation are implemented but deliberately NOT
+        frozen here — see ADR-017 §Freezing scope.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [outlet_id, kind, name]
+              properties:
+                outlet_id: { type: string, format: uuid }
+                kind:
+                  type: string
+                  enum: [POS, KDS, WAITER, PRINTER_BRIDGE]
+                name:
+                  type: string
+                  description: >
+                    Unique per outlet, never globally — two outlets each naming
+                    a device POS1 is normal.
+                label:
+                  type: string
+                  description: >
+                    Free-text note for the technician: which machine, which
+                    install visit.
+      responses:
+        "201":
+          description: >
+            Device enrolled. This is the ONLY response in the API that contains
+            a credential token, and it is unrepeatable.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [device_id, outlet_id, kind, name, credential_id, token]
+                properties:
+                  device_id: { type: string, format: uuid }
+                  outlet_id: { type: string, format: uuid }
+                  kind: { type: string, enum: [POS, KDS, WAITER, PRINTER_BRIDGE] }
+                  name: { type: string }
+                  credential_id: { type: string, format: uuid }
+                  token:
+                    type: string
+                    description: >
+                      Plaintext, returned once and never recoverable. Present it
+                      as `Authorization: Bearer <credential_id>.<secret>`. Never
+                      log it, never store it in an audit value.
+        "401":
+          description: Caller is not authenticated.
+        "403":
+          description: Caller lacks permission to manage this outlet.
+        "409":
+          description: A device with this name already exists at this outlet.
+
   /invoices:
     post:
       summary: >

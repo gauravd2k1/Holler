@@ -51,6 +51,11 @@ const RUST_ROOTS = [
 // the tracks that emit them. Each entry names the track that must remove it —
 // an entry that outlives its track is the signal this map exists to produce.
 const NOT_YET_EMITTED = {
+  ItemQuantityChanged:
+    "Contract landed at 0.4.1 (ADR-016 addendum) to close a money-staleness hole " +
+    "the T3 verifier found: a quantity edited after ItemAdded had synced left the " +
+    "cloud permanently wrong. Emitted by the T3 retry — this entry must be removed " +
+    "when that lands, and its survival past T3 is itself the defect signal.",
   InvoiceCreated:
     "Contract landed at 0.4.0; emitted once the edge billing track (T7) issues invoices.",
   PaymentReceived:

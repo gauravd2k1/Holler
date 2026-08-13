@@ -51,6 +51,31 @@ export const ItemRemovedEventSchema = EventEnvelope(
 );
 export type ItemRemovedEvent = z.infer<typeof ItemRemovedEventSchema>;
 
+// Added at 0.4.1 (ADR-016 addendum). Quantity control landed at Milestone 3
+// with no event to report a change, so a quantity edited AFTER ItemAdded had
+// already synced left the cloud holding a permanently wrong line_total_paise —
+// with no later event carrying enough to correct it. §53 forbids financial
+// records being silently overwritten, and M3 builds tax and invoicing directly
+// on these fields, so an operational-staleness workaround does not suffice.
+//
+// The payload carries the FULL corrected line, not a quantity delta. A
+// delta-only event was considered and REJECTED on §50.1 grounds: it would
+// require the cloud to recompute line_total_paise from its own copy of the
+// unit price and modifier deltas, making the cloud a second computer of money
+// the edge is authoritative for. The edge computes; the cloud stores what it
+// is told. Same reasoning that keeps invoice numbering edge-local.
+export const ItemQuantityChangedEventSchema = EventEnvelope(
+  "ItemQuantityChanged",
+  z.object({
+    order_id: z.string().uuid(),
+    // Self-describing for exactly the reason ItemRemoved is: the cloud must be
+    // able to reconcile without replaying every prior event in order.
+    item: CanonicalOrderSchema.shape.items.element,
+    previous_quantity: z.number().int().positive(),
+  }),
+);
+export type ItemQuantityChangedEvent = z.infer<typeof ItemQuantityChangedEventSchema>;
+
 // Added at 0.2.5. The cashier confirming a draft — DRAFT→CONFIRMED in the
 // order state machine. Deliberately NOT named OrderAccepted: docs/spec/sync.md
 // lists that name, but in the aggregator context acceptance means a merchant
@@ -170,6 +195,7 @@ export const OutboxEventSchema = z.discriminatedUnion("event_type", [
   OrderCreatedEventSchema,
   ItemAddedEventSchema,
   ItemRemovedEventSchema,
+  ItemQuantityChangedEventSchema,
   OrderConfirmedEventSchema,
   KotCreatedEventSchema,
   KotStatusChangedEventSchema,
@@ -195,6 +221,7 @@ export const OUTBOX_EVENT_TYPES = [
   "OrderCreated",
   "ItemAdded",
   "ItemRemoved",
+  "ItemQuantityChanged",
   "OrderConfirmed",
   "KOTCreated",
   "KOTStatusChanged",

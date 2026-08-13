@@ -116,9 +116,13 @@ type TableSessionUpdatedEvent struct {
 // with no compile-time link to this list, so scripts/check-event-type-drift.mjs
 // greps them against it in both directions.
 const (
-	EventTypeOrderCreated        = "OrderCreated"
-	EventTypeItemAdded           = "ItemAdded"
-	EventTypeItemRemoved         = "ItemRemoved"
+	EventTypeOrderCreated = "OrderCreated"
+	EventTypeItemAdded    = "ItemAdded"
+	EventTypeItemRemoved  = "ItemRemoved"
+	// Added at 0.4.1 (ADR-016 addendum). Carries the FULL corrected line, not a
+	// delta: a delta-only payload was rejected on §50.1 grounds because it would
+	// make the cloud recompute money the edge is authoritative for.
+	EventTypeItemQuantityChanged = "ItemQuantityChanged"
 	EventTypeOrderConfirmed      = "OrderConfirmed"
 	EventTypeKotCreated          = "KOTCreated"
 	EventTypeKotStatusChanged    = "KOTStatusChanged"
@@ -144,6 +148,7 @@ var OutboxEventTypes = []string{
 	EventTypeOrderCreated,
 	EventTypeItemAdded,
 	EventTypeItemRemoved,
+	EventTypeItemQuantityChanged,
 	EventTypeOrderConfirmed,
 	EventTypeKotCreated,
 	EventTypeKotStatusChanged,

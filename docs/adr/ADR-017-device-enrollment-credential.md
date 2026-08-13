@@ -38,6 +38,23 @@ But: query-string carriage is acceptable **only while the token is unverified an
 
 Currently it bumps only on create and role change. So a password or PIN change would never reach the edge cache, and a cashier would keep authenticating offline with the old credential indefinitely — including a credential changed *because* it was compromised. In scope for the same track.
 
+## Freezing scope (0.4.1, 2026-08-13)
+
+The cloud half landed and passed its gate. Three routes exist in `backend/internal/outlet`: enroll, credential rotate, credential revoke. **Only `POST /devices/enroll` is frozen into `packages/contracts/openapi/openapi.yaml`.**
+
+Enrollment is frozen because it has a consumer the moment a pilot install happens: a technician enrols the outlet's POS, and that request/response shape is the interface between install tooling and the backend. It is also the only response in the entire API that contains a credential token, which is worth pinning explicitly so the "returned exactly once, never readable again" property is part of the contract rather than an implementation habit.
+
+Rotation and revocation stay **implemented but unfrozen**. They have no consumer yet — no admin UI calls them, and no pilot runbook describes rotating a credential in the field. Freezing a shape before anything consumes it risks freezing the wrong one, and the cost of that is high here: an unfreeze needs a version bump and an ADR, while an unfrozen internal route can simply change. They get frozen when the admin UI or the pilot runbook lands and tells us what the operator actually needs.
+
+This is a deliberate asymmetry, not an oversight. Recorded so a later reader does not "complete" the set without a consumer to design against.
+
+## Verification note (2026-08-13)
+
+The cloud half passed its gate. Two properties were confirmed structurally rather than by assertion, and both are worth recording because they are easy to erode later:
+
+- **No route reads a token back.** `VerifyToken` takes no tenant/outlet parameters, `deviceCredentialVerifyRow` is unexported so no external package can construct one, and the only two writers of the plaintext return it once by value. The guarantee lives in the type and package boundaries, not in a policy someone must remember.
+- **Audit redaction is complete across packages.** `outlet.DeviceService` never redacts for itself — it calls the injected `auth.AuditRecorder`, whose single concrete implementation is the only writer of `AuditEvent` and always applies the redact list regardless of calling package. Today this is defence-in-depth (the device audit values contain no hash to begin with), which is exactly why it must not be quietly removed as unused.
+
 ## Consequences
 
 - `GET /sync/config` stops accepting a human bearer token. Any existing caller relying on that is broken deliberately; it was the hole.

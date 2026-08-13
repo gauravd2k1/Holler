@@ -152,6 +152,7 @@ describe("contract drift", () => {
       "OrderCreated",
       "ItemAdded",
       "ItemRemoved",
+      "ItemQuantityChanged",
       "OrderConfirmed",
       "KOTCreated",
       "KOTStatusChanged",

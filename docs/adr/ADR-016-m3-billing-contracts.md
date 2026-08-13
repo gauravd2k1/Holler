@@ -95,6 +95,20 @@ The rename is therefore not cosmetic deconfliction — it is the type system car
 | Tenant-scoped uniqueness | `invoice_number` unique on `(outlet_id, series_id, invoice_number)`, never global. All config codes unique per outlet. |
 | Version bump + ADR | 0.3.1 → 0.4.0, this ADR. |
 
+## Addendum — 0.4.1: `ItemQuantityChanged` (2026-08-13)
+
+Quantity control landed in Milestone 3 with a command (`SET_ORDER_ITEM_QUANTITY`) but **no event**. The T3 verification gate found the consequence: `correct_pending_item_added_quantity` folds a correction into a still-unpublished `ItemAdded`, but once that event has published, **nothing ever corrects the cloud's `quantity` and `line_total_paise`** — no other frozen event carries a full item snapshot.
+
+The builder disclosed this honestly and cited the `update_order_shape` precedent. **That precedent does not transfer.** An order's shape (type, table) being briefly stale in the cloud is an operational inaccuracy usually caught by context. A wrong `line_total_paise` is a *money* inaccuracy: silent, permanent, and flowing straight into revenue reporting — with M3 building tax and invoicing on exactly these fields. §53 requires financial records never be silently lost or overwritten.
+
+So 0.4.1 freezes `ItemQuantityChanged`, carrying the corrected `OrderItem` in full plus `previous_quantity`.
+
+**A delta-only payload was considered and rejected, explicitly on §50.1 grounds.** Sending only `(order_item_id, new_quantity)` would require the cloud to recompute `line_total_paise` from its own copy of the unit price and modifier deltas. That makes the cloud a **second computer of money the edge is authoritative for** — precisely the split-authority shape §50.1 forbids, and the same reasoning that keeps invoice numbering edge-local (§2 above). The edge computes; the cloud stores what it is told. A smaller payload is not worth reintroducing the one property this architecture is organised around.
+
+The event is self-describing for the reason `ItemRemoved` is: the cloud must reconcile without replaying every prior event in order.
+
+`scripts/check-event-type-drift.mjs` carries a `NOT_YET_EMITTED` entry for it naming the T3 retry as the track that must remove it. **That entry surviving past T3 is itself the defect signal.**
+
 ## Consequences
 
 - Builders gain the full billing surface without a further contract change; adding a payment gateway in M7 needs no shape change, only the already-modelled states.
