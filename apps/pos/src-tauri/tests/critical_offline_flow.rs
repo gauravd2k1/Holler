@@ -22,7 +22,8 @@ use holler_pos_lib::commands::kitchen::{
 use holler_pos_lib::commands::menu::{list_menu_categories_impl, list_menu_items_impl};
 use holler_pos_lib::commands::orders::{
     add_order_item_impl, create_order_impl, get_active_draft_order_impl, get_order_impl,
-    list_orders_impl, remove_order_item_impl, update_order_shape_impl, NewOrderItemRequest,
+    list_orders_impl, remove_order_item_impl, update_order_item_quantity_impl,
+    update_order_shape_impl, NewOrderItemModifierRequest, NewOrderItemRequest,
 };
 use holler_pos_lib::commands::tables::list_tables_impl;
 use holler_pos_lib::state::AppState;
@@ -279,6 +280,7 @@ fn creates_an_order_fully_offline_and_it_is_immediately_readable() {
             quantity: 2,
             unit_price_paise: 25000,
             notes: None,
+            modifiers: vec![],
         }],
     )
     .expect("order creation must succeed with the WAN unavailable");
@@ -323,6 +325,7 @@ fn order_and_its_outbox_row_are_both_present_and_committed_together() {
             quantity: 1,
             unit_price_paise: 25000,
             notes: None,
+            modifiers: vec![],
         }],
     )
     .expect("create order");
@@ -355,6 +358,7 @@ fn a_failed_order_write_leaves_neither_order_nor_outbox_row() {
             quantity: 1,
             unit_price_paise: 10000,
             notes: None,
+            modifiers: vec![],
         }],
     );
     assert!(result.is_err(), "FK violation must fail the write");
@@ -388,6 +392,7 @@ fn totals_arithmetic_is_integer_paise_and_rejects_non_positive_quantity() {
                 quantity: 3,
                 unit_price_paise: 25000,
                 notes: None,
+                modifiers: vec![],
             },
             NewOrderItemRequest {
                 menu_item_id: "item-1".to_string(),
@@ -395,6 +400,7 @@ fn totals_arithmetic_is_integer_paise_and_rejects_non_positive_quantity() {
                 quantity: 1,
                 unit_price_paise: 25000,
                 notes: Some("extra spicy".to_string()),
+                modifiers: vec![],
             },
         ],
     )
@@ -412,6 +418,7 @@ fn totals_arithmetic_is_integer_paise_and_rejects_non_positive_quantity() {
             quantity: 0,
             unit_price_paise: 25000,
             notes: None,
+            modifiers: vec![],
         }],
     )
     .expect_err("zero quantity must be rejected");
@@ -451,6 +458,7 @@ fn add_and_remove_item_on_a_draft_order_round_trip_through_storage() {
             quantity: 1,
             unit_price_paise: 25000,
             notes: None,
+            modifiers: vec![],
         }],
     )
     .expect("create order");
@@ -465,6 +473,7 @@ fn add_and_remove_item_on_a_draft_order_round_trip_through_storage() {
             quantity: 2,
             unit_price_paise: 25000,
             notes: Some("no onions".to_string()),
+            modifiers: vec![],
         },
     )
     .expect("add item to draft order");
@@ -525,6 +534,7 @@ fn a_draft_order_survives_the_pos_process_ending_and_a_fresh_one_reopening() {
                 quantity: 2,
                 unit_price_paise: 25000,
                 notes: None,
+                modifiers: vec![],
             }],
         )
         .expect("first line persists the draft order");
@@ -542,6 +552,7 @@ fn a_draft_order_survives_the_pos_process_ending_and_a_fresh_one_reopening() {
                 quantity: 1,
                 unit_price_paise: 25000,
                 notes: Some("no onions".to_string()),
+                modifiers: vec![],
             },
         )
         .expect("second line persists");
@@ -624,6 +635,7 @@ fn recovery_finds_nothing_when_there_is_no_draft_order_for_this_device() {
             quantity: 1,
             unit_price_paise: 25000,
             notes: None,
+            modifiers: vec![],
         }],
     )
     .expect("create order");
@@ -637,8 +649,17 @@ fn recovery_finds_nothing_when_there_is_no_draft_order_for_this_device() {
         .is_none());
 }
 
+/// `#132-A` (docs/spec/kitchen.md's #132 -> #132-A change history,
+/// docs/m3-planning.md Track B) widened `add_order_item` beyond DRAFT: a
+/// cashier adding a line after the order is already CONFIRMED (or with the
+/// kitchen) must succeed, not be rejected the way it used to be. This test
+/// used to assert the opposite (`add_item_rejects_a_non_draft_order`) —
+/// renamed and inverted once the widening landed; the genuine
+/// terminal-status rejection is
+/// `add_item_rejects_an_order_that_has_already_left_the_active_lifecycle`
+/// below.
 #[test]
-fn add_item_rejects_a_non_draft_order() {
+fn add_item_succeeds_on_a_confirmed_order_the_132a_post_draft_path() {
     let state = seeded_state();
     let order = create_order_impl(
         &state,
@@ -650,12 +671,61 @@ fn add_item_rejects_a_non_draft_order() {
             quantity: 1,
             unit_price_paise: 25000,
             notes: None,
+            modifiers: vec![],
         }],
     )
     .expect("create order");
 
     holler_pos_lib::commands::orders::confirm_order_impl(&state, &order.holler_order_id)
         .expect("confirm order");
+
+    let after_add = add_order_item_impl(
+        &state,
+        &order.holler_order_id,
+        NewOrderItemRequest {
+            menu_item_id: "item-1".to_string(),
+            variant_id: None,
+            quantity: 1,
+            unit_price_paise: 25000,
+            notes: None,
+            modifiers: vec![],
+        },
+    )
+    .expect("add-item must succeed post-confirmation (#132-A)");
+    assert_eq!(after_add.items.len(), 2);
+}
+
+/// The genuine terminal-status rejection: once the order is `SERVED` (no
+/// Tauri command reaches that state today, so it is stamped directly at the
+/// storage layer here, exactly as `edge/database`'s own equivalent tests
+/// do), a line can no longer be added.
+#[test]
+fn add_item_rejects_an_order_that_has_already_left_the_active_lifecycle() {
+    let state = seeded_state();
+    let order = create_order_impl(
+        &state,
+        "DINE_IN".to_string(),
+        None,
+        vec![NewOrderItemRequest {
+            menu_item_id: "item-1".to_string(),
+            variant_id: None,
+            quantity: 1,
+            unit_price_paise: 25000,
+            notes: None,
+            modifiers: vec![],
+        }],
+    )
+    .expect("create order");
+
+    {
+        let db = state.db.lock().unwrap();
+        db.connection()
+            .execute(
+                "UPDATE \"order\" SET status = 'SERVED' WHERE id = ?1",
+                [&order.holler_order_id],
+            )
+            .unwrap();
+    }
 
     let err = add_order_item_impl(
         &state,
@@ -666,9 +736,10 @@ fn add_item_rejects_a_non_draft_order() {
             quantity: 1,
             unit_price_paise: 25000,
             notes: None,
+            modifiers: vec![],
         },
     )
-    .expect_err("must reject amendment of a confirmed order");
+    .expect_err("must reject amendment of a served order");
     assert_eq!(err.code, "ORDER_NOT_DRAFT");
 }
 
@@ -696,6 +767,7 @@ fn order_type_can_be_changed_after_the_first_item_lands_and_it_persists() {
             quantity: 1,
             unit_price_paise: 25000,
             notes: None,
+            modifiers: vec![],
         }],
     )
     .expect("first tap creates the draft order");
@@ -736,6 +808,7 @@ fn setting_a_table_after_the_first_item_lands_makes_the_order_carry_it() {
             quantity: 1,
             unit_price_paise: 25000,
             notes: None,
+            modifiers: vec![],
         }],
     )
     .expect("first tap creates the draft order with no table");
@@ -766,6 +839,7 @@ fn order_shape_cannot_be_changed_once_the_order_leaves_draft() {
             quantity: 1,
             unit_price_paise: 25000,
             notes: None,
+            modifiers: vec![],
         }],
     )
     .expect("create order");
@@ -821,6 +895,7 @@ fn a_recovered_draft_orders_shape_can_be_corrected_and_it_survives_reopening() {
                 quantity: 1,
                 unit_price_paise: 25000,
                 notes: None,
+                modifiers: vec![],
             }],
         )
         .expect("first tap creates the draft order");
@@ -885,6 +960,7 @@ fn send_to_kitchen_produces_one_ticket_per_routed_station_and_it_is_listable() {
             quantity: 2,
             unit_price_paise: 25000,
             notes: None,
+            modifiers: vec![],
         }],
     )
     .expect("create order");
@@ -918,6 +994,7 @@ fn kot_status_transitions_through_the_state_machine_and_rejects_illegal_moves() 
             quantity: 1,
             unit_price_paise: 25000,
             notes: None,
+            modifiers: vec![],
         }],
     )
     .expect("create order");
@@ -958,6 +1035,7 @@ fn send_to_kitchen_notifies_the_hub_with_an_upserted_kot() {
             quantity: 1,
             unit_price_paise: 25000,
             notes: None,
+            modifiers: vec![],
         }],
     )
     .expect("create order");
@@ -994,6 +1072,7 @@ fn transition_kot_status_notifies_upserted_then_removed_on_terminal_status() {
             quantity: 1,
             unit_price_paise: 25000,
             notes: None,
+            modifiers: vec![],
         }],
     )
     .expect("create order");
@@ -1063,6 +1142,7 @@ fn a_print_failure_is_visible_to_staff_after_send_to_kitchen() {
             quantity: 1,
             unit_price_paise: 25000,
             notes: None,
+            modifiers: vec![],
         }],
     )
     .expect("create order");
@@ -1075,4 +1155,396 @@ fn a_print_failure_is_visible_to_staff_after_send_to_kitchen() {
     assert_eq!(failed[0].printer_name, "Kitchen Printer");
     assert_eq!(failed[0].kot_station, "MAIN_KITCHEN");
     assert!(failed[0].last_error.is_some());
+}
+
+// ------------------------------------------------- Milestone 3 Track B --
+// Quantity control, modifier attachment and #132-A post-DRAFT item addition
+// (docs/m3-planning.md Track B, docs/backlog-m2.md P1 "No quantity control
+// on a cart line"). The purpose stated in the task brief: the money
+// invariant must be able to see real quantities AND real modifier price
+// deltas, reachable through the exact commands the frontend will call.
+
+/// The exact defect from the wild: five taps of one item must become one
+/// line of quantity 5 through the Tauri command surface, not five separate
+/// lines of quantity 1.
+#[test]
+fn update_order_item_quantity_through_the_tauri_command_surface() {
+    let state = seeded_state();
+    let order = create_order_impl(
+        &state,
+        "DINE_IN".to_string(),
+        None,
+        vec![NewOrderItemRequest {
+            menu_item_id: "item-1".to_string(),
+            variant_id: None,
+            quantity: 1,
+            unit_price_paise: 25000,
+            notes: None,
+            modifiers: vec![],
+        }],
+    )
+    .expect("create order");
+    let item_id = order.items[0].id.clone();
+
+    let updated = update_order_item_quantity_impl(&state, &order.holler_order_id, &item_id, 5)
+        .expect("quantity update must succeed");
+
+    assert_eq!(updated.items.len(), 1, "still one line, never five");
+    assert_eq!(updated.items[0].quantity, 5);
+    assert_eq!(updated.items[0].line_total_paise, 125000);
+    assert_eq!(updated.subtotal_paise, 125000);
+    assert_eq!(updated.total_paise, 125000);
+}
+
+/// Zero/negative quantity is rejected at the command boundary with the same
+/// `INVALID_QUANTITY` code `add_order_item`/`create_order` already use.
+#[test]
+fn update_order_item_quantity_rejects_non_positive_quantity() {
+    let state = seeded_state();
+    let order = create_order_impl(
+        &state,
+        "DINE_IN".to_string(),
+        None,
+        vec![NewOrderItemRequest {
+            menu_item_id: "item-1".to_string(),
+            variant_id: None,
+            quantity: 1,
+            unit_price_paise: 25000,
+            notes: None,
+            modifiers: vec![],
+        }],
+    )
+    .expect("create order");
+    let item_id = order.items[0].id.clone();
+
+    let err = update_order_item_quantity_impl(&state, &order.holler_order_id, &item_id, 0)
+        .expect_err("zero quantity must be rejected");
+    assert_eq!(err.code, "INVALID_QUANTITY");
+}
+
+/// `#132-A`: a quantity change must succeed even after the order has left
+/// DRAFT (here, CONFIRMED) — matching `add_order_item`'s widened gate.
+#[test]
+fn update_order_item_quantity_succeeds_after_confirmation_132a() {
+    let state = seeded_state();
+    let order = create_order_impl(
+        &state,
+        "DINE_IN".to_string(),
+        None,
+        vec![NewOrderItemRequest {
+            menu_item_id: "item-1".to_string(),
+            variant_id: None,
+            quantity: 1,
+            unit_price_paise: 25000,
+            notes: None,
+            modifiers: vec![],
+        }],
+    )
+    .expect("create order");
+    let item_id = order.items[0].id.clone();
+
+    holler_pos_lib::commands::orders::confirm_order_impl(&state, &order.holler_order_id)
+        .expect("confirm order");
+
+    let updated = update_order_item_quantity_impl(&state, &order.holler_order_id, &item_id, 3)
+        .expect("quantity change must succeed on a CONFIRMED order (#132-A)");
+    assert_eq!(updated.items[0].quantity, 3);
+}
+
+/// THE DEFECT the orchestrator's verifier found, exercised through the
+/// actual Tauri command boundary: a quantity change on a line the kitchen
+/// already has a ticket for must be rejected with an actionable error, not
+/// silently applied while the kitchen's copy goes stale. `#132-A` widened
+/// `update_order_item_quantity` to work post-DRAFT, but only for lines no
+/// `kot` has frozen a snapshot of yet — this is the line that already has
+/// one.
+#[test]
+fn update_order_item_quantity_rejects_an_already_ticketed_line() {
+    let state = seeded_kitchen_state();
+    let order = create_order_impl(
+        &state,
+        "DINE_IN".to_string(),
+        None,
+        vec![NewOrderItemRequest {
+            menu_item_id: "item-1".to_string(),
+            variant_id: None,
+            quantity: 1,
+            unit_price_paise: 25000,
+            notes: None,
+            modifiers: vec![],
+        }],
+    )
+    .expect("create order");
+    let item_id = order.items[0].id.clone();
+
+    holler_pos_lib::commands::orders::confirm_order_impl(&state, &order.holler_order_id)
+        .expect("confirm order");
+    send_order_to_kitchen_impl(&state, &order.holler_order_id).expect("send to kitchen tickets it");
+
+    let err = update_order_item_quantity_impl(&state, &order.holler_order_id, &item_id, 5)
+        .expect_err("quantity change on an already-ticketed line must be rejected");
+    assert_eq!(err.code, "ORDER_ITEM_ALREADY_TICKETED");
+    assert!(
+        err.message.contains("cancel"),
+        "the error must name the sanctioned alternative (#132-C cancel + re-add), got: {}",
+        err.message
+    );
+
+    // Nothing changed — the rejected call must not have written anything.
+    let fetched = get_order_impl(&state, &order.holler_order_id)
+        .expect("get_order")
+        .expect("order exists");
+    assert_eq!(fetched.items[0].quantity, 1);
+}
+
+/// THE CRASH TEST for quantity control, mirroring
+/// `a_draft_order_survives_the_pos_process_ending_and_a_fresh_one_reopening`:
+/// a quantity change written through as the cashier taps must survive the
+/// POS process ending with no graceful shutdown and a completely fresh
+/// process reopening the same encrypted file. Nothing here asserts that
+/// `update_order_item_quantity` was *called*; it drops the whole `AppState`/
+/// `Db` (no shared connection, no in-memory-only handle) and asserts what a
+/// fresh read of SQLite alone produces.
+#[test]
+fn a_quantity_change_survives_the_pos_process_ending_and_a_fresh_one_reopening() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let sealed = dir.path().join("edge.db.enc");
+    let plaintext = dir.path().join("edge.db");
+
+    let order_id: String;
+    let item_id: String;
+
+    // ---- "session 1": the cashier adds a line, then bumps its quantity. ----
+    {
+        let db = Db::open(&sealed, &plaintext, EncryptionKey::new([17u8; 32])).expect("open db");
+        seed(&db);
+        let state = AppState::new(db, OUTLET_ID.to_string(), DEVICE_ID.to_string());
+
+        let order = create_order_impl(
+            &state,
+            "DINE_IN".to_string(),
+            None,
+            vec![NewOrderItemRequest {
+                menu_item_id: "item-1".to_string(),
+                variant_id: None,
+                quantity: 1,
+                unit_price_paise: 25000,
+                notes: None,
+                modifiers: vec![],
+            }],
+        )
+        .expect("create order");
+        order_id = order.holler_order_id.clone();
+        item_id = order.items[0].id.clone();
+
+        update_order_item_quantity_impl(&state, &order_id, &item_id, 5)
+            .expect("quantity update persists");
+
+        // Process ends here with no graceful shutdown — models a crash right
+        // after the quantity tap.
+    }
+
+    // ---- "session 2": a fresh process, fresh AppState, same file. ----
+    let db2 = Db::open(&sealed, &plaintext, EncryptionKey::new([17u8; 32]))
+        .expect("reopen must succeed");
+    let state2 = AppState::new(db2, OUTLET_ID.to_string(), DEVICE_ID.to_string());
+
+    let recovered = get_active_draft_order_impl(&state2)
+        .expect("recovery read must succeed")
+        .expect("draft order must be recoverable");
+    assert_eq!(recovered.holler_order_id, order_id);
+    let recovered_item = recovered
+        .items
+        .iter()
+        .find(|i| i.id == item_id)
+        .expect("line recoverable");
+    assert_eq!(
+        recovered_item.quantity, 5,
+        "the quantity change must have survived the crash, not just the return value"
+    );
+    assert_eq!(recovered_item.line_total_paise, 125000);
+    assert_eq!(recovered.subtotal_paise, 125000);
+}
+
+/// Modifier attachment end to end: a modifier chosen on the very first tap
+/// (the line that creates the order) must have its `price_delta_paise` land
+/// in the line total and the order's own subtotal/total — reachable purely
+/// through `create_order`, not just in principle inside `edge/database`.
+#[test]
+fn create_order_persists_a_modifier_and_its_price_delta_reaches_order_totals() {
+    let state = seeded_state();
+
+    let order = create_order_impl(
+        &state,
+        "DINE_IN".to_string(),
+        None,
+        vec![NewOrderItemRequest {
+            menu_item_id: "item-1".to_string(),
+            variant_id: None,
+            quantity: 2,
+            unit_price_paise: 25000,
+            notes: None,
+            modifiers: vec![NewOrderItemModifierRequest {
+                modifier_id: "modifier-1".to_string(),
+                group_name: "Size".to_string(),
+                option_name: "Large".to_string(),
+                price_delta_paise: 5000,
+            }],
+        }],
+    )
+    .expect("create order with a modifier");
+
+    // (unit_price 25000 + modifier delta 5000) * quantity 2 = 60000.
+    assert_eq!(order.items[0].modifiers.len(), 1);
+    assert_eq!(order.items[0].modifiers[0].price_delta_paise, 5000);
+    assert_eq!(order.items[0].line_total_paise, 60000);
+    assert_eq!(order.subtotal_paise, 60000);
+    assert_eq!(order.total_paise, 60000);
+
+    // Round-trips through storage — the modifier is not just present on the
+    // return value of the write, it survives a fresh read.
+    let fetched = get_order_impl(&state, &order.holler_order_id)
+        .expect("get_order")
+        .expect("order exists");
+    assert_eq!(fetched.items[0].modifiers.len(), 1);
+    assert_eq!(fetched.items[0].modifiers[0].option_name, "Large");
+    assert_eq!(fetched.items[0].line_total_paise, 60000);
+}
+
+/// Modifier attachment via `add_order_item` — the second-tap path, and
+/// (`#132-A`) legal even after the order has left DRAFT.
+#[test]
+fn add_order_item_persists_a_modifier_after_confirmation_132a() {
+    let state = seeded_state();
+    let order = create_order_impl(
+        &state,
+        "DINE_IN".to_string(),
+        None,
+        vec![NewOrderItemRequest {
+            menu_item_id: "item-1".to_string(),
+            variant_id: None,
+            quantity: 1,
+            unit_price_paise: 25000,
+            notes: None,
+            modifiers: vec![],
+        }],
+    )
+    .expect("create order");
+
+    holler_pos_lib::commands::orders::confirm_order_impl(&state, &order.holler_order_id)
+        .expect("confirm order");
+
+    let after_add = add_order_item_impl(
+        &state,
+        &order.holler_order_id,
+        NewOrderItemRequest {
+            menu_item_id: "item-1".to_string(),
+            variant_id: None,
+            quantity: 1,
+            unit_price_paise: 25000,
+            notes: None,
+            modifiers: vec![NewOrderItemModifierRequest {
+                modifier_id: "modifier-2".to_string(),
+                group_name: "Spice".to_string(),
+                option_name: "Extra Hot".to_string(),
+                price_delta_paise: 1000,
+            }],
+        },
+    )
+    .expect("add-item with a modifier must succeed post-confirmation (#132-A)");
+
+    let added_line = after_add
+        .items
+        .iter()
+        .find(|i| !i.modifiers.is_empty())
+        .expect("the added line carries its modifier");
+    assert_eq!(added_line.modifiers[0].price_delta_paise, 1000);
+    assert_eq!(added_line.line_total_paise, 26000);
+    assert_eq!(after_add.subtotal_paise, 25000 + 26000);
+}
+
+/// Composition test (CLAUDE.md: "Test compositions, not just each operation
+/// alone" — the exact shape of the M2 order-type-lock regression): a line
+/// added after send-to-kitchen (`#132-A`), with a modifier, then a quantity
+/// change on that same line, then send-to-kitchen again — every step must
+/// leave the money invariant correct, and the addition must reach the
+/// kitchen as a fresh ticket (idempotent-by-delta), not silently disappear.
+#[test]
+fn addition_modifier_and_quantity_change_compose_correctly_after_send_to_kitchen() {
+    let state = seeded_kitchen_state();
+    let order = create_order_impl(
+        &state,
+        "DINE_IN".to_string(),
+        Some("table-1".to_string()),
+        vec![NewOrderItemRequest {
+            menu_item_id: "item-1".to_string(),
+            variant_id: None,
+            quantity: 1,
+            unit_price_paise: 25000,
+            notes: None,
+            modifiers: vec![],
+        }],
+    )
+    .expect("create order");
+
+    holler_pos_lib::commands::orders::confirm_order_impl(&state, &order.holler_order_id)
+        .expect("confirm order");
+    let first_kots =
+        send_order_to_kitchen_impl(&state, &order.holler_order_id).expect("first send");
+    assert_eq!(first_kots.len(), 1);
+
+    // #132-A: add a second line, with a modifier, after the kitchen already
+    // has a ticket.
+    let after_add = add_order_item_impl(
+        &state,
+        &order.holler_order_id,
+        NewOrderItemRequest {
+            menu_item_id: "item-1".to_string(),
+            variant_id: None,
+            quantity: 2,
+            unit_price_paise: 25000,
+            notes: None,
+            modifiers: vec![NewOrderItemModifierRequest {
+                modifier_id: "modifier-3".to_string(),
+                group_name: "Spice".to_string(),
+                option_name: "Extra Hot".to_string(),
+                price_delta_paise: 1000,
+            }],
+        },
+    )
+    .expect("post-send addition must succeed (#132-A)");
+    let added_item_id = after_add
+        .items
+        .iter()
+        .find(|i| !i.modifiers.is_empty())
+        .expect("added line present")
+        .id
+        .clone();
+
+    // (25000 + 1000) * 2 = 52000.
+    assert_eq!(after_add.subtotal_paise, 25000 + 52000);
+
+    // Change the new line's quantity — still legal post-send.
+    let after_qty =
+        update_order_item_quantity_impl(&state, &order.holler_order_id, &added_item_id, 3)
+            .expect("quantity change must succeed post-send (#132-A)");
+    let resized_line = after_qty
+        .items
+        .iter()
+        .find(|i| i.id == added_item_id)
+        .expect("resized line present");
+    // (25000 + 1000) * 3 = 78000.
+    assert_eq!(resized_line.line_total_paise, 78000);
+    assert_eq!(after_qty.subtotal_paise, 25000 + 78000);
+
+    // Sending again must ticket only the addition, as a fresh #132-A-style
+    // ticket, not silently drop it and not mutate the first ticket.
+    let second_kots =
+        send_order_to_kitchen_impl(&state, &order.holler_order_id).expect("second send");
+    assert_eq!(second_kots.len(), 1, "the addition produces one new ticket");
+    assert_ne!(second_kots[0].id, first_kots[0].id);
+    assert_eq!(second_kots[0].items[0].quantity, 3);
+
+    let all_kots = list_kots_for_order_impl(&state, &order.holler_order_id).expect("list kots");
+    assert_eq!(all_kots.len(), 2, "both tickets must be visible to the kitchen");
 }

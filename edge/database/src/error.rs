@@ -28,11 +28,19 @@ pub enum DbError {
     #[error("invalid input: {0}")]
     InvalidInput(String),
 
-    /// A caller tried to amend (add/remove an order_item on) an order that
-    /// is not DRAFT. Amendment is only legal pre-confirmation; the edge
-    /// enforces this itself rather than trusting the caller (see
-    /// `Db::add_order_item_with_outbox` / `Db::remove_order_item_with_outbox`).
-    #[error("order {order_id} is not amendable: status is {status}, not DRAFT")]
+    /// A caller tried to amend an order line while the order is in a status
+    /// that no longer permits it. Two different legal-status sets share this
+    /// one variant: removing a line or correcting the order's shape is only
+    /// legal from DRAFT (`Db::remove_order_item_with_outbox`,
+    /// `Db::update_order_shape_with_outbox`); adding a line or changing a
+    /// line's quantity is legal through DRAFT/CONFIRMED/SENT_TO_KITCHEN/
+    /// PREPARING — the `#132-A` post-DRAFT addition path
+    /// (`Db::add_order_item_with_outbox`,
+    /// `Db::update_order_item_quantity_with_outbox`). The edge enforces
+    /// whichever set applies itself rather than trusting the caller; `status`
+    /// carries the order's actual status so the caller can render a specific
+    /// message rather than inferring one.
+    #[error("order {order_id} is not amendable: status is {status}")]
     OrderNotAmendable { order_id: String, status: String },
 
     /// A caller tried to confirm (DRAFT -> CONFIRMED) an order that is not
@@ -64,6 +72,32 @@ pub enum DbError {
         kot_id: String,
         from: String,
         to: String,
+    },
+
+    /// A caller tried to change the quantity of a line that some `kot` row
+    /// already carries a frozen snapshot of
+    /// (`repo::already_ticketed_order_item_ids`;
+    /// `Db::update_order_item_quantity_with_outbox`). `kot.items_json` is
+    /// written once at ticket creation and never revised in place — the
+    /// kitchen's copy would silently disagree with the edge's if the
+    /// quantity changed underneath it with no signal either way, exactly the
+    /// print-visibility defect shape this milestone is closing elsewhere
+    /// (docs/backlog-m2.md P1 "A KOT that can never be queued for print is
+    /// invisible to staff"). Deliberately a hard rejection rather than a
+    /// silent re-ticket or a mutated ticket: the `#132-C` cancellation path
+    /// (`Db::cancel_kitchen_items_with_outbox`) is the sanctioned way to
+    /// retract an already-ticketed line, followed by a fresh
+    /// `add_order_item_with_outbox` at the corrected quantity — `error.rs`
+    /// carries the message so a caller can render it verbatim (§64: staff
+    /// must be told whether intervention is necessary, and what it is).
+    #[error(
+        "order item {order_item_id} on order {order_id} is already ticketed at the kitchen; \
+         its quantity cannot be changed in place — cancel the line and add a replacement \
+         with the new quantity"
+    )]
+    OrderItemAlreadyTicketed {
+        order_item_id: String,
+        order_id: String,
     },
 }
 

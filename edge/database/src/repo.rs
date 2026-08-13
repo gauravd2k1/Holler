@@ -540,6 +540,50 @@ pub(crate) fn require_draft_order(tx: &Transaction, order_id: &str) -> DbResult<
     }
 }
 
+/// Enforces "a line may be added, or an existing line's quantity changed,
+/// while the order is still active" — the wider gate `#132-A` (post-DRAFT
+/// item addition, docs/spec/kitchen.md's #132 -> #132-A change history) and
+/// `SET_ORDER_ITEM_QUANTITY` need, versus [`require_draft_order`]'s
+/// DRAFT-only gate that still guards removal and the order-shape correction.
+/// Legal statuses are `DRAFT` (still building the cart), `CONFIRMED` (sent to
+/// billing but not yet the kitchen) and `SENT_TO_KITCHEN`/`PREPARING` (the
+/// kitchen already has some tickets, and a later
+/// `send_order_to_kitchen_with_outbox` call is idempotent-by-delta, so a line
+/// added or resized here reaches the kitchen as a fresh #132-A-style ticket
+/// rather than mutating one already in flight). `READY`/`SERVED`/`BILLED`/
+/// `PAID`/`CLOSED`/`CANCELLED` are terminal for line changes — by that point
+/// the correction belongs to a new order or an explicit reopen, not a silent
+/// edit of a bill already on its way out. Returns the order's `outlet_id` on
+/// success. Returns `DbError::NotFound` if the order does not exist,
+/// `DbError::OrderNotAmendable` if it exists but is in a terminal status.
+pub(crate) fn require_amendable_for_item_changes(
+    tx: &Transaction,
+    order_id: &str,
+) -> DbResult<String> {
+    let row: Option<(String, String)> = tx
+        .query_row(
+            "SELECT outlet_id, status FROM \"order\" WHERE id = ?1",
+            params![order_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    match row {
+        None => Err(crate::error::DbError::NotFound("order")),
+        Some((outlet_id, status))
+            if matches!(
+                status.as_str(),
+                "DRAFT" | "CONFIRMED" | "SENT_TO_KITCHEN" | "PREPARING"
+            ) =>
+        {
+            Ok(outlet_id)
+        }
+        Some((_, status)) => Err(crate::error::DbError::OrderNotAmendable {
+            order_id: order_id.to_string(),
+            status,
+        }),
+    }
+}
+
 /// Enforces "confirmation is only legal from DRAFT" inside the same
 /// transaction as the write it is guarding, so the check and the mutation it
 /// protects can never race — the confirm-path analogue of
@@ -658,8 +702,63 @@ pub(crate) fn get_order_item_in_tx(tx: &Transaction, id: &str) -> DbResult<Optio
     .map_err(Into::into)
 }
 
+/// Public (outside a write transaction) twin of [`get_order_item_in_tx`] —
+/// for read paths that just need one line by id (e.g. before calling
+/// [`crate::Db::update_order_item_quantity_with_outbox`] to render its
+/// current quantity, or in tests).
+pub fn get_order_item(conn: &Connection, id: &str) -> DbResult<Option<OrderItem>> {
+    conn.query_row(
+        "SELECT id, order_id, menu_item_id, variant_id, quantity, unit_price_paise, line_total_paise, notes, created_at
+         FROM order_item WHERE id = ?1",
+        params![id],
+        |row| {
+            Ok(OrderItem {
+                id: row.get(0)?,
+                order_id: row.get(1)?,
+                menu_item_id: row.get(2)?,
+                variant_id: row.get(3)?,
+                quantity: row.get(4)?,
+                unit_price_paise: row.get(5)?,
+                line_total_paise: row.get(6)?,
+                notes: row.get(7)?,
+                created_at: row.get(8)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
 pub(crate) fn delete_order_item(tx: &Transaction, id: &str) -> DbResult<()> {
     let changed = tx.execute("DELETE FROM order_item WHERE id = ?1", params![id])?;
+    if changed == 0 {
+        return Err(crate::error::DbError::NotFound("order_item"));
+    }
+    Ok(())
+}
+
+/// Sets `quantity`/`line_total_paise` on an existing `order_item` row — the
+/// single write behind `SET_ORDER_ITEM_QUANTITY`
+/// (`packages/contracts/src/types/order.ts`, contracts 0.4.0/ADR-016).
+/// Deliberately an `UPDATE` of the existing row, never a delete-then-insert:
+/// that would be two durable writes with a crash window between them, which
+/// is exactly the loss the durable-cart work (`4b0c560`) eliminated
+/// (docs/backlog-m2.md, docs/retro.md 2026-08-10). `line_total_paise` is
+/// supplied by the caller ([`crate::Db::update_order_item_quantity_with_outbox`],
+/// which recomputes it from the row's own `unit_price_paise` and its real
+/// `order_item_modifier` rows via [`compute_line_total_paise`]) rather than
+/// derived again here, so there is one definition of the money invariant,
+/// not two.
+pub(crate) fn update_order_item_quantity(
+    tx: &Transaction,
+    order_item_id: &str,
+    quantity: i64,
+    line_total_paise: i64,
+) -> DbResult<()> {
+    let changed = tx.execute(
+        "UPDATE order_item SET quantity = ?1, line_total_paise = ?2 WHERE id = ?3",
+        params![quantity, line_total_paise, order_item_id],
+    )?;
     if changed == 0 {
         return Err(crate::error::DbError::NotFound("order_item"));
     }
@@ -735,6 +834,36 @@ pub fn list_order_item_modifiers(
         .query_map(params![order_item_id], row_to_order_item_modifier)?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
+}
+
+/// Every modifier selection across every line of one order, grouped by
+/// `order_item_id` — one query rather than N (a caller building a whole
+/// order's read-back would otherwise issue one [`list_order_item_modifiers`]
+/// call per line). Used by the POS command layer to fill in
+/// `CanonicalOrder.items[].modifiers` on every order read path (`get_order`,
+/// `list_orders`, `get_active_draft_order`, and the return value of every
+/// mutation), which is what makes a modifier's `price_delta_paise` visible to
+/// a caller after the write, not just present in the outbox event.
+pub fn list_order_item_modifiers_for_order(
+    conn: &Connection,
+    order_id: &str,
+) -> DbResult<std::collections::HashMap<String, Vec<OrderItemModifier>>> {
+    let mut stmt = conn.prepare(
+        "SELECT m.id, m.order_item_id, m.modifier_id, m.group_name, m.option_name, m.price_delta_paise, m.created_at
+         FROM order_item_modifier m
+         JOIN order_item i ON i.id = m.order_item_id
+         WHERE i.order_id = ?1
+         ORDER BY m.order_item_id, m.created_at, m.id",
+    )?;
+    let rows = stmt
+        .query_map(params![order_id], row_to_order_item_modifier)?
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut by_item: std::collections::HashMap<String, Vec<OrderItemModifier>> =
+        std::collections::HashMap::new();
+    for row in rows {
+        by_item.entry(row.order_item_id.clone()).or_default().push(row);
+    }
+    Ok(by_item)
 }
 
 /// The MONEY INVARIANT from `0003_order_item_modifiers.sql`, the single
@@ -877,6 +1006,93 @@ pub(crate) fn insert_item_added_outbox(
             created_at: meta.occurred_at.clone(),
         },
     )
+}
+
+/// Best-effort correction of a still-unpublished `ItemAdded` payload's
+/// `quantity`/`line_total_paise` fields, called from
+/// [`crate::Db::update_order_item_quantity_with_outbox`] — the `ItemAdded`
+/// analogue of [`update_pending_order_created_payload`].
+///
+/// **Why this exists rather than a dedicated event:** the frozen event
+/// catalog (`packages/contracts/src/types/events.ts` `OUTBOX_EVENT_TYPES`)
+/// has no "item quantity changed" event as of contracts 0.4.0 — only the
+/// `SET_ORDER_ITEM_QUANTITY` *command* landed there, not a corresponding
+/// outbox *event*. This crate never originates a wire event outside that
+/// catalog (ADR-008; contracts are read-only to builder agents). So while the
+/// line's own `ItemAdded` event has not yet left the device
+/// (`published_at IS NULL`), the quantity change is folded into that
+/// still-pending snapshot — a correction of a not-yet-observed fact, not a
+/// second fact needing a second event, matching the shape
+/// `update_pending_order_created_payload` already uses for order-shape
+/// corrections.
+///
+/// A no-op (0 rows touched) if no unpublished `ItemAdded` row exists for
+/// this exact `order_item_id` — either it was added and already published
+/// (residual gap below), or (impossible in practice, since a quantity change
+/// requires an existing line) it was never added at all.
+///
+/// **Residual gap, called out rather than hidden:** if the outlet is online
+/// and the sync worker has already published this line's `ItemAdded` event
+/// by the time the cashier changes its quantity, the cloud's copy stays
+/// stale until a future milestone adds a proper "item quantity changed"
+/// event (needs a contract ADR — out of this crate's authority today). The
+/// edge's own `order_item` row is always correct regardless; only the
+/// cloud's already-delivered copy of the original `ItemAdded` event can go
+/// stale, exactly as `update_order_shape_with_outbox`'s doc comment
+/// describes for order shape.
+pub(crate) fn correct_pending_item_added_quantity(
+    tx: &Transaction,
+    order_id: &str,
+    order_item_id: &str,
+    quantity: i64,
+    line_total_paise: i64,
+) -> DbResult<()> {
+    let mut stmt = tx.prepare(
+        "SELECT id, payload_json FROM local_outbox
+         WHERE aggregate_id = ?1 AND event_type = ?2 AND published_at IS NULL",
+    )?;
+    let candidates: Vec<(String, String)> = stmt
+        .query_map(params![order_id, EVENT_TYPE_ITEM_ADDED], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    for (outbox_id, payload_json) in candidates {
+        let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&payload_json) else {
+            continue;
+        };
+        let matches_this_item = value
+            .get("data")
+            .and_then(|d| d.get("item"))
+            .and_then(|i| i.get("id"))
+            .and_then(|id| id.as_str())
+            == Some(order_item_id);
+        if !matches_this_item {
+            continue;
+        }
+        if let Some(item) = value
+            .get_mut("data")
+            .and_then(|d| d.get_mut("item"))
+            .and_then(|i| i.as_object_mut())
+        {
+            item.insert("quantity".to_string(), serde_json::json!(quantity));
+            item.insert(
+                "line_total_paise".to_string(),
+                serde_json::json!(line_total_paise),
+            );
+            if let Ok(corrected) = serde_json::to_string(&value) {
+                tx.execute(
+                    "UPDATE local_outbox SET payload_json = ?1 WHERE id = ?2",
+                    params![corrected, outbox_id],
+                )?;
+            }
+        }
+        // Exactly one ItemAdded row can ever describe this order_item_id —
+        // it is minted once, at add-time — so the first match is the only
+        // match.
+        break;
+    }
+    Ok(())
 }
 
 /// Builds the `ItemRemoved` event envelope + `data` payload from the
