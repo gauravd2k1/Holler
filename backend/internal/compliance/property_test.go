@@ -196,6 +196,199 @@ func TestProperty_SplitGroupConservation(t *testing.T) {
 	}
 }
 
+// TestProperty_LineComponentsReconcileWithInvoiceTotals is the THIRD §66
+// property, added after the verifier's Defect 1 finding: for every generated
+// invoice and every component (CGST/SGST/IGST/CESS),
+//
+//	Σ over lines of line.<component>Paise == invoice.<component>Paise
+//
+// exactly — never merely close. This is the documented reconciliation rule
+// (engine.go's package doc explains WHY it holds for both pricing modes):
+// invoice-level totals are *composed* from the same numbers the lines
+// display, rather than the lines displaying an independent approximation
+// that happens to usually agree. A printed GST invoice must never disagree
+// with its own line items' columns, to the paise, ever.
+func TestProperty_LineComponentsReconcileWithInvoiceTotals(t *testing.T) {
+	r := rand.New(rand.NewSource(2026))
+	for i := 0; i < propertyIterations; i++ {
+		lineCount := 1 + r.Intn(12)
+		lines := make([]Line, lineCount)
+		for j := range lines {
+			lines[j] = randomLine(r, "order-item")
+		}
+
+		lineComputations, totals, err := ComputeInvoice(lines)
+		if err != nil {
+			t.Fatalf("iteration %d: unexpected error: %v", i, err)
+		}
+
+		var sumCGST, sumSGST, sumIGST, sumCess int64
+		for _, lc := range lineComputations {
+			sumCGST += int64(lc.CGSTPaise)
+			sumSGST += int64(lc.SGSTPaise)
+			sumIGST += int64(lc.IGSTPaise)
+			sumCess += int64(lc.CessPaise)
+		}
+		if sumCGST != int64(totals.CGSTPaise) {
+			t.Fatalf("iteration %d: sum of line CGSTPaise = %d, invoice CGSTPaise = %d (lines: %+v)",
+				i, sumCGST, totals.CGSTPaise, lines)
+		}
+		if sumSGST != int64(totals.SGSTPaise) {
+			t.Fatalf("iteration %d: sum of line SGSTPaise = %d, invoice SGSTPaise = %d (lines: %+v)",
+				i, sumSGST, totals.SGSTPaise, lines)
+		}
+		if sumIGST != int64(totals.IGSTPaise) {
+			t.Fatalf("iteration %d: sum of line IGSTPaise = %d, invoice IGSTPaise = %d (lines: %+v)",
+				i, sumIGST, totals.IGSTPaise, lines)
+		}
+		if sumCess != int64(totals.CessPaise) {
+			t.Fatalf("iteration %d: sum of line CessPaise = %d, invoice CessPaise = %d (lines: %+v)",
+				i, sumCess, totals.CessPaise, lines)
+		}
+	}
+}
+
+// mixedRateProfiles are the fixed set of distinct tax profiles the fourth
+// property mixes on one invoice: a 5% split-rate food profile, an 18%
+// split-rate profile, a 12%+2.8%-cess profile (cess stacked on GST), a
+// 12%-only IGST profile (no CGST/SGST at all — the "component absent
+// entirely" case for a different axis than 0%), and a fully exempt profile
+// (no rates at all).
+func mixedRateProfiles() [][]ResolvedRate {
+	return [][]ResolvedRate{
+		{ // 5% food (CGST+SGST)
+			{Component: contracts.TaxComponentCGST, RateBps: 250},
+			{Component: contracts.TaxComponentSGST, RateBps: 250},
+		},
+		{ // 18% (CGST+SGST)
+			{Component: contracts.TaxComponentCGST, RateBps: 900},
+			{Component: contracts.TaxComponentSGST, RateBps: 900},
+		},
+		{ // 12% + 2.8% cess stacked on GST
+			{Component: contracts.TaxComponentCGST, RateBps: 600},
+			{Component: contracts.TaxComponentSGST, RateBps: 600},
+			{Component: contracts.TaxComponentCess, RateBps: 280},
+		},
+		{ // 12% IGST only — CGST/SGST/CESS are absent from this profile
+			// entirely (not zero-rated: the component simply has no rule).
+			{Component: contracts.TaxComponentIGST, RateBps: 1200},
+		},
+		{}, // fully exempt: no rates at all.
+	}
+}
+
+// randomMixedRateLine generates one line under a randomly chosen profile from
+// mixedRateProfiles, so a single invoice can mix several distinct rate sets —
+// the shape the fourth §66 property requires (a real bill with a 5% food
+// item, an 18% item, and a cess-bearing item together).
+func randomMixedRateLine(r *rand.Rand, profiles [][]ResolvedRate, orderItemID string) Line {
+	quantity := 1 + r.Intn(6)
+	var unitPrice int
+	switch r.Intn(4) {
+	case 0:
+		unitPrice = 0
+	case 1:
+		unitPrice = 1
+	default:
+		unitPrice = r.Intn(500000)
+	}
+	discountPerUnit := 0
+	if r.Intn(3) == 0 && unitPrice > 0 {
+		discountPerUnit = r.Intn(unitPrice + 1)
+	}
+	mode := contracts.PricingModeExclusive
+	if r.Intn(2) == 0 {
+		mode = contracts.PricingModeInclusive
+	}
+	profile := profiles[r.Intn(len(profiles))]
+	return Line{
+		OrderItemID:          orderItemID,
+		Description:          "mixed-rate line",
+		Quantity:             quantity,
+		UnitPricePaise:       unitPrice,
+		DiscountPerUnitPaise: discountPerUnit,
+		TaxProfileID:         "mixed-profile",
+		PricingMode:          mode,
+		Rates:                profile,
+	}
+}
+
+// TestProperty_MixedRateLineComponentsReconcile is the FOURTH §66 property,
+// added at the human's request: the third property (line/invoice
+// reconciliation) must hold not just when every line shares one profile, but
+// across an invoice whose lines sit on GENUINELY DIFFERENT tax profiles —
+// different rates, different component sets, some components absent
+// entirely from a given line's profile. A line with no rule for a component
+// must receive EXACTLY zero of it — never a stray remainder paise from
+// largestRemainderSplit's allocation, which is the axis this property
+// stresses that the third property (single-profile) cannot reach.
+func TestProperty_MixedRateLineComponentsReconcile(t *testing.T) {
+	profiles := mixedRateProfiles()
+	r := rand.New(rand.NewSource(90210))
+	for i := 0; i < propertyIterations; i++ {
+		lineCount := 3 + r.Intn(10) // always enough lines to actually mix profiles
+		lines := make([]Line, lineCount)
+		for j := range lines {
+			lines[j] = randomMixedRateLine(r, profiles, "order-item")
+		}
+
+		lineComputations, totals, err := ComputeInvoice(lines)
+		if err != nil {
+			t.Fatalf("iteration %d: unexpected error: %v", i, err)
+		}
+
+		var sumCGST, sumSGST, sumIGST, sumCess int64
+		for j, lc := range lineComputations {
+			sumCGST += int64(lc.CGSTPaise)
+			sumSGST += int64(lc.SGSTPaise)
+			sumIGST += int64(lc.IGSTPaise)
+			sumCess += int64(lc.CessPaise)
+
+			// A line whose profile carries no rule for a component must show
+			// EXACTLY zero for it, regardless of how much tax other lines on
+			// the same invoice generate for that component.
+			if lc.CGSTRateBps == 0 && lc.CGSTPaise != 0 {
+				t.Fatalf("iteration %d line %d: CGST rate is 0 but CGSTPaise = %d (rates: %+v)",
+					i, j, lc.CGSTPaise, lines[j].Rates)
+			}
+			if lc.SGSTRateBps == 0 && lc.SGSTPaise != 0 {
+				t.Fatalf("iteration %d line %d: SGST rate is 0 but SGSTPaise = %d (rates: %+v)",
+					i, j, lc.SGSTPaise, lines[j].Rates)
+			}
+			if lc.IGSTRateBps == 0 && lc.IGSTPaise != 0 {
+				t.Fatalf("iteration %d line %d: IGST rate is 0 but IGSTPaise = %d (rates: %+v)",
+					i, j, lc.IGSTPaise, lines[j].Rates)
+			}
+			if lc.CessRateBps == 0 && lc.CessPaise != 0 {
+				t.Fatalf("iteration %d line %d: Cess rate is 0 but CessPaise = %d (rates: %+v)",
+					i, j, lc.CessPaise, lines[j].Rates)
+			}
+		}
+
+		if sumCGST != int64(totals.CGSTPaise) {
+			t.Fatalf("iteration %d: mixed-profile sum of line CGSTPaise = %d, invoice CGSTPaise = %d (lines: %+v)",
+				i, sumCGST, totals.CGSTPaise, lines)
+		}
+		if sumSGST != int64(totals.SGSTPaise) {
+			t.Fatalf("iteration %d: mixed-profile sum of line SGSTPaise = %d, invoice SGSTPaise = %d (lines: %+v)",
+				i, sumSGST, totals.SGSTPaise, lines)
+		}
+		if sumIGST != int64(totals.IGSTPaise) {
+			t.Fatalf("iteration %d: mixed-profile sum of line IGSTPaise = %d, invoice IGSTPaise = %d (lines: %+v)",
+				i, sumIGST, totals.IGSTPaise, lines)
+		}
+		if sumCess != int64(totals.CessPaise) {
+			t.Fatalf("iteration %d: mixed-profile sum of line CessPaise = %d, invoice CessPaise = %d (lines: %+v)",
+				i, sumCess, totals.CessPaise, lines)
+		}
+
+		invoice := toInvoice(totals)
+		if !invoice.SumsCorrectly() {
+			t.Fatalf("iteration %d: mixed-profile invoice does not satisfy SumsCorrectly(): %+v", i, totals)
+		}
+	}
+}
+
 func orderItemID(i int) string {
 	return "order-item-" + string(rune('a'+i))
 }
