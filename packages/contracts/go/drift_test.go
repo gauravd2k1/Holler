@@ -96,7 +96,7 @@ func TestMilestone1AggregateAuthority(t *testing.T) {
 // Mirrors AUDIT_REDACTED_FIELDS in src/types/identity.ts. Credential material
 // must never reach an audit_event value map or the wire (ADR-011).
 func TestAuditRedactedFields(t *testing.T) {
-	want := []string{"password_hash", "pin_hash", "token_hash"}
+	want := []string{"password_hash", "pin_hash", "token_hash", "device_token_hash", "credential_hash"}
 	if !reflect.DeepEqual(AuditRedactedFields, want) {
 		t.Fatalf("AuditRedactedFields drifted from TypeScript: got %v want %v", AuditRedactedFields, want)
 	}
@@ -210,6 +210,36 @@ func TestAuditEventFixtureRoundTrip(t *testing.T) {
 var credentialBearingFixtures = map[string]bool{
 	"edge_user_cache_entry.json":        true,
 	"edge_user_cache_entry_no_pin.json": true,
+	// Added at 0.4.3 and justified in the ADR-017 amendment, exactly as this
+	// guard demands. The device credential hash syncs to an enrolled edge so a
+	// LAN handshake can be verified with the uplink down — the ADR-011 pattern
+	// applied to devices, for the same offline-first reason. It carries an
+	// Argon2id VERIFIER, never a bearer token; see the assertion below.
+	"edge_device_credential.json": true,
+}
+
+// The device carrier is held to the same standard the user carriers are. Its
+// column is spelled token_hash, but the value must be an Argon2id verifier —
+// something a presented token is checked against — never a replayable bearer
+// token. If a plaintext token ever landed here, the hash prefix would be the
+// first casualty.
+func TestEdgeDeviceCredentialHoldsAVerifierNotAToken(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "fixtures", "edge_device_credential.json"))
+	if err != nil {
+		t.Fatalf("reading fixture: %v", err)
+	}
+	var cred EdgeDeviceCredential
+	if err := json.Unmarshal(raw, &cred); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !strings.HasPrefix(cred.CredentialHash, "$argon2id$") {
+		t.Fatalf("credential_hash must be an Argon2id verifier, got %q", cred.CredentialHash)
+	}
+	for _, forbidden := range []string{"refresh_token", "access_token", "plaintext"} {
+		if strings.Contains(string(raw), forbidden) {
+			t.Fatalf("device credential fixture must not contain %q", forbidden)
+		}
+	}
 }
 
 func TestEdgeUserCacheEntryFixtureRoundTrip(t *testing.T) {
@@ -411,5 +441,20 @@ func TestCashShiftAccounting(t *testing.T) {
 	noReason.VarianceReason = nil
 	if noReason.IsFullyAccounted() {
 		t.Fatalf("a non-zero variance with no reason must not be accepted (§39)")
+	}
+}
+
+// EdgeDeviceCredential (0.4.3, ADR-017 amendment) — the second deliberate
+// credential carrier after EdgeUserCacheEntry. Pinned because a mirror that
+// silently drops token_hash would make offline LAN auth fail closed with no
+// signal, and one that drops revoked_at would make a dead credential look live.
+func TestEdgeDeviceCredentialFixtureRoundTrip(t *testing.T) {
+	var cred EdgeDeviceCredential
+	roundTrip(t, "edge_device_credential.json", &cred)
+	if cred.CredentialHash == "" {
+		t.Fatalf("credential_hash must survive the round trip; offline LAN auth depends on it")
+	}
+	if cred.RevokedAt != nil {
+		t.Fatalf("fixture credential is live; revoked_at must be nil")
 	}
 }

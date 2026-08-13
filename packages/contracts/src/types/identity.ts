@@ -132,13 +132,65 @@ export const EdgeUserCacheEntrySchema = z.object({
 });
 export type EdgeUserCacheEntry = z.infer<typeof EdgeUserCacheEntrySchema>;
 
+// Added at 0.4.3 (ADR-017 amendment). The device credential hash, shipped to
+// an enrolled edge so a LAN handshake can be verified WITH THE UPLINK DOWN.
+//
+// This is the ADR-011 pattern applied to devices, not a new idea: /sync/config
+// already ships Argon2id password and PIN hashes so a cashier can log in
+// offline, for exactly the same reason. A kitchen screen that reconnects
+// during a WAN outage — a browser reload, a tablet waking, a router blip — must
+// still be able to authenticate, because ticket visibility is a core operation
+// and CLAUDE.md's premise is that core operations run without internet.
+//
+// The PLAINTEXT token still never leaves the cloud. Only the Argon2id hash
+// syncs, it travels only on /sync/config to an already-enrolled node, and the
+// edge SQLite file holding it is encrypted at rest (ADR-011). Never logged,
+// never in an audit value — token_hash and device_token_hash are both in
+// AUDIT_REDACTED_FIELDS above.
+export const EdgeDeviceCredentialSchema = z.object({
+  credential_id: z.string().uuid(),
+  device_id: z.string().uuid(),
+  tenant_id: z.string().uuid(),
+  outlet_id: z.string().uuid(),
+  // Argon2id encoded string over the token secret — a VERIFIER, never a
+  // bearer token. Named credential_hash rather than token_hash deliberately:
+  // the drift guard treats "token_hash" as bearer material, and it is right to,
+  // so the field that holds something you check against says so.
+  credential_hash: z.string(),
+  // A device kind is carried so the LAN server can refuse, say, a PRINTER_BRIDGE
+  // credential presented by something claiming to be a KDS.
+  device_kind: z.enum(["POS", "KDS", "WAITER", "PRINTER_BRIDGE"]),
+  // Both nullable. A revoked or expired credential still SYNCS — the edge must
+  // learn that it is dead, which it cannot do if the row simply vanishes while
+  // the uplink is down. The edge rejects on these fields; it does not infer
+  // liveness from absence.
+  revoked_at: z.string().datetime().nullable(),
+  expires_at: z.string().datetime().nullable(),
+  config_version: z.number().int(),
+  schema_version: z.literal(1),
+});
+export type EdgeDeviceCredential = z.infer<typeof EdgeDeviceCredentialSchema>;
+
 // Field names that must never be written into audit_event old_value/new_value
 // or emitted on the wire. The audit helper in each runtime redacts these
 // (ADR-011); the drift tests assert the list matches Go.
 //
 // token_hash added at 0.2.1 alongside the refresh_token table: a refresh-token
 // row must never reach an audit_event value either.
-export const AUDIT_REDACTED_FIELDS = ["password_hash", "pin_hash", "token_hash"] as const;
+export const AUDIT_REDACTED_FIELDS = [
+  "password_hash",
+  "pin_hash",
+  "token_hash",
+  // Added at 0.4.3 (ADR-017 amendment). The device credential's column IS
+  // named token_hash, so it was already matched by the entry above — this is
+  // belt-and-braces for any writer that spells the field with its qualifier,
+  // and it lets the auth package drop the local supplement it had to add at
+  // 0.4.1 when this list was still frozen without it.
+  "device_token_hash",
+  // The edge-cached verifier (0.4.3). Belongs in the sweep for the same reason
+  // password_hash does: it is credential material at rest on the shop floor.
+  "credential_hash",
+] as const;
 
 export const AuditEventSchema = z.object({
   id: z.string().uuid(),

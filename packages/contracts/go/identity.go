@@ -33,14 +33,14 @@ type Permission string
 
 // Milestone 1 permission set — extended per milestone by the orchestrator.
 const (
-	PermissionOrderCreate Permission = "order.create"
-	PermissionOrderModify Permission = "order.modify"
-	PermissionOrderCancel Permission = "order.cancel"
-	PermissionOrderVoid   Permission = "order.void"
-	PermissionMenuManage  Permission = "menu.manage"
-	PermissionTableManage Permission = "table.manage"
+	PermissionOrderCreate  Permission = "order.create"
+	PermissionOrderModify  Permission = "order.modify"
+	PermissionOrderCancel  Permission = "order.cancel"
+	PermissionOrderVoid    Permission = "order.void"
+	PermissionMenuManage   Permission = "menu.manage"
+	PermissionTableManage  Permission = "table.manage"
 	PermissionOutletManage Permission = "outlet.manage"
-	PermissionUserManage  Permission = "user.manage"
+	PermissionUserManage   Permission = "user.manage"
 )
 
 type Role struct {
@@ -130,7 +130,55 @@ type EdgeUserCacheEntry struct {
 //
 // token_hash added at 0.2.1 alongside the refresh_token table: a refresh-token
 // row must never reach an audit_event value either.
-var AuditRedactedFields = []string{"password_hash", "pin_hash", "token_hash"}
+var AuditRedactedFields = []string{
+	"password_hash",
+	"pin_hash",
+	"token_hash",
+	// Added at 0.4.3 (ADR-017 amendment). The device credential column IS named
+	// token_hash and was already matched above; this covers a qualified spelling
+	// and lets internal/auth drop the local supplement it needed at 0.4.1 when
+	// this list was frozen without it.
+	"device_token_hash",
+	// The edge-cached verifier (0.4.3), in the sweep for the same reason
+	// password_hash is: credential material at rest on the shop floor.
+	"credential_hash",
+}
+
+// EdgeDeviceCredential is the device credential hash shipped to an enrolled
+// edge so a LAN handshake can be verified WITH THE UPLINK DOWN. Added at 0.4.3
+// (ADR-017 amendment).
+//
+// The ADR-011 pattern applied to devices: /sync/config already ships Argon2id
+// password and PIN hashes so a cashier can log in offline. A kitchen screen
+// reconnecting during a WAN outage must likewise still authenticate, because
+// ticket visibility is a core operation and core operations run without
+// internet.
+//
+// The PLAINTEXT token never leaves the cloud. Only the hash syncs, only on
+// /sync/config, only to an already-enrolled node, into a SQLite file encrypted
+// at rest. Never logged, never in an audit value.
+type EdgeDeviceCredential struct {
+	CredentialID string `json:"credential_id"`
+	DeviceID     string `json:"device_id"`
+	TenantID     string `json:"tenant_id"`
+	OutletID     string `json:"outlet_id"`
+	// Argon2id encoded string over the token secret — a VERIFIER, never a
+	// bearer token. Named CredentialHash rather than TokenHash deliberately:
+	// the drift guard treats "token_hash" as bearer material, correctly, so the
+	// field holding something you check against is named for that.
+	CredentialHash string `json:"credential_hash"`
+	// Carried so the LAN server can refuse a PRINTER_BRIDGE credential
+	// presented by something claiming to be a KDS.
+	DeviceKind string `json:"device_kind"`
+	// Both nullable. A revoked or expired credential STILL SYNCS — the edge must
+	// learn that it is dead, which it cannot do if the row vanishes while the
+	// uplink is down. The edge rejects on these fields rather than inferring
+	// liveness from absence.
+	RevokedAt     *string `json:"revoked_at"`
+	ExpiresAt     *string `json:"expires_at"`
+	ConfigVersion int     `json:"config_version"`
+	SchemaVersion int     `json:"schema_version"`
+}
 
 type AuditEvent struct {
 	ID string `json:"id"`

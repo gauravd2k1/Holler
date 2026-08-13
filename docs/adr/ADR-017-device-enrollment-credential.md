@@ -38,6 +38,33 @@ But: query-string carriage is acceptable **only while the token is unverified an
 
 Currently it bumps only on create and role change. So a password or PIN change would never reach the edge cache, and a cashier would keep authenticating offline with the old credential indefinitely — including a credential changed *because* it was compromised. In scope for the same track.
 
+## Amendment — 0.4.3: the credential hash syncs to an enrolled edge (2026-08-13)
+
+**This amends §1.** That section said `device_credential` is cloud-only, with no SQLite mirror. That is now too strict, and the reason is instructive.
+
+The first edge implementation verified every new LAN connection by calling the cloud (`CloudConfigOracleVerifier`). Its verification gate ruled that a **blocker**: a browser reload, a tablet waking, or a router blip during a WAN outage left the kitchen screen unable to re-authenticate and receiving no tickets until connectivity returned. CLAUDE.md's premise is that core operations run without internet, and `docs/spec/kitchen.md` makes the KDS LAN-first. Ticket visibility is a core operation.
+
+So the mechanism as first built traded an **unauthenticated-but-available** KDS for an **authenticated-but-unavailable-offline** one — worse at precisely the moment local-first exists to protect. Closing a security hole by breaking the product's central guarantee is not closing it.
+
+### The decision
+
+The device credential's **Argon2id hash** now syncs to an enrolled edge on `GET /sync/config` and LAN handshakes are verified locally.
+
+This is not a new idea; it is **the ADR-011 pattern applied to devices**. `/sync/config` already ships password and PIN hashes so a cashier can log in offline, for exactly the same reason and with exactly the same containment. Devices now get the same treatment:
+
+- The **plaintext token still never leaves the cloud.** Only the verifier syncs.
+- It travels only on `/sync/config`, only over TLS, only to an already-enrolled node.
+- The edge SQLite file holding it is **encrypted at rest** (ADR-011) — never copy it or its backups anywhere unencrypted.
+- The field is named **`credential_hash`, not `token_hash`**, because it holds something you *check a presented token against*, never a bearer token you could replay. The contract drift guard treats `token_hash` as bearer material and is right to; the naming now matches the semantics rather than fighting the guard.
+- `credential_hash` and `device_token_hash` are both in `AUDIT_REDACTED_FIELDS`, so neither can reach an audit value or a log line.
+- `edge_device_credential.json` is registered as a deliberate credential-bearing fixture in both drift sweeps — which required this ADR, exactly as those guards demand.
+
+**A revoked or expired credential still syncs.** The edge must be able to learn that a credential is dead, and it cannot learn that from a row's absence while the uplink is down: absence is indistinguishable from "not yet synced". Rejection is decided by `revoked_at`/`expires_at`, never by whether a row exists.
+
+### Explicitly rejected: verify-online-then-cache-with-a-TTL
+
+Caching a successful verification for a window was considered and **rejected**. It leaves a cold-start hole: a screen that has never connected while online cannot join the LAN at all. That is precisely the offline-first failure this architecture exists to prevent — the outlet whose uplink is down on the morning a new kitchen tablet arrives is exactly the outlet that most needs the tablet to work. A mechanism that works only for devices lucky enough to have been online before is not an offline-capable mechanism.
+
 ## Freezing scope (0.4.1, 2026-08-13)
 
 The cloud half landed and passed its gate. Three routes exist in `backend/internal/outlet`: enroll, credential rotate, credential revoke. **Only `POST /devices/enroll` is frozen into `packages/contracts/openapi/openapi.yaml`.**
@@ -54,6 +81,18 @@ The cloud half passed its gate. Two properties were confirmed structurally rathe
 
 - **No route reads a token back.** `VerifyToken` takes no tenant/outlet parameters, `deviceCredentialVerifyRow` is unexported so no external package can construct one, and the only two writers of the plaintext return it once by value. The guarantee lives in the type and package boundaries, not in a policy someone must remember.
 - **Audit redaction is complete across packages.** `outlet.DeviceService` never redacts for itself — it calls the injected `auth.AuditRecorder`, whose single concrete implementation is the only writer of `AuditEvent` and always applies the redact list regardless of calling package. Today this is defence-in-depth (the device audit values contain no hash to begin with), which is exactly why it must not be quietly removed as unused.
+
+## Amendment — 0.4.3: the device credential gates edge→cloud ingest (2026-08-13)
+
+**This extends §2.** The first implementation gated `GET /sync/config` on the device credential and stopped there. The T4 verification gate found the consequence by tracing further than either side's own gate had: the **ingest routes** — order, table_session, kot — remained behind `auth.Authenticate`, which verifies HMAC-signed *human* JWTs. A device credential (`<credential_id>.<secret>`) cannot satisfy that signature check.
+
+So a correctly enrolled edge node could pull config and then have every envelope push rejected. Hole 1 was closed in form and not in effect: the worker would present a credential the ingest path could not evaluate.
+
+**Decision: `DeviceAuthenticate` gates the ingest routes, and tenant/outlet resolve from the credential row.**
+
+Ingest is edge→cloud replay by definition — the caller is always an enrolled device, never a browser — so accepting a human JWT there was never meaningful, and accepting *either* would reinstate exactly the ambiguity this ADR exists to remove, on the path that now carries money.
+
+This also closes the remaining half of hole 1. §1 named the defect as a mis-enrolled node silently mislabelling every outbound envelope; verifying `outlet_id` against `/sync/config` narrowed that to outlet level but left `tenant_id` locally supplied and unverifiable. With ingest resolving tenant and outlet **from the credential**, an envelope's claimed `tenant_id` is checked against what the credential actually resolves to rather than trusted. A wrong tenant with a right outlet is no longer representable.
 
 ## Consequences
 

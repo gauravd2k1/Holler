@@ -50,6 +50,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0007_menu_item_tax_profile.sql",
         include_str!("../../../packages/contracts/sqlite/0007_menu_item_tax_profile.sql"),
     ),
+    (
+        "0008_edge_device_credential_cache.sql",
+        include_str!("../../../packages/contracts/sqlite/0008_edge_device_credential_cache.sql"),
+    ),
 ];
 
 /// Applies any migrations not yet reflected in `PRAGMA user_version`. Safe
@@ -229,8 +233,8 @@ mod tests {
 
         assert_eq!(
             MIGRATIONS.len(),
-            7,
-            "expected exactly 7 registered migrations after contracts 0.4.2"
+            8,
+            "expected exactly 8 registered migrations after contracts 0.4.3"
         );
     }
 
@@ -275,6 +279,56 @@ mod tests {
             columns.iter().any(|c| c == "display_number"),
             "expected display_number column on \"order\" after 0006"
         );
+    }
+
+    /// The edge-cached device credential (0.4.3, ADR-017 amendment). Its
+    /// absence would mean a KDS cannot re-authenticate with the uplink down,
+    /// which the T4 gate ruled a blocker: ticket visibility is a core
+    /// operation and core operations run without internet.
+    #[test]
+    fn device_credential_cache_exists_after_migration() {
+        let conn = Connection::open_in_memory().expect("open");
+        configure_connection(&conn).expect("pragmas");
+        apply_all(&conn).expect("apply");
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = 'device_credential_cache'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "expected device_credential_cache after 0008");
+
+        let mut stmt = conn
+            .prepare("PRAGMA table_info(device_credential_cache)")
+            .unwrap();
+        let columns: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        // Named credential_hash, never token_hash: it holds a verifier to check
+        // a presented token against, not a bearer token. The contract drift
+        // guards treat token_hash as bearer material and are right to.
+        assert!(
+            columns.iter().any(|c| c == "credential_hash"),
+            "the verifier column must be credential_hash"
+        );
+        assert!(
+            !columns.iter().any(|c| c == "token_hash"),
+            "device_credential_cache must not name a column token_hash"
+        );
+        // A revoked credential still syncs and is still stored: while offline,
+        // a missing row is indistinguishable from one not yet synced, so
+        // liveness must never be inferred from absence.
+        for expected in ["revoked_at", "expires_at"] {
+            assert!(
+                columns.iter().any(|c| c == expected),
+                "expected {expected} so a dead credential can be recognised offline"
+            );
+        }
     }
 }
 

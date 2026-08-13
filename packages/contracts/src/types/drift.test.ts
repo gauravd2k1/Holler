@@ -12,6 +12,7 @@ import {
   AuditEventSchema,
   AUDIT_REDACTED_FIELDS,
   EdgeUserCacheEntrySchema,
+  EdgeDeviceCredentialSchema,
 } from "./identity";
 import { RestaurantTableSchema, TableSessionSchema } from "./table";
 import { MenuItemSchema, MenuItemModifierSchema } from "./menu";
@@ -169,6 +170,28 @@ describe("contract drift", () => {
     ]);
   });
 
+  // The device credential hash is the second deliberate credential carrier,
+  // after EdgeUserCacheEntry. Both hash states are pinned because nullable
+  // handling is exactly where a mirror silently drops a field.
+  it("edge_device_credential.json round-trips with its hash intact", () => {
+    const raw = loadFixture("edge_device_credential.json") as Record<string, unknown>;
+    const parsed = EdgeDeviceCredentialSchema.parse(raw);
+    expect(JSON.parse(JSON.stringify(parsed))).toEqual(raw);
+    expect(parsed.token_hash).toBe(raw.token_hash);
+  });
+
+  // A revoked credential must still be representable: the edge learns a
+  // credential is dead by syncing it, not by its absence. Absence is
+  // indistinguishable from "not yet synced" while the uplink is down.
+  it("represents a revoked device credential rather than omitting it", () => {
+    const raw = loadFixture("edge_device_credential.json") as Record<string, unknown>;
+    const revoked = EdgeDeviceCredentialSchema.parse({
+      ...raw,
+      revoked_at: "2026-08-13T09:00:00Z",
+    });
+    expect(revoked.revoked_at).toBe("2026-08-13T09:00:00Z");
+  });
+
   it("invoice.json round-trips through InvoiceSchema", () => {
     const raw = loadFixture("invoice.json");
     const parsed = InvoiceSchema.parse(raw);
@@ -267,7 +290,13 @@ describe("contract drift", () => {
   });
 
   it("redacts exactly the credential fields Go redacts (ADR-011)", () => {
-    expect([...AUDIT_REDACTED_FIELDS]).toEqual(["password_hash", "pin_hash", "token_hash"]);
+    expect([...AUDIT_REDACTED_FIELDS]).toEqual([
+      "password_hash",
+      "pin_hash",
+      "token_hash",
+      "device_token_hash",
+      "credential_hash",
+    ]);
   });
 
   // EdgeUserCacheEntry (0.3.1, ADR-015) — the one deliberate credential
@@ -311,6 +340,11 @@ describe("contract drift", () => {
     const CREDENTIAL_BEARING = new Set([
       "edge_user_cache_entry.json",
       "edge_user_cache_entry_no_pin.json",
+      // Added at 0.4.3 and justified in the ADR-017 amendment, exactly as this
+      // guard demands. The device credential hash syncs to an enrolled edge so
+      // a LAN handshake can be verified with the uplink down — the ADR-011
+      // pattern applied to devices, for the same offline-first reason.
+      "edge_device_credential.json",
     ]);
     const all = readdirSync(resolve(__dirname, "../../fixtures")).filter((f) => f.endsWith(".json"));
     expect(all.length).toBeGreaterThan(CREDENTIAL_BEARING.size); // the sweep is not vacuous
@@ -322,7 +356,7 @@ describe("contract drift", () => {
     }
   });
 
-  // The exception is exactly as wide as it claims to be: the carriers hold
+  // The exception is exactly as wide as it claims to be: the user carriers hold
   // password_hash and pin_hash, and never token_hash or any bearer material.
   it("the credential carriers hold verifiers only, never a token", () => {
     for (const name of ["edge_user_cache_entry.json", "edge_user_cache_entry_no_pin.json"]) {
@@ -332,5 +366,19 @@ describe("contract drift", () => {
       expect(serialized).not.toContain("access_token");
       expect(serialized).not.toContain("session");
     }
+  });
+
+  // The device carrier is held to the same standard, stated for its own field
+  // names. Its column is spelled token_hash, but the VALUE must be an Argon2id
+  // verifier — something you check a presented token against — never a bearer
+  // token you could replay. If a plaintext token ever landed in this field the
+  // hash prefix would be the first thing to go.
+  it("the device credential carrier holds an Argon2id verifier, not a bearer token", () => {
+    const cred = loadFixture("edge_device_credential.json") as Record<string, unknown>;
+    expect(String(cred.credential_hash)).toMatch(/^\$argon2id\$/);
+    const serialized = JSON.stringify(cred);
+    expect(serialized).not.toContain("refresh_token");
+    expect(serialized).not.toContain("access_token");
+    expect(serialized).not.toContain("plaintext");
   });
 });
