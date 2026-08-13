@@ -118,6 +118,57 @@ func TestIntegration_CreateUserAndLogin(t *testing.T) {
 	}
 }
 
+// TestIntegration_ChangePasswordBumpsConfigVersionAgainstRealPostgres is the
+// Postgres-backed counterpart to TestChangePassword_BumpsConfigVersion,
+// exercising Repository.UpdatePassword's real SQL (ADR-017 §4) rather than
+// the fakeRepo's in-memory mirror of it.
+func TestIntegration_ChangePasswordBumpsConfigVersionAgainstRealPostgres(t *testing.T) {
+	pool := testPool(t)
+	repo := NewRepository(pool)
+	auditor := NewAuditor(repo)
+	signer := NewTokenSigner([]byte("integration-test-key"))
+	refresh := NewInMemoryRefreshStore()
+	limiter := NewInMemoryRateLimiter()
+	svc := NewService(repo, signer, refresh, limiter, auditor, time.Minute, time.Hour)
+	ctx := context.Background()
+
+	tenantID := id.New()
+	if _, err := pool.Exec(ctx, `INSERT INTO tenant (id, name, created_at, updated_at) VALUES ($1, $2, now(), now())`, tenantID, "Integration Test Tenant Password Change"); err != nil {
+		t.Fatalf("inserting tenant fixture: %v", err)
+	}
+	t.Cleanup(func() {
+		pool.Exec(ctx, `DELETE FROM audit_event WHERE tenant_id = $1`, tenantID)
+		pool.Exec(ctx, `DELETE FROM app_user WHERE tenant_id = $1`, tenantID)
+		pool.Exec(ctx, `DELETE FROM tenant WHERE id = $1`, tenantID)
+	})
+
+	userID := id.New()
+	actor := userID
+	created, err := svc.CreateUser(ctx, tenantID, userID, "password-change@example.com", "Password Change User", "original-password-1", &actor, nil)
+	if err != nil {
+		t.Fatalf("creating user: %v", err)
+	}
+	if created.ConfigVersion != 1 {
+		t.Fatalf("expected freshly created user at config_version 1, got %d", created.ConfigVersion)
+	}
+
+	afterPassword, err := svc.ChangePassword(ctx, tenantID, userID, "a-brand-new-password-2", &actor, nil)
+	if err != nil {
+		t.Fatalf("ChangePassword: %v", err)
+	}
+	if afterPassword.ConfigVersion <= created.ConfigVersion {
+		t.Fatalf("expected config_version to increase after password change: before=%d after=%d", created.ConfigVersion, afterPassword.ConfigVersion)
+	}
+
+	afterPin, err := svc.ChangePin(ctx, tenantID, userID, "9876", &actor, nil)
+	if err != nil {
+		t.Fatalf("ChangePin: %v", err)
+	}
+	if afterPin.ConfigVersion <= afterPassword.ConfigVersion {
+		t.Fatalf("expected config_version to increase again after PIN change: before=%d after=%d", afterPassword.ConfigVersion, afterPin.ConfigVersion)
+	}
+}
+
 // TestIntegration_ListEdgeUserCache covers the /sync/config users export end
 // to end against real Postgres: outlet eligibility (tenant-wide role vs.
 // outlet-scoped role vs. a different outlet), since_version filtering, both

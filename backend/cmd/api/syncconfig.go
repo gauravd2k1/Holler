@@ -7,7 +7,6 @@ import (
 
 	contracts "github.com/holler/contracts"
 
-	"github.com/holler/backend/internal/auth"
 	"github.com/holler/backend/internal/kitchen"
 	"github.com/holler/backend/internal/menu"
 	"github.com/holler/backend/internal/outlet"
@@ -134,8 +133,15 @@ func newSyncConfigHandler(outlets outletConfigProvider, menuSvc menuConfigProvid
 	return &syncConfigHandler{outlets: outlets, menu: menuSvc, tables: tablesSvc, kitchen: kitchenSvc, users: usersSvc}
 }
 
+// ServeHTTP requires a verified DevicePrincipal in context (ADR-017 §2):
+// GET /sync/config is the one route that carries Argon2id password and PIN
+// hashes, and its cloud-side gate is now outlet.DeviceAuthenticate, not a
+// human bearer token — see backend/cmd/api/main.go's router wiring. tenantID
+// and outletID come from the verified device credential, never from the
+// request: a device presenting outlet_id=X in the query string cannot pull
+// another outlet's users just by typing a different id in.
 func (h *syncConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	principal, ok := auth.PrincipalFromContext(r.Context())
+	devicePrincipal, ok := outlet.DevicePrincipalFromContext(r.Context())
 	if !ok {
 		httpx.Error(w, httpx.ErrUnauthorized)
 		return
@@ -146,6 +152,16 @@ func (h *syncConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, httpx.ErrInvalidInput)
 		return
 	}
+	// A caller-supplied outlet_id that does not match the enrolled device's
+	// own outlet is treated exactly like every other cross-tenant lookup in
+	// this codebase: httpx.ErrNotFound, never a 200 with another outlet's
+	// data and never a 403 that confirms the id exists.
+	if outletID != devicePrincipal.OutletID {
+		httpx.Error(w, httpx.ErrNotFound)
+		return
+	}
+	tenantID := devicePrincipal.TenantID
+
 	sinceVersionRaw := r.URL.Query().Get("since_version")
 	sinceVersion, err := strconv.Atoi(sinceVersionRaw)
 	if err != nil || sinceVersion < 0 {
@@ -153,11 +169,10 @@ func (h *syncConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// GetOutlet is the tenant-scoping check for the whole route: it returns
-	// httpx.ErrNotFound for an outlet_id that exists but belongs to another
-	// tenant, exactly like every other route in this codebase, and its
-	// config_version becomes the bundle's top-level config_version.
-	o, err := h.outlets.GetOutlet(r.Context(), outlet.Principal{UserID: principal.UserID, TenantID: principal.TenantID}, outletID)
+	// GetOutlet's config_version becomes the bundle's top-level
+	// config_version. tenantID here is the device credential's tenant, not
+	// anything the caller supplied.
+	o, err := h.outlets.GetOutlet(r.Context(), outlet.Principal{TenantID: tenantID}, outletID)
 	if err != nil {
 		httpx.Error(w, err)
 		return
@@ -178,12 +193,12 @@ func (h *syncConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, err)
 		return
 	}
-	bundle, err := h.kitchen.SyncConfigBundle(r.Context(), principal.TenantID, outletID, sinceVersion)
+	bundle, err := h.kitchen.SyncConfigBundle(r.Context(), tenantID, outletID, sinceVersion)
 	if err != nil {
 		httpx.Error(w, err)
 		return
 	}
-	users, err := h.users.ListEdgeUserCache(r.Context(), principal.TenantID, outletID, sinceVersion)
+	users, err := h.users.ListEdgeUserCache(r.Context(), tenantID, outletID, sinceVersion)
 	if err != nil {
 		httpx.Error(w, err)
 		return

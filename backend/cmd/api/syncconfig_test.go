@@ -134,23 +134,26 @@ func newTestSyncConfigHandler() *syncConfigHandler {
 	)
 }
 
-func doSyncConfigRequest(t *testing.T, h http.Handler, principal *auth.AuthenticatedPrincipal, query string) *httptest.ResponseRecorder {
+// doSyncConfigRequest injects a DevicePrincipal directly into the request
+// context, exactly like outlet.DeviceAuthenticate would after verifying a
+// real device token (ADR-017 §2) — this handler no longer reads
+// auth.AuthenticatedPrincipal at all.
+func doSyncConfigRequest(t *testing.T, h http.Handler, principal *outlet.DevicePrincipal, query string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, "/sync/config?"+query, nil)
 	if principal != nil {
-		req = req.WithContext(auth.WithPrincipal(req.Context(), *principal))
+		req = req.WithContext(outlet.WithDevicePrincipal(req.Context(), *principal))
 	}
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec
 }
 
-func testPrincipal() auth.AuthenticatedPrincipal {
-	return auth.AuthenticatedPrincipal{
-		UserID:      "user-1",
-		TenantID:    scTenantID,
-		OutletID:    scOutletID,
-		Permissions: []auth.Permission{auth.PermissionUserManage},
+func testDevicePrincipal() outlet.DevicePrincipal {
+	return outlet.DevicePrincipal{
+		DeviceID: "device-1",
+		TenantID: scTenantID,
+		OutletID: scOutletID,
 	}
 }
 
@@ -159,7 +162,7 @@ func testPrincipal() auth.AuthenticatedPrincipal {
 // users array is populated with credential material intact.
 func TestSyncConfig_AllNineFieldsPresent(t *testing.T) {
 	h := newTestSyncConfigHandler()
-	p := testPrincipal()
+	p := testDevicePrincipal()
 	rec := doSyncConfigRequest(t, h, &p, "outlet_id="+scOutletID+"&since_version=0")
 
 	if rec.Code != http.StatusOK {
@@ -202,7 +205,7 @@ func TestSyncConfig_AllNineFieldsPresent(t *testing.T) {
 // states are checked against the raw JSON, not just the decoded struct.
 func TestSyncConfig_UsersPinHashRoundTripsBothStates(t *testing.T) {
 	h := newTestSyncConfigHandler()
-	p := testPrincipal()
+	p := testDevicePrincipal()
 	rec := doSyncConfigRequest(t, h, &p, "outlet_id="+scOutletID+"&since_version=0")
 
 	var raw struct {
@@ -250,7 +253,7 @@ func TestSyncConfig_UsersPinHashRoundTripsBothStates(t *testing.T) {
 // edge has no role table to resolve against.
 func TestSyncConfig_UsersPermissionsFlattened(t *testing.T) {
 	h := newTestSyncConfigHandler()
-	p := testPrincipal()
+	p := testDevicePrincipal()
 	rec := doSyncConfigRequest(t, h, &p, "outlet_id="+scOutletID+"&since_version=0")
 
 	var resp syncConfigResponse
@@ -279,7 +282,7 @@ func TestSyncConfig_UsersPermissionsFlattened(t *testing.T) {
 // covered by backend/internal/kitchen's tests, not duplicated here.
 func TestSyncConfig_SinceVersionFiltering(t *testing.T) {
 	h := newTestSyncConfigHandler()
-	p := testPrincipal()
+	p := testDevicePrincipal()
 	rec := doSyncConfigRequest(t, h, &p, "outlet_id="+scOutletID+"&since_version=3")
 
 	var resp syncConfigResponse
@@ -311,7 +314,7 @@ func TestSyncConfig_RequiresAuthentication(t *testing.T) {
 
 func TestSyncConfig_CrossTenantOutletIsNotFound(t *testing.T) {
 	h := newTestSyncConfigHandler()
-	p := testPrincipal()
+	p := testDevicePrincipal()
 	p.TenantID = "other-tenant"
 	rec := doSyncConfigRequest(t, h, &p, "outlet_id="+scOutletID+"&since_version=0")
 	if rec.Code != http.StatusNotFound {
@@ -319,9 +322,22 @@ func TestSyncConfig_CrossTenantOutletIsNotFound(t *testing.T) {
 	}
 }
 
+// TestSyncConfig_DeviceOutletMismatchIsNotFound is the direct ADR-017 hole-1
+// falsification: a device enrolled at scOutletID cannot pull another
+// outlet's config just by putting a different outlet_id in the query
+// string. Authority comes from the verified credential, not the request.
+func TestSyncConfig_DeviceOutletMismatchIsNotFound(t *testing.T) {
+	h := newTestSyncConfigHandler()
+	p := testDevicePrincipal()
+	rec := doSyncConfigRequest(t, h, &p, "outlet_id=some-other-outlet&since_version=0")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 when outlet_id does not match the device's own outlet, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestSyncConfig_MissingQueryParamsAreRejected(t *testing.T) {
 	h := newTestSyncConfigHandler()
-	p := testPrincipal()
+	p := testDevicePrincipal()
 
 	if rec := doSyncConfigRequest(t, h, &p, "since_version=0"); rec.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 with missing outlet_id, got %d", rec.Code)

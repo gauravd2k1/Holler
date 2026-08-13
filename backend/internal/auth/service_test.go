@@ -97,6 +97,30 @@ func (f *fakeRepo) ReplaceUserRoles(ctx context.Context, userID string, assignme
 	return nil
 }
 
+func (f *fakeRepo) UpdatePassword(ctx context.Context, userID, passwordHash string, now time.Time) error {
+	row, ok := f.users[userID]
+	if !ok {
+		return httpx.ErrNotFound
+	}
+	row.passwordHash = passwordHash
+	row.configVersion++
+	row.updatedAt = now
+	f.users[userID] = row
+	return nil
+}
+
+func (f *fakeRepo) UpdatePin(ctx context.Context, userID, pinHash string, now time.Time) error {
+	row, ok := f.users[userID]
+	if !ok {
+		return httpx.ErrNotFound
+	}
+	row.pinHash = &pinHash
+	row.configVersion++
+	row.updatedAt = now
+	f.users[userID] = row
+	return nil
+}
+
 func (f *fakeRepo) ListRoles(ctx context.Context, tenantID string) ([]Role, error) {
 	var out []Role
 	for _, r := range f.roles {
@@ -337,4 +361,115 @@ func TestSetUserRoles_AuditsOldAndNew(t *testing.T) {
 	if auditor.calls[0].Action != "user.roles.replace" {
 		t.Errorf("unexpected action: %s", auditor.calls[0].Action)
 	}
+}
+
+// TestChangePassword_BumpsConfigVersion is the direct test for ADR-017 §4:
+// today config_version bumps only on create and role change, so a password
+// change never reached the edge cache and a cashier kept authenticating
+// offline against the OLD, possibly-compromised credential. This proves the
+// fix.
+func TestChangePassword_BumpsConfigVersion(t *testing.T) {
+	svc, repo, _ := newTestService(t)
+	tenantID := id.New()
+	userID := id.New()
+	hash := mustHash(t, "password12345")
+	repo.CreateUser(context.Background(), userID, tenantID, "user@example.com", "User", hash, time.Now())
+
+	before := repo.users[userID]
+	if before.configVersion != 1 {
+		t.Fatalf("expected freshly created user at config_version 1, got %d", before.configVersion)
+	}
+
+	if _, err := svc.ChangePassword(context.Background(), tenantID, userID, "a-new-password-999", nil, nil); err != nil {
+		t.Fatalf("ChangePassword: %v", err)
+	}
+
+	after := repo.users[userID]
+	if after.configVersion <= before.configVersion {
+		t.Fatalf("expected config_version to increase on password change: before=%d after=%d", before.configVersion, after.configVersion)
+	}
+	if after.passwordHash == before.passwordHash {
+		t.Fatal("expected password_hash to change")
+	}
+	if err := crypto.VerifyPassword("a-new-password-999", after.passwordHash); err != nil {
+		t.Fatalf("expected the new password to verify against the stored hash: %v", err)
+	}
+}
+
+// TestChangePin_BumpsConfigVersion mirrors TestChangePassword_BumpsConfigVersion
+// for the PIN path.
+func TestChangePin_BumpsConfigVersion(t *testing.T) {
+	svc, repo, _ := newTestService(t)
+	tenantID := id.New()
+	userID := id.New()
+	hash := mustHash(t, "password12345")
+	repo.CreateUser(context.Background(), userID, tenantID, "user@example.com", "User", hash, time.Now())
+
+	before := repo.users[userID]
+
+	if _, err := svc.ChangePin(context.Background(), tenantID, userID, "1234", nil, nil); err != nil {
+		t.Fatalf("ChangePin: %v", err)
+	}
+
+	after := repo.users[userID]
+	if after.configVersion <= before.configVersion {
+		t.Fatalf("expected config_version to increase on PIN change: before=%d after=%d", before.configVersion, after.configVersion)
+	}
+	if after.pinHash == nil {
+		t.Fatal("expected pin_hash to be set")
+	}
+}
+
+// TestChangePassword_NeverAuditsThePlaintextOrHash is the falsifying test
+// for CLAUDE.md's "no credential material in audit values" rule applied to
+// the new password-change path specifically: prove the audit record this
+// action writes carries no password_hash key at all, not merely that a
+// generic redaction list happens to catch it.
+func TestChangePassword_NeverAuditsThePlaintextOrHash(t *testing.T) {
+	svc, repo, auditor := newTestService(t)
+	tenantID := id.New()
+	userID := id.New()
+	hash := mustHash(t, "password12345")
+	repo.CreateUser(context.Background(), userID, tenantID, "user@example.com", "User", hash, time.Now())
+
+	if _, err := svc.ChangePassword(context.Background(), tenantID, userID, "a-new-password-999", nil, nil); err != nil {
+		t.Fatalf("ChangePassword: %v", err)
+	}
+
+	if len(auditor.calls) != 1 {
+		t.Fatalf("expected one audit call, got %d", len(auditor.calls))
+	}
+	for _, v := range auditor.calls[0].NewValue {
+		if s, ok := v.(string); ok && (contains(s, "password12345") || contains(s, "$argon2id$")) {
+			t.Fatalf("audit NewValue leaked credential material: %v", auditor.calls[0].NewValue)
+		}
+	}
+}
+
+// TestRedact_StripsDeviceTokenHash is the direct test for this track's task
+// 6: device_token_hash joins password_hash/pin_hash/token_hash on the
+// redact list (ADR-017 §1), confined to this package's local supplement
+// since packages/contracts is frozen and read-only to builder agents.
+func TestRedact_StripsDeviceTokenHash(t *testing.T) {
+	got := redact(map[string]interface{}{
+		"device_id":         "some-device-id",
+		"device_token_hash": "argon2id-should-never-appear",
+	})
+	if _, present := got["device_token_hash"]; present {
+		t.Fatalf("expected device_token_hash to be redacted, got %v", got)
+	}
+	if got["device_id"] != "some-device-id" {
+		t.Fatalf("expected non-redacted fields to survive, got %v", got)
+	}
+}
+
+func contains(haystack, needle string) bool {
+	return len(haystack) >= len(needle) && (func() bool {
+		for i := 0; i+len(needle) <= len(haystack); i++ {
+			if haystack[i:i+len(needle)] == needle {
+				return true
+			}
+		}
+		return false
+	})()
 }

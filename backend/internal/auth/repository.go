@@ -133,6 +133,41 @@ func (r *Repository) CreateUser(ctx context.Context, id, tenantID, email, fullNa
 	return nil
 }
 
+// UpdatePassword sets a user's password_hash and bumps config_version, so a
+// changed credential reaches the edge cache on the next /sync/config pull
+// exactly like a role change does (ADR-017 §4). Previously config_version
+// bumped only on create and role change, so a compromised password change
+// never reached an offline cashier's cached credential.
+func (r *Repository) UpdatePassword(ctx context.Context, userID, passwordHash string, now time.Time) error {
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE app_user SET password_hash = $2, config_version = config_version + 1, updated_at = $3
+		WHERE id = $1
+	`, userID, passwordHash, now)
+	if err != nil {
+		return fmt.Errorf("auth: updating password: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return httpx.ErrNotFound
+	}
+	return nil
+}
+
+// UpdatePin sets a user's pin_hash and bumps config_version, for the same
+// reason UpdatePassword does (ADR-017 §4).
+func (r *Repository) UpdatePin(ctx context.Context, userID, pinHash string, now time.Time) error {
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE app_user SET pin_hash = $2, config_version = config_version + 1, updated_at = $3
+		WHERE id = $1
+	`, userID, pinHash, now)
+	if err != nil {
+		return fmt.Errorf("auth: updating pin: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return httpx.ErrNotFound
+	}
+	return nil
+}
+
 // ListUsers returns every user of a tenant with their role assignments.
 func (r *Repository) ListUsers(ctx context.Context, tenantID string) ([]User, error) {
 	rows, err := r.pool.Query(ctx, `

@@ -104,6 +104,13 @@ func buildRouter(pool postgres.Pool, cfg config.Config) *chi.Mux {
 	outletSvc := outlet.NewService(outletRepo)
 	outletHandler := outlet.NewHandler(outletSvc)
 
+	// --- device enrollment (ADR-017, T1) ---------------------------------
+	// outletRepo also implements outlet.DeviceRepository (device_postgres.go)
+	// — one Postgres pool, two concerns sharing a type, exactly like
+	// outlet.Repository/DeviceRepository split by file.
+	deviceSvc := outlet.NewDeviceService(outletRepo, outletRepo, auditor)
+	deviceHandler := outlet.NewDeviceHandler(deviceSvc)
+
 	// --- kitchen (constructed before menu: menu.NewHandlers takes
 	// kitchen.Service as its StationRouter per ADR-014's task split) -------
 	kitchenRepo := kitchen.NewRepository(pool)
@@ -153,24 +160,28 @@ func buildRouter(pool postgres.Pool, cfg config.Config) *chi.Mux {
 		orderingHandler.Mount(r)
 		kitchenHandler.Mount(r)
 
-		// /sync/config serves an enrolled edge node, not a browser session.
-		// FINDING (T7): this codebase has no device/edge-enrollment
-		// authentication mechanism at all — no device_token, no edge
-		// certificate, nothing distinct from a user's bearer access token
-		// (grep across backend/ and docs/adr/ turns up nothing named
-		// device/enroll/edge auth beyond the SyncEnvelope's plain device_id
-		// field, which is unauthenticated metadata, not a credential). This
-		// route is therefore gated on the SAME bearer-token principal every
-		// other authenticated route uses, requiring user.manage: the closest
-		// existing permission, chosen because this route is the one place
-		// credential hashes are meant to cross the wire (ADR-011) and
-		// /users already requires user.manage to view account data without
-		// hashes. A real edge-enrollment credential (e.g. a long-lived
-		// per-device certificate or token, checked independently of a human
-		// login) is still needed before this route can be honestly described
-		// as authenticating "an enrolled edge node" rather than "an already
-		// logged-in human's browser session" — see this task's final report.
-		r.With(auth.RequirePermission(auth.PermissionUserManage)).Get("/sync/config", syncConfig.ServeHTTP)
+		// Device enrollment/rotation/revocation are human-privileged
+		// management actions (a technician or manager acting through an
+		// authenticated session), gated on outlet.manage — the closest
+		// existing permission to "may register hardware at this outlet".
+		r.With(auth.RequirePermission(auth.PermissionOutletManage)).Group(func(r chi.Router) {
+			deviceHandler.Mount(r)
+		})
+	})
+
+	// /sync/config serves an enrolled edge node, not a browser session
+	// (ADR-017 §2). It is deliberately OUTSIDE the human-bearer-token group
+	// above: outlet.DeviceAuthenticate is the only middleware guarding it,
+	// resolving tenant_id/outlet_id from the verified device_credential row
+	// rather than from anything the caller supplied. A request carrying a
+	// valid human access token but no device credential gets the same 401 as
+	// one carrying nothing at all — that break is intentional (ADR-017
+	// "Consequences": "GET /sync/config stops accepting a human bearer
+	// token. Any existing caller relying on that is broken deliberately; it
+	// was the hole.").
+	router.Group(func(r chi.Router) {
+		r.Use(outlet.DeviceAuthenticate(deviceSvc))
+		r.Get("/sync/config", syncConfig.ServeHTTP)
 	})
 
 	return router
