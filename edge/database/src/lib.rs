@@ -24,7 +24,8 @@ use crate::crypto::EncryptionKey;
 use crate::model::{
     Kot, KotStatusHistoryEntry, KotTicketItem, KotTransitionMeta, NewOrder, NewOrderItem,
     NewOutboxEntry, NewTableSession, Order, OrderConfirmedMeta, OrderItemAddedMeta,
-    OrderItemModifier, OrderItemRemovedMeta, SendToKitchenMeta, Station, TableSession,
+    OrderItemModifier, OrderItemQuantitySetMeta, OrderItemRemovedMeta, SendToKitchenMeta,
+    Station, TableSession,
 };
 use std::collections::BTreeMap;
 
@@ -208,15 +209,75 @@ impl Db {
         Ok(())
     }
 
+    /// Like [`Db::create_order_with_outbox`], but also persists each item's
+    /// modifier selections (`order_item_modifier`) in the same transaction —
+    /// the create-time counterpart to [`Db::add_order_item_with_outbox`]'s
+    /// modifier handling, needed because the durable-cart change
+    /// (`4b0c560`) creates the order on the *first* cart line, so a
+    /// modifier chosen on that very first tap has nowhere to land unless
+    /// this entry point can store it too.
+    ///
+    /// `item_modifiers[i]` is the modifier list for `items[i]` — the two
+    /// slices must be the same length; a caller that supplies them out of
+    /// step is a programming error in this crate's own call sites, not a
+    /// data-shape one the storage layer should turn into a `DbResult`, so
+    /// this asserts rather than returning `Err` (matching
+    /// `build_new_draft_order`'s `item_ids`/`items` zip in the POS command
+    /// layer). Like `add_order_item_with_outbox`, each item's
+    /// `line_total_paise` is **not trusted** — it is recomputed here from
+    /// `unit_price_paise`, `quantity` and the real modifier rows per the
+    /// money invariant in `0003_order_item_modifiers.sql`, so the caller
+    /// supplying `order.subtotal_paise`/`total_paise` must derive them the
+    /// same way or the order and its lines will disagree (the domain layer
+    /// that builds `order` does exactly that — see
+    /// `apps/pos/src-tauri/src/domain/order.rs`).
+    pub fn create_order_with_outbox_and_modifiers(
+        &mut self,
+        order: &NewOrder,
+        items: &[NewOrderItem],
+        item_modifiers: &[Vec<OrderItemModifier>],
+        outbox: &NewOutboxEntry,
+    ) -> DbResult<()> {
+        assert_eq!(
+            items.len(),
+            item_modifiers.len(),
+            "caller must supply exactly one modifier list per item"
+        );
+        let tx = self.connection_mut().transaction()?;
+        repo::insert_order(&tx, order)?;
+        for (item, modifiers) in items.iter().zip(item_modifiers.iter()) {
+            let line_total_paise =
+                repo::compute_line_total_paise(item.unit_price_paise, item.quantity, modifiers);
+            let stored_item = NewOrderItem {
+                line_total_paise,
+                ..item.clone()
+            };
+            repo::insert_order_item(&tx, &stored_item)?;
+            for modifier in modifiers {
+                repo::insert_order_item_modifier(&tx, modifier)?;
+            }
+        }
+        repo::insert_outbox_entry(&tx, outbox)?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Adds a line item — and its modifier selections, in the same
     /// transaction — to an already-persisted order, writing the
     /// `order_item` row, the `order_item_modifier` rows, its `local_outbox`
     /// event, and the recomputed order totals all in the *same* SQLite
     /// transaction (ADR-007) — the same guarantee as
     /// [`Db::create_order_with_outbox`]. Rejects the write with
-    /// `DbError::OrderNotAmendable` if the order is not `DRAFT` (amendment
-    /// is only legal pre-confirmation); rolls back entirely on any failure,
-    /// leaving neither the line, its modifiers, nor the outbox row.
+    /// `DbError::OrderNotAmendable` unless the order is DRAFT, CONFIRMED,
+    /// SENT_TO_KITCHEN or PREPARING (`repo::require_amendable_for_item_changes`)
+    /// — this is the `#132-A` post-DRAFT addition path
+    /// (docs/spec/kitchen.md's #132 -> #132-A change history,
+    /// docs/m3-planning.md Track B): a line added after the order already
+    /// left the kitchen is legal, and a later
+    /// [`Db::send_order_to_kitchen_with_outbox`] call (idempotent-by-delta)
+    /// tickets it as a fresh station ticket rather than mutating one already
+    /// in flight. Rolls back entirely on any failure, leaving neither the
+    /// line, its modifiers, nor the outbox row.
     ///
     /// `item.line_total_paise` is **not trusted** — this crate recomputes
     /// it from `item.unit_price_paise`, `item.quantity` and `modifiers` per
@@ -240,7 +301,7 @@ impl Db {
         meta: &OrderItemAddedMeta,
     ) -> DbResult<()> {
         let tx = self.connection_mut().transaction()?;
-        let outlet_id = repo::require_draft_order(&tx, &item.order_id)?;
+        let outlet_id = repo::require_amendable_for_item_changes(&tx, &item.order_id)?;
 
         let line_total_paise =
             repo::compute_line_total_paise(item.unit_price_paise, item.quantity, modifiers);
@@ -262,6 +323,110 @@ impl Db {
             meta,
         )?;
         repo::recompute_and_persist_order_totals(&tx, &item.order_id, &item.created_at)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Sets an existing order line's `quantity` (and its dependent
+    /// `line_total_paise`) — the single durable write behind the frozen
+    /// `SET_ORDER_ITEM_QUANTITY` command
+    /// (`packages/contracts/src/types/order.ts`, contracts 0.4.0/ADR-016).
+    ///
+    /// **Deliberately one `UPDATE`, never remove-then-add.** Two durable
+    /// writes with a crash window between them is precisely the loss the
+    /// durable-cart work (`4b0c560`) eliminated (docs/backlog-m2.md P1 "No
+    /// quantity control on a cart line", docs/retro.md 2026-08-10) — the
+    /// contract froze `SET_ORDER_ITEM_QUANTITY` as one command for exactly
+    /// this reason, and this method honours that: `repo::get_order_item_in_tx`,
+    /// `repo::update_order_item_quantity` and
+    /// `repo::recompute_and_persist_order_totals` all run inside the one
+    /// transaction this method opens, and nothing here ever calls
+    /// `delete_order_item`.
+    ///
+    /// Legal in the same statuses as [`Db::add_order_item_with_outbox`] —
+    /// DRAFT, CONFIRMED, SENT_TO_KITCHEN, PREPARING
+    /// (`repo::require_amendable_for_item_changes`) — but **only for a line
+    /// no `kot` row has frozen a snapshot of yet**
+    /// (`repo::already_ticketed_order_item_ids`). `kot.items_json` is
+    /// written once at ticket creation and never revised in place (ADR-014
+    /// §4's single-writer rule for `kot.status` extends, by the same
+    /// reasoning, to the ticket's item snapshot — nothing outside ticket
+    /// creation touches `items_json`), so a quantity change on an
+    /// already-ticketed line would otherwise leave the kitchen's copy
+    /// silently wrong with no signal in either direction: the exact
+    /// print-visibility defect shape docs/backlog-m2.md already records once
+    /// this milestone ("A KOT that can never be queued for print is
+    /// invisible to staff"). Rather than repeat it, this is a hard
+    /// rejection: `DbError::OrderItemAlreadyTicketed`, whose message names
+    /// the sanctioned alternative (`#132-C` cancellation via
+    /// `Db::cancel_kitchen_items_with_outbox`, then a fresh
+    /// `add_order_item_with_outbox` at the corrected quantity) so a caller
+    /// can surface it verbatim to the cashier (§64: never silence, always
+    /// say whether intervention is needed and what it is). An *unticketed*
+    /// line on a SENT_TO_KITCHEN/PREPARING order — e.g. one added after the
+    /// first send, per `#132-A`, and not yet itself sent — is unaffected;
+    /// only lines a `kot` has actually captured are blocked.
+    ///
+    /// Also rejects with `DbError::OrderNotAmendable` if the order itself is
+    /// terminal, and with `DbError::NotFound("order_item")` if the line does
+    /// not exist. `quantity` must be a positive integer — rejected with
+    /// `DbError::InvalidInput` before any write is attempted, matching the
+    /// frozen command's `z.number().int().positive()`.
+    ///
+    /// The line's existing modifier selections are read and their price
+    /// deltas re-summed (never re-supplied by the caller — a quantity change
+    /// must not silently also change what modifiers are on the line), and
+    /// the new `line_total_paise` is computed from them by the same
+    /// `repo::compute_line_total_paise` money invariant every other write in
+    /// this crate uses, so a quantity-only change can never desync the line
+    /// total from its modifiers.
+    ///
+    /// **No new `local_outbox` row is written.** The frozen event catalog
+    /// has no "item quantity changed" event as of contracts 0.4.0 — see
+    /// `repo::correct_pending_item_added_quantity`'s doc comment for the
+    /// full reasoning and the residual gap this leaves for an
+    /// already-published `ItemAdded` event. While that line's `ItemAdded`
+    /// event has not yet left the device, this folds the new quantity into
+    /// it in place, matching the pattern `Db::update_order_shape_with_outbox`
+    /// already uses for order-shape corrections.
+    pub fn update_order_item_quantity_with_outbox(
+        &mut self,
+        order_item_id: &str,
+        quantity: i64,
+        meta: &OrderItemQuantitySetMeta,
+    ) -> DbResult<()> {
+        if quantity <= 0 {
+            return Err(DbError::InvalidInput(
+                "quantity must be a positive integer".to_string(),
+            ));
+        }
+
+        let tx = self.connection_mut().transaction()?;
+        let existing = repo::get_order_item_in_tx(&tx, order_item_id)?
+            .ok_or(DbError::NotFound("order_item"))?;
+        repo::require_amendable_for_item_changes(&tx, &existing.order_id)?;
+
+        let already_ticketed = repo::already_ticketed_order_item_ids(&tx, &existing.order_id)?;
+        if already_ticketed.contains(order_item_id) {
+            return Err(DbError::OrderItemAlreadyTicketed {
+                order_item_id: order_item_id.to_string(),
+                order_id: existing.order_id.clone(),
+            });
+        }
+
+        let modifiers = repo::list_order_item_modifiers_in_tx(&tx, order_item_id)?;
+        let line_total_paise =
+            repo::compute_line_total_paise(existing.unit_price_paise, quantity, &modifiers);
+
+        repo::update_order_item_quantity(&tx, order_item_id, quantity, line_total_paise)?;
+        repo::recompute_and_persist_order_totals(&tx, &existing.order_id, &meta.occurred_at)?;
+        repo::correct_pending_item_added_quantity(
+            &tx,
+            &existing.order_id,
+            order_item_id,
+            quantity,
+            line_total_paise,
+        )?;
         tx.commit()?;
         Ok(())
     }
@@ -1276,8 +1441,13 @@ mod tests {
         assert_eq!(payload["data"]["item"]["line_total_paise"], 42_00);
     }
 
+    /// `CONFIRMED` is one of the statuses `#132-A` deliberately widened
+    /// `add_order_item_with_outbox` to accept (see its doc comment) — this
+    /// used to be the rejection case before that widening; it is now the
+    /// positive case, and the terminal-status rejection lives in
+    /// `add_order_item_rejects_a_terminal_order_and_writes_nothing` below.
     #[test]
-    fn add_order_item_rejects_non_draft_order_and_writes_nothing() {
+    fn add_order_item_accepts_a_confirmed_order_the_132a_post_draft_path() {
         let mut db = Db::open_in_memory_for_tests().expect("open");
         seed_outlet_and_device(&db, "outlet-1", "device-1");
         let (_, menu_item_id, _) = seed_menu(&db, "outlet-1");
@@ -1287,17 +1457,537 @@ mod tests {
         db.create_order_with_outbox(&order, &[], &sample_outbox("order-confirmed"))
             .expect("create confirmed order");
 
-        let item = sample_order_item("item-reject-1", "order-confirmed", &menu_item_id, 25000);
+        let item = sample_order_item("item-post-confirm", "order-confirmed", &menu_item_id, 25000);
+        db.add_order_item_with_outbox(&item, &[], &item_added_meta("item-post-confirm"))
+            .expect("add-item must succeed post-confirmation (#132-A)");
+
+        let items = repo::list_order_items(db.connection(), "order-confirmed").unwrap();
+        assert_eq!(items.len(), 1, "the post-confirmation line must persist");
+    }
+
+    /// The genuine terminal-status rejection: once an order is `SERVED` (or
+    /// later), a line can no longer be added — that correction belongs to a
+    /// new order or an explicit reopen, not a silent edit of a bill already
+    /// on its way out (`repo::require_amendable_for_item_changes`).
+    #[test]
+    fn add_order_item_rejects_a_terminal_order_and_writes_nothing() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+        let (_, menu_item_id, _) = seed_menu(&db, "outlet-1");
+
+        let mut order = sample_order("order-served", "outlet-1", "device-1");
+        order.status = "SERVED".to_string();
+        db.create_order_with_outbox(&order, &[], &sample_outbox("order-served"))
+            .expect("create served order");
+
+        let item = sample_order_item("item-reject-1", "order-served", &menu_item_id, 25000);
         let result = db.add_order_item_with_outbox(&item, &[], &item_added_meta("item-reject-1"));
 
         assert!(matches!(result, Err(DbError::OrderNotAmendable { .. })));
 
-        let items = repo::list_order_items(db.connection(), "order-confirmed").unwrap();
+        let items = repo::list_order_items(db.connection(), "order-served").unwrap();
         assert!(items.is_empty(), "rejected item must not be persisted");
         let pending = repo::list_unpublished_outbox(db.connection(), 100).unwrap();
         assert!(pending
             .iter()
-            .all(|e| e.aggregate_id != "order-confirmed" || e.event_type != "ItemAdded"));
+            .all(|e| e.aggregate_id != "order-served" || e.event_type != "ItemAdded"));
+    }
+
+    // ---------------------------------------------------------- Track B: --
+    // quantity control (SET_ORDER_ITEM_QUANTITY, contracts 0.4.0/ADR-016)
+    // and create-time modifiers (docs/m3-planning.md Track B).
+
+    fn quantity_meta(occurred_at: &str) -> model::OrderItemQuantitySetMeta {
+        model::OrderItemQuantitySetMeta {
+            occurred_at: occurred_at.to_string(),
+        }
+    }
+
+    /// The core money-invariant proof for quantity control: five taps of one
+    /// item must become one line of quantity 5, not five lines of quantity 1
+    /// (docs/backlog-m2.md P1). This exercises the single-write path
+    /// directly — the crash-durability proof against a real sealed file is
+    /// `a_quantity_change_survives_the_pos_process_ending_and_a_fresh_one_reopening`
+    /// in `apps/pos/src-tauri/tests`.
+    #[test]
+    fn update_order_item_quantity_recomputes_line_and_order_totals() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+        let (_, menu_item_id, _) = seed_menu(&db, "outlet-1");
+
+        let order = sample_order("order-qty-1", "outlet-1", "device-1");
+        let item = sample_order_item("item-qty-1", "order-qty-1", &menu_item_id, 15000);
+        db.create_order_with_outbox(&order, &[item], &sample_outbox("order-qty-1"))
+            .expect("create draft order with one line");
+
+        db.update_order_item_quantity_with_outbox(
+            "item-qty-1",
+            5,
+            &quantity_meta("2026-08-12T10:00:00Z"),
+        )
+        .expect("quantity update on a draft order must succeed");
+
+        let stored_item = repo::get_order_item(db.connection(), "item-qty-1")
+            .unwrap()
+            .expect("item exists");
+        assert_eq!(stored_item.quantity, 5);
+        assert_eq!(
+            stored_item.line_total_paise, 75000,
+            "unit_price_paise (15000) * quantity (5), integer paise, no float anywhere"
+        );
+
+        let stored_order = db.get_order("order-qty-1").unwrap().expect("order exists");
+        assert_eq!(stored_order.subtotal_paise, 75000);
+        assert_eq!(stored_order.total_paise, 75000);
+    }
+
+    /// The quantity change must recompute `line_total_paise` from the line's
+    /// *real* modifier deltas, never just `unit_price_paise * quantity` —
+    /// this is the exact scenario the M3 planning doc calls out: "the
+    /// money invariant can see real quantities and real modifier price
+    /// deltas", together, not each proven only in isolation.
+    #[test]
+    fn update_order_item_quantity_reapplies_existing_modifier_deltas() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+        let (_, menu_item_id, _) = seed_menu(&db, "outlet-1");
+
+        // Create the draft order with no lines, then add the
+        // line-with-modifier through the public amendment API, exactly as
+        // the POS cart does.
+        let order = sample_order("order-qty-mod", "outlet-1", "device-1");
+        db.create_order_with_outbox(&order, &[], &sample_outbox("order-qty-mod"))
+            .expect("create empty draft order");
+        let item = sample_order_item("item-qty-mod", "order-qty-mod", &menu_item_id, 10000);
+        let modifiers = vec![sample_modifier("mod-1", "item-qty-mod", 2500)];
+        db.add_order_item_with_outbox(&item, &modifiers, &item_added_meta("item-qty-mod"))
+            .expect("add line with modifier");
+
+        // (unit_price 10000 + modifier delta 2500) * quantity 1 = 12500.
+        let after_add = repo::get_order_item(db.connection(), "item-qty-mod")
+            .unwrap()
+            .expect("item exists");
+        assert_eq!(after_add.line_total_paise, 12500);
+
+        db.update_order_item_quantity_with_outbox(
+            "item-qty-mod",
+            3,
+            &quantity_meta("2026-08-12T10:05:00Z"),
+        )
+        .expect("quantity update must succeed");
+
+        let after_qty = repo::get_order_item(db.connection(), "item-qty-mod")
+            .unwrap()
+            .expect("item exists");
+        assert_eq!(
+            after_qty.line_total_paise, 37500,
+            "(unit_price_paise 10000 + modifier delta 2500) * quantity 3 = 37500"
+        );
+
+        let stored_order = db
+            .get_order("order-qty-mod")
+            .unwrap()
+            .expect("order exists");
+        assert_eq!(stored_order.subtotal_paise, 37500);
+    }
+
+    /// `#132-A`: a quantity change is legal in the same widened statuses as
+    /// adding a line — a bump after send-to-kitchen must succeed, not be
+    /// silently limited to the cart-building DRAFT phase.
+    #[test]
+    fn update_order_item_quantity_succeeds_after_confirmation_132a() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+        let (_, menu_item_id, _) = seed_menu(&db, "outlet-1");
+
+        let order = sample_order("order-qty-confirmed", "outlet-1", "device-1");
+        let item = sample_order_item("item-qty-confirmed", "order-qty-confirmed", &menu_item_id, 20000);
+        db.create_order_with_outbox(&order, &[item], &sample_outbox("order-qty-confirmed"))
+            .expect("create draft order");
+        db.connection()
+            .execute(
+                "UPDATE \"order\" SET status = 'CONFIRMED' WHERE id = 'order-qty-confirmed'",
+                [],
+            )
+            .unwrap();
+
+        db.update_order_item_quantity_with_outbox(
+            "item-qty-confirmed",
+            2,
+            &quantity_meta("2026-08-12T10:10:00Z"),
+        )
+        .expect("quantity change must succeed on a CONFIRMED order (#132-A)");
+
+        let stored_item = repo::get_order_item(db.connection(), "item-qty-confirmed")
+            .unwrap()
+            .expect("item exists");
+        assert_eq!(stored_item.quantity, 2);
+        assert_eq!(stored_item.line_total_paise, 40000);
+    }
+
+    /// THE DEFECT the verifier found: `#132-A` widened the amendment gate to
+    /// SENT_TO_KITCHEN/PREPARING without any re-ticketing mechanism, so a
+    /// quantity change on a line the kitchen already has a frozen
+    /// `kot.items_json` snapshot of must be rejected outright — never
+    /// silently applied to `order_item` while the kitchen's copy goes stale
+    /// with no signal either way. This must fail against the pre-fix
+    /// behaviour (quantity change silently succeeding on a ticketed line);
+    /// see the task report for the scratch-copy falsification proving that.
+    #[test]
+    fn update_order_item_quantity_rejects_an_already_ticketed_line() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+        let (_, menu_item_id, _) = seed_menu(&db, "outlet-1");
+        seed_station(&db, "station-ticketed", "outlet-1", "MAIN_KITCHEN");
+        route_item_to_stations(&db, &menu_item_id, &["station-ticketed".to_string()]);
+
+        let order = sample_order("order-qty-ticketed", "outlet-1", "device-1");
+        let item = sample_order_item("item-qty-ticketed", "order-qty-ticketed", &menu_item_id, 20000);
+        db.create_order_with_outbox(&order, &[item], &sample_outbox("order-qty-ticketed"))
+            .expect("create draft order");
+        confirm_for_kitchen(&mut db, "order-qty-ticketed");
+        db.send_order_to_kitchen_with_outbox(
+            "order-qty-ticketed",
+            &send_meta("device-1", "2026-08-13T09:00:00Z"),
+        )
+        .expect("send to kitchen tickets the line");
+
+        let result = db.update_order_item_quantity_with_outbox(
+            "item-qty-ticketed",
+            5,
+            &quantity_meta("2026-08-13T09:05:00Z"),
+        );
+        assert!(matches!(
+            result,
+            Err(DbError::OrderItemAlreadyTicketed { .. })
+        ));
+
+        // Nothing was written: the stored row, the kot snapshot and the
+        // order totals must all be exactly what they were before the
+        // rejected call.
+        let stored_item = repo::get_order_item(db.connection(), "item-qty-ticketed")
+            .unwrap()
+            .expect("item exists");
+        assert_eq!(stored_item.quantity, 1, "rejected change must not write");
+        assert_eq!(stored_item.line_total_paise, 20000);
+
+        let kots = repo::list_kots_for_order(db.connection(), "order-qty-ticketed").unwrap();
+        assert_eq!(kots.len(), 1);
+        let ticket_items: Vec<serde_json::Value> =
+            serde_json::from_str(&kots[0].items_json).unwrap();
+        assert_eq!(
+            ticket_items[0]["quantity"], 1,
+            "the kitchen's frozen ticket snapshot must be untouched too"
+        );
+
+        let stored_order = db
+            .get_order("order-qty-ticketed")
+            .unwrap()
+            .expect("order exists");
+        // sample_order() seeds subtotal_paise at 0 and create_order_with_outbox
+        // trusts it verbatim (only add/remove/quantity-change ever recompute
+        // it) — this asserts the rejected call did not move it from whatever
+        // it already was, not that it equals the line's own total.
+        assert_eq!(stored_order.subtotal_paise, 0, "totals must not move");
+    }
+
+    /// The composed scenario the orchestrator described directly: on one
+    /// order with one line already ticketed, a quantity change on that
+    /// ticketed line is rejected while a *new*, not-yet-ticketed line added
+    /// afterward (`#132-A`) can still have its own quantity changed freely —
+    /// the gate is per-line, not per-order.
+    #[test]
+    fn update_order_item_quantity_distinguishes_ticketed_from_unticketed_lines_on_one_order() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+        let (_, menu_item_id, _) = seed_menu(&db, "outlet-1");
+        seed_station(&db, "station-mixed", "outlet-1", "MAIN_KITCHEN");
+        route_item_to_stations(&db, &menu_item_id, &["station-mixed".to_string()]);
+
+        let order = sample_order("order-qty-mixed", "outlet-1", "device-1");
+        let ticketed_item =
+            sample_order_item("item-qty-mixed-ticketed", "order-qty-mixed", &menu_item_id, 10000);
+        db.create_order_with_outbox(&order, &[ticketed_item], &sample_outbox("order-qty-mixed"))
+            .expect("create draft order");
+        confirm_for_kitchen(&mut db, "order-qty-mixed");
+        db.send_order_to_kitchen_with_outbox(
+            "order-qty-mixed",
+            &send_meta("device-1", "2026-08-13T09:10:00Z"),
+        )
+        .expect("first send tickets the original line");
+
+        // #132-A: a second line added after the first send is not yet
+        // ticketed.
+        let new_item =
+            sample_order_item("item-qty-mixed-new", "order-qty-mixed", &menu_item_id, 15000);
+        db.add_order_item_with_outbox(&new_item, &[], &item_added_meta("item-qty-mixed-new"))
+            .expect("post-send addition (#132-A)");
+
+        // The ticketed line rejects.
+        let ticketed_result = db.update_order_item_quantity_with_outbox(
+            "item-qty-mixed-ticketed",
+            3,
+            &quantity_meta("2026-08-13T09:15:00Z"),
+        );
+        assert!(matches!(
+            ticketed_result,
+            Err(DbError::OrderItemAlreadyTicketed { .. })
+        ));
+
+        // The new, not-yet-ticketed line succeeds.
+        db.update_order_item_quantity_with_outbox(
+            "item-qty-mixed-new",
+            4,
+            &quantity_meta("2026-08-13T09:16:00Z"),
+        )
+        .expect("quantity change on an unticketed line must still succeed");
+        let resized = repo::get_order_item(db.connection(), "item-qty-mixed-new")
+            .unwrap()
+            .expect("item exists");
+        assert_eq!(resized.quantity, 4);
+        assert_eq!(resized.line_total_paise, 60000);
+    }
+
+    /// The terminal-status counterpart: once the order is `SERVED`, a
+    /// quantity change must be rejected, not silently applied.
+    #[test]
+    fn update_order_item_quantity_rejects_a_terminal_order() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+        let (_, menu_item_id, _) = seed_menu(&db, "outlet-1");
+
+        let order = sample_order("order-qty-served", "outlet-1", "device-1");
+        let item = sample_order_item("item-qty-served", "order-qty-served", &menu_item_id, 20000);
+        db.create_order_with_outbox(&order, &[item], &sample_outbox("order-qty-served"))
+            .expect("create draft order");
+        db.connection()
+            .execute(
+                "UPDATE \"order\" SET status = 'SERVED' WHERE id = 'order-qty-served'",
+                [],
+            )
+            .unwrap();
+
+        let result = db.update_order_item_quantity_with_outbox(
+            "item-qty-served",
+            2,
+            &quantity_meta("2026-08-12T10:15:00Z"),
+        );
+        assert!(matches!(result, Err(DbError::OrderNotAmendable { .. })));
+
+        let stored_item = repo::get_order_item(db.connection(), "item-qty-served")
+            .unwrap()
+            .expect("item exists");
+        assert_eq!(
+            stored_item.quantity, 1,
+            "the rejected change must not have touched the stored row"
+        );
+    }
+
+    /// Zero and negative quantities are rejected before any write, matching
+    /// the frozen command's `z.number().int().positive()`.
+    #[test]
+    fn update_order_item_quantity_rejects_non_positive_quantity() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+        let (_, menu_item_id, _) = seed_menu(&db, "outlet-1");
+
+        let order = sample_order("order-qty-invalid", "outlet-1", "device-1");
+        let item = sample_order_item("item-qty-invalid", "order-qty-invalid", &menu_item_id, 20000);
+        db.create_order_with_outbox(&order, &[item], &sample_outbox("order-qty-invalid"))
+            .expect("create draft order");
+
+        for bad_quantity in [0, -1] {
+            let result = db.update_order_item_quantity_with_outbox(
+                "item-qty-invalid",
+                bad_quantity,
+                &quantity_meta("2026-08-12T10:20:00Z"),
+            );
+            assert!(matches!(result, Err(DbError::InvalidInput(_))));
+        }
+
+        let stored_item = repo::get_order_item(db.connection(), "item-qty-invalid")
+            .unwrap()
+            .expect("item exists");
+        assert_eq!(stored_item.quantity, 1, "rejected attempts must not write");
+    }
+
+    /// Proves the update is a **single** `UPDATE`, not remove-then-add: the
+    /// `order_item.id` must be unchanged after a quantity change (a
+    /// delete-then-insert implementation could easily mint a new id, or
+    /// leave a window where the row briefly does not exist — this asserts
+    /// the row identity survives, which a remove-then-add could break even
+    /// if it happened to reuse the same id).
+    #[test]
+    fn update_order_item_quantity_is_a_single_update_not_remove_then_add() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+        let (_, menu_item_id, _) = seed_menu(&db, "outlet-1");
+
+        let order = sample_order("order-qty-identity", "outlet-1", "device-1");
+        let item = sample_order_item("item-qty-identity", "order-qty-identity", &menu_item_id, 5000);
+        db.create_order_with_outbox(&order, &[item], &sample_outbox("order-qty-identity"))
+            .expect("create draft order");
+        let created_at_before = repo::get_order_item(db.connection(), "item-qty-identity")
+            .unwrap()
+            .expect("item exists")
+            .created_at;
+
+        db.update_order_item_quantity_with_outbox(
+            "item-qty-identity",
+            4,
+            &quantity_meta("2026-08-12T10:25:00Z"),
+        )
+        .expect("quantity update");
+
+        let items = repo::list_order_items(db.connection(), "order-qty-identity").unwrap();
+        assert_eq!(items.len(), 1, "still exactly one row — never two");
+        assert_eq!(items[0].id, "item-qty-identity", "id is unchanged");
+        assert_eq!(
+            items[0].created_at, created_at_before,
+            "created_at is unchanged — this was an UPDATE, not a fresh INSERT"
+        );
+    }
+
+    /// No new `local_outbox` row is minted for a quantity change (the frozen
+    /// event catalog has no "item quantity changed" event) — instead the
+    /// line's still-unpublished `ItemAdded` row is corrected in place, so
+    /// the cloud never observes the pre-change quantity for a line it has
+    /// not seen yet. See `repo::correct_pending_item_added_quantity`'s doc
+    /// comment for the full reasoning and the residual gap this leaves once
+    /// that `ItemAdded` event has actually published.
+    #[test]
+    fn update_order_item_quantity_corrects_the_pending_item_added_payload_in_place() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+        let (_, menu_item_id, _) = seed_menu(&db, "outlet-1");
+
+        let order = sample_order("order-qty-pending", "outlet-1", "device-1");
+        db.create_order_with_outbox(&order, &[], &sample_outbox("order-qty-pending"))
+            .expect("create empty draft order");
+        let item = sample_order_item("item-qty-pending", "order-qty-pending", &menu_item_id, 10000);
+        db.add_order_item_with_outbox(&item, &[], &item_added_meta("item-qty-pending"))
+            .expect("add line");
+
+        let before = repo::list_unpublished_outbox(db.connection(), 100).unwrap();
+        let item_added_count_before = before
+            .iter()
+            .filter(|e| e.aggregate_id == "order-qty-pending" && e.event_type == "ItemAdded")
+            .count();
+        assert_eq!(item_added_count_before, 1);
+
+        db.update_order_item_quantity_with_outbox(
+            "item-qty-pending",
+            4,
+            &quantity_meta("2026-08-12T10:30:00Z"),
+        )
+        .expect("quantity update");
+
+        let after = repo::list_unpublished_outbox(db.connection(), 100).unwrap();
+        let item_added_rows: Vec<_> = after
+            .iter()
+            .filter(|e| e.aggregate_id == "order-qty-pending" && e.event_type == "ItemAdded")
+            .collect();
+        assert_eq!(
+            item_added_rows.len(),
+            1,
+            "no second outbox row was minted for the quantity change"
+        );
+
+        let payload: serde_json::Value =
+            serde_json::from_str(&item_added_rows[0].payload_json).unwrap();
+        assert_eq!(payload["data"]["item"]["quantity"], 4);
+        assert_eq!(
+            payload["data"]["item"]["line_total_paise"], 40000,
+            "the corrected payload's line_total_paise must match the new quantity"
+        );
+    }
+
+    /// Modifiers chosen on an order's *first* line — before any second tap
+    /// exists to go through `add_order_item_with_outbox` — must still reach
+    /// the taxable base. This proves
+    /// `create_order_with_outbox_and_modifiers` end to end: modifier rows
+    /// persist, and the order's own `subtotal_paise`/`total_paise` already
+    /// reflect the price delta the caller computed the same way.
+    #[test]
+    fn create_order_with_outbox_and_modifiers_persists_deltas_into_totals() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+        let (_, menu_item_id, _) = seed_menu(&db, "outlet-1");
+
+        let item = sample_order_item("item-create-mod", "order-create-mod", &menu_item_id, 10000);
+        let modifiers = vec![sample_modifier("mod-create-1", "item-create-mod", 3000)];
+
+        // The caller (POS domain layer) is expected to compute
+        // subtotal/total the same way this crate will recompute
+        // line_total_paise — (unit_price + delta) * quantity — so both sides
+        // agree; this test pins that by supplying totals derived from the
+        // same formula.
+        let mut order = sample_order("order-create-mod", "outlet-1", "device-1");
+        order.subtotal_paise = 13000;
+        order.total_paise = 13000;
+
+        db.create_order_with_outbox_and_modifiers(
+            &order,
+            &[item],
+            &[modifiers],
+            &sample_outbox("order-create-mod"),
+        )
+        .expect("create order with a create-time modifier");
+
+        let stored_item = repo::get_order_item(db.connection(), "item-create-mod")
+            .unwrap()
+            .expect("item exists");
+        assert_eq!(
+            stored_item.line_total_paise, 13000,
+            "(unit_price_paise 10000 + modifier delta 3000) * quantity 1, recomputed \
+             server-side, never trusted from the caller"
+        );
+
+        let stored_modifiers =
+            repo::list_order_item_modifiers(db.connection(), "item-create-mod").unwrap();
+        assert_eq!(stored_modifiers.len(), 1);
+        assert_eq!(stored_modifiers[0].price_delta_paise, 3000);
+
+        let stored_order = db
+            .get_order("order-create-mod")
+            .unwrap()
+            .expect("order exists");
+        assert_eq!(stored_order.subtotal_paise, 13000);
+        assert_eq!(stored_order.total_paise, 13000);
+    }
+
+    /// `list_order_item_modifiers_for_order` is the grouped read the POS
+    /// command layer uses to fill in every line's `modifiers` on every read
+    /// path — one query for a whole order rather than one per line.
+    #[test]
+    fn list_order_item_modifiers_for_order_groups_by_order_item() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+        let (_, menu_item_id, _) = seed_menu(&db, "outlet-1");
+
+        let order = sample_order("order-mods-grouped", "outlet-1", "device-1");
+        db.create_order_with_outbox(&order, &[], &sample_outbox("order-mods-grouped"))
+            .expect("create empty draft order");
+
+        let item_a = sample_order_item("item-mods-a", "order-mods-grouped", &menu_item_id, 10000);
+        let item_b = sample_order_item("item-mods-b", "order-mods-grouped", &menu_item_id, 20000);
+        db.add_order_item_with_outbox(
+            &item_a,
+            &[sample_modifier("mod-a-1", "item-mods-a", 500)],
+            &item_added_meta("item-mods-a"),
+        )
+        .expect("add item a with a modifier");
+        db.add_order_item_with_outbox(&item_b, &[], &item_added_meta("item-mods-b"))
+            .expect("add item b with no modifiers");
+
+        let grouped =
+            repo::list_order_item_modifiers_for_order(db.connection(), "order-mods-grouped")
+                .unwrap();
+        assert_eq!(grouped.get("item-mods-a").map(Vec::len), Some(1));
+        assert!(
+            !grouped.contains_key("item-mods-b"),
+            "no entry for a line with no modifiers"
+        );
     }
 
     /// Proves the same rollback guarantee as
@@ -2368,13 +3058,19 @@ mod tests {
     /// of drifting quietly.
     ///
     /// WHAT THIS TEST CLAIMS, AND WHAT IT DOES NOT. The order and its line go
-    /// through the public `Db` API. The line's *modifier* does not: no public
-    /// writer reaches `order_item_modifier` for an order in this state, because
-    /// `add_order_item_with_outbox` is DRAFT-only and the fixture's order is
-    /// `SENT_TO_KITCHEN`. That leg is written through the in-crate `repo::`
-    /// path instead. So for modifiers this asserts **storage fidelity — that
-    /// the schema can hold and return the contract's shape — and not public-API
-    /// coverage.** The API-coverage claim for modifiers belongs to
+    /// through the public `Db` API via `create_order_with_outbox`, which does
+    /// not persist modifiers (only its sibling
+    /// `create_order_with_outbox_and_modifiers` does, added for Milestone 3
+    /// Track B). Reaching for `add_order_item_with_outbox` instead would not
+    /// substitute — this fixture's item is the order's *first* and only
+    /// line, so calling it would create a *second*, unrelated item rather
+    /// than attach a modifier to this one, regardless of what statuses that
+    /// method now accepts (`#132-A` widened it beyond DRAFT, but that is
+    /// orthogonal to this test's setup). So the modifier leg is written
+    /// through the in-crate `repo::` path instead, and for modifiers this
+    /// test asserts **storage fidelity — that the schema can hold and return
+    /// the contract's shape — and not public-API coverage.** The
+    /// API-coverage claim for modifiers belongs to
     /// [`order_item_fixture_round_trips_byte_for_byte_through_public_api`],
     /// which does drive the public DRAFT amendment path. Read together they
     /// cover both; read alone, neither covers both.
@@ -2477,10 +3173,12 @@ mod tests {
         db.create_order_with_outbox(&new_order, &[new_item], &sample_outbox(&order_id))
             .expect("persist fixture order + item through the public API");
 
-        // order_item_modifier has no writer on `Db` outside
-        // add_order_item_with_outbox (which requires DRAFT and recomputes
-        // totals) — the fixture's order is SENT_TO_KITCHEN, so its modifier
-        // is written directly through the same in-crate transaction pattern
+        // Neither `Db` entry point that writes order_item_modifier fits this
+        // fixture: create_order_with_outbox (used just above) does not
+        // persist modifiers at all, and add_order_item_with_outbox would
+        // create a second, unrelated line rather than attach a modifier to
+        // this one (see the doc comment above). So the fixture's modifier is
+        // written directly through the same in-crate transaction pattern
         // every other writer in this module uses (`repo::` functions are
         // `pub(crate)`, reachable here because `tests` is a descendant
         // module of the crate root that defines `Db`).
@@ -2989,16 +3687,19 @@ mod tests {
         assert_eq!(first_round[0].sequence, 1);
         let first_kot_id = first_round[0].id.clone();
 
-        // A second line added directly at the storage layer (order-item
-        // amendment after confirmation is outside this crate's Milestone 1
-        // DRAFT-only guard and is not this task's concern) — what matters
-        // here is purely the KOT-generation delta behaviour.
+        // A second line added through the real public #132-A path: the order
+        // is CONFIRMED (already past DRAFT) and already has a NEW ticket at
+        // the kitchen, and `add_order_item_with_outbox` accepts that status
+        // (`repo::require_amendable_for_item_changes`) precisely so this
+        // works — what matters here is that the addition both persists and
+        // produces the right KOT-generation delta behaviour below.
         let item_2 = sample_order_item("item-132-2", "order-132", &menu_item_id, 5000);
-        {
-            let tx = db.connection_mut().transaction().expect("begin tx");
-            repo::insert_order_item(&tx, &item_2).expect("insert addition line");
-            tx.commit().expect("commit addition line");
-        }
+        db.add_order_item_with_outbox(
+            &item_2,
+            &[],
+            &item_added_meta("item-132-2"),
+        )
+        .expect("post-confirmation addition must succeed (#132-A)");
 
         let second_round = db
             .send_order_to_kitchen_with_outbox(

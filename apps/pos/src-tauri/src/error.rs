@@ -97,6 +97,15 @@ impl From<holler_edge_database::DbError> for AppError {
             DbError::IllegalKotStatusTransition { .. } => {
                 AppError::new("ILLEGAL_KOT_STATUS_TRANSITION", message)
             }
+            // §64: never silence — the message already names the sanctioned
+            // alternative (cancel the ticketed line via #132-C, then add a
+            // replacement at the corrected quantity), so this code exists
+            // purely so the frontend can distinguish it from a generic
+            // storage failure and render that message rather than "Something
+            // went wrong".
+            DbError::OrderItemAlreadyTicketed { .. } => {
+                AppError::new("ORDER_ITEM_ALREADY_TICKETED", message)
+            }
             _other => AppError::new("STORAGE_ERROR", message),
         }
     }

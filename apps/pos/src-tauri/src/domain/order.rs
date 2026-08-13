@@ -13,6 +13,24 @@ use holler_edge_database::model::{NewOrder, NewOrderItem, Order};
 
 use crate::error::DomainError;
 
+/// One modifier selection on a cart line, as submitted by the caller —
+/// mirrors `packages/contracts/src/types/order.ts` `OrderItemModifierSchema`
+/// minus the storage-only fields (`id`/`created_at`; `order_item_id` is
+/// implicit from the line it is attached to). `price_delta_paise` is real
+/// money and must land in the taxable base (docs/m3-planning.md Track B),
+/// so this struct exists purely to carry it from the command layer into the
+/// money arithmetic below — nothing here trusts it blindly:
+/// `holler_edge_database::Db` recomputes every stored total from the actual
+/// `order_item_modifier` rows it writes, never from what a caller claims a
+/// total should be.
+#[derive(Debug, Clone)]
+pub struct DraftOrderItemModifierInput {
+    pub modifier_id: String,
+    pub group_name: String,
+    pub option_name: String,
+    pub price_delta_paise: i64,
+}
+
 /// One line the cashier has added to the cart. `unit_price_paise` is a
 /// snapshot taken by the caller from the live menu at add-time — this
 /// function never re-reads or recomputes it (ordering.md: line items are
@@ -24,6 +42,7 @@ pub struct DraftOrderItemInput {
     pub quantity: i64,
     pub unit_price_paise: i64,
     pub notes: Option<String>,
+    pub modifiers: Vec<DraftOrderItemModifierInput>,
 }
 
 #[derive(Debug, Clone)]
@@ -35,13 +54,23 @@ pub struct DraftOrderInput {
     pub items: Vec<DraftOrderItemInput>,
 }
 
-/// `unit_price_paise * quantity`. The only place a line total is computed —
-/// callers must not duplicate this arithmetic.
-pub fn line_total_paise(unit_price_paise: i64, quantity: i64) -> Result<i64, DomainError> {
+/// `(unit_price_paise + SUM(modifier price_delta_paise)) * quantity` — the
+/// same money invariant `0003_order_item_modifiers.sql` defines and
+/// `holler_edge_database::repo::compute_line_total_paise` enforces
+/// server-side. Kept as one definition here too (rather than importing the
+/// edge crate's `pub(crate)` version, which this crate cannot reach) so this
+/// layer's snapshot totals already agree with what the storage layer will
+/// independently recompute and persist.
+pub fn line_total_paise(
+    unit_price_paise: i64,
+    quantity: i64,
+    modifiers: &[DraftOrderItemModifierInput],
+) -> Result<i64, DomainError> {
     if quantity <= 0 {
         return Err(DomainError::InvalidQuantity);
     }
-    Ok(unit_price_paise * quantity)
+    let modifier_delta_sum: i64 = modifiers.iter().map(|m| m.price_delta_paise).sum();
+    Ok((unit_price_paise + modifier_delta_sum) * quantity)
 }
 
 /// Sums line totals into an order subtotal. Milestone 1: total == subtotal
@@ -69,7 +98,7 @@ pub fn build_new_draft_order(
     let mut items = Vec::with_capacity(input.items.len());
     let mut line_totals = Vec::with_capacity(input.items.len());
     for (id, item) in item_ids.into_iter().zip(input.items.iter()) {
-        let line_total = line_total_paise(item.unit_price_paise, item.quantity)?;
+        let line_total = line_total_paise(item.unit_price_paise, item.quantity, &item.modifiers)?;
         line_totals.push(line_total);
         items.push(NewOrderItem {
             id,
@@ -132,19 +161,43 @@ mod tests {
 
     #[test]
     fn line_total_multiplies_paise() {
-        assert_eq!(line_total_paise(15000, 3).unwrap(), 45000);
+        assert_eq!(line_total_paise(15000, 3, &[]).unwrap(), 45000);
     }
 
     #[test]
     fn line_total_rejects_non_positive_quantity() {
         assert!(matches!(
-            line_total_paise(15000, 0),
+            line_total_paise(15000, 0, &[]),
             Err(DomainError::InvalidQuantity)
         ));
         assert!(matches!(
-            line_total_paise(15000, -1),
+            line_total_paise(15000, -1, &[]),
             Err(DomainError::InvalidQuantity)
         ));
+    }
+
+    /// The money-invariant proof at this layer: a modifier's
+    /// `price_delta_paise` must land in the taxable base
+    /// (docs/m3-planning.md Track B), applied once per unit before the
+    /// quantity multiplication — not added flat after.
+    #[test]
+    fn line_total_applies_modifier_deltas_before_multiplying_by_quantity() {
+        let modifiers = vec![
+            DraftOrderItemModifierInput {
+                modifier_id: "mod-1".into(),
+                group_name: "Size".into(),
+                option_name: "Large".into(),
+                price_delta_paise: 3000,
+            },
+            DraftOrderItemModifierInput {
+                modifier_id: "mod-2".into(),
+                group_name: "Topping".into(),
+                option_name: "Extra Cheese".into(),
+                price_delta_paise: 2000,
+            },
+        ];
+        // (10000 + 3000 + 2000) * 3 = 45000, never (10000 * 3) + 3000 + 2000.
+        assert_eq!(line_total_paise(10000, 3, &modifiers).unwrap(), 45000);
     }
 
     #[test]
@@ -168,6 +221,7 @@ mod tests {
                     quantity: 2,
                     unit_price_paise: 15000,
                     notes: None,
+                    modifiers: vec![],
                 },
                 DraftOrderItemInput {
                     menu_item_id: "item-2".into(),
@@ -175,6 +229,7 @@ mod tests {
                     quantity: 1,
                     unit_price_paise: 20000,
                     notes: Some("no onions".into()),
+                    modifiers: vec![],
                 },
             ],
         };
@@ -194,6 +249,44 @@ mod tests {
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].line_total_paise, 30000);
         assert_eq!(items[1].line_total_paise, 20000);
+    }
+
+    /// The first-tap case (docs/m3-planning.md Track B): a modifier chosen
+    /// before any order exists yet must still reach the order's own
+    /// `subtotal_paise`/`total_paise`, not just the line.
+    #[test]
+    fn build_new_draft_order_folds_modifier_deltas_into_order_totals() {
+        let input = DraftOrderInput {
+            outlet_id: "outlet-1".into(),
+            device_id: "device-1".into(),
+            order_type: "DINE_IN".into(),
+            table_id: None,
+            items: vec![DraftOrderItemInput {
+                menu_item_id: "item-1".into(),
+                variant_id: None,
+                quantity: 2,
+                unit_price_paise: 15000,
+                notes: None,
+                modifiers: vec![DraftOrderItemModifierInput {
+                    modifier_id: "mod-1".into(),
+                    group_name: "Spice".into(),
+                    option_name: "Extra Hot".into(),
+                    price_delta_paise: 1000,
+                }],
+            }],
+        };
+        let (order, items) = build_new_draft_order(
+            "order-1".into(),
+            vec!["item-row-1".into()],
+            &input,
+            "2026-08-07T10:00:00.000Z",
+        )
+        .unwrap();
+
+        // (15000 + 1000) * 2 = 32000.
+        assert_eq!(items[0].line_total_paise, 32000);
+        assert_eq!(order.subtotal_paise, 32000);
+        assert_eq!(order.total_paise, 32000);
     }
 
     #[test]

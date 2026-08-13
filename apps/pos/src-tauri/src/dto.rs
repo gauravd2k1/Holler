@@ -215,10 +215,14 @@ impl From<db::TableSession> for TableSession {
 
 // ------------------------------------------------------------------ order --
 // Mirrors packages/contracts/src/types/order.ts CanonicalOrderSchema and
-// OrderItemSchema field-for-field. Milestone 1 excludes tax/discount
-// computation (Milestone 3) and modifiers (no order_item_modifier table
-// exists yet in the frozen schema) — those fields are always present, per
-// the contract, but always zero/empty in this milestone.
+// OrderItemSchema field-for-field. Milestone 1 excluded tax/discount
+// computation (Milestone 3, in progress) and modifiers — Milestone 3 Track B
+// (docs/m3-planning.md) closes the modifier half: `order_item_modifier`
+// (contracts 0.2.3) has always existed and `holler_edge_database` has always
+// been able to store/recompute deltas through it; the gap this crate closes
+// is that every read path here returned an empty `modifiers: Vec::new()`
+// regardless of what was actually stored, so a modifier's price_delta_paise
+// never reached a caller after the write, only inside the outbox event.
 
 #[derive(Debug, Clone, Serialize)]
 pub struct OrderItemModifier {
@@ -226,6 +230,17 @@ pub struct OrderItemModifier {
     pub group_name: String,
     pub option_name: String,
     pub price_delta_paise: i64,
+}
+
+impl From<db::OrderItemModifier> for OrderItemModifier {
+    fn from(m: db::OrderItemModifier) -> Self {
+        Self {
+            modifier_id: m.modifier_id,
+            group_name: m.group_name,
+            option_name: m.option_name,
+            price_delta_paise: m.price_delta_paise,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -240,17 +255,22 @@ pub struct OrderItem {
     pub notes: Option<String>,
 }
 
-impl From<db::OrderItem> for OrderItem {
-    fn from(i: db::OrderItem) -> Self {
+impl OrderItem {
+    /// The real conversion — call sites that actually know a line's
+    /// modifiers (every current one does, via
+    /// `holler_edge_database::repo::list_order_item_modifiers_for_order`)
+    /// must use this, not a bare `From<db::OrderItem>` that would silently
+    /// drop them again.
+    pub fn from_db(item: db::OrderItem, modifiers: Vec<db::OrderItemModifier>) -> Self {
         Self {
-            id: i.id,
-            menu_item_id: i.menu_item_id,
-            variant_id: i.variant_id,
-            quantity: i.quantity,
-            unit_price_paise: i.unit_price_paise,
-            line_total_paise: i.line_total_paise,
-            modifiers: Vec::new(),
-            notes: i.notes,
+            id: item.id,
+            menu_item_id: item.menu_item_id,
+            variant_id: item.variant_id,
+            quantity: item.quantity,
+            unit_price_paise: item.unit_price_paise,
+            line_total_paise: item.line_total_paise,
+            modifiers: modifiers.into_iter().map(OrderItemModifier::from).collect(),
+            notes: item.notes,
         }
     }
 }
@@ -310,7 +330,22 @@ impl CanonicalOrder {
     /// persisted, without round-tripping through a fabricated `db::Order`
     /// (which would require inventing `version`/`sync_status` values that
     /// were never actually read from storage).
-    pub fn from_new_order_and_items(order: &db::NewOrder, items: &[db::NewOrderItem]) -> Self {
+    ///
+    /// `item_modifiers[i]` is `items[i]`'s modifier list — the two slices
+    /// must be the same length, matching
+    /// `holler_edge_database::Db::create_order_with_outbox_and_modifiers`'s
+    /// own contract (this is the DTO built from exactly the rows passed to
+    /// that call).
+    pub fn from_new_order_and_items(
+        order: &db::NewOrder,
+        items: &[db::NewOrderItem],
+        item_modifiers: &[Vec<db::OrderItemModifier>],
+    ) -> Self {
+        assert_eq!(
+            items.len(),
+            item_modifiers.len(),
+            "caller must supply exactly one modifier list per item"
+        );
         Self {
             holler_order_id: order.id.clone(),
             external_order_id: order.external_order_id.clone(),
@@ -323,14 +358,15 @@ impl CanonicalOrder {
             delivery_address: None,
             items: items
                 .iter()
-                .map(|i| OrderItem {
+                .zip(item_modifiers.iter())
+                .map(|(i, modifiers)| OrderItem {
                     id: i.id.clone(),
                     menu_item_id: i.menu_item_id.clone(),
                     variant_id: i.variant_id.clone(),
                     quantity: i.quantity,
                     unit_price_paise: i.unit_price_paise,
                     line_total_paise: i.line_total_paise,
-                    modifiers: Vec::new(),
+                    modifiers: modifiers.iter().cloned().map(OrderItemModifier::from).collect(),
                     notes: i.notes.clone(),
                 })
                 .collect(),
@@ -359,7 +395,17 @@ impl CanonicalOrder {
         }
     }
 
-    pub fn from_order_and_items(order: db::Order, items: Vec<db::OrderItem>) -> Self {
+    /// Builds the wire shape from already-persisted rows, filling in each
+    /// line's `modifiers` from `modifiers_by_item` (keyed by
+    /// `order_item.id`, as returned by
+    /// `holler_edge_database::repo::list_order_item_modifiers_for_order`) —
+    /// a line with no entry gets an empty list, which is correct for a line
+    /// that genuinely has no modifiers rather than an error.
+    pub fn from_order_and_items(
+        order: db::Order,
+        items: Vec<db::OrderItem>,
+        modifiers_by_item: &std::collections::HashMap<String, Vec<db::OrderItemModifier>>,
+    ) -> Self {
         Self {
             holler_order_id: order.id,
             external_order_id: order.external_order_id,
@@ -370,7 +416,13 @@ impl CanonicalOrder {
             table_id: order.table_id,
             customer: None,
             delivery_address: None,
-            items: items.into_iter().map(OrderItem::from).collect(),
+            items: items
+                .into_iter()
+                .map(|i| {
+                    let modifiers = modifiers_by_item.get(&i.id).cloned().unwrap_or_default();
+                    OrderItem::from_db(i, modifiers)
+                })
+                .collect(),
             subtotal_paise: order.subtotal_paise,
             discount_paise: order.discount_paise,
             packaging_paise: 0,

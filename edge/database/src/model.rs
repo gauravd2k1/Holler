@@ -209,6 +209,20 @@ pub struct OrderItemRemovedMeta {
     pub occurred_at: String,
 }
 
+/// Caller-supplied fields for
+/// [`crate::Db::update_order_item_quantity_with_outbox`] — the single-write
+/// `SET_ORDER_ITEM_QUANTITY` command (contracts 0.4.0, ADR-016). No
+/// `outbox_id` field: unlike [`OrderItemAddedMeta`]/[`OrderItemRemovedMeta`],
+/// this write mints no new `local_outbox` row (the frozen event catalog has
+/// no "item quantity changed" event) — it only *may* correct an already
+/// still-unpublished `ItemAdded` row in place. See the doc comment on
+/// [`crate::Db::update_order_item_quantity_with_outbox`] for the reasoning
+/// and the residual gap that leaves.
+#[derive(Debug, Clone)]
+pub struct OrderItemQuantitySetMeta {
+    pub occurred_at: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct NewTableSession {
     pub id: String,

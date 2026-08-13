@@ -43,6 +43,7 @@ pub fn run() {
             commands::orders::list_orders,
             commands::orders::get_active_draft_order,
             commands::orders::add_order_item,
+            commands::orders::update_order_item_quantity,
             commands::orders::remove_order_item,
             commands::orders::update_order_shape,
             commands::orders::confirm_order,
