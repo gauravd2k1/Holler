@@ -16,8 +16,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use serde::Deserialize;
 use tungstenite::handshake::server::{Callback, ErrorResponse, Request, Response};
 use tungstenite::protocol::{Role, WebSocket};
 use tungstenite::Message;
@@ -25,8 +26,35 @@ use tungstenite::Message;
 use holler_edge_database::model::KotTransitionMeta;
 use holler_edge_database::Db;
 
+use crate::auth::DeviceTokenVerifier;
 use crate::contract::{Kot as WireKot, KdsLanCommand, KdsLanMessage, KotStatus};
+use crate::error::DeviceError;
 use crate::hub::Hub;
+
+/// How long a connection may sit between the WS handshake completing and a
+/// valid `auth` frame arriving (ADR-017 hole 3, `lan.ts`'s "first-frame auth
+/// message" option — chosen over an `Authorization` header because a
+/// browser `WebSocket` cannot set custom headers on the handshake at all;
+/// `apps/kds` is a browser app). No snapshot, no command handling, nothing
+/// else happens on a connection before this either succeeds or the
+/// connection is closed.
+const AUTH_FRAME_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// KDS -> edge, first frame only. NOT part of `packages/contracts/src/types/
+/// lan.ts`'s `KdsLanCommandSchema` — that schema is KOT status intent, and
+/// this crate must not overload it with connection auth. `lan.ts`'s own
+/// transport note names "a first-frame auth message" as one of the two
+/// sanctioned ways to move `device_token` out of the query string but does
+/// not define its shape, since contracts is read-only to builder tracks;
+/// this hand-mirrored shape is the smallest thing that satisfies it and is
+/// flagged in this track's report as a candidate for promotion into `lan.ts`
+/// by the orchestrator, the same way `device_token` itself was reserved
+/// ahead of use.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum AuthFrame {
+    Auth { device_token: String },
+}
 
 /// Default interval between heartbeats. `docs/spec/kitchen.md` gives a
 /// <250ms *propagation* target for a state change, not a heartbeat cadence —
@@ -140,10 +168,18 @@ impl LanServerHandle {
 
 /// Starts the LAN WebSocket server bound to `addr` (use `127.0.0.1:0` or
 /// `0.0.0.0:0` in tests to get an ephemeral port).
+///
+/// `verifier` is mandatory (ADR-017 hole 3): every connection must
+/// authenticate with a first-frame `auth` message before it receives a
+/// snapshot or has a command accepted. There is no "no verifier" overload —
+/// a caller that wants the pre-ADR-017 unauthenticated posture would have to
+/// construct one that always returns `Ok(())`, which is exactly the kind of
+/// thing that must be visible in a diff, not the silent default.
 pub fn start(
     addr: SocketAddr,
     db: Arc<Mutex<Db>>,
     heartbeat_interval: Duration,
+    verifier: Arc<dyn DeviceTokenVerifier>,
 ) -> std::io::Result<LanServerHandle> {
     let listener = TcpListener::bind(addr)?;
     let local_addr = listener.local_addr()?;
@@ -153,6 +189,7 @@ pub fn start(
     let accept_hub = hub.clone();
     let accept_db = db.clone();
     let accept_shutdown = shutdown_flag.clone();
+    let accept_verifier = verifier.clone();
     let accept_thread = thread::spawn(move || {
         for incoming in listener.incoming() {
             if accept_shutdown.load(Ordering::SeqCst) {
@@ -163,8 +200,9 @@ pub fn start(
             };
             let hub = accept_hub.clone();
             let db = accept_db.clone();
+            let verifier = accept_verifier.clone();
             thread::spawn(move || {
-                if let Err(err) = handle_connection(stream, hub, db) {
+                if let Err(err) = handle_connection(stream, hub, db, verifier) {
                     log::debug!("kds lan: connection ended: {err}");
                 }
             });
@@ -197,6 +235,7 @@ fn handle_connection(
     stream: TcpStream,
     hub: Arc<Hub>,
     db: Arc<Mutex<Db>>,
+    verifier: Arc<dyn DeviceTokenVerifier>,
 ) -> Result<(), crate::error::DeviceError> {
     stream.set_nodelay(true).ok();
     let parsed = Arc::new(Mutex::new(None));
@@ -217,6 +256,23 @@ fn handle_connection(
             }
         }
     };
+
+    // ADR-017 hole 3: outlet_id/device_id (checked above) identify a
+    // connection, they do not authenticate it. Nothing past this point —
+    // no snapshot, no subscription, no command handling — happens until the
+    // first frame is a verified `auth` message. A rejection here closes the
+    // socket and returns Ok(()) (a normal connection-ended outcome, logged
+    // at debug by `start`'s caller), never leaking whether the outlet_id or
+    // device_id was itself valid.
+    if let Err(err) = authenticate_first_frame(&mut socket, &conn_request, verifier.as_ref()) {
+        log::warn!(
+            "kds lan: rejected connection outlet={} device={}: {err}",
+            conn_request.outlet_id,
+            conn_request.device_id
+        );
+        let _ = socket.close(None);
+        return Ok(());
+    }
 
     let raw = socket.get_ref().try_clone()?;
     raw.set_read_timeout(Some(READ_POLL_INTERVAL))?;
@@ -306,6 +362,61 @@ fn handle_connection(
         writer_conn_id
     );
     Ok(())
+}
+
+/// Blocks (bounded by [`AUTH_FRAME_TIMEOUT`]) for the connection's first
+/// frame, requires it to be a valid `auth` message, and verifies its
+/// `device_token` against `conn_request.outlet_id`. Returns `Ok(())` only
+/// when verification actually succeeded; every other outcome (timeout,
+/// non-auth first frame, malformed JSON, a token the verifier rejects, the
+/// peer closing early, a transport error) is `Err` — this function fails
+/// closed by construction, not by convention: there is no code path that
+/// returns `Ok(())` without a successful `verifier.verify(..)` call.
+fn authenticate_first_frame(
+    socket: &mut WebSocket<TcpStream>,
+    conn_request: &ConnRequest,
+    verifier: &dyn DeviceTokenVerifier,
+) -> Result<(), DeviceError> {
+    // A short, dedicated read timeout for the auth phase only — distinct
+    // from READ_POLL_INTERVAL, which governs the steady-state command loop
+    // once a connection is trusted.
+    socket
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .ok();
+    let deadline = Instant::now() + AUTH_FRAME_TIMEOUT;
+
+    loop {
+        if Instant::now() >= deadline {
+            return Err(DeviceError::Unauthorized(
+                "no auth frame within timeout".to_string(),
+            ));
+        }
+        match socket.read() {
+            Ok(Message::Text(text)) => {
+                let frame: AuthFrame = serde_json::from_str(&text).map_err(|e| {
+                    DeviceError::Unauthorized(format!("first frame was not a valid auth message: {e}"))
+                })?;
+                let AuthFrame::Auth { device_token } = frame;
+                return verifier.verify(&device_token, &conn_request.outlet_id);
+            }
+            Ok(Message::Close(_)) => {
+                return Err(DeviceError::Unauthorized(
+                    "connection closed before auth".to_string(),
+                ));
+            }
+            // Ping/pong/binary before auth: not the frame we need yet, keep
+            // waiting up to the deadline. tungstenite auto-answers pings.
+            Ok(_) => continue,
+            Err(tungstenite::Error::Io(ref e))
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                continue;
+            }
+            Err(e) => return Err(DeviceError::Unauthorized(format!("transport error before auth: {e}"))),
+        }
+    }
 }
 
 fn build_snapshot(

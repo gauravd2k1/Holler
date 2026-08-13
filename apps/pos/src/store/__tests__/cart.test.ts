@@ -9,6 +9,7 @@ const createOrderMock = vi.fn();
 const addOrderItemMock = vi.fn();
 const removeOrderItemMock = vi.fn();
 const updateOrderShapeMock = vi.fn();
+const updateOrderItemQuantityMock = vi.fn();
 
 vi.mock("../../lib/tauri", async () => {
   const actual = await vi.importActual<typeof import("../../lib/tauri")>("../../lib/tauri");
@@ -19,6 +20,7 @@ vi.mock("../../lib/tauri", async () => {
     addOrderItem: (...args: unknown[]) => addOrderItemMock(...args),
     removeOrderItem: (...args: unknown[]) => removeOrderItemMock(...args),
     updateOrderShape: (...args: unknown[]) => updateOrderShapeMock(...args),
+    updateOrderItemQuantity: (...args: unknown[]) => updateOrderItemQuantityMock(...args),
   };
 });
 
@@ -32,6 +34,7 @@ const MENU_ITEMS: MenuItem[] = [
     name: "Paneer Tikka",
     base_price_paise: 25000,
     is_available: true,
+    tax_profile_id: null,
     config_version: 1,
     schema_version: 1,
   },
@@ -40,6 +43,7 @@ const MENU_ITEMS: MenuItem[] = [
 function persistedOrder(items: CanonicalOrder["items"]): CanonicalOrder {
   return {
     holler_order_id: "order-1",
+    display_number: "A1",
     external_order_id: null,
     source: "POS",
     outlet_id: "outlet-1",
@@ -77,6 +81,7 @@ beforeEach(() => {
   addOrderItemMock.mockReset();
   removeOrderItemMock.mockReset();
   updateOrderShapeMock.mockReset();
+  updateOrderItemQuantityMock.mockReset();
   useCartStore.setState({
     orderId: null,
     orderStatus: null,
@@ -163,7 +168,62 @@ describe("cart store — crash recovery (THE TEST THAT MATTERS)", () => {
 });
 
 describe("cart store — write-through mutations", () => {
-  it("addItem creates the DRAFT order on the first line and never touches create_order again", async () => {
+  it("addItem creates the DRAFT order on the first line, then raises quantity on the same line rather than adding a second (docs/backlog-m2.md)", async () => {
+    createOrderMock.mockResolvedValue(
+      persistedOrder([
+        {
+          id: "oi-1",
+          menu_item_id: "item-1",
+          variant_id: null,
+          quantity: 1,
+          unit_price_paise: 25000,
+          line_total_paise: 25000,
+          modifiers: [],
+          notes: null,
+        },
+      ]),
+    );
+    // Mirrors what the real edge does: persists exactly the requested
+    // quantity and reports it back — not a fixed canned value, so this
+    // catches the store sending the wrong running total on tap N.
+    updateOrderItemQuantityMock.mockImplementation(
+      (_orderId: string, _orderItemId: string, quantity: number) =>
+        Promise.resolve(
+          persistedOrder([
+            {
+              id: "oi-1",
+              menu_item_id: "item-1",
+              variant_id: null,
+              quantity,
+              unit_price_paise: 25000,
+              line_total_paise: 25000 * quantity,
+              modifiers: [],
+              notes: null,
+            },
+          ]),
+        ),
+    );
+
+    // Five taps of the same item.
+    for (let i = 0; i < 5; i += 1) {
+      await useCartStore.getState().addItem(
+        { menuItemId: "item-1", variantId: null, unitPricePaise: 25000, quantity: 1, notes: null },
+        MENU_ITEMS,
+      );
+    }
+
+    expect(createOrderMock).toHaveBeenCalledTimes(1);
+    // Every tap after the first raises the existing line's quantity — never
+    // a second call to add_order_item for the same plain item.
+    expect(addOrderItemMock).not.toHaveBeenCalled();
+    expect(updateOrderItemQuantityMock).toHaveBeenCalledTimes(4);
+    expect(updateOrderItemQuantityMock).toHaveBeenLastCalledWith("order-1", "oi-1", 5);
+    // One line, quantity 5 — not five lines of quantity 1.
+    expect(useCartStore.getState().lines).toHaveLength(1);
+    expect(useCartStore.getState().lines[0]?.quantity).toBe(5);
+  });
+
+  it("a modifier line never merges into a plain line of the same menu item", async () => {
     createOrderMock.mockResolvedValue(
       persistedOrder([
         {
@@ -196,8 +256,15 @@ describe("cart store — write-through mutations", () => {
           variant_id: null,
           quantity: 1,
           unit_price_paise: 25000,
-          line_total_paise: 25000,
-          modifiers: [],
+          line_total_paise: 28000,
+          modifiers: [
+            {
+              modifier_id: "00000000-0000-7000-8000-000000000099",
+              group_name: "Extras",
+              option_name: "Extra cheese",
+              price_delta_paise: 3000,
+            },
+          ],
           notes: null,
         },
       ]),
@@ -207,17 +274,27 @@ describe("cart store — write-through mutations", () => {
       { menuItemId: "item-1", variantId: null, unitPricePaise: 25000, quantity: 1, notes: null },
       MENU_ITEMS,
     );
-    expect(createOrderMock).toHaveBeenCalledTimes(1);
-    expect(useCartStore.getState().orderId).toBe("order-1");
-    expect(useCartStore.getState().lines).toHaveLength(1);
-
     await useCartStore.getState().addItem(
-      { menuItemId: "item-1", variantId: null, unitPricePaise: 25000, quantity: 1, notes: null },
+      {
+        menuItemId: "item-1",
+        variantId: null,
+        unitPricePaise: 25000,
+        quantity: 1,
+        notes: null,
+        modifiers: [{ groupName: "Extras", optionName: "Extra cheese", priceDeltaPaise: 3000 }],
+      },
       MENU_ITEMS,
     );
-    expect(createOrderMock).toHaveBeenCalledTimes(1);
-    expect(addOrderItemMock).toHaveBeenCalledWith("order-1", expect.objectContaining({ menu_item_id: "item-1" }));
-    expect(useCartStore.getState().lines).toHaveLength(2);
+
+    expect(updateOrderItemQuantityMock).not.toHaveBeenCalled();
+    expect(addOrderItemMock).toHaveBeenCalledTimes(1);
+    const [, sentItem] = addOrderItemMock.mock.calls[0] as [string, { modifiers: unknown[] }];
+    expect(sentItem.modifiers).toHaveLength(1);
+    const state = useCartStore.getState();
+    expect(state.lines).toHaveLength(2);
+    expect(state.lines[1]?.modifiers[0]?.priceDeltaPaise).toBe(3000);
+    // The delta is visible in the line total, not just tucked in the array.
+    expect(state.lines[1]?.lineTotalPaise).toBe(28000);
   });
 
   it("a failed write is surfaced as an error and does not fabricate a line", async () => {
@@ -232,11 +309,53 @@ describe("cart store — write-through mutations", () => {
     expect(state.error).toBe("disk full");
   });
 
+  it("setLineQuantity surfaces ORDER_ITEM_ALREADY_TICKETED verbatim rather than silently diverging from the kitchen", async () => {
+    useCartStore.setState({
+      orderId: "order-1",
+      orderStatus: "SENT_TO_KITCHEN",
+      lines: [
+        {
+          lineId: "oi-1",
+          menuItemId: "item-1",
+          menuItemName: "Paneer Tikka",
+          variantId: null,
+          unitPricePaise: 25000,
+          quantity: 1,
+          notes: null,
+          modifiers: [],
+          lineTotalPaise: 25000,
+        },
+      ],
+    });
+    updateOrderItemQuantityMock.mockRejectedValue({
+      code: "ORDER_ITEM_ALREADY_TICKETED",
+      message:
+        "order item oi-1 on order order-1 is already ticketed at the kitchen; its quantity cannot be changed in place — cancel the line and add a replacement with the new quantity",
+    });
+
+    await useCartStore.getState().setLineQuantity("oi-1", 2, MENU_ITEMS);
+
+    const state = useCartStore.getState();
+    expect(state.error).toContain("already ticketed at the kitchen");
+    // The rejected write must not have silently changed the line.
+    expect(state.lines[0]?.quantity).toBe(1);
+  });
+
   it("removeItem replaces lines from the edge's response, not by filtering locally", async () => {
     useCartStore.setState({
       orderId: "order-1",
       lines: [
-        { lineId: "oi-1", menuItemId: "item-1", menuItemName: "Paneer Tikka", variantId: null, unitPricePaise: 25000, quantity: 1, notes: null },
+        {
+          lineId: "oi-1",
+          menuItemId: "item-1",
+          menuItemName: "Paneer Tikka",
+          variantId: null,
+          unitPricePaise: 25000,
+          quantity: 1,
+          notes: null,
+          modifiers: [],
+          lineTotalPaise: 25000,
+        },
       ],
     });
     removeOrderItemMock.mockResolvedValue(persistedOrder([]));
@@ -287,6 +406,8 @@ describe("cart store — order shape stays editable through DRAFT", () => {
           unitPricePaise: 25000,
           quantity: 1,
           notes: null,
+          modifiers: [],
+          lineTotalPaise: 25000,
         },
       ],
     });

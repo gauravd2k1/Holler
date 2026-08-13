@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { MenuItem, OrderStatus, OrderType } from "@holler/contracts";
+import type { CanonicalOrder, MenuItem, OrderStatus, OrderType } from "@holler/contracts";
 import type { CartLine } from "../domain/cart";
 import { menuItemNameResolver, orderToCartLines, isRecoverableDraft } from "../domain/cartSync";
 import {
@@ -8,9 +8,10 @@ import {
   getActiveDraftOrder,
   isTauriCommandError,
   removeOrderItem,
+  updateOrderItemQuantity,
   updateOrderShape,
 } from "../lib/tauri";
-import type { NewOrderItemRequest } from "../lib/tauri";
+import type { NewOrderItemModifierRequest, NewOrderItemRequest } from "../lib/tauri";
 
 // docs/backlog-m2.md "POS cart persistence" (reopened 2026-08-10): the
 // cashier's in-progress work must live in SQLite as it happens, not in
@@ -31,12 +32,26 @@ import type { NewOrderItemRequest } from "../lib/tauri";
 // through their commands, and `orderStatus` (not merely "does an order
 // exist") is what gates whether that is currently legal.
 
+/** One modifier the cashier attaches while adding a line — the store mints
+ * `modifier_id` (a snapshot id, not a catalog FK; see
+ * `packages/contracts/sqlite/0003_order_item_modifiers.sql`) so callers
+ * never have to. */
+export interface NewCartItemModifierInput {
+  groupName: string;
+  optionName: string;
+  priceDeltaPaise: number;
+}
+
 export interface NewCartItemInput {
   menuItemId: string;
   variantId: string | null;
   unitPricePaise: number;
   quantity: number;
   notes: string | null;
+  /** Defaults to no modifiers. A line requested with modifiers is always
+   * added as its own new line (see `addItem`'s merge rule below) — it never
+   * merges into a plain, unmodified line of the same menu item. */
+  modifiers?: NewCartItemModifierInput[];
 }
 
 interface CartState {
@@ -73,13 +88,48 @@ interface CartState {
   setTableId: (tableId: string | null) => Promise<void>;
 
   hydrate: (menuItems: readonly MenuItem[]) => Promise<void>;
+  /**
+   * Tapping a menu item with no modifiers, when a plain (no-modifier) line
+   * for that same menu item + variant already exists, raises that line's
+   * quantity via `updateOrderItemQuantity` rather than adding a second line
+   * — docs/backlog-m2.md "No quantity control on a cart line. Confirmed in
+   * the wild." A request that carries modifiers always becomes its own new
+   * line: modifiers make it a materially different line, not a repeat of
+   * the plain one.
+   */
   addItem: (input: NewCartItemInput, menuItems: readonly MenuItem[]) => Promise<void>;
+  /** Sets one line's quantity directly (the cart's +/- controls) — always a
+   * single durable write via `updateOrderItemQuantity`, never remove-then-
+   * add (docs/m3-planning.md Track B). Surfaces `ORDER_ITEM_ALREADY_TICKETED`
+   * like every other write here: as `error`, verbatim, never silently
+   * dropped. */
+  setLineQuantity: (
+    orderItemId: string,
+    quantity: number,
+    menuItems: readonly MenuItem[],
+  ) => Promise<void>;
   removeItem: (orderItemId: string, menuItems: readonly MenuItem[]) => Promise<void>;
   /** The order is already fully persisted (every line landed as it was
    * added) — "Send" hands it off to the Orders screen's confirm/kitchen
    * flow rather than creating anything new. This just resets the active
    * cart for the next order. */
   clearAfterHandoff: () => void;
+}
+
+function toModifierRequests(
+  modifiers: NewCartItemModifierInput[] | undefined,
+): NewOrderItemModifierRequest[] {
+  if (!modifiers || modifiers.length === 0) return [];
+  return modifiers.map((m) => ({
+    // A snapshot id (docs/spec above) — minted here since nothing upstream
+    // of this store currently has a real menu_item_modifier catalog id to
+    // hand it (see this task's report: no Tauri command yet exposes
+    // menu_item_modifier reads to the frontend).
+    modifier_id: crypto.randomUUID(),
+    group_name: m.groupName,
+    option_name: m.optionName,
+    price_delta_paise: m.priceDeltaPaise,
+  }));
 }
 
 function toItemRequest(input: NewCartItemInput): NewOrderItemRequest {
@@ -89,7 +139,23 @@ function toItemRequest(input: NewCartItemInput): NewOrderItemRequest {
     quantity: input.quantity,
     unit_price_paise: input.unitPricePaise,
     notes: input.notes,
+    modifiers: toModifierRequests(input.modifiers),
   };
+}
+
+/** The existing line a plain (no-modifier) tap should raise the quantity of,
+ * or `undefined` if this tap must become its own new line. */
+function findMergeableLine(
+  lines: readonly CartLine[],
+  input: NewCartItemInput,
+): CartLine | undefined {
+  if (input.modifiers && input.modifiers.length > 0) return undefined;
+  return lines.find(
+    (line) =>
+      line.menuItemId === input.menuItemId &&
+      line.variantId === input.variantId &&
+      line.modifiers.length === 0,
+  );
 }
 
 function errorMessage(err: unknown): string {
@@ -179,12 +245,16 @@ export const useCartStore = create<CartState>((set, get) => ({
   addItem: async (input, menuItems) => {
     set({ pending: true, error: null });
     try {
-      const { orderId, orderType, tableId } = get();
-      const item = toItemRequest(input);
-      const order =
-        orderId === null
-          ? await createOrder(orderType, tableId, [item])
-          : await addOrderItem(orderId, item);
+      const { orderId, orderType, tableId, lines } = get();
+      let order: CanonicalOrder;
+      if (orderId === null) {
+        order = await createOrder(orderType, tableId, [toItemRequest(input)]);
+      } else {
+        const mergeable = findMergeableLine(lines, input);
+        order = mergeable
+          ? await updateOrderItemQuantity(orderId, mergeable.lineId, mergeable.quantity + input.quantity)
+          : await addOrderItem(orderId, toItemRequest(input));
+      }
       set({
         orderId: order.holler_order_id,
         orderStatus: order.status,
@@ -192,6 +262,21 @@ export const useCartStore = create<CartState>((set, get) => ({
         tableId: order.table_id,
         lines: orderToCartLines(order, menuItemNameResolver(menuItems)),
       });
+    } catch (err) {
+      set({ error: errorMessage(err) });
+    } finally {
+      set({ pending: false });
+    }
+  },
+
+  setLineQuantity: async (orderItemId, quantity, menuItems) => {
+    const { orderId } = get();
+    if (orderId === null) return;
+    if (!Number.isInteger(quantity) || quantity <= 0) return;
+    set({ pending: true, error: null });
+    try {
+      const order = await updateOrderItemQuantity(orderId, orderItemId, quantity);
+      set({ lines: orderToCartLines(order, menuItemNameResolver(menuItems)) });
     } catch (err) {
       set({ error: errorMessage(err) });
     } finally {

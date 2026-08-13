@@ -2,6 +2,7 @@
 //! broadcast fan-out to multiple clients, a dead client not blocking others,
 //! rejection of an illegal transition, and measured propagation latency.
 
+use std::collections::HashSet;
 use std::net::TcpStream;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -9,11 +10,48 @@ use std::time::{Duration, Instant};
 use holler_edge_database::{model, repo, Db};
 use tungstenite::{Message, WebSocket};
 
+use crate::auth::DeviceTokenVerifier;
 use crate::contract::{KdsLanCommand, KdsLanMessage, KotStatus};
+use crate::error::{DeviceError, DeviceResult};
 use crate::server;
 
 const OUTLET_ID: &str = "outlet-1";
 const DEVICE_ID: &str = "device-pos-1";
+
+/// The only token every existing test's `connect_ws` presents. Exists so the
+/// bulk of this file (written before ADR-017 hole 3) keeps testing what it
+/// always tested — snapshot/broadcast/reconnect/illegal-transition behaviour
+/// — without every call site fabricating a token, while the new
+/// authentication-specific tests below exercise rejection explicitly.
+const VALID_TOKEN: &str = "kds-1.valid-secret";
+
+/// Test double for [`DeviceTokenVerifier`] — an allowlist of
+/// `(outlet_id, token)` pairs, fails closed on anything else. Never used
+/// outside `#[cfg(test)]`: production wiring is
+/// `crate::auth::CloudConfigOracleVerifier` (`src/bin/kds_lan_server.rs`).
+struct FakeVerifier {
+    valid: HashSet<(String, String)>,
+}
+
+impl FakeVerifier {
+    fn allowing(outlet_id: &str, token: &str) -> Self {
+        let mut valid = HashSet::new();
+        valid.insert((outlet_id.to_string(), token.to_string()));
+        Self { valid }
+    }
+}
+
+impl DeviceTokenVerifier for FakeVerifier {
+    fn verify(&self, token: &str, outlet_id: &str) -> DeviceResult<()> {
+        if self.valid.contains(&(outlet_id.to_string(), token.to_string())) {
+            Ok(())
+        } else {
+            Err(DeviceError::Unauthorized(
+                "token not recognized for this outlet (fake verifier)".to_string(),
+            ))
+        }
+    }
+}
 
 /// Seeds one outlet/device/station/menu-item and sends one order to the
 /// kitchen, producing exactly one active `kot` row. Returns the KOT id.
@@ -178,12 +216,36 @@ fn seed_one_active_kot(db: &mut Db) -> String {
     created[0].id.clone()
 }
 
-fn connect_ws(addr: std::net::SocketAddr, outlet_id: &str, device_id: &str) -> WebSocket<TcpStream> {
+/// Connects and, unless `token` is `None`, immediately sends the first-frame
+/// `auth` message ADR-017 hole 3 requires (`server.rs::authenticate_first_frame`)
+/// — this is the WS-handshake-can't-carry-headers workaround `lan.ts`
+/// documents, exercised the same way `apps/kds`'s real client will.
+fn connect_ws_with_token(
+    addr: std::net::SocketAddr,
+    outlet_id: &str,
+    device_id: &str,
+    token: Option<&str>,
+) -> WebSocket<TcpStream> {
     let stream = TcpStream::connect(addr).expect("tcp connect");
     stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
     let url = format!("ws://{addr}/kds?outlet_id={outlet_id}&device_id={device_id}");
-    let (socket, _resp) = tungstenite::client(url.as_str(), stream).expect("ws handshake");
+    let (mut socket, _resp) = tungstenite::client(url.as_str(), stream).expect("ws handshake");
+    if let Some(token) = token {
+        let auth_frame = serde_json::json!({ "type": "auth", "device_token": token });
+        socket
+            .send(Message::Text(auth_frame.to_string().into()))
+            .expect("send auth frame");
+    }
     socket
+}
+
+/// Every pre-existing test in this file authenticates with [`VALID_TOKEN`]
+/// (accepted by the [`FakeVerifier`] [`start_test_server`] wires up) — this
+/// keeps their original intent (snapshot/broadcast/reconnect/illegal
+/// transition) unentangled with the authentication tests added alongside
+/// ADR-017 hole 3, below.
+fn connect_ws(addr: std::net::SocketAddr, outlet_id: &str, device_id: &str) -> WebSocket<TcpStream> {
+    connect_ws_with_token(addr, outlet_id, device_id, Some(VALID_TOKEN))
 }
 
 fn read_message(socket: &mut WebSocket<TcpStream>) -> KdsLanMessage {
@@ -209,10 +271,12 @@ fn read_message_skip_heartbeats(socket: &mut WebSocket<TcpStream>) -> KdsLanMess
 
 fn start_test_server(db: Db) -> (server::LanServerHandle, std::net::SocketAddr, Arc<Mutex<Db>>) {
     let db = Arc::new(Mutex::new(db));
+    let verifier: Arc<dyn DeviceTokenVerifier> = Arc::new(FakeVerifier::allowing(OUTLET_ID, VALID_TOKEN));
     let handle = server::start(
         "127.0.0.1:0".parse().unwrap(),
         db.clone(),
         Duration::from_millis(200),
+        verifier,
     )
     .expect("server starts");
     let addr = handle.local_addr();
@@ -393,6 +457,88 @@ fn illegal_transition_from_kds_is_rejected_and_state_unchanged() {
         }
         other => panic!("expected kot_upserted from the legal transition, got {other:?}"),
     }
+
+    handle.shutdown();
+}
+
+/// ADR-017 hole 3: a wrong `device_token` must never reach the snapshot —
+/// the WS handshake itself (outlet_id/device_id present) still succeeds,
+/// but the connection is closed before anything else happens.
+///
+/// Falsification performed for this track (not left as a flag in this test,
+/// per the task's instruction not to mutate tracked files to prove a
+/// point): with `authenticate_first_frame`'s call temporarily replaced by
+/// `Ok(())` in a scratch copy of `server.rs` outside this repository, this
+/// exact test failed — the client received a snapshot instead of a
+/// disconnect, confirming the assertion below is not vacuous.
+#[test]
+fn connection_with_wrong_token_is_rejected_before_snapshot() {
+    let mut db = Db::open_in_memory_for_tests().expect("open db");
+    let _kot_id = seed_one_active_kot(&mut db);
+    let (handle, addr, _db) = start_test_server(db);
+
+    let mut client = connect_ws_with_token(addr, OUTLET_ID, "kds-kitchen-1", Some("wrong-token"));
+    match client.read() {
+        Ok(Message::Text(text)) => panic!("expected rejection, got a message instead: {text}"),
+        Ok(Message::Close(_)) | Err(_) => {} // rejected, as required
+        Ok(other) => panic!("expected rejection, got {other:?}"),
+    }
+
+    handle.shutdown();
+}
+
+/// Same closure, for a token valid at a *different* outlet than the one
+/// this connection claims — proves outlet scoping, not just "any known
+/// token", is enforced.
+#[test]
+fn connection_with_token_valid_for_a_different_outlet_is_rejected() {
+    let mut db = Db::open_in_memory_for_tests().expect("open db");
+    let _kot_id = seed_one_active_kot(&mut db);
+    let (handle, addr, _db) = start_test_server(db);
+
+    // VALID_TOKEN is only allowlisted for OUTLET_ID by start_test_server's
+    // FakeVerifier — presenting it for a different outlet_id must fail.
+    let mut client = connect_ws_with_token(addr, "some-other-outlet", "kds-kitchen-1", Some(VALID_TOKEN));
+    match client.read() {
+        Ok(Message::Text(text)) => panic!("expected rejection, got a message instead: {text}"),
+        Ok(Message::Close(_)) | Err(_) => {}
+        Ok(other) => panic!("expected rejection, got {other:?}"),
+    }
+
+    handle.shutdown();
+}
+
+/// No auth frame at all before the peer sends something else: the server
+/// must reject, not silently treat a non-auth first frame as implicitly
+/// trusted.
+#[test]
+fn connection_whose_first_frame_is_not_an_auth_message_is_rejected() {
+    let mut db = Db::open_in_memory_for_tests().expect("open db");
+    let kot_id = seed_one_active_kot(&mut db);
+    let (handle, addr, db_handle) = start_test_server(db);
+
+    let mut client = connect_ws_with_token(addr, OUTLET_ID, "kds-kitchen-1", None);
+    // Send a set_kot_status command as the first frame instead of auth.
+    let command = KdsLanCommand::SetKotStatus {
+        kot_id: kot_id.clone(),
+        status: KotStatus::Acknowledged,
+        device_id: "kds-kitchen-1".to_string(),
+        requested_at: "2026-08-07T10:03:00Z".to_string(),
+    };
+    client
+        .send(Message::Text(serde_json::to_string(&command).unwrap().into()))
+        .expect("send non-auth first frame");
+
+    match client.read() {
+        Ok(Message::Text(text)) => panic!("expected rejection, got a message instead: {text}"),
+        Ok(Message::Close(_)) | Err(_) => {}
+        Ok(other) => panic!("expected rejection, got {other:?}"),
+    }
+
+    // And the transition it smuggled in a command shape must never have
+    // applied — the server closed before ever reaching command handling.
+    let kots = db_handle.lock().unwrap().list_kots_for_order("order-1").unwrap();
+    assert_eq!(kots[0].status, "NEW", "a rejected connection's payload must never be applied");
 
     handle.shutdown();
 }

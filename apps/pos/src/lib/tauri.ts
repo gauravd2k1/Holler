@@ -47,12 +47,28 @@ function toCommandError(err: unknown): TauriCommandError {
   return { code: "UNKNOWN_ERROR", message: String(err) };
 }
 
+/** One modifier selection submitted alongside a cart line — mirrors
+ * `apps/pos/src-tauri/src/commands/orders.rs` `NewOrderItemModifierRequest`.
+ * `modifier_id` is a snapshot (see `packages/contracts/sqlite/
+ * 0003_order_item_modifiers.sql`: deliberately not a foreign key), minted by
+ * the caller. */
+export interface NewOrderItemModifierRequest {
+  modifier_id: string;
+  group_name: string;
+  option_name: string;
+  price_delta_paise: number;
+}
+
 export interface NewOrderItemRequest {
   menu_item_id: string;
   variant_id: string | null;
   quantity: number;
   unit_price_paise: number;
   notes: string | null;
+  /** Optional — mirrors the Rust side's `#[serde(default)]`. Omitting this
+   * is equivalent to sending an empty array; either way, no modifier delta
+   * reaches the line total unless this is actually populated. */
+  modifiers?: NewOrderItemModifierRequest[];
 }
 
 export async function login(email: string, password: string): Promise<AuthenticatedPrincipal> {
@@ -184,6 +200,26 @@ export async function addOrderItem(
 ): Promise<CanonicalOrder> {
   try {
     const raw = await invoke("add_order_item", { orderId, item });
+    return CanonicalOrderSchema.parse(raw);
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
+
+/** Sets an existing order line's `quantity` in place — the frozen
+ * `SET_ORDER_ITEM_QUANTITY` command (contracts 0.4.0, ADR-016; apps/pos/
+ * src-tauri/src/commands/orders.rs `update_order_item_quantity`). A single
+ * durable write, deliberately not remove-then-add (docs/backlog-m2.md P1,
+ * docs/m3-planning.md Track B). Rejects with `ORDER_ITEM_ALREADY_TICKETED`
+ * if some `kot` row has already frozen a snapshot of this line — the kitchen
+ * copy and the cashier's copy must never silently diverge. */
+export async function updateOrderItemQuantity(
+  orderId: string,
+  orderItemId: string,
+  quantity: number,
+): Promise<CanonicalOrder> {
+  try {
+    const raw = await invoke("update_order_item_quantity", { orderId, orderItemId, quantity });
     return CanonicalOrderSchema.parse(raw);
   } catch (err) {
     throw toCommandError(err);

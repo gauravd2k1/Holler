@@ -43,6 +43,20 @@ pub enum SyncError {
 
     #[error("worker not configured: {0}")]
     Config(&'static str),
+
+    /// ADR-017 "Consequences": a config bundle with a newer `config_version`
+    /// whose `users` array is empty is treated as an error, not an empty
+    /// set. `/sync/config`'s `users` field is the *only* channel through
+    /// which a freshly-enrolled edge node gets cached credentials at all
+    /// (ADR-011) — silently accepting zero of them means every login
+    /// attempt fails later with no signal pointing back at the sync pull
+    /// that caused it (docs/backlog-m2.md, "found during M2 execution").
+    #[error(
+        "sync/config returned config_version {config_version} with an empty users array; \
+         refusing to apply (ADR-017: an edge that receives zero cached credentials must fail \
+         loudly, not silently)"
+    )]
+    EmptyUserCache { config_version: i64 },
 }
 
 pub type SyncResult<T> = Result<T, SyncError>;

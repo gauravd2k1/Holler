@@ -1,10 +1,28 @@
 import type { OrderType } from "@holler/contracts";
-import { lineTotalPaise, sumPaise } from "./money";
+import { sumPaise } from "./money";
 
 // Milestone 1 excludes tax/discount computation (Milestone 3) — a cart line
 // carries only quantity * unit price. The order-level tax/discount fields
 // that CanonicalOrder carries are displayed once the backend returns them,
 // never computed here.
+//
+// M3 Track B (docs/m3-planning.md): a line's total is no longer
+// `unitPricePaise * quantity` recomputed here — that formula silently
+// ignores modifier price deltas, which is exactly the fiction the M2->M3
+// close-out called out ("204/204 scenarios without ever exercising a
+// modifier price delta"). `lineTotalPaise` below is instead the edge's own
+// computed `order_item.line_total_paise`, carried through unchanged — the
+// one definition of the money invariant lives in `edge/database`
+// (`packages/contracts/sqlite/0003_order_item_modifiers.sql`'s "MONEY
+// INVARIANT" comment), and this module must not duplicate it with a formula
+// that can drift from that one.
+
+export interface CartLineModifier {
+  modifierId: string;
+  groupName: string;
+  optionName: string;
+  priceDeltaPaise: number;
+}
 
 export interface CartLine {
   /**
@@ -21,6 +39,12 @@ export interface CartLine {
   unitPricePaise: number;
   quantity: number;
   notes: string | null;
+  /** This line's real modifier selections, as persisted — never trusted to
+   * be inferred from what the cashier tapped locally. */
+  modifiers: CartLineModifier[];
+  /** The edge's computed `(unit_price_paise + sum(modifier price deltas)) *
+   * quantity`. Authoritative — never recomputed client-side. */
+  lineTotalPaise: number;
 }
 
 /** The order types this milestone supports (docs/spec/ordering.md). */
@@ -31,7 +55,7 @@ export const SUPPORTED_ORDER_TYPES: readonly OrderType[] = [
 ];
 
 export function lineTotal(line: CartLine): number {
-  return lineTotalPaise(line.unitPricePaise, line.quantity);
+  return line.lineTotalPaise;
 }
 
 export function cartSubtotalPaise(lines: readonly CartLine[]): number {

@@ -28,11 +28,12 @@ import { WebSocketServer, type WebSocket as WsSocket } from "ws";
 // vitest coverage).
 
 // Must match apps/kds/.env.e2e's VITE_KDS_LAN_URL/VITE_KDS_OUTLET_ID/
-// VITE_KDS_DEVICE_ID — the dev server under test is started with those
-// values baked in via `--mode e2e`.
+// VITE_KDS_DEVICE_ID/VITE_KDS_DEVICE_TOKEN — the dev server under test is
+// started with those values baked in via `--mode e2e`.
 const STUB_LAN_PORT = 9401;
 const OUTLET_ID = "018e5a2e-0000-7000-8000-0000000000e2";
 const DEVICE_ID = "018e5a2e-0000-7000-8000-0000000000e3";
+const DEVICE_TOKEN = "e2e-test.secret";
 
 let wss: WebSocketServer;
 
@@ -41,17 +42,33 @@ test.beforeAll(() => {
   wss.on("connection", (socket: WsSocket, request) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
     // Same handshake contract edge/device enforces (ADR-015): identity comes
-    // from the connection's query params, not a payload field.
+    // from the connection's query params, not a payload field. device_token
+    // is deliberately NOT among them (ADR-017 §3) — it must never show up
+    // here, only in the first WS frame below.
     expect(url.searchParams.get("outlet_id")).toBe(OUTLET_ID);
     expect(url.searchParams.get("device_id")).toBe(DEVICE_ID);
+    expect(url.searchParams.has("device_token")).toBe(false);
 
-    const snapshot = {
-      type: "snapshot" as const,
-      outlet_id: OUTLET_ID,
-      sent_at: new Date().toISOString(),
-      kots: [] as const,
-    };
-    socket.send(JSON.stringify(snapshot));
+    // ADR-017 hole 3, real-browser proof: the actual `WebSocket` this app
+    // constructs sends the auth frame as its first message, exercising the
+    // exact code path `LanClient.connect`'s `onopen` handler runs — jsdom
+    // (connectionController.test.ts) proves the call happens, this proves a
+    // real browser's WebSocket actually delivers it in order. This stub
+    // does not enforce rejection (it is not edge/device, see the header
+    // comment), it only asserts the frame arrived and only then sends the
+    // snapshot — mirroring the real server's ordering.
+    socket.once("message", (data) => {
+      const frame = JSON.parse(data.toString());
+      expect(frame).toEqual({ type: "auth", device_token: DEVICE_TOKEN });
+
+      const snapshot = {
+        type: "snapshot" as const,
+        outlet_id: OUTLET_ID,
+        sent_at: new Date().toISOString(),
+        kots: [] as const,
+      };
+      socket.send(JSON.stringify(snapshot));
+    });
   });
 });
 

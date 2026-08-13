@@ -10,6 +10,7 @@ function menuItem(overrides: Partial<MenuItem> = {}): MenuItem {
     name: "Paneer Tikka",
     base_price_paise: 25000,
     is_available: true,
+    tax_profile_id: null,
     config_version: 1,
     schema_version: 1,
     ...overrides,
@@ -58,9 +59,47 @@ describe("orderToCartLines", () => {
       unitPricePaise: 25000,
       quantity: 3,
       notes: null,
+      modifiers: [],
+      lineTotalPaise: 75000,
     });
     expect(lines[1]?.notes).toBe("no onions");
     expect(lines[1]?.quantity).toBe(1);
+  });
+
+  it("carries a line's real modifiers and the edge-computed line total through unchanged", () => {
+    const resolve = menuItemNameResolver([menuItem()]);
+    const lines = orderToCartLines(
+      order([
+        {
+          id: "oi-1",
+          menu_item_id: "item-1",
+          variant_id: null,
+          quantity: 2,
+          unit_price_paise: 25000,
+          line_total_paise: 56000, // (25000 + 3000) * 2 — the edge's own computation
+          modifiers: [
+            {
+              modifier_id: "00000000-0000-7000-8000-000000000099",
+              group_name: "Extras",
+              option_name: "Extra cheese",
+              price_delta_paise: 3000,
+            },
+          ],
+          notes: null,
+        },
+      ]),
+      resolve,
+    );
+
+    expect(lines[0]?.lineTotalPaise).toBe(56000);
+    expect(lines[0]?.modifiers).toEqual([
+      {
+        modifierId: "00000000-0000-7000-8000-000000000099",
+        groupName: "Extras",
+        optionName: "Extra cheese",
+        priceDeltaPaise: 3000,
+      },
+    ]);
   });
 
   it("falls back to the raw menu item id when no matching menu item is loaded", () => {

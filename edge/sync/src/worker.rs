@@ -1,10 +1,13 @@
 //! The outbox pump (edge→cloud, ADR-007/ADR-009) and its scheduling report.
 //! Offline is the normal case (task requirement #8): every expected
 //! condition — no connectivity, a rejected envelope, an unroutable
-//! (Milestone-2) aggregate, a local authority violation — is captured in
-//! [`PumpReport`] rather than raised as an `Err`, so a caller ticking this on
-//! a timer never needs to treat "offline" as an exceptional/panicking path.
-//! Only a genuine local-database failure propagates as `Err`.
+//! (Milestone-2) aggregate, a local authority violation, an unverifiable
+//! device credential (ADR-017) — is captured in [`PumpReport`] rather than
+//! raised as an `Err`, so a caller ticking this on a timer never needs to
+//! treat "offline" or "not enrolled" as an exceptional/panicking path. Only
+//! a genuine local-database failure propagates as `Err`.
+
+use std::cell::Cell;
 
 use chrono::Utc;
 use holler_edge_database::{model, repo, Db};
@@ -14,10 +17,34 @@ use crate::envelope::build_edge_to_cloud_envelope;
 use crate::error::{SyncError, SyncResult};
 use crate::route::resolve;
 
+/// Verification query parameter for [`SyncWorker::verify_enrollment`]: set
+/// high enough that the response's filtered arrays (tables/categories/items,
+/// and `users` if the caller ever decoded it) come back empty, so the ping
+/// costs one small HTTP round trip rather than a full config bundle. Not
+/// `i64::MAX` — Go's `strconv.Atoi` targets platform `int`, and staying
+/// within `i32`'s range keeps this correct even if the backend ever runs on
+/// a 32-bit target.
+const VERIFY_SINCE_VERSION: i64 = i32::MAX as i64;
+
 /// Static identity of this edge node — set once at enrollment. Not derived
 /// from any outbox row: tenant_id in particular has no home in the frozen
 /// edge SQLite schema outside `app_user` (ADR-011 note in this crate's
 /// report), so the sync worker is the thing that knows it.
+///
+/// ADR-017 hole 1: `tenant_id`/`outlet_id`/`device_id` here are still
+/// supplied by whoever constructs a `WorkerConfig` — this crate has no way
+/// to mint them itself — but they are no longer trusted blind.
+/// `device_token` is the enrolled credential (`POST /devices/enroll`,
+/// `<credential_id>.<secret>`) that [`SyncWorker`] presents on every cloud
+/// request, and before the first envelope of a session is ever sent,
+/// [`SyncWorker::verify_enrollment`] confirms the credential actually
+/// resolves to `outlet_id` — a locally mis-typed or mis-enrolled `outlet_id`
+/// now fails loudly (the cloud 404s: `backend/cmd/api/syncconfig.go`)
+/// instead of silently mislabelling every outbound envelope. `tenant_id`
+/// remains unverifiable against any contracted wire field — neither
+/// `POST /devices/enroll` nor `GET /sync/config` ever echoes a device's
+/// resolved `tenant_id` back to the caller — which is a real contract gap
+/// this crate cannot close by itself (see this track's report).
 #[derive(Debug, Clone)]
 pub struct WorkerConfig {
     pub tenant_id: String,
@@ -28,6 +55,12 @@ pub struct WorkerConfig {
     /// the frozen schema, so its envelope uses this node identity instead.
     pub device_id: String,
     pub base_url: String,
+    /// This edge node's enrolled device credential (ADR-017), presented as
+    /// `Authorization: Bearer <device_token>` on every request `SyncWorker`
+    /// makes. Never logged, never placed in an error, never persisted by
+    /// this crate — storage protection is the caller's responsibility (see
+    /// this track's report on where it is kept at rest).
+    pub device_token: String,
 }
 
 /// Why [`SyncWorker::pump_outbox`] stopped before draining every pending
@@ -68,19 +101,57 @@ pub struct PumpReport {
 pub struct SyncWorker {
     config: WorkerConfig,
     client: HttpClient,
+    /// Set once [`Self::verify_enrollment`] has succeeded this process
+    /// lifetime, so a long-running worker pays the extra round trip once per
+    /// session rather than once per `pump_outbox` call. `Cell`, not
+    /// `Mutex`: every method here takes `&self` but this crate has no
+    /// cross-thread sharing requirement (`SyncWorker` is driven by one
+    /// caller on a timer, per this module's own doc comment).
+    enrollment_verified: Cell<bool>,
 }
 
 impl SyncWorker {
     pub fn new(config: WorkerConfig) -> Self {
-        let client = HttpClient::new(config.base_url.clone());
-        Self { config, client }
+        let client =
+            HttpClient::new(config.base_url.clone()).with_bearer_token(config.device_token.clone());
+        Self {
+            config,
+            client,
+            enrollment_verified: Cell::new(false),
+        }
     }
 
     /// For tests: inject an already-built client (e.g. pointed at a local
-    /// `tiny_http` server) instead of constructing one from `base_url`.
+    /// `tiny_http` server) instead of constructing one from `base_url`. The
+    /// caller decides whether that client carries a bearer token — this
+    /// exists to test transport/retry behaviour independent of auth, so it
+    /// deliberately does not force one on.
     #[doc(hidden)]
     pub fn with_client(config: WorkerConfig, client: HttpClient) -> Self {
-        Self { config, client }
+        Self {
+            config,
+            client,
+            enrollment_verified: Cell::new(false),
+        }
+    }
+
+    /// Confirms this worker's `device_token` is a currently-valid credential
+    /// that resolves to `config.outlet_id` (ADR-017 hole 1). Pings
+    /// `GET /sync/config` — the one route that already enforces
+    /// `DeviceAuthenticate` and 404s a caller-supplied `outlet_id` that does
+    /// not match the credential's own (`backend/cmd/api/syncconfig.go`) — and
+    /// discards the body; this is an identity check, not a config pull, so it
+    /// deliberately does not go through [`crate::config::apply_bundle`] and
+    /// never touches local SQLite. A locally mis-typed or mis-enrolled
+    /// `outlet_id` therefore fails loudly here, before this worker ever
+    /// builds an envelope carrying it, rather than silently mislabelling
+    /// every outbound record.
+    fn verify_enrollment(&self) -> SyncResult<()> {
+        let _: serde_json::Value = self.client.get_json(&format!(
+            "/sync/config?outlet_id={}&since_version={VERIFY_SINCE_VERSION}",
+            self.config.outlet_id
+        ))?;
+        Ok(())
     }
 
     /// Drains up to `limit` unpublished outbox rows, oldest first, resuming
@@ -195,6 +266,33 @@ impl SyncWorker {
                 }
                 Err(other) => return Err(other),
             };
+
+            // Verify enrollment once per session, and only right before the
+            // first row that actually needs the network — a row that never
+            // reaches this point (unrouted, an authority violation, a local
+            // parse failure) proves those checks work without ever
+            // requiring connectivity, which is what
+            // `authority_violation_is_refused_locally_and_never_sent` pins.
+            if !self.enrollment_verified.get() {
+                match self.verify_enrollment() {
+                    Ok(()) => self.enrollment_verified.set(true),
+                    Err(SyncError::HttpTransport) => {
+                        self.record_attempt_stop(db, &row.id, false, StopReason::Offline)?;
+                        report.stopped = Some(StopReason::Offline);
+                        return Ok(report);
+                    }
+                    Err(SyncError::HttpStatus { status }) => {
+                        // 401/404 here means this device's credential is
+                        // invalid or does not resolve to config.outlet_id —
+                        // ADR-017 hole 1, closed: a mis-enrolled node is
+                        // stopped before it sends anything, not after.
+                        self.record_attempt_stop(db, &row.id, true, StopReason::Rejected { status })?;
+                        report.stopped = Some(StopReason::Rejected { status });
+                        return Ok(report);
+                    }
+                    Err(other) => return Err(other),
+                }
+            }
 
             let body = serde_json::to_value(&envelope)?;
             match self.client.post_json(&route.path, &body) {

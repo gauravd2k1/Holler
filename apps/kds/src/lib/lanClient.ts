@@ -51,6 +51,15 @@ export class LanClient {
     this.socket = socket;
 
     socket.onopen = () => {
+      // ADR-017 hole 3: the connection is not trusted by the edge yet — it
+      // has only proven outlet_id/device_id parse as non-empty (identity,
+      // not authentication). The very first frame sent must be this auth
+      // message, before anything else, or the edge closes the socket
+      // without ever sending a snapshot (see lanConfig.ts's AUTHENTICATION
+      // note for why this is a message and not an Authorization header).
+      socket.send(
+        JSON.stringify({ type: "auth", device_token: this.config.deviceToken }),
+      );
       this.handlers.onConnectionStatusChange("connected");
     };
 

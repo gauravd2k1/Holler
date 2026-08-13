@@ -22,8 +22,16 @@ type MenuItem struct {
 	Name           string `json:"name"`
 	BasePricePaise int64  `json:"base_price_paise"`
 	IsAvailable    bool   `json:"is_available"`
-	ConfigVersion  int    `json:"config_version"`
-	SchemaVersion  int    `json:"schema_version"`
+	// TaxProfileID added at 0.4.2 (ADR-016 addendum). Which TaxProfile prices
+	// this item; nil means "use the outlet's default profile".
+	//
+	// An INPUT to resolution, never a substitute for the snapshot: resolution
+	// happens at billing time and InvoiceLine stores what was applied (its own
+	// TaxProfileID plus per-component rate_bps and paise), so re-pointing an
+	// item tomorrow never rewrites a bill issued today (§31).
+	TaxProfileID  *string `json:"tax_profile_id"`
+	ConfigVersion int     `json:"config_version"`
+	SchemaVersion int     `json:"schema_version"`
 }
 
 type MenuItemVariant struct {

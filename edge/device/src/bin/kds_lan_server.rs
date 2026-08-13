@@ -12,16 +12,18 @@
 //! Nothing here is outlet-installer wiring — ADR-013 still applies — this is
 //! the process a real deployment would eventually launch, run by hand for now.
 //!
-//! # This binds 0.0.0.0 by default, and that port has NO authentication.
-//! `server.rs`'s `handle_connection` accepts any `outlet_id`/`device_id` pair
-//! that parses as non-empty strings — there is no device lookup, no token, no
-//! TLS (docs/backlog-m2.md, "Device enrollment", HARD TRIGGER: blocks any
-//! pilot deployment). `device_id` is identity, not authentication (ADR-015).
-//! On a restaurant LAN without VLAN segmentation, anyone who captures or
-//! guesses a `device_id` can drive `set_kot_status` for that outlet — mark
-//! food SERVED when it never left the kitchen, or CANCELLED on a live ticket.
-//! This binary does not close that hole; it only makes the already-existing
-//! server reachable. Do not run it on a network you do not fully control.
+//! # This binds 0.0.0.0 by default. TLS is still absent (ADR-017's own
+//! posture: this is a plaintext LAN hop inside one outlet, ADR-013 — network
+//! segmentation is the documented mitigation, not TLS on this port).
+//! `outlet_id`/`device_id` in the handshake query string remain identity,
+//! not authentication (ADR-015) — but every connection must now additionally
+//! present a verified `device_token` as its first WS frame
+//! (`server.rs::authenticate_first_frame`, ADR-017 hole 3) before it
+//! receives a snapshot or has a command accepted. A captured/guessed
+//! `device_id` alone can no longer drive `set_kot_status`. `verify()`
+//! resolves whether the token belongs to *some* device enrolled at this
+//! outlet, not specifically to the claimed `device_id` — see
+//! `src/auth.rs`'s doc comment for why, and for what remains open.
 
 use std::env;
 use std::net::SocketAddr;
@@ -32,7 +34,7 @@ use std::time::Duration;
 
 use holler_edge_database::crypto::EncryptionKey;
 use holler_edge_database::Db;
-use holler_edge_device::server;
+use holler_edge_device::{server, CloudConfigOracleVerifier};
 
 /// Fixed, documented, non-ephemeral default. `server::start` accepts
 /// `SocketAddr`, so `:0` (an OS-assigned ephemeral port) is technically legal
@@ -79,8 +81,22 @@ fn run() -> Result<(), String> {
     let db = Db::open(&sealed_path, &plaintext_path, key).map_err(|e| format!("opening db: {e}"))?;
     let db = Arc::new(Mutex::new(db));
 
-    let handle = server::start(bind_addr, db.clone(), server::DEFAULT_HEARTBEAT_INTERVAL)
-        .map_err(|e| format!("binding {bind_addr}: {e}"))?;
+    // ADR-017 hole 3: every KDS connection must present a verified
+    // device_token before it gets a snapshot. HOLLER_CLOUD_BASE_URL is the
+    // same cloud this edge node syncs against — required, not defaulted, so
+    // a misconfigured launch fails at startup rather than silently verifying
+    // against nothing.
+    let cloud_base_url = require_env("HOLLER_CLOUD_BASE_URL")?;
+    let verifier: Arc<dyn holler_edge_device::DeviceTokenVerifier> =
+        Arc::new(CloudConfigOracleVerifier::new(cloud_base_url));
+
+    let handle = server::start(
+        bind_addr,
+        db.clone(),
+        server::DEFAULT_HEARTBEAT_INTERVAL,
+        verifier,
+    )
+    .map_err(|e| format!("binding {bind_addr}: {e}"))?;
 
     println!("kds-lan-server: listening on {}", handle.local_addr());
     if bind_addr.ip().is_unspecified() {

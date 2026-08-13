@@ -46,6 +46,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0006_m3_billing.sql",
         include_str!("../../../packages/contracts/sqlite/0006_m3_billing.sql"),
     ),
+    (
+        "0007_menu_item_tax_profile.sql",
+        include_str!("../../../packages/contracts/sqlite/0007_menu_item_tax_profile.sql"),
+    ),
 ];
 
 /// Applies any migrations not yet reflected in `PRAGMA user_version`. Safe
@@ -225,8 +229,8 @@ mod tests {
 
         assert_eq!(
             MIGRATIONS.len(),
-            6,
-            "expected exactly 6 registered migrations after contracts 0.4.0"
+            7,
+            "expected exactly 7 registered migrations after contracts 0.4.2"
         );
     }
 

@@ -6,6 +6,7 @@ import type { WebSocketLike } from "../lanClient";
 
 const OUTLET_ID = "018e5a2e-0000-7c3d-9f4e-1234567890ab";
 const DEVICE_ID = "018e5a2e-7777-7c3d-9f4e-1234567890ab";
+const DEVICE_TOKEN = "018e5a2e-cred-7c3d-9f4e-1234567890ab.test-secret";
 
 const BASE_KOT: Kot = {
   id: "018e5a2e-6666-7c3d-9f4e-1234567890ab",
@@ -73,6 +74,7 @@ function makeController(sockets: FakeSocket[]) {
       url: "ws://edge.local/kds",
       outletId: OUTLET_ID,
       deviceId: DEVICE_ID,
+      deviceToken: DEVICE_TOKEN,
       station: null,
       heartbeatTimeoutMs: 5_000,
       reconnectDelayMs: 1_000,
@@ -88,6 +90,25 @@ function makeController(sockets: FakeSocket[]) {
 }
 
 describe("ConnectionController", () => {
+  // ADR-017 hole 3: the query string carries only identity (outlet_id/
+  // device_id), never carried device_token — the auth message sent
+  // immediately on open is the only place the token travels. Falsified for
+  // this track: with the `socket.send(JSON.stringify({ type: "auth", ... }))`
+  // call in `LanClient.connect`'s `onopen` handler temporarily deleted, this
+  // exact test failed (`sockets[0].sent` was empty), confirming the
+  // assertion is not vacuous.
+  it("sends the device_token as the first frame on open, before anything else", () => {
+    const sockets: FakeSocket[] = [];
+    const controller = makeController(sockets);
+    controller.start();
+    sockets[0].open();
+
+    expect(sockets[0].sent).toHaveLength(1);
+    const firstFrame = JSON.parse(sockets[0].sent[0]);
+    expect(firstFrame).toEqual({ type: "auth", device_token: DEVICE_TOKEN });
+    controller.stop();
+  });
+
   it("applies a snapshot fully on connect", () => {
     const sockets: FakeSocket[] = [];
     const controller = makeController(sockets);

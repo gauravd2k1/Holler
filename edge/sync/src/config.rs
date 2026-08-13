@@ -121,6 +121,20 @@ pub fn apply_bundle(
         return Ok(false);
     }
 
+    // ADR-017 "Consequences": an empty `users` array is an error, not an
+    // empty set, and this check runs before touching SQLite at all — a
+    // suspect bundle applies nothing rather than replacing tables/menu while
+    // silently zeroing out login credentials. A legitimately staffless
+    // outlet is not a case this backend produces (ListEdgeUserCache reflects
+    // enrolled users), so failing loudly here has no legitimate false
+    // positive to weigh against the M1-acceptance-threatening silent failure
+    // this closes.
+    if bundle.users.is_empty() {
+        return Err(crate::error::SyncError::EmptyUserCache {
+            config_version: bundle.config_version,
+        });
+    }
+
     let conn = db.connection();
     exec_batch(conn, "BEGIN")?;
 
@@ -247,5 +261,60 @@ mod tests {
         assert!(result.is_err(), "malformed items array must fail to parse");
         let msg = result.err().expect("checked is_err above").to_string();
         assert!(!msg.contains("super-secret-hash"));
+    }
+
+    /// ADR-017 "Consequences": an empty `users` array on a bundle that would
+    /// otherwise apply must be a hard error, and — proving the guard is not
+    /// vacuous — nothing else in the bundle gets applied either: the table
+    /// carried alongside the empty `users` array must NOT land in SQLite.
+    /// Falsified by temporarily deleting the `bundle.users.is_empty()` guard
+    /// in `apply_bundle`: with it removed, this test fails because
+    /// `apply_bundle` returns `Ok(true)` and the table row is written.
+    #[test]
+    fn empty_users_array_on_a_newer_bundle_is_rejected_and_nothing_applies() {
+        let mut db = Db::open_in_memory_for_tests().expect("open db");
+        repo::upsert_outlet(
+            db.connection(),
+            &model::Outlet {
+                id: "outlet-1".to_string(),
+                brand_id: "brand-1".to_string(),
+                name: "Test Outlet".to_string(),
+                timezone: "Asia/Kolkata".to_string(),
+                config_version: 1,
+                created_at: "2026-08-07T00:00:00Z".to_string(),
+                updated_at: "2026-08-07T00:00:00Z".to_string(),
+            },
+        )
+        .expect("seed outlet");
+
+        let bundle = ConfigBundle {
+            config_version: 2,
+            users: vec![],
+            roles: vec![],
+            tables: vec![WireRestaurantTable {
+                id: "table-1".to_string(),
+                outlet_id: "outlet-1".to_string(),
+                section: "Main".to_string(),
+                label: "T1".to_string(),
+                seat_count: 4,
+                is_active: true,
+                config_version: 2,
+            }],
+            categories: vec![],
+            items: vec![],
+        };
+
+        let err = apply_bundle(&mut db, "outlet-1", 0, bundle).expect_err("empty users must error");
+        assert!(matches!(
+            err,
+            crate::error::SyncError::EmptyUserCache { config_version: 2 }
+        ));
+
+        let tables = repo::list_restaurant_tables(db.connection(), "outlet-1")
+            .expect("list tables");
+        assert!(
+            tables.is_empty(),
+            "no part of a rejected bundle may apply, including the table carried alongside the empty users array"
+        );
     }
 }

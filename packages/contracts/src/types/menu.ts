@@ -29,6 +29,18 @@ export const MenuItemSchema = z.object({
   name: z.string(),
   base_price_paise: z.number().int(), // integer paise (CLAUDE.md); never float
   is_available: z.boolean(), // item-snooze flag, §19
+  // Added at 0.4.2 (ADR-016 addendum). Which TaxProfile prices this item.
+  //
+  // NULL is meaningful: "use the outlet's default profile". That keeps a
+  // single-rate restaurant configuration-free rather than making every item
+  // name the same profile.
+  //
+  // This is an INPUT to resolution, never a substitute for the snapshot.
+  // Resolution happens at billing time and invoice_line stores what was
+  // applied — its own tax_profile_id plus per-component rate_bps and paise.
+  // Re-pointing an item at a different profile tomorrow must never alter what
+  // a bill issued today says it charged (§31 reproducibility).
+  tax_profile_id: z.string().uuid().nullable(),
   config_version: z.number().int(),
   schema_version: z.literal(1),
 });
