@@ -65,3 +65,12 @@ ureq = { version = "2", default-features = false, features = ["json", "tls"] }
 [dev-dependencies]
 tempfile = "3"
 tiny_http = "0.12"
+
+# Test-only: hashes a device secret into the same Argon2id PHC format
+# `holler_edge_database::auth::verify_password` checks against, so
+# `tests.rs` can seed `device_credential_cache` rows with a real verifier
+# rather than a stub string. Matches holler-edge-database's own choice of
+# these crates.
+argon2 = { version = "0.5", default-features = false, features = ["alloc"] }
+rand = "0.8"
+base64 = "0.22"

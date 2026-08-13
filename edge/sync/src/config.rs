@@ -26,6 +26,36 @@ pub struct ConfigBundle {
     pub tables: Vec<WireRestaurantTable>,
     pub categories: Vec<WireMenuCategory>,
     pub items: Vec<WireMenuItem>,
+    // Added at 0.4.3 (ADR-017 amendment). Argon2id VERIFIERS for devices
+    // enrolled at this outlet — the ADR-011 pattern applied to devices, so a
+    // KDS LAN handshake can be verified with the uplink down. `#[serde(
+    // default)]` so a bundle from a cloud that has not deployed this field
+    // yet still parses (mirrors `roles` above) — `apply_bundle` does not
+    // treat an empty `device_credentials` array as an error the way it does
+    // an empty `users` array, since a legitimately device-less outlet is not
+    // ruled out the way a staff-less one is.
+    #[serde(default)]
+    pub device_credentials: Vec<WireDeviceCredential>,
+}
+
+/// Mirrors `EdgeDeviceCredential` (openapi.yaml / packages/contracts 0.4.3).
+/// Radioactive like `WireAppUser`: `credential_hash` is a verifier, never a
+/// bearer token, but gets the exact same containment as `password_hash` —
+/// this type deliberately does not derive `Debug` so an accidental `{:?}`
+/// log is a compile error.
+#[derive(Deserialize)]
+pub struct WireDeviceCredential {
+    pub credential_id: String,
+    pub device_id: String,
+    pub tenant_id: String,
+    pub outlet_id: String,
+    pub credential_hash: String,
+    pub device_kind: String,
+    #[serde(default)]
+    pub revoked_at: Option<String>,
+    #[serde(default)]
+    pub expires_at: Option<String>,
+    pub config_version: i64,
 }
 
 /// Mirrors `EdgeUserCacheEntry` (openapi.yaml). Radioactive (ADR-011):
@@ -203,6 +233,27 @@ pub fn apply_bundle(
                 },
             )?;
         }
+        // ADR-017 amendment (0.4.3): persisted exactly as `users` is, into
+        // the encrypted-at-rest device_credential_cache table, so a KDS LAN
+        // handshake can be verified with the uplink down. A revoked/expired
+        // credential is written as-is (never skipped) — the edge learns a
+        // credential is dead by syncing it, not by its absence.
+        for c in &bundle.device_credentials {
+            repo::replace_device_credential_cache(
+                conn,
+                &model::DeviceCredentialCache {
+                    credential_id: c.credential_id.clone(),
+                    device_id: c.device_id.clone(),
+                    tenant_id: c.tenant_id.clone(),
+                    outlet_id: c.outlet_id.clone(),
+                    credential_hash: c.credential_hash.clone(),
+                    device_kind: c.device_kind.clone(),
+                    revoked_at: c.revoked_at.clone(),
+                    expires_at: c.expires_at.clone(),
+                    config_version: c.config_version,
+                },
+            )?;
+        }
         Ok(())
     })();
 
@@ -302,6 +353,7 @@ mod tests {
             }],
             categories: vec![],
             items: vec![],
+            device_credentials: vec![],
         };
 
         let err = apply_bundle(&mut db, "outlet-1", 0, bundle).expect_err("empty users must error");
@@ -316,5 +368,71 @@ mod tests {
             tables.is_empty(),
             "no part of a rejected bundle may apply, including the table carried alongside the empty users array"
         );
+    }
+
+    /// The point of the whole ADR-017 amendment: a device credential shipped
+    /// on `/sync/config` must land in the encrypted-at-rest
+    /// `device_credential_cache` table, exactly as `users` lands in
+    /// `app_user` — this is what makes the offline LAN handshake possible at
+    /// all. Falsifiable by deleting the `for c in &bundle.device_credentials`
+    /// loop in `apply_bundle`: with it removed, this test fails because the
+    /// lookup below returns `None`.
+    #[test]
+    fn device_credential_in_bundle_lands_in_local_cache() {
+        let mut db = Db::open_in_memory_for_tests().expect("open db");
+        repo::upsert_outlet(
+            db.connection(),
+            &model::Outlet {
+                id: "outlet-1".to_string(),
+                brand_id: "brand-1".to_string(),
+                name: "Test Outlet".to_string(),
+                timezone: "Asia/Kolkata".to_string(),
+                config_version: 1,
+                created_at: "2026-08-13T00:00:00Z".to_string(),
+                updated_at: "2026-08-13T00:00:00Z".to_string(),
+            },
+        )
+        .expect("seed outlet");
+
+        let bundle = ConfigBundle {
+            config_version: 2,
+            users: vec![WireAppUser {
+                id: "u1".to_string(),
+                tenant_id: "t1".to_string(),
+                outlet_id: "outlet-1".to_string(),
+                email: "a@b.com".to_string(),
+                full_name: "A".to_string(),
+                password_hash: "argon2id$fake".to_string(),
+                pin_hash: None,
+                is_active: true,
+                permissions: vec![],
+                config_version: 2,
+            }],
+            roles: vec![],
+            tables: vec![],
+            categories: vec![],
+            items: vec![],
+            device_credentials: vec![WireDeviceCredential {
+                credential_id: "cred-1".to_string(),
+                device_id: "device-1".to_string(),
+                tenant_id: "t1".to_string(),
+                outlet_id: "outlet-1".to_string(),
+                credential_hash: "argon2id$device-verifier".to_string(),
+                device_kind: "KDS".to_string(),
+                revoked_at: None,
+                expires_at: None,
+                config_version: 2,
+            }],
+        };
+
+        let applied = apply_bundle(&mut db, "outlet-1", 0, bundle).expect("apply must succeed");
+        assert!(applied);
+
+        let cached = repo::get_device_credential_cache_by_id(db.connection(), "cred-1")
+            .expect("lookup")
+            .expect("credential must be cached after config apply");
+        assert_eq!(cached.device_id, "device-1");
+        assert_eq!(cached.device_kind, "KDS");
+        assert_eq!(cached.credential_hash, "argon2id$device-verifier");
     }
 }

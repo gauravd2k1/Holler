@@ -34,7 +34,7 @@ use std::time::Duration;
 
 use holler_edge_database::crypto::EncryptionKey;
 use holler_edge_database::Db;
-use holler_edge_device::{server, CloudConfigOracleVerifier};
+use holler_edge_device::{server, CachedCredentialVerifier, CloudConfigOracleVerifier};
 
 /// Fixed, documented, non-ephemeral default. `server::start` accepts
 /// `SocketAddr`, so `:0` (an OS-assigned ephemeral port) is technically legal
@@ -81,14 +81,23 @@ fn run() -> Result<(), String> {
     let db = Db::open(&sealed_path, &plaintext_path, key).map_err(|e| format!("opening db: {e}"))?;
     let db = Arc::new(Mutex::new(db));
 
-    // ADR-017 hole 3: every KDS connection must present a verified
-    // device_token before it gets a snapshot. HOLLER_CLOUD_BASE_URL is the
-    // same cloud this edge node syncs against — required, not defaulted, so
-    // a misconfigured launch fails at startup rather than silently verifying
-    // against nothing.
+    // ADR-017 amendment (0.4.3): every KDS connection must present a
+    // verified device_token before it gets a snapshot, and that check is
+    // now LOCAL-FIRST — against device_credential_cache, populated by
+    // edge/sync from GET /sync/config — so a reconnecting screen keeps
+    // working with the uplink down. HOLLER_CLOUD_BASE_URL is still required
+    // (not defaulted) because it backs the fallback path for a credential
+    // that has never synced to this node yet; a misconfigured launch fails
+    // at startup rather than silently verifying against nothing.
     let cloud_base_url = require_env("HOLLER_CLOUD_BASE_URL")?;
-    let verifier: Arc<dyn holler_edge_device::DeviceTokenVerifier> =
+    let cloud_fallback: Arc<dyn holler_edge_device::DeviceTokenVerifier> =
         Arc::new(CloudConfigOracleVerifier::new(cloud_base_url));
+    let verifier: Arc<dyn holler_edge_device::DeviceTokenVerifier> =
+        Arc::new(CachedCredentialVerifier::new(
+            db.clone(),
+            "KDS",
+            Some(cloud_fallback),
+        ));
 
     let handle = server::start(
         bind_addr,

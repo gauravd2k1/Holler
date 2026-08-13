@@ -102,6 +102,14 @@ impl HttpClient {
     }
 }
 
+// `ureq::Response::into_json` returns `std::io::Error`, not
+// `serde_json::Error`; wrap it into a message-preserving serde_json::Error so
+// this module has exactly one JSON error type on its public surface.
+fn serde_json_error_from_io(e: std::io::Error) -> serde_json::Error {
+    use serde::de::Error as _;
+    serde_json::Error::custom(e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,12 +166,4 @@ mod tests {
         let _ = client.post_json("/orders", &serde_json::json!({})).expect("post ok");
         handle.join().unwrap();
     }
-}
-
-// `ureq::Response::into_json` returns `std::io::Error`, not
-// `serde_json::Error`; wrap it into a message-preserving serde_json::Error so
-// this module has exactly one JSON error type on its public surface.
-fn serde_json_error_from_io(e: std::io::Error) -> serde_json::Error {
-    use serde::de::Error as _;
-    serde_json::Error::custom(e.to_string())
 }

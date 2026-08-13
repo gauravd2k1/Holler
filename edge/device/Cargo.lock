@@ -475,10 +475,13 @@ dependencies = [
 name = "holler-edge-device"
 version = "0.1.0"
 dependencies = [
+ "argon2",
+ "base64",
  "chrono",
  "ctrlc",
  "holler-edge-database",
  "log",
+ "rand 0.8.7",
  "serde",
  "serde_json",
  "tempfile",

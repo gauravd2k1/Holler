@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use holler_edge_database::{model, repo, Db};
 use tungstenite::{Message, WebSocket};
 
-use crate::auth::DeviceTokenVerifier;
+use crate::auth::{CachedCredentialVerifier, DeviceTokenVerifier};
 use crate::contract::{KdsLanCommand, KdsLanMessage, KotStatus};
 use crate::error::{DeviceError, DeviceResult};
 use crate::server;
@@ -539,6 +539,271 @@ fn connection_whose_first_frame_is_not_an_auth_message_is_rejected() {
     // applied — the server closed before ever reaching command handling.
     let kots = db_handle.lock().unwrap().list_kots_for_order("order-1").unwrap();
     assert_eq!(kots[0].status, "NEW", "a rejected connection's payload must never be applied");
+
+    handle.shutdown();
+}
+
+// ============================================================================
+// ADR-017 amendment (0.4.3): CachedCredentialVerifier — the offline path.
+//
+// These tests wire the REAL production verifier (`CachedCredentialVerifier`),
+// not `FakeVerifier`, with no cloud fallback configured at all — the
+// strongest statement this crate can make that authentication does not
+// require reaching the cloud: there is no cloud client even constructed.
+// ============================================================================
+
+const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD_NO_PAD;
+
+/// Hashes `secret` into the same Argon2id PHC string
+/// `holler_edge_database::auth::verify_password` checks against — mirrors
+/// `holler_edge_database::auth::tests::hash_password_like_go`, duplicated
+/// here because that helper is private to its own crate's test module.
+fn hash_secret(secret: &str) -> String {
+    use argon2::{Algorithm, Argon2, Params, Version};
+    use base64::Engine;
+    use rand::RngCore as _;
+
+    let mut salt = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut salt);
+    let params = Params::new(64 * 1024, 2, 4, Some(32)).expect("valid params");
+    let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+    let mut key = [0u8; 32];
+    argon2
+        .hash_password_into(secret.as_bytes(), &salt, &mut key)
+        .expect("hash");
+    format!(
+        "$argon2id$v={}$m={},t={},p={}${}${}",
+        Version::V0x13 as u32,
+        64 * 1024,
+        2,
+        4,
+        B64.encode(salt),
+        B64.encode(key)
+    )
+}
+
+/// Bundles a `device_credential_cache` row's non-identity fields, purely to
+/// keep [`seed_device_credential`] under clippy's argument-count lint —
+/// `credential_id`/`device_id`/`outlet_id`/`secret` are the per-test varying
+/// identity, everything here is the "what kind of row" shape.
+struct CredentialSeed<'a> {
+    device_kind: &'a str,
+    revoked_at: Option<&'a str>,
+    expires_at: Option<&'a str>,
+}
+
+fn seed_device_credential(
+    db: &mut Db,
+    credential_id: &str,
+    device_id: &str,
+    outlet_id: &str,
+    secret: &str,
+    seed: CredentialSeed,
+) {
+    repo::replace_device_credential_cache(
+        db.connection(),
+        &model::DeviceCredentialCache {
+            credential_id: credential_id.to_string(),
+            device_id: device_id.to_string(),
+            tenant_id: "tenant-1".to_string(),
+            outlet_id: outlet_id.to_string(),
+            credential_hash: hash_secret(secret),
+            device_kind: seed.device_kind.to_string(),
+            revoked_at: seed.revoked_at.map(str::to_string),
+            expires_at: seed.expires_at.map(str::to_string),
+            config_version: 1,
+        },
+    )
+    .expect("seed device credential cache row");
+}
+
+/// THE test the whole track turns on: with the cloud entirely unreachable —
+/// no fallback verifier configured at all, so there is nothing to time out
+/// or fail, the mechanism structurally cannot reach the network — a KDS
+/// presenting a credential that was synced earlier (via
+/// `device_credential_cache`, exactly as `holler_edge_sync::config::
+/// apply_bundle` would have written it from a real `GET /sync/config`)
+/// authenticates and receives its snapshot.
+///
+/// Falsified in a scratch copy outside this repository (see this track's
+/// report): disabling the local cache lookup (short-circuiting
+/// `CachedCredentialVerifier::lookup` to always return `Ok(None)`, the same
+/// shape a "the cache doesn't work" regression would take) makes this exact
+/// test fail closed with a rejected connection, because there is no
+/// fallback to catch it — proving the assertion is not vacuous.
+#[test]
+fn kds_authenticates_from_local_cache_with_no_cloud_reachable() {
+    let mut db = Db::open_in_memory_for_tests().expect("open db");
+    let kot_id = seed_one_active_kot(&mut db);
+    seed_device_credential(
+        &mut db,
+        "cred-kds-1",
+        "kds-kitchen-1",
+        OUTLET_ID,
+        "correct-secret",
+        CredentialSeed {
+            device_kind: "KDS",
+            revoked_at: None,
+            expires_at: None,
+        },
+    );
+
+    let db = Arc::new(Mutex::new(db));
+    // No cloud_fallback: `None`. This is the load-bearing part of the test —
+    // there is no verifier this call could silently fall through to.
+    let verifier: Arc<dyn DeviceTokenVerifier> =
+        Arc::new(CachedCredentialVerifier::new(db.clone(), "KDS", None));
+    let handle = server::start(
+        "127.0.0.1:0".parse().unwrap(),
+        db.clone(),
+        Duration::from_millis(200),
+        verifier,
+    )
+    .expect("server starts");
+    let addr = handle.local_addr();
+
+    let mut client =
+        connect_ws_with_token(addr, OUTLET_ID, "kds-kitchen-1", Some("cred-kds-1.correct-secret"));
+    let msg = read_message(&mut client);
+    match msg {
+        KdsLanMessage::Snapshot { kots, outlet_id, .. } => {
+            assert_eq!(outlet_id, OUTLET_ID);
+            assert_eq!(kots.len(), 1);
+            assert_eq!(kots[0].id, kot_id);
+        }
+        other => panic!("expected snapshot from an offline-verified connection, got {other:?}"),
+    }
+
+    handle.shutdown();
+}
+
+/// A revoked credential must be rejected even though the row IS present
+/// locally — rejection is decided by `revoked_at`, never by absence
+/// (ADR-017 amendment). No cloud fallback here either: a present-but-revoked
+/// row must never fall through to "ask the cloud", it must reject outright.
+#[test]
+fn revoked_cached_credential_is_rejected_even_though_present_locally() {
+    let mut db = Db::open_in_memory_for_tests().expect("open db");
+    let _kot_id = seed_one_active_kot(&mut db);
+    seed_device_credential(
+        &mut db,
+        "cred-kds-2",
+        "kds-kitchen-1",
+        OUTLET_ID,
+        "correct-secret",
+        CredentialSeed {
+            device_kind: "KDS",
+            revoked_at: Some("2026-08-13T00:00:00Z"),
+            expires_at: None,
+        },
+    );
+
+    let db = Arc::new(Mutex::new(db));
+    let verifier: Arc<dyn DeviceTokenVerifier> =
+        Arc::new(CachedCredentialVerifier::new(db.clone(), "KDS", None));
+    let handle = server::start(
+        "127.0.0.1:0".parse().unwrap(),
+        db.clone(),
+        Duration::from_millis(200),
+        verifier,
+    )
+    .expect("server starts");
+    let addr = handle.local_addr();
+
+    let mut client =
+        connect_ws_with_token(addr, OUTLET_ID, "kds-kitchen-1", Some("cred-kds-2.correct-secret"));
+    match client.read() {
+        Ok(Message::Text(text)) => panic!("expected rejection of a revoked credential, got: {text}"),
+        Ok(Message::Close(_)) | Err(_) => {}
+        Ok(other) => panic!("expected rejection, got {other:?}"),
+    }
+
+    handle.shutdown();
+}
+
+/// A credential minted for a different `device_kind` (e.g. a
+/// `PRINTER_BRIDGE` token) must not open a KDS connection even with the
+/// right secret — ADR-017 amendment requirement 4.
+#[test]
+fn cached_credential_of_the_wrong_device_kind_is_rejected() {
+    let mut db = Db::open_in_memory_for_tests().expect("open db");
+    let _kot_id = seed_one_active_kot(&mut db);
+    seed_device_credential(
+        &mut db,
+        "cred-printer-1",
+        "printer-bridge-1",
+        OUTLET_ID,
+        "correct-secret",
+        CredentialSeed {
+            device_kind: "PRINTER_BRIDGE",
+            revoked_at: None,
+            expires_at: None,
+        },
+    );
+
+    let db = Arc::new(Mutex::new(db));
+    let verifier: Arc<dyn DeviceTokenVerifier> =
+        Arc::new(CachedCredentialVerifier::new(db.clone(), "KDS", None));
+    let handle = server::start(
+        "127.0.0.1:0".parse().unwrap(),
+        db.clone(),
+        Duration::from_millis(200),
+        verifier,
+    )
+    .expect("server starts");
+    let addr = handle.local_addr();
+
+    let mut client = connect_ws_with_token(
+        addr,
+        OUTLET_ID,
+        "printer-bridge-1",
+        Some("cred-printer-1.correct-secret"),
+    );
+    match client.read() {
+        Ok(Message::Text(text)) => panic!("expected rejection of a wrong-kind credential, got: {text}"),
+        Ok(Message::Close(_)) | Err(_) => {}
+        Ok(other) => panic!("expected rejection, got {other:?}"),
+    }
+
+    handle.shutdown();
+}
+
+/// A credential not (yet) cached locally, with no fallback configured, must
+/// be rejected — never treated as "unknown, so allow" (fail closed) and
+/// never treated as "revoked" (the two are different: this asserts the
+/// rejection reason a caller can act on, via the fallback-absent case
+/// specifically, distinguishing it structurally from the revoked test
+/// above).
+#[test]
+fn uncached_credential_with_no_fallback_is_rejected() {
+    let mut db = Db::open_in_memory_for_tests().expect("open db");
+    let _kot_id = seed_one_active_kot(&mut db);
+    // Deliberately no seed_device_credential call: "cred-unknown" never
+    // synced to this node.
+
+    let db = Arc::new(Mutex::new(db));
+    let verifier: Arc<dyn DeviceTokenVerifier> =
+        Arc::new(CachedCredentialVerifier::new(db.clone(), "KDS", None));
+    let handle = server::start(
+        "127.0.0.1:0".parse().unwrap(),
+        db.clone(),
+        Duration::from_millis(200),
+        verifier,
+    )
+    .expect("server starts");
+    let addr = handle.local_addr();
+
+    let mut client = connect_ws_with_token(
+        addr,
+        OUTLET_ID,
+        "kds-kitchen-1",
+        Some("cred-unknown.some-secret"),
+    );
+    match client.read() {
+        Ok(Message::Text(text)) => panic!("expected rejection of an uncached credential, got: {text}"),
+        Ok(Message::Close(_)) | Err(_) => {}
+        Ok(other) => panic!("expected rejection, got {other:?}"),
+    }
 
     handle.shutdown();
 }

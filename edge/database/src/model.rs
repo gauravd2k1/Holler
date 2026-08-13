@@ -442,6 +442,28 @@ pub struct OutboxEntry {
     pub attempt_count: i64,
 }
 
+// ------------------------------------------- device_credential_cache (0.4.3) --
+// CONFIG, cloud->edge (ADR-011 pattern extended to devices, ADR-017
+// amendment). Mirrors `packages/contracts/sqlite/0008_edge_device_credential_
+// cache.sql` exactly. `credential_hash` is a VERIFIER (Argon2id over the
+// device's secret), never a bearer token — never log or place this struct's
+// `credential_hash` field in an error. A revoked or expired credential STILL
+// SYNCS and is stored as-is; rejection is decided by `revoked_at`/
+// `expires_at`, never by whether a row exists (see repo::get_device_
+// credential_cache_by_id's doc comment).
+#[derive(Debug, Clone)]
+pub struct DeviceCredentialCache {
+    pub credential_id: String,
+    pub device_id: String,
+    pub tenant_id: String,
+    pub outlet_id: String,
+    pub credential_hash: String,
+    pub device_kind: String,
+    pub revoked_at: Option<String>,
+    pub expires_at: Option<String>,
+    pub config_version: i64,
+}
+
 #[derive(Debug, Clone)]
 pub struct SyncState {
     pub outlet_id: String,

@@ -2294,6 +2294,87 @@ pub fn increment_outbox_attempt(conn: &Connection, id: &str) -> DbResult<()> {
     Ok(())
 }
 
+// ----------------------------------------------- device_credential_cache --
+// Config aggregate: cloud owns it, replaced wholesale per config_version
+// (ADR-011 pattern extended to devices, ADR-017 amendment 0.4.3). Never
+// returned over any wire API by this crate; `credential_hash` gets the same
+// containment as `app_user.password_hash`.
+
+pub fn replace_device_credential_cache(
+    conn: &Connection,
+    c: &DeviceCredentialCache,
+) -> DbResult<()> {
+    conn.execute(
+        "INSERT INTO device_credential_cache
+            (credential_id, device_id, tenant_id, outlet_id, credential_hash,
+             device_kind, revoked_at, expires_at, config_version)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+         ON CONFLICT(credential_id) DO UPDATE SET
+            device_id = excluded.device_id,
+            tenant_id = excluded.tenant_id,
+            outlet_id = excluded.outlet_id,
+            credential_hash = excluded.credential_hash,
+            device_kind = excluded.device_kind,
+            revoked_at = excluded.revoked_at,
+            expires_at = excluded.expires_at,
+            config_version = excluded.config_version
+         WHERE excluded.config_version >= device_credential_cache.config_version",
+        params![
+            c.credential_id,
+            c.device_id,
+            c.tenant_id,
+            c.outlet_id,
+            c.credential_hash,
+            c.device_kind,
+            c.revoked_at,
+            c.expires_at,
+            c.config_version,
+        ],
+    )?;
+    Ok(())
+}
+
+fn row_to_device_credential_cache(row: &rusqlite::Row) -> rusqlite::Result<DeviceCredentialCache> {
+    Ok(DeviceCredentialCache {
+        credential_id: row.get(0)?,
+        device_id: row.get(1)?,
+        tenant_id: row.get(2)?,
+        outlet_id: row.get(3)?,
+        credential_hash: row.get(4)?,
+        device_kind: row.get(5)?,
+        revoked_at: row.get(6)?,
+        expires_at: row.get(7)?,
+        config_version: row.get(8)?,
+    })
+}
+
+const DEVICE_CREDENTIAL_CACHE_COLUMNS: &str =
+    "credential_id, device_id, tenant_id, outlet_id, credential_hash, \
+     device_kind, revoked_at, expires_at, config_version";
+
+/// Looks up a cached credential by its `credential_id` (the first component
+/// of the `<credential_id>.<secret>` device token). Returns `Ok(None)` when
+/// the row is not (yet) cached — this is deliberately NOT an error: while
+/// offline, "not cached" is indistinguishable from "not yet synced", and the
+/// caller (`holler_edge_device::auth`) must treat that as "unknown", never
+/// as "revoked". Only `revoked_at`/`expires_at` on a row that DOES exist may
+/// reject a presented token — see the schema's own column comments.
+pub fn get_device_credential_cache_by_id(
+    conn: &Connection,
+    credential_id: &str,
+) -> DbResult<Option<DeviceCredentialCache>> {
+    conn.query_row(
+        &format!(
+            "SELECT {DEVICE_CREDENTIAL_CACHE_COLUMNS} FROM device_credential_cache \
+             WHERE credential_id = ?1"
+        ),
+        params![credential_id],
+        row_to_device_credential_cache,
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
 // ---------------------------------------------------------------- sync_state --
 
 pub fn get_sync_state(conn: &Connection, outlet_id: &str) -> DbResult<Option<SyncState>> {
@@ -2352,4 +2433,112 @@ pub fn update_sync_cursor(
         ],
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod device_credential_cache_tests {
+    use super::*;
+    use crate::Db;
+
+
+    fn seed_outlet(conn: &Connection) {
+        upsert_outlet(
+            conn,
+            &Outlet {
+                id: "outlet-1".to_string(),
+                brand_id: "brand-1".to_string(),
+                name: "Test Outlet".to_string(),
+                timezone: "Asia/Kolkata".to_string(),
+                config_version: 1,
+                created_at: "2026-08-13T00:00:00Z".to_string(),
+                updated_at: "2026-08-13T00:00:00Z".to_string(),
+            },
+        )
+        .expect("seed outlet");
+    }
+
+    fn sample(config_version: i64) -> DeviceCredentialCache {
+        DeviceCredentialCache {
+            credential_id: "cred-1".to_string(),
+            device_id: "device-1".to_string(),
+            tenant_id: "tenant-1".to_string(),
+            outlet_id: "outlet-1".to_string(),
+            credential_hash: "argon2id$fake-verifier".to_string(),
+            device_kind: "KDS".to_string(),
+            revoked_at: None,
+            expires_at: None,
+            config_version,
+        }
+    }
+
+    /// Round trip: an inserted credential is readable by `credential_id`,
+    /// and a row that has never synced reads back as `None` — never as an
+    /// error — because "not cached" must be distinguishable from "revoked"
+    /// at the call site (ADR-017 amendment).
+    #[test]
+    fn missing_credential_is_none_not_an_error() {
+        let db = Db::open_in_memory_for_tests().expect("open db");
+        let got = get_device_credential_cache_by_id(db.connection(), "does-not-exist")
+            .expect("lookup must not error on a missing row");
+        assert!(got.is_none());
+    }
+
+    #[test]
+    fn insert_then_read_back_round_trips_all_fields() {
+        let db = Db::open_in_memory_for_tests().expect("open db");
+        seed_outlet(db.connection());
+        replace_device_credential_cache(db.connection(), &sample(1)).expect("insert");
+
+        let got = get_device_credential_cache_by_id(db.connection(), "cred-1")
+            .expect("lookup")
+            .expect("row must exist");
+        assert_eq!(got.device_id, "device-1");
+        assert_eq!(got.tenant_id, "tenant-1");
+        assert_eq!(got.outlet_id, "outlet-1");
+        assert_eq!(got.credential_hash, "argon2id$fake-verifier");
+        assert_eq!(got.device_kind, "KDS");
+        assert!(got.revoked_at.is_none());
+        assert!(got.expires_at.is_none());
+        assert_eq!(got.config_version, 1);
+    }
+
+    /// A revoked/expired row must still be present and readable — the whole
+    /// point of syncing it at all (ADR-017 amendment: rejection decided by
+    /// these fields, never by absence).
+    #[test]
+    fn revoked_and_expired_rows_still_read_back() {
+        let db = Db::open_in_memory_for_tests().expect("open db");
+        seed_outlet(db.connection());
+        let mut c = sample(1);
+        c.revoked_at = Some("2026-08-13T00:00:00Z".to_string());
+        c.expires_at = Some("2026-08-13T00:00:00Z".to_string());
+        replace_device_credential_cache(db.connection(), &c).expect("insert");
+
+        let got = get_device_credential_cache_by_id(db.connection(), "cred-1")
+            .expect("lookup")
+            .expect("a revoked/expired row must still be stored, not deleted");
+        assert!(got.revoked_at.is_some());
+        assert!(got.expires_at.is_some());
+    }
+
+    /// Mirrors `replace_app_user`'s config_version guard: an older or equal
+    /// bundle must never regress an already-newer cached credential (this is
+    /// what makes a revocation, which bumps config_version, stick rather
+    /// than being overwritten by a stale replay).
+    #[test]
+    fn stale_config_version_does_not_overwrite_newer_row() {
+        let db = Db::open_in_memory_for_tests().expect("open db");
+        seed_outlet(db.connection());
+        replace_device_credential_cache(db.connection(), &sample(5)).expect("insert v5");
+
+        let mut stale = sample(3);
+        stale.credential_hash = "argon2id$should-not-apply".to_string();
+        replace_device_credential_cache(db.connection(), &stale).expect("stale write must not error");
+
+        let got = get_device_credential_cache_by_id(db.connection(), "cred-1")
+            .expect("lookup")
+            .expect("row must exist");
+        assert_eq!(got.config_version, 5, "newer row must survive a stale replay");
+        assert_eq!(got.credential_hash, "argon2id$fake-verifier");
+    }
 }
