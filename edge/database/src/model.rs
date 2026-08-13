@@ -319,6 +319,18 @@ pub struct KotTicketItem {
     pub notes: Option<String>,
 }
 
+/// One order line that resolved to zero active stations when
+/// `send_order_to_kitchen_with_outbox` tried to route it. Carried on
+/// [`crate::DbError::UnroutedKitchenItems`] so the caller — ultimately the
+/// cashier, via the Tauri command layer — learns *which* dish did not reach
+/// a kitchen, not just that something did not (docs/spec/ordering.md §64:
+/// staff must be told whether intervention is necessary).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnroutedKitchenItem {
+    pub order_item_id: String,
+    pub name: String,
+}
+
 /// Caller-supplied fields for [`crate::Db::send_order_to_kitchen_with_outbox`].
 /// Unlike every other write in this crate, the number of `kot` rows this
 /// call produces is not knowable to the caller ahead of time: it depends on

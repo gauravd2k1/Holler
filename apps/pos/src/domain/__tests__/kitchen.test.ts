@@ -103,6 +103,27 @@ describe("kitchenErrorMessage", () => {
     expect(kitchenErrorMessage({ code: "STORAGE_ERROR" })).toContain("try again");
     expect(kitchenErrorMessage(new Error("boom"))).toContain("try again");
   });
+
+  // Regression for docs/backlog-m2.md Track A / docs/m3-planning.md §2 Track
+  // A: a mixed order used to send silently, dropping any unrouted line with
+  // no signal anywhere. The edge now rejects the whole call and names the
+  // dropped item(s) (apps/pos/src-tauri/src/error.rs); this asserts the POS
+  // renders that name rather than a generic message.
+  it("surfaces the edge's item-naming message for UNROUTED_KITCHEN_ITEMS verbatim", () => {
+    const message = kitchenErrorMessage({
+      code: "UNROUTED_KITCHEN_ITEMS",
+      message: "2 items have no kitchen station — not sent: Mystery Side, Cold Coffee",
+    });
+    expect(message).toBe("2 items have no kitchen station — not sent: Mystery Side, Cold Coffee");
+    expect(message).toContain("Mystery Side");
+    expect(message).toContain("Cold Coffee");
+  });
+
+  it("falls back to a non-generic-looking message for UNROUTED_KITCHEN_ITEMS if the edge ever sent no message", () => {
+    const message = kitchenErrorMessage({ code: "UNROUTED_KITCHEN_ITEMS" });
+    expect(message.length).toBeGreaterThan(0);
+    expect(message).not.toContain("try again");
+  });
 });
 
 describe("stationsForKots", () => {

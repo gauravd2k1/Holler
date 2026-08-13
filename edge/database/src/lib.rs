@@ -470,13 +470,20 @@ impl Db {
     /// sequence, never a mutation of an earlier one, matching the #132 ->
     /// #132-A change history in docs/spec/kitchen.md.
     ///
-    /// An order line whose menu item routes to no active station (e.g. a
-    /// non-production line) is silently skipped rather than ticketed
-    /// anywhere — legitimate per ADR-014 §2. Returns
-    /// `DbError::NothingToSendToKitchen` if that leaves zero tickets to
-    /// create, so an empty call is never a silent no-op. Returns
-    /// `DbError::OrderNotSendableToKitchen` if the order is not in a status
-    /// that can produce KOTs (DRAFT, or already
+    /// Returns `DbError::UnroutedKitchenItems` — naming every affected line
+    /// — if the unticketed lines are a *mix* of routed and unrouted (at
+    /// least one of each). Nothing in `packages/contracts` marks a menu item
+    /// as deliberately non-production, so an unrouted line cannot be
+    /// distinguished from a routing config gap; the whole call is rejected
+    /// and **no `kot` row is written for any line, routed or not**, so a
+    /// cashier is never told an order reached the kitchen when one of its
+    /// dishes did not (docs/backlog-m2.md Track A). Returns
+    /// `DbError::NothingToSendToKitchen` if there were zero unticketed lines
+    /// at all, or if every unticketed line is unrouted — both are "nothing
+    /// legitimately goes to any kitchen from this call" and keep the
+    /// pre-existing, already-correct outcome; only the *mixed* case changed.
+    /// Returns `DbError::OrderNotSendableToKitchen` if the order is not in a
+    /// status that can produce KOTs (DRAFT, or already
     /// SERVED/BILLED/PAID/CLOSED/CANCELLED).
     pub fn send_order_to_kitchen_with_outbox(
         &mut self,
@@ -521,22 +528,42 @@ impl Db {
             .collect();
 
         // Group ticket lines by station code; an item present in more than
-        // one station's routing appears on more than one group.
+        // one station's routing appears on more than one group. Also track
+        // any line that resolves to zero stations — see
+        // `DbError::UnroutedKitchenItems` for why that rejects the whole
+        // call rather than being skipped.
         let mut by_station: BTreeMap<String, Vec<KotTicketItem>> = BTreeMap::new();
+        let mut unrouted: Vec<crate::model::UnroutedKitchenItem> = Vec::new();
         for item in &unticketed_items {
             let stations = repo::list_stations_for_menu_item(&tx, &item.menu_item_id)?;
+            let ticket_item = repo::build_kot_ticket_item(&tx, item)?;
             if stations.is_empty() {
-                // Legitimate: a non-production line (e.g. a service charge)
-                // produces no ticket anywhere.
+                unrouted.push(crate::model::UnroutedKitchenItem {
+                    order_item_id: item.id.clone(),
+                    name: ticket_item.name.clone(),
+                });
                 continue;
             }
-            let ticket_item = repo::build_kot_ticket_item(&tx, item)?;
             for station in stations {
                 by_station
                     .entry(station.code)
                     .or_default()
                     .push(ticket_item.clone());
             }
+        }
+
+        // A *mixed* call — some lines routed, some not — is the defect this
+        // guards against, and is rejected outright (see
+        // `DbError::UnroutedKitchenItems`). An *all-unrouted* call (or a
+        // call with zero unticketed lines at all) keeps its pre-existing,
+        // already-correct `NothingToSendToKitchen` outcome below — this
+        // fix narrows the gap the all-unrouted case never had, it does not
+        // change that case's wire behaviour.
+        if !unrouted.is_empty() && !by_station.is_empty() {
+            return Err(DbError::UnroutedKitchenItems {
+                order_id: order_id.to_string(),
+                items: unrouted,
+            });
         }
 
         if by_station.is_empty() {
@@ -2668,6 +2695,136 @@ mod tests {
 
         let stored_order = db.get_order("order-thali").unwrap().expect("order exists");
         assert_eq!(stored_order.status, "SENT_TO_KITCHEN");
+    }
+
+    /// Regression for docs/backlog-m2.md Track A / docs/m3-planning.md §2
+    /// Track A: a mixed order — one routed item, one unrouted item — used to
+    /// send "successfully" with the unrouted line silently `continue`d past
+    /// (the guard only fired when *every* line was unrouted). This asserts
+    /// the whole call now rejects, names the unrouted item, and — critically
+    /// — writes zero `kot` rows for *either* line, so the routed item never
+    /// reaches the kitchen half-sent while the order silently drops the rest.
+    #[test]
+    fn mixed_order_with_one_unrouted_line_rejects_and_writes_no_kots() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+        let (category_id, routed_item_id, _) = seed_menu(&db, "outlet-1");
+
+        // A second menu item that is never routed to any station — the
+        // config gap that used to be swallowed.
+        let unrouted_item_id = "item-unrouted".to_string();
+        repo::upsert_menu_item(
+            db.connection(),
+            &model::MenuItem {
+                id: unrouted_item_id.clone(),
+                outlet_id: "outlet-1".to_string(),
+                category_id: category_id.clone(),
+                name: "Mystery Side".to_string(),
+                base_price_paise: 8000,
+                is_available: true,
+                config_version: 1,
+            },
+        )
+        .expect("seed unrouted menu item");
+
+        seed_station(&db, "station-main", "outlet-1", "MAIN_KITCHEN");
+        route_item_to_stations(&db, &routed_item_id, &["station-main".to_string()]);
+        // Deliberately no `route_item_to_stations` call for `unrouted_item_id`.
+
+        let order = sample_order("order-mixed", "outlet-1", "device-1");
+        let routed_line = sample_order_item("item-routed", "order-mixed", &routed_item_id, 25000);
+        let unrouted_line =
+            sample_order_item("item-mystery", "order-mixed", &unrouted_item_id, 8000);
+        db.create_order_with_outbox(
+            &order,
+            &[routed_line, unrouted_line],
+            &sample_outbox("order-mixed"),
+        )
+        .expect("create draft order with mixed lines");
+        confirm_for_kitchen(&mut db, "order-mixed");
+
+        let result = db.send_order_to_kitchen_with_outbox(
+            "order-mixed",
+            &send_meta("device-1", "2026-08-09T10:00:00Z"),
+        );
+
+        match result {
+            Err(DbError::UnroutedKitchenItems { order_id, items }) => {
+                assert_eq!(order_id, "order-mixed");
+                assert_eq!(items.len(), 1, "only the unrouted line is named");
+                assert_eq!(items[0].order_item_id, "item-mystery");
+                assert_eq!(items[0].name, "Mystery Side");
+            }
+            other => panic!("expected UnroutedKitchenItems, got {other:?}"),
+        }
+
+        // The routed item must NOT have been ticketed either — a partial
+        // send that tells nobody is exactly the defect this guards against.
+        let stored = repo::list_kots_for_order(db.connection(), "order-mixed").unwrap();
+        assert!(
+            stored.is_empty(),
+            "no kot row for either line when any line is unrouted"
+        );
+        let pending = repo::list_unpublished_outbox(db.connection(), 100).unwrap();
+        assert!(
+            !pending
+                .iter()
+                .any(|e| e.event_type == "KOTCreated" || e.event_type == "SentToKitchen"),
+            "no KOTCreated/SentToKitchen outbox rows on a rejected send"
+        );
+        let stored_order = db
+            .get_order("order-mixed")
+            .unwrap()
+            .expect("order still exists");
+        assert_ne!(
+            stored_order.status, "SENT_TO_KITCHEN",
+            "order status must not advance on a rejected send"
+        );
+    }
+
+    /// The all-unrouted case was already correct before this Track A fix
+    /// (the guard at the bottom of the routing loop fired whenever
+    /// `by_station` was empty) and must keep its exact outcome —
+    /// `NothingToSendToKitchen`, not the new `UnroutedKitchenItems` — since
+    /// only the *mixed* case was ever silent. Guards against a fix for the
+    /// mixed case accidentally widening to change this one's wire contract.
+    #[test]
+    fn all_unrouted_order_keeps_nothing_to_send_to_kitchen_not_unrouted_items() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+        let (category_id, _, _) = seed_menu(&db, "outlet-1");
+
+        let unrouted_item_id = "item-unrouted-only".to_string();
+        repo::upsert_menu_item(
+            db.connection(),
+            &model::MenuItem {
+                id: unrouted_item_id.clone(),
+                outlet_id: "outlet-1".to_string(),
+                category_id: category_id.clone(),
+                name: "Service Charge".to_string(),
+                base_price_paise: 5000,
+                is_available: true,
+                config_version: 1,
+            },
+        )
+        .expect("seed unrouted-only menu item");
+        // Deliberately no station routing for this item at all.
+
+        let order = sample_order("order-all-unrouted", "outlet-1", "device-1");
+        let line = sample_order_item("item-only", "order-all-unrouted", &unrouted_item_id, 5000);
+        db.create_order_with_outbox(&order, &[line], &sample_outbox("order-all-unrouted"))
+            .expect("create draft order");
+        confirm_for_kitchen(&mut db, "order-all-unrouted");
+
+        let result = db.send_order_to_kitchen_with_outbox(
+            "order-all-unrouted",
+            &send_meta("device-1", "2026-08-09T10:00:00Z"),
+        );
+
+        assert!(
+            matches!(result, Err(DbError::NothingToSendToKitchen { .. })),
+            "expected NothingToSendToKitchen, got {result:?}"
+        );
     }
 
     /// The pre-flight guard: sending an order to the kitchen while it is

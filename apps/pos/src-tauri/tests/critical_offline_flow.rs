@@ -905,6 +905,81 @@ fn send_to_kitchen_produces_one_ticket_per_routed_station_and_it_is_listable() {
     assert_eq!(listed[0].id, kots[0].id);
 }
 
+/// Regression for docs/backlog-m2.md Track A / docs/m3-planning.md §2 Track
+/// A, at the Tauri command boundary the POS UI actually calls: a mixed
+/// order with one routed line and one unrouted line used to send
+/// "successfully", ticketing only the routed item and dropping the other
+/// with no signal anywhere. This asserts `send_order_to_kitchen_impl` now
+/// returns `AppError { code: "UNROUTED_KITCHEN_ITEMS", .. }` naming the
+/// dropped item, and that **no** `Kot` was created for either line — the
+/// routed item must not go to the kitchen while the unrouted one silently
+/// vanishes.
+#[test]
+fn send_to_kitchen_rejects_a_mixed_order_and_names_the_unrouted_item() {
+    let state = seeded_kitchen_state();
+
+    // A second menu item that is never routed to any station — the config
+    // gap this test exercises.
+    {
+        let db = state.db.lock().expect("lock db");
+        repo::upsert_menu_item(
+            db.connection(),
+            &model::MenuItem {
+                id: "item-unrouted".to_string(),
+                outlet_id: OUTLET_ID.to_string(),
+                category_id: "cat-1".to_string(),
+                name: "Mystery Side".to_string(),
+                base_price_paise: 8000,
+                is_available: true,
+                config_version: 1,
+            },
+        )
+        .expect("seed unrouted menu item");
+    }
+
+    let order = create_order_impl(
+        &state,
+        "DINE_IN".to_string(),
+        Some("table-1".to_string()),
+        vec![
+            NewOrderItemRequest {
+                menu_item_id: "item-1".to_string(),
+                variant_id: None,
+                quantity: 1,
+                unit_price_paise: 25000,
+                notes: None,
+            },
+            NewOrderItemRequest {
+                menu_item_id: "item-unrouted".to_string(),
+                variant_id: None,
+                quantity: 1,
+                unit_price_paise: 8000,
+                notes: None,
+            },
+        ],
+    )
+    .expect("create order");
+
+    holler_pos_lib::commands::orders::confirm_order_impl(&state, &order.holler_order_id)
+        .expect("confirm order");
+
+    let err = send_order_to_kitchen_impl(&state, &order.holler_order_id)
+        .expect_err("mixed order with an unrouted line must be rejected");
+    assert_eq!(err.code, "UNROUTED_KITCHEN_ITEMS");
+    assert!(
+        err.message.contains("Mystery Side"),
+        "message must name the unrouted item, got: {}",
+        err.message
+    );
+
+    let listed =
+        list_kots_for_order_impl(&state, &order.holler_order_id).expect("list kots for order");
+    assert!(
+        listed.is_empty(),
+        "neither line — including the routed one — may be ticketed on a rejected send"
+    );
+}
+
 #[test]
 fn kot_status_transitions_through_the_state_machine_and_rejects_illegal_moves() {
     let state = seeded_kitchen_state();
