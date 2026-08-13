@@ -89,8 +89,13 @@ fn worker_config(base_url: String) -> WorkerConfig {
         outlet_id: "outlet-1".to_string(),
         device_id: "device-1".to_string(),
         base_url,
+        device_token: "cred-1.test-secret".to_string(),
     }
 }
+
+/// The exact path/query `SyncWorker::verify_enrollment` requests, so tests
+/// that stand in for the cloud know what to expect as their first request.
+const VERIFY_PATH: &str = "/sync/config?outlet_id=outlet-1&since_version=2147483647";
 
 /// Money must be i64 paise, never float, even in test fixtures.
 #[test]
@@ -102,7 +107,9 @@ fn outbox_drains_in_order_and_marks_published_without_deleting() {
     let seen_paths: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(vec![]));
     let seen_paths_clone = seen_paths.clone();
     let handle = std::thread::spawn(move || {
-        for _ in 0..2 {
+        // First request is SyncWorker::verify_enrollment (ADR-017), then the
+        // two order pushes.
+        for _ in 0..3 {
             if let Ok(req) = server.recv() {
                 seen_paths_clone.lock().unwrap().push(req.url().to_string());
                 let _ = req.respond(Response::from_string("{}").with_status_code(201));
@@ -122,7 +129,10 @@ fn outbox_drains_in_order_and_marks_published_without_deleting() {
 
     assert_eq!(report.published, vec!["outbox-1", "outbox-2"]);
     assert!(report.stopped.is_none());
-    assert_eq!(*seen_paths.lock().unwrap(), vec!["/orders", "/orders"]);
+    assert_eq!(
+        *seen_paths.lock().unwrap(),
+        vec![VERIFY_PATH, "/orders", "/orders"]
+    );
 
     // Never delete local transactions after sync ack.
     assert!(db.get_order("order-1").unwrap().is_some());
@@ -149,9 +159,12 @@ fn resumption_after_interruption_does_not_resend_or_skip() {
         let base_url = format!("http://{addr}");
         let count = request_count.clone();
         let handle = std::thread::spawn(move || {
-            if let Ok(req) = server.recv() {
-                count.fetch_add(1, Ordering::SeqCst);
-                let _ = req.respond(Response::from_string("{}").with_status_code(201));
+            // verify_enrollment, then the outbox-1 push.
+            for _ in 0..2 {
+                if let Ok(req) = server.recv() {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    let _ = req.respond(Response::from_string("{}").with_status_code(201));
+                }
             }
             // Server dropped here — further connection attempts fail,
             // standing in for the process disappearing mid-drain.
@@ -163,22 +176,25 @@ fn resumption_after_interruption_does_not_resend_or_skip() {
         handle.join().unwrap();
     }
 
-    assert_eq!(request_count.load(Ordering::SeqCst), 1);
+    assert_eq!(request_count.load(Ordering::SeqCst), 2);
     let pending = repo::list_unpublished_outbox(db.connection(), 10).unwrap();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].id, "outbox-2");
 
     // "Restart": a brand-new server and worker resume from local_outbox
-    // state alone — nothing re-sent, nothing skipped.
+    // state alone — nothing re-sent, nothing skipped. A fresh `SyncWorker`
+    // has its own `enrollment_verified` flag, so it re-verifies too.
     let server2 = Server::http("127.0.0.1:0").expect("start second server");
     let addr2 = server2.server_addr();
     let base_url2 = format!("http://{addr2}");
     let seen = Arc::new(std::sync::Mutex::new(vec![]));
     let seen_clone = seen.clone();
     let handle2 = std::thread::spawn(move || {
-        if let Ok(req) = server2.recv() {
-            seen_clone.lock().unwrap().push(req.url().to_string());
-            let _ = req.respond(Response::from_string("{}").with_status_code(201));
+        for _ in 0..2 {
+            if let Ok(req) = server2.recv() {
+                seen_clone.lock().unwrap().push(req.url().to_string());
+                let _ = req.respond(Response::from_string("{}").with_status_code(201));
+            }
         }
     });
     let worker2 = SyncWorker::new(worker_config(base_url2));
@@ -199,6 +215,10 @@ fn rejected_envelope_increments_attempt_count_and_computes_backoff() {
     let addr = server.server_addr();
     let base_url = format!("http://{addr}");
     let handle = std::thread::spawn(move || {
+        // verify_enrollment succeeds first, then the order push is rejected.
+        if let Ok(req) = server.recv() {
+            let _ = req.respond(Response::from_string("{}").with_status_code(200));
+        }
         if let Ok(req) = server.recv() {
             let _ = req.respond(Response::from_string("{\"code\":\"boom\"}").with_status_code(500));
         }
@@ -387,4 +407,59 @@ fn config_pull_error_paths_never_expose_password_hash() {
     let err = result.expect_err("malformed bundle must fail to parse");
     let msg = err.to_string();
     assert!(!msg.contains("LEAK-ME"));
+}
+
+/// ADR-017 hole 1, falsified: a mis-enrolled node — WorkerConfig.outlet_id
+/// does not match what the presented device_token actually resolves to —
+/// must be stopped before it sends any envelope, not after. Stands in for
+/// the cloud's real behaviour (`backend/cmd/api/syncconfig.go`: caller
+/// outlet_id != device principal's own outlet_id -> 404) with a fake
+/// server that rejects the verify call the same way.
+///
+/// Falsification performed for this track: with the
+/// `!self.enrollment_verified.get()` guard in `SyncWorker::pump_outbox`
+/// temporarily replaced by `if false { .. }` (skipping verification
+/// entirely), this test fails — the fake server never receives the expected
+/// 404 verify request, `req.respond` on the leftover queued response times
+/// out the test, demonstrating the guard is load-bearing rather than
+/// vacuously satisfied.
+#[test]
+fn mis_enrolled_outlet_id_is_rejected_before_any_envelope_is_sent() {
+    let server = Server::http("127.0.0.1:0").expect("start test server");
+    let addr = server.server_addr();
+    let base_url = format!("http://{addr}");
+    let seen_paths: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(vec![]));
+    let seen_paths_clone = seen_paths.clone();
+    let handle = std::thread::spawn(move || {
+        // Exactly one request must arrive: the verify ping. If a push
+        // request also arrives, this loop consumes it as a second
+        // "unexpected" 404 and the test's path-count assertion below
+        // catches it — the pump must never get that far.
+        if let Ok(req) = server.recv() {
+            seen_paths_clone.lock().unwrap().push(req.url().to_string());
+            let _ = req.respond(Response::from_string("{\"code\":\"not_found\"}").with_status_code(404));
+        }
+    });
+
+    let mut db = Db::open_in_memory_for_tests().expect("open db");
+    seed_outlet_and_device(&db, "outlet-1", "device-1");
+    seed_order_with_outbox(&mut db, "order-1", "outbox-1");
+
+    // This credential belongs to a different outlet than local config
+    // claims — the fake server's 404 stands in for the cloud's real
+    // rejection of that mismatch.
+    let mut config = worker_config(base_url);
+    config.device_token = "cred-for-a-different-outlet.secret".to_string();
+    let worker = SyncWorker::new(config);
+    let report = worker.pump_outbox(&mut db, 10).expect("pump must not panic on rejection");
+    handle.join().unwrap();
+
+    assert!(report.published.is_empty(), "no envelope may be sent once verification is rejected");
+    assert_eq!(report.stopped, Some(StopReason::Rejected { status: 404 }));
+    assert_eq!(*seen_paths.lock().unwrap(), vec![VERIFY_PATH]);
+
+    // Never sent, never deleted.
+    let pending = repo::list_unpublished_outbox(db.connection(), 10).unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].id, "outbox-1");
 }

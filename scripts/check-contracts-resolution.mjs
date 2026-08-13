@@ -12,6 +12,12 @@
 // state" after it appeared during Milestone 2. It then happened again. This
 // check is that confirmation, made mechanical.
 //
+// Note on the fix: there is NO pnpm workspace at the repo root — `pnpm install`
+// there reports "No projects found". Each app is its own pnpm project, so a
+// contracts version bump requires running `pnpm install` INSIDE each consumer's
+// directory. `--filter` from the root silently does nothing, which is part of
+// why this drift goes unnoticed.
+//
 // Run: node scripts/check-contracts-resolution.mjs
 
 import { readFileSync, existsSync, readdirSync } from "node:fs";
@@ -58,7 +64,7 @@ for (const root of CONSUMER_ROOTS) {
     if (actual !== expected) {
       problems.push(
         `${pkg.name}: resolves @holler/contracts ${actual}, workspace is ${expected}. ` +
-          `Fix with: pnpm install --filter ${pkg.name}`,
+          `Fix with: cd ${root}/${entry.name} && pnpm install`,
       );
     }
   }

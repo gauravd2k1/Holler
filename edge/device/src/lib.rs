@@ -7,11 +7,13 @@
 //! sends intent, this crate validates and answers; it never writes state
 //! directly.
 
+pub mod auth;
 pub mod contract;
 mod error;
 pub mod hub;
 pub mod server;
 
+pub use auth::{CloudConfigOracleVerifier, DeviceTokenVerifier};
 pub use error::{DeviceError, DeviceResult};
 pub use hub::Hub;
 pub use server::{start, LanServerHandle, DEFAULT_HEARTBEAT_INTERVAL};

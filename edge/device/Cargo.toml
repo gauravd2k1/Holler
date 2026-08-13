@@ -56,5 +56,12 @@ log = "0.4"
 # the library — nothing in `server`/`hub` depends on process signals.
 ctrlc = "3"
 
+# ADR-017 hole 3: the production `DeviceTokenVerifier` (src/auth.rs) verifies
+# a KDS's presented device_token against the cloud, the same rustls-based
+# blocking client edge/sync uses for the same reason (no system OpenSSL
+# dependency on Windows, ADR-013).
+ureq = { version = "2", default-features = false, features = ["json", "tls"] }
+
 [dev-dependencies]
 tempfile = "3"
+tiny_http = "0.12"

@@ -7,10 +7,12 @@ describe("loadLanConfigFromEnv", () => {
       VITE_KDS_LAN_URL: "ws://192.168.1.50:7000/kds",
       VITE_KDS_OUTLET_ID: "018e5a2e-0000-7c3d-9f4e-1234567890ab",
       VITE_KDS_DEVICE_ID: "018e5a2e-7777-7c3d-9f4e-1234567890ab",
+      VITE_KDS_DEVICE_TOKEN: "018e5a2e-cred-0000-9f4e-1234567890ab.secret",
     });
     expect(config.url).toBe("ws://192.168.1.50:7000/kds");
     expect(config.outletId).toBe("018e5a2e-0000-7c3d-9f4e-1234567890ab");
     expect(config.deviceId).toBe("018e5a2e-7777-7c3d-9f4e-1234567890ab");
+    expect(config.deviceToken).toBe("018e5a2e-cred-0000-9f4e-1234567890ab.secret");
     expect(config.station).toBeNull();
   });
 
@@ -19,6 +21,7 @@ describe("loadLanConfigFromEnv", () => {
       VITE_KDS_LAN_URL: "ws://192.168.1.50:7000/kds",
       VITE_KDS_OUTLET_ID: "018e5a2e-0000-7c3d-9f4e-1234567890ab",
       VITE_KDS_DEVICE_ID: "018e5a2e-7777-7c3d-9f4e-1234567890ab",
+      VITE_KDS_DEVICE_TOKEN: "018e5a2e-cred-0000-9f4e-1234567890ab.secret",
       VITE_KDS_STATION: "TANDOOR",
     });
     expect(config.station).toBe("TANDOOR");
@@ -33,6 +36,7 @@ describe("loadLanConfigFromEnv", () => {
       loadLanConfigFromEnv({
         VITE_KDS_LAN_URL: "ws://host/kds",
         VITE_KDS_DEVICE_ID: "018e5a2e-7777-7c3d-9f4e-1234567890ab",
+        VITE_KDS_DEVICE_TOKEN: "018e5a2e-cred-0000-9f4e-1234567890ab.secret",
       }),
     ).toThrow(/VITE_KDS_OUTLET_ID/);
   });
@@ -42,20 +46,33 @@ describe("loadLanConfigFromEnv", () => {
       loadLanConfigFromEnv({
         VITE_KDS_LAN_URL: "ws://host/kds",
         VITE_KDS_OUTLET_ID: "018e5a2e-0000-7c3d-9f4e-1234567890ab",
+        VITE_KDS_DEVICE_TOKEN: "018e5a2e-cred-0000-9f4e-1234567890ab.secret",
       }),
     ).toThrow(/VITE_KDS_DEVICE_ID/);
+  });
+
+  it("throws when the device token is missing", () => {
+    expect(() =>
+      loadLanConfigFromEnv({
+        VITE_KDS_LAN_URL: "ws://host/kds",
+        VITE_KDS_OUTLET_ID: "018e5a2e-0000-7c3d-9f4e-1234567890ab",
+        VITE_KDS_DEVICE_ID: "018e5a2e-7777-7c3d-9f4e-1234567890ab",
+      }),
+    ).toThrow(/VITE_KDS_DEVICE_TOKEN/);
   });
 });
 
 describe("buildConnectionUrl", () => {
   const outletId = "018e5a2e-0000-7c3d-9f4e-1234567890ab";
   const deviceId = "018e5a2e-7777-7c3d-9f4e-1234567890ab";
+  const deviceToken = "018e5a2e-cred-0000-9f4e-1234567890ab.secret";
 
   it("appends outlet_id and device_id to a plain base URL", () => {
     const url = buildConnectionUrl({
       url: "ws://192.168.1.50:7000/kds",
       outletId,
       deviceId,
+      deviceToken,
       station: null,
       heartbeatTimeoutMs: 1,
       reconnectDelayMs: 1,
@@ -69,11 +86,31 @@ describe("buildConnectionUrl", () => {
     expect(parsed.searchParams.has("station")).toBe(false);
   });
 
+  // ADR-017 §3: the whole point of moving the credential out of the query
+  // string. `device_token` must never appear in `buildConnectionUrl`'s
+  // output — it travels only in `LanClient`'s first WS frame
+  // (`lanClient.test.ts`).
+  it("never places device_token in the connection URL", () => {
+    const url = buildConnectionUrl({
+      url: "ws://192.168.1.50:7000/kds",
+      outletId,
+      deviceId,
+      deviceToken,
+      station: "TANDOOR",
+      heartbeatTimeoutMs: 1,
+      reconnectDelayMs: 1,
+      transitionTimeoutMs: 1,
+    });
+    expect(url).not.toContain(deviceToken);
+    expect(new URL(url).searchParams.has("device_token")).toBe(false);
+  });
+
   it("adds the station param only when configured", () => {
     const url = buildConnectionUrl({
       url: "ws://192.168.1.50:7000/kds",
       outletId,
       deviceId,
+      deviceToken,
       station: "TANDOOR",
       heartbeatTimeoutMs: 1,
       reconnectDelayMs: 1,
@@ -87,6 +124,7 @@ describe("buildConnectionUrl", () => {
       url: "ws://192.168.1.50:7000/kds?debug=1",
       outletId,
       deviceId,
+      deviceToken,
       station: null,
       heartbeatTimeoutMs: 1,
       reconnectDelayMs: 1,
@@ -103,6 +141,7 @@ describe("buildConnectionUrl", () => {
       url: "ws://192.168.1.50:7000/kds/",
       outletId,
       deviceId,
+      deviceToken,
       station: null,
       heartbeatTimeoutMs: 1,
       reconnectDelayMs: 1,
