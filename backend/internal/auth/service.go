@@ -27,6 +27,8 @@ type UserRepository interface {
 	ListRoles(ctx context.Context, tenantID string) ([]Role, error)
 	GetRole(ctx context.Context, tenantID, roleID string) (Role, error)
 	ListUsersForEdgeCache(ctx context.Context, tenantID, outletID string, sinceVersion int) ([]credentialRow, error)
+	UpdatePassword(ctx context.Context, userID, passwordHash string, now time.Time) error
+	UpdatePin(ctx context.Context, userID, pinHash string, now time.Time) error
 }
 
 // Service implements login, refresh rotation, logout, user/role management
@@ -313,6 +315,67 @@ func (s *Service) CreateUser(ctx context.Context, tenantID, userID, email, fullN
 		})
 	}
 
+	return s.repo.GetUser(ctx, tenantID, userID)
+}
+
+// ChangePassword hashes newPassword and persists it, bumping the user's
+// config_version so the change reaches the edge cache on the next
+// /sync/config pull (ADR-017 §4) — otherwise a cashier keeps authenticating
+// offline against the OLD credential indefinitely, including one changed
+// because it was compromised. The plaintext password never enters the audit
+// value; only the fact that a change occurred is recorded.
+func (s *Service) ChangePassword(ctx context.Context, tenantID, userID, newPassword string, actorUserID *string, deviceID *string) (User, error) {
+	if newPassword == "" {
+		return User{}, fmt.Errorf("%w: password is required", httpx.ErrInvalidInput)
+	}
+	hash, err := crypto.HashPassword(newPassword)
+	if err != nil {
+		return User{}, err
+	}
+	now := s.now().UTC()
+	if err := s.repo.UpdatePassword(ctx, userID, hash, now); err != nil {
+		return User{}, err
+	}
+
+	if s.auditor != nil {
+		_ = s.auditor.Audit(ctx, AuditInput{
+			TenantID:    tenantID,
+			ActorUserID: actorUserID,
+			DeviceID:    deviceID,
+			Action:      "user.password.change",
+			EntityType:  "app_user",
+			EntityID:    &userID,
+			NewValue:    map[string]interface{}{"id": userID},
+		})
+	}
+	return s.repo.GetUser(ctx, tenantID, userID)
+}
+
+// ChangePin is ChangePassword's PIN counterpart.
+func (s *Service) ChangePin(ctx context.Context, tenantID, userID, newPin string, actorUserID *string, deviceID *string) (User, error) {
+	if newPin == "" {
+		return User{}, fmt.Errorf("%w: pin is required", httpx.ErrInvalidInput)
+	}
+	hash, err := crypto.HashPassword(newPin)
+	if err != nil {
+		return User{}, err
+	}
+	now := s.now().UTC()
+	if err := s.repo.UpdatePin(ctx, userID, hash, now); err != nil {
+		return User{}, err
+	}
+
+	if s.auditor != nil {
+		_ = s.auditor.Audit(ctx, AuditInput{
+			TenantID:    tenantID,
+			ActorUserID: actorUserID,
+			DeviceID:    deviceID,
+			Action:      "user.pin.change",
+			EntityType:  "app_user",
+			EntityID:    &userID,
+			NewValue:    map[string]interface{}{"id": userID},
+		})
+	}
 	return s.repo.GetUser(ctx, tenantID, userID)
 }
 

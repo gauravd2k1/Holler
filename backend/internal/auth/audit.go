@@ -67,8 +67,16 @@ func (a *Auditor) Audit(ctx context.Context, input AuditInput) error {
 	return a.writer.RecordAudit(ctx, event)
 }
 
+// localRedactedFields supplements contracts.AuditRedactedFields with fields
+// ADR-017 adds to the redact list that the frozen contracts package (edited
+// only by the orchestrator/architect session, ADR-008) does not yet carry.
+// "device_token_hash" belongs alongside password_hash/pin_hash/token_hash:
+// a device_credential row must never appear in an audit_event value any
+// more than a refresh_token or app_user credential row may.
+var localRedactedFields = []string{"device_token_hash"}
+
 // redact returns a shallow copy of v with every key in AuditRedactedFields
-// removed. A nil input returns nil.
+// or localRedactedFields removed. A nil input returns nil.
 func redact(v map[string]interface{}) map[string]interface{} {
 	if v == nil {
 		return nil
@@ -85,6 +93,11 @@ func redact(v map[string]interface{}) map[string]interface{} {
 
 func isRedactedField(key string) bool {
 	for _, f := range AuditRedactedFields {
+		if f == key {
+			return true
+		}
+	}
+	for _, f := range localRedactedFields {
 		if f == key {
 			return true
 		}

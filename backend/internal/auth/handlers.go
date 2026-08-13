@@ -32,6 +32,8 @@ func (h *Handlers) Mount(r chi.Router) {
 		r.With(RequirePermission(PermissionUserManage)).Get("/users", h.listUsers)
 		r.With(RequirePermission(PermissionUserManage)).Post("/users", h.createUser)
 		r.With(RequirePermission(PermissionUserManage)).Put("/users/{id}/roles", h.setUserRoles)
+		r.With(RequirePermission(PermissionUserManage)).Post("/users/{id}/password", h.changePassword)
+		r.With(RequirePermission(PermissionUserManage)).Post("/users/{id}/pin", h.changePin)
 		r.Get("/roles", h.listRoles)
 	})
 }
@@ -211,6 +213,56 @@ func (h *Handlers) setUserRoles(w http.ResponseWriter, r *http.Request) {
 
 	actor := principal.UserID
 	user, err := h.service.SetUserRoles(r.Context(), principal.TenantID, userID, inputs, &actor, nil)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, user)
+}
+
+type changePasswordRequest struct {
+	Password string `json:"password"`
+}
+
+// changePassword mints a new password_hash for /users/{id} and bumps
+// config_version (ADR-017 §4). Mounted alongside /users/{id}/roles, same
+// permission — user.manage is the same authority that can already assign
+// roles, which is at least as sensitive.
+func (h *Handlers) changePassword(w http.ResponseWriter, r *http.Request) {
+	principal, _ := PrincipalFromContext(r.Context())
+	userID := chi.URLParam(r, "id")
+
+	var req changePasswordRequest
+	if err := httpx.DecodeJSON(r, &req); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+
+	actor := principal.UserID
+	user, err := h.service.ChangePassword(r.Context(), principal.TenantID, userID, req.Password, &actor, nil)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, user)
+}
+
+type changePinRequest struct {
+	Pin string `json:"pin"`
+}
+
+func (h *Handlers) changePin(w http.ResponseWriter, r *http.Request) {
+	principal, _ := PrincipalFromContext(r.Context())
+	userID := chi.URLParam(r, "id")
+
+	var req changePinRequest
+	if err := httpx.DecodeJSON(r, &req); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+
+	actor := principal.UserID
+	user, err := h.service.ChangePin(r.Context(), principal.TenantID, userID, req.Pin, &actor, nil)
 	if err != nil {
 		httpx.Error(w, err)
 		return

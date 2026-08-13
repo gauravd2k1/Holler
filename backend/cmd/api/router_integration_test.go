@@ -78,6 +78,8 @@ func TestBuildRouter_SyncConfigEndToEnd(t *testing.T) {
 	// that survived the first. Delete in FK-safe order, scoped to org.ID.
 	t.Cleanup(func() {
 		pool.Exec(ctx, `DELETE FROM audit_event WHERE tenant_id = $1`, org.ID)
+		pool.Exec(ctx, `DELETE FROM device_credential WHERE tenant_id = $1`, org.ID)
+		pool.Exec(ctx, `DELETE FROM device WHERE outlet_id IN (SELECT id FROM outlet WHERE brand_id IN (SELECT id FROM brand WHERE tenant_id = $1))`, org.ID)
 		pool.Exec(ctx, `DELETE FROM refresh_token WHERE user_id IN (SELECT id FROM app_user WHERE tenant_id = $1)`, org.ID)
 		pool.Exec(ctx, `DELETE FROM user_role WHERE user_id IN (SELECT id FROM app_user WHERE tenant_id = $1)`, org.ID)
 		pool.Exec(ctx, `DELETE FROM app_user WHERE tenant_id = $1`, org.ID)
@@ -250,8 +252,50 @@ func TestBuildRouter_SyncConfigEndToEnd(t *testing.T) {
 	}
 	stationResp.Body.Close()
 
+	// --- enroll a device: GET /sync/config no longer accepts the human
+	// bearer token used above (ADR-017 §2) — it is gated on a verified
+	// device credential, resolved server-side to tenant_id/outlet_id rather
+	// than trusted from the caller. Enrollment itself IS a human-privileged
+	// action, so it uses the owner's session, exactly like table/menu/
+	// station creation above. -----------------------------------------------
+	enrollResp := authedPost("/devices/enroll", map[string]any{
+		"outlet_id": out.ID, "kind": "POS", "name": "Sync Config Integration POS", "label": "integration test",
+	})
+	if enrollResp.StatusCode != http.StatusCreated {
+		t.Fatalf("POST /devices/enroll: expected 201, got %d", enrollResp.StatusCode)
+	}
+	var enrolled struct {
+		DeviceID string `json:"device_id"`
+		Token    string `json:"token"`
+	}
+	if err := json.NewDecoder(enrollResp.Body).Decode(&enrolled); err != nil {
+		t.Fatalf("decoding enroll response: %v", err)
+	}
+	enrollResp.Body.Close()
+	if enrolled.Token == "" {
+		t.Fatal("expected a non-empty device token from enrollment")
+	}
+
+	deviceGet := func(path string) *http.Response {
+		req, _ := http.NewRequest(http.MethodGet, server.URL+path, nil)
+		req.Header.Set("Authorization", "Bearer "+enrolled.Token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		return resp
+	}
+
+	// A human access token — even the owning tenant's own, fully-privileged
+	// one — must no longer work on this route. This is the direct
+	// falsification of the hole ADR-017 closes: prove the OLD gate (a valid
+	// bearer token + user.manage) now fails where it used to pass.
+	if humanResp := authedGet("/sync/config?outlet_id=" + out.ID + "&since_version=0"); humanResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected a human bearer token to be REJECTED on GET /sync/config, got %d", humanResp.StatusCode)
+	}
+
 	// --- the route under test ---------------------------------------------
-	syncResp := authedGet("/sync/config?outlet_id=" + out.ID + "&since_version=0")
+	syncResp := deviceGet("/sync/config?outlet_id=" + out.ID + "&since_version=0")
 	if syncResp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /sync/config: expected 200, got %d", syncResp.StatusCode)
 	}
@@ -307,7 +351,7 @@ func TestBuildRouter_SyncConfigEndToEnd(t *testing.T) {
 
 	// --- since_version filtering: pulling again with the table's own
 	// config_version as the watermark must exclude it. ---------------------
-	filteredResp := authedGet("/sync/config?outlet_id=" + out.ID + "&since_version=" + strconv.Itoa(sinceVersion))
+	filteredResp := deviceGet("/sync/config?outlet_id=" + out.ID + "&since_version=" + strconv.Itoa(sinceVersion))
 	filteredBody, err := jsonBody(filteredResp)
 	if err != nil {
 		t.Fatalf("reading filtered /sync/config body: %v", err)
