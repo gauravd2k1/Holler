@@ -10,6 +10,7 @@ function menuItem(overrides: Partial<MenuItem> = {}): MenuItem {
     name: "Paneer Tikka",
     base_price_paise: 25000,
     is_available: true,
+    tax_profile_id: null,
     config_version: 1,
     schema_version: 1,
     ...overrides,
