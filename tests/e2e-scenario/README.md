@@ -102,7 +102,11 @@ sidesteps the problem entirely and is a more faithful simulation besides.
 3. **KDS fidelity** — every KOT with a routable station reaches the
    subscribed KDS client within 2s (latency recorded).
 4. **No-station items** — sending must produce an explicit, surfaced
-   outcome. See Findings: the mixed case currently does not.
+   outcome. An order made entirely of unrouted items must reject with
+   `NOTHING_TO_SEND_TO_KITCHEN`; a mixed order (some routable, some
+   unrouted) must reject with `UnroutedKitchenItems`/`UNROUTED_KITCHEN_ITEMS`
+   naming the unrouted item(s), and must create zero KOTs for either kind of
+   line. See Findings: this was silent for the mixed case until M3 Track A.
 5. **Money** — subtotal always equals Σ(line totals) in integer paise,
    checked after every mutation and against the final durable row.
 6. **Durability** — after crash+recover, the committed orders/items/KOTs
@@ -119,8 +123,12 @@ sidesteps the problem entirely and is a more faithful simulation besides.
 
 ## Findings (coverage gaps and product defects — not fixed by this track)
 
-Recorded in every run's `REPORT.md`, deduplicated. As of this track's own
-verification run:
+Recorded in every run's report (`orchestrator/src/report.ts`), deduplicated.
+The report is a scratch artifact, not a tracked file — it writes to
+`$TMPDIR/holler-e2e-scenario-reports/REPORT-<seed>-<timestamp>.md` by
+default; set `HOLLER_E2E_REPORT_DIR` to redirect it (e.g. for a CI artifact
+upload step). Each run's CLI output prints the exact path used. As of this
+track's own verification run:
 
 - **Modifiers are unreachable at the order-item level.**
   `commands::orders::NewOrderItemRequest` carries no modifiers field —
@@ -135,19 +143,25 @@ verification run:
   DRAFT.** `add_order_item` enforces DRAFT-only. Partial add-then-send /
   KOT `#132-A` amendments are therefore also unreachable, for the same
   underlying reason as the cancellation gap above.
-- **PRODUCT DEFECT — `zero-station-item-send` (named regression).**
-  `send_order_to_kitchen_with_outbox_inner` (`edge/database/src/lib.rs`)
-  silently skips a line item with no station routing when the order
-  *also* has routable items: the call succeeds, tickets are created for
-  the routed lines, and the unrouted line simply never appears on any
-  KOT — no error, no per-item outcome field, nothing in the response that
-  distinguishes "sent everything" from "sent some." An order made
-  entirely of unrouted items *does* get an explicit
-  `NOTHING_TO_SEND_TO_KITCHEN` error; only the mixed case is silent. This
-  is invariant 4's exact "silence is a FAIL" case, and the harness catches
-  it on essentially every run whose randomized fixture pool happens to mix
-  a no-station item with a routable one. Not fixed here, per the track's
-  own rule against fixing product bugs inside this track.
+- ~~**PRODUCT DEFECT — `zero-station-item-send` (named regression).**~~
+  **CLOSED at M3 Track A.** `send_order_to_kitchen_with_outbox_inner`
+  (`edge/database/src/lib.rs`) used to silently skip a line item with no
+  station routing when the order *also* had routable items: the call
+  succeeded, tickets were created for the routed lines, and the unrouted
+  line simply never appeared on any KOT — no error, no per-item outcome
+  field, nothing in the response that distinguished "sent everything" from
+  "sent some." An order made entirely of unrouted items already got an
+  explicit `NOTHING_TO_SEND_TO_KITCHEN` error; only the mixed case was
+  silent. This was invariant 4's exact "silence is a FAIL" case, and the
+  harness caught it on essentially every run whose randomized fixture pool
+  happened to mix a no-station item with a routable one.
+  Fixed by rejecting the whole `send_order_to_kitchen_with_outbox` call
+  outright when *any* unticketed line is unrouted — `DbError::
+  UnroutedKitchenItems`, naming every affected item, with **zero** `kot`
+  rows written for any line on that call (never a partial send). The
+  `zero-station-item-send` named regression (`run.ts`) now asserts the
+  fixed behaviour rather than merely reproducing the bug; it stays in the
+  named-regression set as the standing guard against this shape recurring.
 
 ## Self-falsification
 

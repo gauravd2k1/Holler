@@ -74,9 +74,27 @@ export function kitchenErrorMessage(err: unknown): string {
       return "This ticket cannot move to that status from where it is now.";
     case "NO_PRINTER_ROUTED":
       return "No active printer is configured for that station.";
+    case "UNROUTED_KITCHEN_ITEMS":
+      // Unlike the other cases, the edge already built a cashier-legible,
+      // item-naming message here (apps/pos/src-tauri/src/error.rs) —
+      // "2 items have no kitchen station — not sent: <names>". Nothing was
+      // sent to any kitchen, so surfacing it verbatim is the fix for
+      // docs/backlog-m2.md's "mixed order sends silently" defect: the
+      // cashier must be told *which* dish did not go, not just that
+      // something failed (docs/spec/ordering.md §64).
+      return unroutedKitchenItemsMessage(err);
     default:
       return "Could not complete the kitchen action. Please try again.";
   }
+}
+
+function unroutedKitchenItemsMessage(err: unknown): string {
+  const message = (err as { message?: unknown } | null)?.message;
+  if (typeof message === "string" && message.length > 0) return message;
+  // Defensive fallback only — the edge always populates `message` for this
+  // code (error.rs `UnroutedKitchenItems` arm), so this branch should be
+  // unreachable in practice.
+  return "Some items have no kitchen station and were not sent. Check with a manager before retrying.";
 }
 
 /** The order-level statuses from which "Send to Kitchen" is a legal action

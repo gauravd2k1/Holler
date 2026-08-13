@@ -1,5 +1,18 @@
 use thiserror::Error;
 
+use crate::model::UnroutedKitchenItem;
+
+/// Renders the item list for [`DbError::UnroutedKitchenItems`]'s `Display`
+/// impl. A free function rather than inline in the `#[error(...)]` string
+/// because the message needs a joined name list, not just one field.
+fn format_unrouted_items(items: &[UnroutedKitchenItem]) -> String {
+    items
+        .iter()
+        .map(|i| i.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// All errors this crate can return. Deliberately typed and specific — no
 /// `String`-only errors, no `unwrap`/`expect` in library paths.
 #[derive(Debug, Error)]
@@ -55,6 +68,29 @@ pub enum DbError {
     /// to any active station, and the caller needs to know which.
     #[error("order {order_id} has no unticketed, station-routed items to send")]
     NothingToSendToKitchen { order_id: String },
+
+    /// A `send_order_to_kitchen_with_outbox` call found a *mix* of routed
+    /// and unrouted unticketed order lines (an all-unrouted call still gets
+    /// `NothingToSendToKitchen`, unchanged from before this variant
+    /// existed). Rejected outright rather than sent-with-partial-loss:
+    /// nothing in `packages/contracts` distinguishes "deliberately
+    /// non-production line" from "routing config gap", so treating an
+    /// unrouted line as intentional would silently drop real dishes
+    /// (docs/backlog-m2.md, "A mixed order sends silently when one line
+    /// has no station"; docs/m3-planning.md §2 Track A). No `kot` row is
+    /// written for *any* line in the same call — the whole send fails
+    /// together so the cashier is never told part of an order reached the
+    /// kitchen when it did not, and can retry once routing is fixed or the
+    /// unrouted item is removed.
+    #[error(
+        "order {order_id} has {} item(s) with no kitchen station route: {}",
+        items.len(),
+        format_unrouted_items(items)
+    )]
+    UnroutedKitchenItems {
+        order_id: String,
+        items: Vec<UnroutedKitchenItem>,
+    },
 
     /// A caller requested an illegal KOT status transition. Never a silent
     /// no-op (docs/spec/kitchen.md statuses; ADR-014 §4 — `kot.status` has

@@ -77,6 +77,23 @@ impl From<holler_edge_database::DbError> for AppError {
             DbError::NothingToSendToKitchen { .. } => {
                 AppError::new("NOTHING_TO_SEND_TO_KITCHEN", message)
             }
+            DbError::UnroutedKitchenItems { ref items, .. } => {
+                // Cashier-facing wording per §64 (docs/spec/ordering.md): name
+                // the items, state plainly that nothing was sent, so the
+                // control on screen (see PosScreen.tsx) can render this
+                // verbatim rather than a generic failure.
+                let names = items
+                    .iter()
+                    .map(|i| i.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let n = items.len();
+                let noun = if n == 1 { "item has" } else { "items have" };
+                AppError::new(
+                    "UNROUTED_KITCHEN_ITEMS",
+                    format!("{n} {noun} no kitchen station — not sent: {names}"),
+                )
+            }
             DbError::IllegalKotStatusTransition { .. } => {
                 AppError::new("ILLEGAL_KOT_STATUS_TRANSITION", message)
             }

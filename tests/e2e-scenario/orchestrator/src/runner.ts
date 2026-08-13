@@ -299,6 +299,27 @@ export async function runScenario(
         } else {
           mark(result.invariants, "4_no_station_explicit", true);
         }
+      } else if (mixedNoStation) {
+        // M3 Track A fix (docs/backlog-m2.md / docs/m3-planning.md §2 Track
+        // A): a mixed order — some routable items, one or more with no
+        // station route — is now rejected outright rather than sent with
+        // the unrouted line silently dropped. Db::send_order_to_kitchen_
+        // with_outbox_inner writes zero `kot` rows for EITHER line and
+        // returns DbError::UnroutedKitchenItems, surfaced to this bridge as
+        // `{ error: { code: "UNROUTED_KITCHEN_ITEMS", message: "<N> item(s)
+        // ... not sent: <names>" } }`. Nothing was sent to any kitchen, so
+        // `phase` stays "confirmed" — no KOTs, no KDS fidelity checks, no
+        // send-again probe for this order.
+        if (sendResp.ok || sendResp.error?.code !== "UNROUTED_KITCHEN_ITEMS") {
+          mark(result.invariants, "4_no_station_explicit", false,
+            `mixed routable + no-station order did not produce the expected explicit ` +
+            `UNROUTED_KITCHEN_ITEMS rejection (got ${JSON.stringify(sendResp)})`);
+        } else if (typeof sendResp.error?.message !== "string" || sendResp.error.message.length === 0) {
+          mark(result.invariants, "4_no_station_explicit", false,
+            "UNROUTED_KITCHEN_ITEMS rejection carried no cashier-facing message naming the unrouted item(s)");
+        } else {
+          mark(result.invariants, "4_no_station_explicit", true);
+        }
       } else if (sendResp.ok) {
         phase = "sent";
         const kots = sendResp.kots ?? [];
@@ -308,28 +329,6 @@ export async function runScenario(
           kotIds.push(k.id);
           kotStatuses.set(k.id, k.status);
           for (const it of k.items) routedOrderItemIds.add(it.order_item_id);
-        }
-
-        if (mixedNoStation) {
-          // Invariant 4: the mixed case is where the shipped code silently
-          // drops the unrouted line (see runner README / harness main.rs
-          // comment on send_order_to_kitchen_with_outbox_inner) — no error,
-          // no signal distinguishing "sent everything" from "sent some".
-          const explicitSignalExists = false; // there genuinely is none on this return shape
-          if (!explicitSignalExists) {
-            mark(result.invariants, "4_no_station_explicit", false,
-              "zero-station-item-send: order mixed routable + no-station items; send_to_kitchen " +
-              "succeeded silently for the no-station line — no error, no per-item outcome field.");
-            result.findings.push(
-              "PRODUCT DEFECT (named regression zero-station-item-send): send_order_to_kitchen_with_outbox " +
-              "silently skips a no-station line item when the order also has routable items — the cashier " +
-              "gets no indication that line never reached any kitchen screen. All-unrouted orders DO get an " +
-              "explicit NOTHING_TO_SEND_TO_KITCHEN error; only the mixed case is silent. Not fixed here per " +
-              "track rules — filed as a finding.",
-            );
-          } else {
-            mark(result.invariants, "4_no_station_explicit", true);
-          }
         }
 
         // KOT conservation (invariant 2): every routable item id appears on
