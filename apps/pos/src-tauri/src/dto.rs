@@ -582,6 +582,297 @@ pub struct FailedPrintJob {
     pub schema_version: u8,
 }
 
+// ----------------------------------------------------------- billing (M3) --
+// Mirrors packages/contracts/src/types/invoice.ts InvoiceSchema/InvoiceLineSchema
+// and packages/contracts/src/types/payment.ts PaymentSchema/CashShiftSchema/
+// CashMovementSchema field-for-field (ADR-016, contracts 0.4.0). Every money
+// field here is copied verbatim from `holler_edge_database` — this crate
+// computes no tax or tender arithmetic of its own (CLAUDE.md: the edge
+// computes, the UI formats).
+
+#[derive(Debug, Clone, Serialize)]
+pub struct InvoiceLine {
+    pub id: String,
+    pub invoice_id: String,
+    pub order_item_id: String,
+    pub line_no: i64,
+    pub description: String,
+    pub hsn_sac: Option<String>,
+    pub quantity: i64,
+    pub unit_price_paise: i64,
+    pub gross_paise: i64,
+    pub discount_paise: i64,
+    pub taxable_value_paise: i64,
+    pub tax_profile_id: String,
+    pub cgst_rate_bps: i64,
+    pub cgst_paise: i64,
+    pub sgst_rate_bps: i64,
+    pub sgst_paise: i64,
+    pub igst_rate_bps: i64,
+    pub igst_paise: i64,
+    pub cess_rate_bps: i64,
+    pub cess_paise: i64,
+    pub total_paise: i64,
+    pub schema_version: u8,
+}
+
+impl From<db::InvoiceLine> for InvoiceLine {
+    fn from(l: db::InvoiceLine) -> Self {
+        Self {
+            id: l.id,
+            invoice_id: l.invoice_id,
+            order_item_id: l.order_item_id,
+            line_no: l.line_no,
+            description: l.description,
+            hsn_sac: l.hsn_sac,
+            quantity: l.quantity,
+            unit_price_paise: l.unit_price_paise,
+            gross_paise: l.gross_paise,
+            discount_paise: l.discount_paise,
+            taxable_value_paise: l.taxable_value_paise,
+            tax_profile_id: l.tax_profile_id,
+            cgst_rate_bps: l.cgst_rate_bps,
+            cgst_paise: l.cgst_paise,
+            sgst_rate_bps: l.sgst_rate_bps,
+            sgst_paise: l.sgst_paise,
+            igst_rate_bps: l.igst_rate_bps,
+            igst_paise: l.igst_paise,
+            cess_rate_bps: l.cess_rate_bps,
+            cess_paise: l.cess_paise,
+            total_paise: l.total_paise,
+            schema_version: 1,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Invoice {
+    pub id: String,
+    pub outlet_id: String,
+    pub order_id: String,
+    pub split_group_id: Option<String>,
+    pub split_index: i64,
+    pub split_count: i64,
+    pub series_id: String,
+    pub invoice_number: String,
+    pub invoice_date: String,
+    pub business_date: String,
+    pub status: String,
+    pub cancelled_reason: Option<String>,
+    pub cancelled_at: Option<String>,
+    pub customer_name: Option<String>,
+    pub customer_phone: Option<String>,
+    pub customer_gstin: Option<String>,
+    pub place_of_supply_state_code: String,
+    pub lines: Vec<InvoiceLine>,
+    pub subtotal_paise: i64,
+    pub discount_paise: i64,
+    pub taxable_value_paise: i64,
+    pub cgst_paise: i64,
+    pub sgst_paise: i64,
+    pub igst_paise: i64,
+    pub cess_paise: i64,
+    pub round_off_paise: i64,
+    pub grand_total_paise: i64,
+    pub compliance_version_id: String,
+    pub tax_snapshot: serde_json::Value,
+    pub fiscal_profile: serde_json::Value,
+    pub channel: String,
+    pub tax_liability_party: String,
+    pub eco_operator_name: Option<String>,
+    pub eco_operator_gstin: Option<String>,
+    pub supply_classification: Option<String>,
+    pub created_by_user_id: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub version: i64,
+    pub schema_version: u8,
+}
+
+impl Invoice {
+    /// Fails loudly (rather than silently substituting an empty object) if
+    /// `tax_snapshot_json`/`fiscal_profile_json` do not parse — a malformed
+    /// row here means the edge wrote something a GST invoice screen cannot
+    /// show, and that must not pass silently (mirrors `Kot::try_from`'s
+    /// discipline on `items_json`).
+    pub fn from_db(inv: db::Invoice, lines: Vec<db::InvoiceLine>) -> Result<Self, serde_json::Error> {
+        let tax_snapshot: serde_json::Value = serde_json::from_str(&inv.tax_snapshot_json)?;
+        let fiscal_profile: serde_json::Value = serde_json::from_str(&inv.fiscal_profile_json)?;
+        Ok(Self {
+            id: inv.id,
+            outlet_id: inv.outlet_id,
+            order_id: inv.order_id,
+            split_group_id: inv.split_group_id,
+            split_index: inv.split_index,
+            split_count: inv.split_count,
+            series_id: inv.series_id,
+            invoice_number: inv.invoice_number,
+            invoice_date: inv.invoice_date,
+            business_date: inv.business_date,
+            status: inv.status,
+            cancelled_reason: inv.cancelled_reason,
+            cancelled_at: inv.cancelled_at,
+            customer_name: inv.customer_name,
+            customer_phone: inv.customer_phone,
+            customer_gstin: inv.customer_gstin,
+            place_of_supply_state_code: inv.place_of_supply_state_code,
+            lines: lines.into_iter().map(InvoiceLine::from).collect(),
+            subtotal_paise: inv.subtotal_paise,
+            discount_paise: inv.discount_paise,
+            taxable_value_paise: inv.taxable_value_paise,
+            cgst_paise: inv.cgst_paise,
+            sgst_paise: inv.sgst_paise,
+            igst_paise: inv.igst_paise,
+            cess_paise: inv.cess_paise,
+            round_off_paise: inv.round_off_paise,
+            grand_total_paise: inv.grand_total_paise,
+            compliance_version_id: inv.compliance_version_id,
+            tax_snapshot,
+            fiscal_profile,
+            channel: inv.channel,
+            tax_liability_party: inv.tax_liability_party,
+            eco_operator_name: inv.eco_operator_name,
+            eco_operator_gstin: inv.eco_operator_gstin,
+            supply_classification: inv.supply_classification,
+            created_by_user_id: inv.created_by_user_id,
+            created_at: inv.created_at,
+            updated_at: inv.updated_at,
+            version: inv.version,
+            schema_version: 1,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Payment {
+    pub id: String,
+    pub outlet_id: String,
+    pub order_id: String,
+    pub cash_shift_id: Option<String>,
+    pub method: String,
+    pub status: String,
+    pub amount_paise: i64,
+    pub tendered_paise: Option<i64>,
+    pub change_paise: Option<i64>,
+    pub reference: Option<String>,
+    pub external_id: Option<String>,
+    pub reverses_payment_id: Option<String>,
+    pub captured_at: Option<String>,
+    /// Always empty: `payment_allocation` (payment<->invoice settlement) is
+    /// unimplemented in `holler_edge_database` (T7c disclosure) — `payment`
+    /// ties directly to `order_id` today. Present on the DTO so it matches
+    /// `PaymentSchema`'s wire shape (which defaults it to `[]`) rather than
+    /// omitting the field.
+    pub allocations: Vec<serde_json::Value>,
+    pub created_by_user_id: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub version: i64,
+    pub schema_version: u8,
+}
+
+impl From<db::Payment> for Payment {
+    fn from(p: db::Payment) -> Self {
+        Self {
+            id: p.id,
+            outlet_id: p.outlet_id,
+            order_id: p.order_id,
+            cash_shift_id: p.cash_shift_id,
+            method: p.method,
+            status: p.status,
+            amount_paise: p.amount_paise,
+            tendered_paise: p.tendered_paise,
+            change_paise: p.change_paise,
+            reference: p.reference,
+            external_id: p.external_id,
+            reverses_payment_id: p.reverses_payment_id,
+            captured_at: p.captured_at,
+            allocations: Vec::new(),
+            created_by_user_id: p.created_by_user_id,
+            created_at: p.created_at,
+            updated_at: p.updated_at,
+            version: p.version,
+            schema_version: 1,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CashMovement {
+    pub id: String,
+    pub cash_shift_id: String,
+    pub kind: String,
+    pub amount_paise: i64,
+    pub reason: Option<String>,
+    pub payment_id: Option<String>,
+    pub created_by_user_id: String,
+    pub created_at: String,
+    pub schema_version: u8,
+}
+
+impl From<db::CashMovement> for CashMovement {
+    fn from(m: db::CashMovement) -> Self {
+        Self {
+            id: m.id,
+            cash_shift_id: m.cash_shift_id,
+            kind: m.kind,
+            amount_paise: m.amount_paise,
+            reason: m.reason,
+            payment_id: m.payment_id,
+            created_by_user_id: m.created_by_user_id,
+            created_at: m.created_at,
+            schema_version: 1,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CashShift {
+    pub id: String,
+    pub outlet_id: String,
+    pub device_id: String,
+    pub cashier_user_id: String,
+    pub status: String,
+    pub opened_at: String,
+    pub opening_cash_paise: i64,
+    pub closed_at: Option<String>,
+    pub expected_cash_paise: Option<i64>,
+    pub actual_cash_paise: Option<i64>,
+    pub variance_paise: Option<i64>,
+    pub variance_reason: Option<String>,
+    pub business_date: String,
+    pub movements: Vec<CashMovement>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub version: i64,
+    pub schema_version: u8,
+}
+
+impl CashShift {
+    pub fn from_db(s: db::CashShift, movements: Vec<db::CashMovement>) -> Self {
+        Self {
+            id: s.id,
+            outlet_id: s.outlet_id,
+            device_id: s.device_id,
+            cashier_user_id: s.cashier_user_id,
+            status: s.status,
+            opened_at: s.opened_at,
+            opening_cash_paise: s.opening_cash_paise,
+            closed_at: s.closed_at,
+            expected_cash_paise: s.expected_cash_paise,
+            actual_cash_paise: s.actual_cash_paise,
+            variance_paise: s.variance_paise,
+            variance_reason: s.variance_reason,
+            business_date: s.business_date,
+            movements: movements.into_iter().map(CashMovement::from).collect(),
+            created_at: s.created_at,
+            updated_at: s.updated_at,
+            version: s.version,
+            schema_version: 1,
+        }
+    }
+}
+
 impl From<holler_edge_printer::model::FailedPrintJobView> for FailedPrintJob {
     fn from(v: holler_edge_printer::model::FailedPrintJobView) -> Self {
         Self {

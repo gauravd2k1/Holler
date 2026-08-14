@@ -106,6 +106,41 @@ impl From<holler_edge_database::DbError> for AppError {
             DbError::OrderItemAlreadyTicketed { .. } => {
                 AppError::new("ORDER_ITEM_ALREADY_TICKETED", message)
             }
+            // §64, billing (ADR-016, docs/spec/payments.md): every one of
+            // these carries a specific, actionable message from
+            // `edge/database/src/error.rs` already — a variance amount, a
+            // remaining reversible amount, an existing shift id — so the
+            // frontend can render `message` verbatim instead of "Something
+            // went wrong", and the `code` lets it distinguish cases where it
+            // needs to (e.g. collecting a variance reason and retrying).
+            DbError::ForwardPaymentAmountNotPositive { .. } => {
+                AppError::new("FORWARD_PAYMENT_AMOUNT_NOT_POSITIVE", message)
+            }
+            DbError::ReversalAmountNotNonPositive { .. } => {
+                AppError::new("REVERSAL_AMOUNT_NOT_NON_POSITIVE", message)
+            }
+            DbError::ReversedPaymentNotFound { .. } => {
+                AppError::new("REVERSED_PAYMENT_NOT_FOUND", message)
+            }
+            DbError::PaymentAlreadyFullyReversed { .. } => {
+                AppError::new("PAYMENT_ALREADY_FULLY_REVERSED", message)
+            }
+            DbError::ReversalExceedsRemaining { .. } => {
+                AppError::new("REVERSAL_EXCEEDS_REMAINING", message)
+            }
+            DbError::CashShiftAlreadyOpen { .. } => {
+                AppError::new("CASH_SHIFT_ALREADY_OPEN", message)
+            }
+            DbError::CashShiftNotOpen { .. } => AppError::new("CASH_SHIFT_NOT_OPEN", message),
+            // The binding §39 case: the UI must never present a dead end
+            // here — this code is what lets it show "counted cash differs by
+            // X, enter a reason" and re-submit, rather than a generic error.
+            DbError::CashVarianceReasonRequired { .. } => {
+                AppError::new("CASH_VARIANCE_REASON_REQUIRED", message)
+            }
+            DbError::CashMovementReasonRequired { .. } => {
+                AppError::new("CASH_MOVEMENT_REASON_REQUIRED", message)
+            }
             _other => AppError::new("STORAGE_ERROR", message),
         }
     }

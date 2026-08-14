@@ -3,6 +3,7 @@ import { useAuthStore } from "../store/auth";
 import { LoginScreen } from "../components/LoginScreen";
 import { PosScreen } from "../components/PosScreen";
 import { OrderListScreen } from "../components/OrderListScreen";
+import { BillingScreen } from "../components/BillingScreen";
 
 const rootRoute = createRootRoute({
   component: () => <Outlet />,
@@ -36,7 +37,14 @@ const ordersRoute = createRoute({
   component: OrderListScreen,
 });
 
-const routeTree = rootRoute.addChildren([loginRoute, posRoute, ordersRoute]);
+const billingRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/orders/$orderId/billing",
+  beforeLoad: requireAuth,
+  component: BillingScreen,
+});
+
+const routeTree = rootRoute.addChildren([loginRoute, posRoute, ordersRoute, billingRoute]);
 
 export const router = createRouter({ routeTree });
 

@@ -4,6 +4,7 @@
 //! `holler_edge_database`/`crate::domain` errors to `crate::error::AppError`.
 
 pub mod auth;
+pub mod billing;
 pub mod kitchen;
 pub mod menu;
 pub mod orders;

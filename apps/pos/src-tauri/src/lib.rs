@@ -55,6 +55,14 @@ pub fn run() {
             commands::kitchen::list_stations,
             commands::kitchen::list_failed_print_jobs,
             commands::kitchen::retry_failed_print_jobs,
+            commands::billing::issue_invoice,
+            commands::billing::list_invoices_for_order,
+            commands::billing::record_payment,
+            commands::billing::list_payments_for_order,
+            commands::billing::open_cash_shift,
+            commands::billing::close_cash_shift,
+            commands::billing::record_paid_in_out,
+            commands::billing::get_cash_shift,
         ])
         .build(tauri::generate_context!())
         .expect("error while building the Holler POS application")

@@ -1,10 +1,14 @@
 import { useQuery } from "@tanstack/react-query";
 import {
+  getCashShift,
+  getOrder,
   listFailedPrintJobs,
+  listInvoicesForOrder,
   listKotsForOrder,
   listMenuCategories,
   listMenuItems,
   listOrders,
+  listPaymentsForOrder,
   listStations,
   listTables,
 } from "./tauri";
@@ -16,9 +20,13 @@ export const queryKeys = {
   menuCategories: ["menu-categories"] as const,
   tables: ["tables"] as const,
   orders: ["orders"] as const,
+  order: (orderId: string) => ["order", orderId] as const,
   stations: ["stations"] as const,
   kots: (orderId: string) => ["kots", orderId] as const,
   failedPrintJobs: ["failed-print-jobs"] as const,
+  invoices: (orderId: string) => ["invoices", orderId] as const,
+  payments: (orderId: string) => ["payments", orderId] as const,
+  cashShift: (cashShiftId: string) => ["cash-shift", cashShiftId] as const,
 };
 
 export function useMenuItemsQuery() {
@@ -57,5 +65,39 @@ export function useFailedPrintJobsQuery() {
     queryKey: queryKeys.failedPrintJobs,
     queryFn: listFailedPrintJobs,
     refetchInterval: 5000,
+  });
+}
+
+// -------------------------------------------------------------- billing (M3) --
+
+export function useOrderQuery(orderId: string | null) {
+  return useQuery({
+    queryKey: queryKeys.order(orderId ?? "none"),
+    queryFn: () => getOrder(orderId as string),
+    enabled: orderId !== null,
+  });
+}
+
+export function useInvoicesForOrderQuery(orderId: string | null) {
+  return useQuery({
+    queryKey: queryKeys.invoices(orderId ?? "none"),
+    queryFn: () => listInvoicesForOrder(orderId as string),
+    enabled: orderId !== null,
+  });
+}
+
+export function usePaymentsForOrderQuery(orderId: string | null) {
+  return useQuery({
+    queryKey: queryKeys.payments(orderId ?? "none"),
+    queryFn: () => listPaymentsForOrder(orderId as string),
+    enabled: orderId !== null,
+  });
+}
+
+export function useCashShiftQuery(cashShiftId: string | null) {
+  return useQuery({
+    queryKey: queryKeys.cashShift(cashShiftId ?? "none"),
+    queryFn: () => getCashShift(cashShiftId as string),
+    enabled: cashShiftId !== null,
   });
 }

@@ -7,17 +7,27 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   AuthenticatedPrincipalSchema,
   CanonicalOrderSchema,
+  CashMovementSchema,
+  CashShiftSchema,
+  InvoiceSchema,
   KotSchema,
   MenuItemSchema,
+  PaymentSchema,
   PrintJobSchema,
   RestaurantTableSchema,
   StationSchema,
   TableSessionSchema,
   type AuthenticatedPrincipal,
   type CanonicalOrder,
+  type CashMovement,
+  type CashMovementKind,
+  type CashShift,
+  type Invoice,
   type Kot,
   type MenuItem,
   type OrderType,
+  type Payment,
+  type PaymentMethod,
   type RestaurantTable,
   type Station,
   type TableSession,
@@ -346,6 +356,155 @@ export async function retryFailedPrintJobs(): Promise<FailedPrintJob[]> {
   try {
     const raw = await invoke<unknown[]>("retry_failed_print_jobs");
     return raw.map((j) => FailedPrintJobSchema.parse(j));
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
+
+// ------------------------------------------------------------- billing (M3) --
+// ADR-016, docs/spec/payments.md, docs/spec/compliance.md. Every money value
+// returned here is already computed by the edge (`edge/database`'s tax
+// engine and append-only payment/cash-shift writers) — this module only
+// invokes the command and validates the wire shape; it never derives a
+// paise amount of its own (CLAUDE.md §Money).
+
+/** Issues a GST invoice over every line currently on `orderId`, unsplit
+ * (`split_count == 1` — split bills are out of this milestone's POS surface,
+ * apps/pos/src-tauri/src/commands/billing.rs). Rejects with
+ * `NOTHING_TO_BILL`, `NO_FISCAL_PROFILE_CONFIGURED` or
+ * `NO_ACTIVE_INVOICE_SERIES` if outlet config is incomplete — see
+ * `billingErrorMessage`. */
+export async function issueInvoice(orderId: string, createdByUserId: string): Promise<Invoice> {
+  try {
+    const raw = await invoke("issue_invoice", { orderId, createdByUserId });
+    return InvoiceSchema.parse(raw);
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
+
+export async function listInvoicesForOrder(orderId: string): Promise<Invoice[]> {
+  try {
+    const raw = await invoke<unknown[]>("list_invoices_for_order", { orderId });
+    return raw.map((i) => InvoiceSchema.parse(i));
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
+
+/** Records ONE tender against `orderId` — forward (`reversesPaymentId ==
+ * null`) or a reversal (void/refund). `cashierUserId` is `created_by_user_id`
+ * on the stored row; `cashShiftId` links a CASH tender to the cashier's open
+ * shift (so it posts a `cash_movement`) and is `null` for every other method
+ * or when no shift is open. Rejects with `FORWARD_PAYMENT_AMOUNT_NOT_POSITIVE`/
+ * `REVERSAL_AMOUNT_NOT_NON_POSITIVE`/`REVERSAL_EXCEEDS_REMAINING`/etc — see
+ * `billingErrorMessage`. There is no "edit a payment" command: a correction
+ * is always a new call here with `reversesPaymentId` set (apps/pos/
+ * src-tauri/src/commands/billing.rs `record_payment_impl` — the append-only
+ * shape docs/spec/payments.md requires). */
+export async function recordPayment(args: {
+  orderId: string;
+  method: PaymentMethod;
+  amountPaise: number;
+  tenderedPaise: number | null;
+  changePaise: number | null;
+  reference: string | null;
+  cashShiftId: string | null;
+  reversesPaymentId: string | null;
+  createdByUserId: string;
+}): Promise<Payment> {
+  try {
+    const raw = await invoke("record_payment", {
+      orderId: args.orderId,
+      method: args.method,
+      amountPaise: args.amountPaise,
+      tenderedPaise: args.tenderedPaise,
+      changePaise: args.changePaise,
+      reference: args.reference,
+      cashShiftId: args.cashShiftId,
+      reversesPaymentId: args.reversesPaymentId,
+      createdByUserId: args.createdByUserId,
+    });
+    return PaymentSchema.parse(raw);
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
+
+export async function listPaymentsForOrder(orderId: string): Promise<Payment[]> {
+  try {
+    const raw = await invoke<unknown[]>("list_payments_for_order", { orderId });
+    return raw.map((p) => PaymentSchema.parse(p));
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
+
+/** Opens a new cash shift (§39) for `cashierUserId` on this device. Rejects
+ * with `CASH_SHIFT_ALREADY_OPEN` if the cashier already has one open here. */
+export async function openCashShift(
+  cashierUserId: string,
+  openingCashPaise: number,
+): Promise<CashShift> {
+  try {
+    const raw = await invoke("open_cash_shift", { cashierUserId, openingCashPaise });
+    return CashShiftSchema.parse(raw);
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
+
+/** Closes an open shift. `expected_cash_paise` is derived by the edge from
+ * its own posted movements — this call NEVER supplies it. If the derived
+ * variance is non-zero and `varianceReason` is `null`/blank, the edge
+ * rejects with `CASH_VARIANCE_REASON_REQUIRED` (§39, binding) and the shift
+ * stays open, unmutated — the caller must collect a reason and retry, never
+ * silently drop the close. */
+export async function closeCashShift(
+  cashShiftId: string,
+  actualCashPaise: number,
+  varianceReason: string | null,
+): Promise<CashShift> {
+  try {
+    const raw = await invoke("close_cash_shift", {
+      cashShiftId,
+      actualCashPaise,
+      varianceReason,
+    });
+    return CashShiftSchema.parse(raw);
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
+
+/** Posts a PAID_IN/PAID_OUT cash movement against an open shift. `reason` is
+ * mandatory — the edge rejects a blank one with
+ * `CASH_MOVEMENT_REASON_REQUIRED` before writing anything. */
+export async function recordPaidInOut(args: {
+  cashShiftId: string;
+  kind: Extract<CashMovementKind, "PAID_IN" | "PAID_OUT">;
+  amountPaise: number;
+  reason: string;
+  createdByUserId: string;
+}): Promise<CashMovement> {
+  try {
+    const raw = await invoke("record_paid_in_out", {
+      cashShiftId: args.cashShiftId,
+      kind: args.kind,
+      amountPaise: args.amountPaise,
+      reason: args.reason,
+      createdByUserId: args.createdByUserId,
+    });
+    return CashMovementSchema.parse(raw);
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
+
+export async function getCashShift(cashShiftId: string): Promise<CashShift | null> {
+  try {
+    const raw = await invoke("get_cash_shift", { cashShiftId });
+    return raw === null ? null : CashShiftSchema.parse(raw);
   } catch (err) {
     throw toCommandError(err);
   }

@@ -164,6 +164,19 @@ export function OrderListScreen() {
                       {expandedOrderId === order.holler_order_id ? "Hide Kitchen" : "Kitchen"}
                     </button>
                   )}
+                  {order.status !== "DRAFT" && order.status !== "CANCELLED" && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void navigate({
+                          to: "/orders/$orderId/billing",
+                          params: { orderId: order.holler_order_id },
+                        })
+                      }
+                    >
+                      Bill
+                    </button>
+                  )}
                 </td>
               </tr>
               {expandedOrderId === order.holler_order_id && (
