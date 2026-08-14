@@ -128,3 +128,137 @@ pub fn build_tax_snapshots(
     }
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tax::domain::PricingMode;
+    use crate::tax::resolve::parse_utc;
+
+    fn version(id: &str, outlet_id: &str) -> ComplianceVersion {
+        ComplianceVersion {
+            id: id.to_string(),
+            outlet_id: outlet_id.to_string(),
+            label: format!("{id}-label"),
+            effective_from: "2026-01-01T00:00:00Z".to_string(),
+            notes: None,
+            config_version: 1,
+        }
+    }
+
+    fn profile(id: &str, outlet_id: &str, code: &str) -> TaxProfile {
+        TaxProfile {
+            id: id.to_string(),
+            outlet_id: outlet_id.to_string(),
+            code: code.to_string(),
+            name: code.to_string(),
+            pricing_mode: "EXCLUSIVE".to_string(),
+            is_default: false,
+            is_active: true,
+            config_version: 1,
+        }
+    }
+
+    fn rule(profile_id: &str, version_id: &str, component: &str, rate_bps: i64) -> TaxRule {
+        TaxRule {
+            id: format!("{profile_id}-{version_id}-{component}"),
+            tax_profile_id: profile_id.to_string(),
+            compliance_version_id: version_id.to_string(),
+            component: component.to_string(),
+            rate_bps,
+            effective_from: "2026-01-01T00:00:00Z".to_string(),
+            effective_to: None,
+            config_version: 1,
+        }
+    }
+
+    fn line(order_item_id: &str, tax_profile_id: &str) -> Line {
+        Line {
+            order_item_id: order_item_id.to_string(),
+            description: "line".to_string(),
+            hsn_sac: None,
+            quantity: 1,
+            unit_price_paise: 1000,
+            discount_per_unit_paise: 0,
+            tax_profile_id: tax_profile_id.to_string(),
+            pricing_mode: PricingMode::Exclusive,
+            rates: vec![],
+        }
+    }
+
+    /// The reproducibility invariant a mixed-rate bill depends on: a
+    /// three-profile invoice must capture all THREE snapshots, not just
+    /// whichever profile a naive "first line wins" implementation would
+    /// keep. Fails against a defect that returns only one entry (or
+    /// overwrites earlier entries) for a multi-profile line set.
+    #[test]
+    fn build_tax_snapshots_captures_every_profile_on_a_mixed_rate_bill() {
+        let outlet_id = "outlet-1";
+        let versions = vec![version("cv-1", outlet_id)];
+        let profiles = vec![
+            profile("p-food", outlet_id, "GST_5_FOOD"),
+            profile("p-liquor", outlet_id, "GST_18_LIQUOR"),
+            profile("p-cess", outlet_id, "GST_12_CESS"),
+        ];
+        let rules = vec![
+            rule("p-food", "cv-1", "CGST", 250),
+            rule("p-food", "cv-1", "SGST", 250),
+            rule("p-liquor", "cv-1", "CGST", 900),
+            rule("p-liquor", "cv-1", "SGST", 900),
+            rule("p-cess", "cv-1", "CGST", 600),
+            rule("p-cess", "cv-1", "SGST", 600),
+            rule("p-cess", "cv-1", "CESS", 280),
+        ];
+        let lines = vec![
+            line("item-1", "p-food"),
+            line("item-2", "p-liquor"),
+            line("item-3", "p-cess"),
+            // A second line under an already-captured profile must not
+            // produce a duplicate or a second resolution — exactly one
+            // snapshot per distinct profile id.
+            line("item-4", "p-food"),
+        ];
+
+        let at = parse_utc("2026-06-01T00:00:00Z").unwrap();
+        let snapshots = build_tax_snapshots(&versions, &profiles, &rules, outlet_id, &lines, at)
+            .expect("build snapshots");
+
+        assert_eq!(
+            snapshots.len(),
+            3,
+            "a three-profile bill must capture all three snapshots, not just one"
+        );
+        assert!(snapshots.contains_key("p-food"));
+        assert!(snapshots.contains_key("p-liquor"));
+        assert!(snapshots.contains_key("p-cess"));
+
+        assert_eq!(snapshots["p-liquor"].tax_profile_code, "GST_18_LIQUOR");
+        let liquor_rates: Vec<_> = snapshots["p-liquor"].rates.iter().map(|r| r.rate_bps).collect();
+        assert_eq!(liquor_rates, vec![900, 900]);
+
+        let cess_components: Vec<_> = snapshots["p-cess"]
+            .rates
+            .iter()
+            .map(|r| r.component.as_str())
+            .collect();
+        assert_eq!(cess_components, vec!["CGST", "SGST", "CESS"]);
+
+        // render_tax_snapshots must carry every profile through to JSON too
+        // — the wire/storage shape, not just the in-memory map.
+        let rendered = render_tax_snapshots(&snapshots);
+        let obj = rendered.as_object().expect("object");
+        assert_eq!(obj.len(), 3, "rendered JSON must carry all three profiles");
+        assert!(obj.contains_key("p-food"));
+        assert!(obj.contains_key("p-liquor"));
+        assert!(obj.contains_key("p-cess"));
+    }
+
+    #[test]
+    fn build_tax_snapshots_errors_when_a_referenced_compliance_version_is_missing() {
+        let outlet_id = "outlet-1";
+        let lines = vec![line("item-1", "p-food")];
+        let err = build_tax_snapshots(&[], &[], &[], outlet_id, &lines, Utc::now())
+            .expect_err("no compliance version at all must error");
+        assert!(matches!(err, crate::error::DbError::InvalidInput(_)));
+    }
+}

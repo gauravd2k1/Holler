@@ -175,3 +175,259 @@ pub fn resolve_rates(
     }
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn profile(id: &str, outlet_id: &str, is_default: bool, is_active: bool) -> TaxProfile {
+        TaxProfile {
+            id: id.to_string(),
+            outlet_id: outlet_id.to_string(),
+            code: id.to_string(),
+            name: id.to_string(),
+            pricing_mode: "EXCLUSIVE".to_string(),
+            is_default,
+            is_active,
+            config_version: 1,
+        }
+    }
+
+    fn version(id: &str, outlet_id: &str, effective_from: &str) -> ComplianceVersion {
+        ComplianceVersion {
+            id: id.to_string(),
+            outlet_id: outlet_id.to_string(),
+            label: id.to_string(),
+            effective_from: effective_from.to_string(),
+            notes: None,
+            config_version: 1,
+        }
+    }
+
+    fn rule(
+        profile_id: &str,
+        version_id: &str,
+        component: &str,
+        rate_bps: i64,
+        effective_from: &str,
+        effective_to: Option<&str>,
+    ) -> TaxRule {
+        TaxRule {
+            id: format!("{profile_id}-{version_id}-{component}-{effective_from}"),
+            tax_profile_id: profile_id.to_string(),
+            compliance_version_id: version_id.to_string(),
+            component: component.to_string(),
+            rate_bps,
+            effective_from: effective_from.to_string(),
+            effective_to: effective_to.map(|s| s.to_string()),
+            config_version: 1,
+        }
+    }
+
+    // ---------------------------------------------------- resolve_tax_profile --
+
+    /// A pin that names an active profile at the right outlet must resolve
+    /// to THAT profile, even though a default also exists — the liquor-item-
+    /// on-a-food-default-outlet case ADR-016 names explicitly.
+    #[test]
+    fn pin_set_and_valid_resolves_to_pinned_profile_not_default() {
+        let profiles = vec![
+            profile("p-default", "outlet-1", true, true),
+            profile("p-liquor", "outlet-1", false, true),
+        ];
+        let got = resolve_tax_profile(&profiles, "outlet-1", Some("p-liquor"), Utc::now())
+            .expect("pinned profile must resolve");
+        assert_eq!(got.id, "p-liquor");
+    }
+
+    /// The critical invariant: a pin that is set but does not resolve must
+    /// ERROR, never silently fall back to the outlet default. This test
+    /// fails against a defect that swaps the `.ok_or_else(...)` error for a
+    /// fallback to the default profile — the exact silent-fallback shape a
+    /// liquor-item-taxed-as-food misconfiguration would produce.
+    #[test]
+    fn pin_set_but_profile_inactive_errors_never_falls_back_to_default() {
+        let profiles = vec![
+            profile("p-default", "outlet-1", true, true),
+            profile("p-retired", "outlet-1", false, false), // inactive
+        ];
+        let err = resolve_tax_profile(&profiles, "outlet-1", Some("p-retired"), Utc::now())
+            .expect_err("an inactive pinned profile must error, not silently fall back");
+        assert!(
+            matches!(err, DbError::InvalidInput(_)),
+            "expected InvalidInput, got {err:?}"
+        );
+    }
+
+    /// A pin naming a profile that belongs to a DIFFERENT outlet is a
+    /// tenancy boundary, not a lookup miss to paper over. It must error,
+    /// never resolve cross-outlet and never fall back to this outlet's
+    /// default.
+    #[test]
+    fn pin_set_but_profile_belongs_to_different_outlet_errors() {
+        let profiles = vec![
+            profile("p-default", "outlet-1", true, true),
+            profile("p-other-outlet", "outlet-2", true, true),
+        ];
+        let err = resolve_tax_profile(&profiles, "outlet-1", Some("p-other-outlet"), Utc::now())
+            .expect_err("a profile belonging to a different outlet must error");
+        assert!(matches!(err, DbError::InvalidInput(_)));
+    }
+
+    /// A pin naming a profile absent from `profiles` altogether (deleted,
+    /// or never synced) must error the same way as inactive/wrong-outlet —
+    /// no special-cased silent fallback for "not found" either.
+    #[test]
+    fn pin_set_but_profile_absent_entirely_errors() {
+        let profiles = vec![profile("p-default", "outlet-1", true, true)];
+        let err = resolve_tax_profile(&profiles, "outlet-1", Some("does-not-exist"), Utc::now())
+            .expect_err("a pin naming a nonexistent profile must error");
+        assert!(matches!(err, DbError::InvalidInput(_)));
+    }
+
+    /// `None` — the common case — resolves to the outlet's active default,
+    /// with zero per-item configuration.
+    #[test]
+    fn pin_none_resolves_to_outlet_default() {
+        let profiles = vec![
+            profile("p-nondefault", "outlet-1", false, true),
+            profile("p-default", "outlet-1", true, true),
+        ];
+        let got = resolve_tax_profile(&profiles, "outlet-1", None, Utc::now())
+            .expect("default profile must resolve");
+        assert_eq!(got.id, "p-default");
+    }
+
+    #[test]
+    fn pin_none_with_no_active_default_errors() {
+        let profiles = vec![profile("p-inactive-default", "outlet-1", true, false)];
+        let err = resolve_tax_profile(&profiles, "outlet-1", None, Utc::now())
+            .expect_err("no active default must error");
+        assert!(matches!(err, DbError::InvalidInput(_)));
+    }
+
+    // ----------------------------------------- resolve_compliance_version --
+
+    /// `at == effective_from` is INCLUSIVE: the version takes effect AT that
+    /// instant, not strictly after it. An off-by-one here misprices every
+    /// bill issued in the same instant as a rate-change rollout.
+    #[test]
+    fn compliance_version_effective_from_boundary_is_inclusive() {
+        let change = parse_utc("2026-04-01T00:00:00Z").unwrap();
+        let versions = vec![
+            version("v1", "outlet-1", "2025-01-01T00:00:00Z"),
+            version("v2", "outlet-1", "2026-04-01T00:00:00Z"),
+        ];
+
+        let at_boundary = resolve_compliance_version(&versions, "outlet-1", change)
+            .expect("resolve at boundary");
+        assert_eq!(
+            at_boundary.id, "v2",
+            "at == effective_from must resolve to the NEW version (inclusive boundary)"
+        );
+
+        let just_before = change - chrono::Duration::nanoseconds(1);
+        let before_boundary = resolve_compliance_version(&versions, "outlet-1", just_before)
+            .expect("resolve just before boundary");
+        assert_eq!(
+            before_boundary.id, "v1",
+            "one instant before effective_from must still resolve to the OLD version"
+        );
+    }
+
+    #[test]
+    fn compliance_version_resolves_past_instant_to_past_ruleset() {
+        let versions = vec![
+            version("v1", "outlet-1", "2025-01-01T00:00:00Z"),
+            version("v2", "outlet-1", "2026-04-01T00:00:00Z"),
+            version("v-other-outlet", "outlet-2", "2025-06-01T00:00:00Z"),
+        ];
+
+        let got = resolve_compliance_version(
+            &versions,
+            "outlet-1",
+            parse_utc("2025-06-01T00:00:00Z").unwrap(),
+        )
+        .expect("resolve");
+        assert_eq!(got.id, "v1", "a past instant must return the ruleset live then");
+
+        let err = resolve_compliance_version(
+            &versions,
+            "outlet-1",
+            parse_utc("2024-01-01T00:00:00Z").unwrap(),
+        )
+        .expect_err("before any version existed must error");
+        assert!(matches!(err, DbError::InvalidInput(_)));
+    }
+
+    // -------------------------------------------------------- resolve_rates --
+
+    /// `at == effective_from` is INCLUSIVE, `at == effective_to` is
+    /// EXCLUSIVE (the old rate no longer applies at that instant). This is
+    /// the pair of boundaries a rate-change rollout hinges on: at the exact
+    /// changeover instant, the OLD rule must have stopped applying and the
+    /// NEW rule must have started, never both or neither.
+    #[test]
+    fn rates_effective_from_and_effective_to_boundaries() {
+        let change = parse_utc("2026-01-01T00:00:00Z").unwrap();
+        let rules = vec![
+            rule("profile-1", "version-1", "CGST", 250, "2025-01-01T00:00:00Z", Some("2026-01-01T00:00:00Z")),
+            rule("profile-1", "version-1", "CGST", 900, "2026-01-01T00:00:00Z", None),
+        ];
+
+        let at_boundary = resolve_rates(&rules, "profile-1", "version-1", change).expect("resolve");
+        assert_eq!(
+            rate_of(&at_boundary, TaxComponent::Cgst),
+            900,
+            "at == effective_to/effective_from boundary must resolve to the NEW rate"
+        );
+
+        let just_before = change - chrono::Duration::nanoseconds(1);
+        let before_boundary =
+            resolve_rates(&rules, "profile-1", "version-1", just_before).expect("resolve");
+        assert_eq!(
+            rate_of(&before_boundary, TaxComponent::Cgst),
+            250,
+            "one instant before the boundary must still resolve to the OLD rate"
+        );
+    }
+
+    #[test]
+    fn rates_unknown_profile_version_pair_errors() {
+        let rules = vec![rule(
+            "profile-1", "version-1", "CGST", 250, "2025-01-01T00:00:00Z", None,
+        )];
+        let err = resolve_rates(
+            &rules,
+            "unknown-profile",
+            "version-1",
+            parse_utc("2026-01-01T00:00:00Z").unwrap(),
+        )
+        .expect_err("an unknown profile/version pair must error");
+        assert!(matches!(err, DbError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn rates_component_with_no_rule_is_absent_not_zero_entry() {
+        let rules = vec![rule(
+            "profile-1", "version-1", "IGST", 1200, "2025-01-01T00:00:00Z", None,
+        )];
+        let got = resolve_rates(
+            &rules,
+            "profile-1",
+            "version-1",
+            parse_utc("2026-01-01T00:00:00Z").unwrap(),
+        )
+        .expect("resolve");
+        assert_eq!(got.len(), 1, "only IGST has a rule; CGST/SGST/CESS must be absent entirely");
+        assert_eq!(got[0].component, TaxComponent::Igst);
+    }
+
+    fn rate_of(rates: &[ResolvedRate], component: TaxComponent) -> i64 {
+        rates
+            .iter()
+            .find(|r| r.component == component)
+            .map(|r| r.rate_bps)
+            .unwrap_or(0)
+    }
+}

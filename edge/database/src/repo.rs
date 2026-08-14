@@ -3263,4 +3263,193 @@ mod m3_billing_config_tests {
         assert_eq!(discounts.len(), 1);
         assert_eq!(discounts[0].value_bps, Some(2000));
     }
+
+    // -------------------------------------------------- stale-config-version --
+    // Every M3 config upsert shares the same `WHERE excluded.config_version
+    // >= <table>.config_version` guard as `upsert_tax_profile` (already
+    // covered above). Each of the remaining five gets its own dedicated
+    // stale-replay test rather than being judged uniform by inspection —
+    // inspection is exactly the standard of evidence a copy-paste slip in
+    // one WHERE clause survives.
+
+    fn sample_compliance_version(config_version: i64) -> ComplianceVersion {
+        ComplianceVersion {
+            id: "cv-1".to_string(),
+            outlet_id: "outlet-1".to_string(),
+            label: "GST 2026-04".to_string(),
+            effective_from: "2026-04-01T00:00:00Z".to_string(),
+            notes: None,
+            config_version,
+        }
+    }
+
+    #[test]
+    fn stale_config_version_does_not_overwrite_newer_compliance_version() {
+        let db = Db::open_in_memory_for_tests().expect("open db");
+        seed_outlet(db.connection(), "outlet-1");
+
+        let mut newer = sample_compliance_version(5);
+        newer.label = "Newer Label".to_string();
+        upsert_compliance_version(db.connection(), &newer).expect("insert v5");
+
+        let mut stale = sample_compliance_version(3);
+        stale.label = "Stale Label".to_string();
+        upsert_compliance_version(db.connection(), &stale).expect("stale write must not error");
+
+        let got = list_compliance_versions_for_outlet(db.connection(), "outlet-1").expect("list");
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].config_version, 5, "newer row must survive a stale replay");
+        assert_eq!(got[0].label, "Newer Label");
+    }
+
+    fn sample_tax_rule(config_version: i64) -> TaxRule {
+        TaxRule {
+            id: "rule-1".to_string(),
+            tax_profile_id: "profile-1".to_string(),
+            compliance_version_id: "cv-1".to_string(),
+            component: "CGST".to_string(),
+            rate_bps: 250,
+            effective_from: "2026-04-01T00:00:00Z".to_string(),
+            effective_to: None,
+            config_version,
+        }
+    }
+
+    #[test]
+    fn stale_config_version_does_not_overwrite_newer_tax_rule() {
+        let db = Db::open_in_memory_for_tests().expect("open db");
+        seed_outlet(db.connection(), "outlet-1");
+        upsert_tax_profile(db.connection(), &sample_profile(1)).expect("profile");
+        upsert_compliance_version(db.connection(), &sample_compliance_version(1)).expect("cv");
+
+        let mut newer = sample_tax_rule(5);
+        newer.rate_bps = 900;
+        upsert_tax_rule(db.connection(), &newer).expect("insert v5");
+
+        let mut stale = sample_tax_rule(3);
+        stale.rate_bps = 100;
+        upsert_tax_rule(db.connection(), &stale).expect("stale write must not error");
+
+        let got = list_tax_rules_for_profile(db.connection(), "profile-1").expect("list");
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].config_version, 5, "newer row must survive a stale replay");
+        assert_eq!(got[0].rate_bps, 900, "a stale replay must not regress the rate");
+    }
+
+    fn sample_fiscal_profile(config_version: i64) -> OutletFiscalProfile {
+        OutletFiscalProfile {
+            id: "fiscal-1".to_string(),
+            outlet_id: "outlet-1".to_string(),
+            legal_name: "Test Restaurant Pvt Ltd".to_string(),
+            trade_name: "Test Restaurant".to_string(),
+            address_line1: "123 Main St".to_string(),
+            address_line2: None,
+            city: "Pune".to_string(),
+            state_code: "27".to_string(),
+            state_name: "Maharashtra".to_string(),
+            pincode: "411001".to_string(),
+            gstin: "27AAAAA0000A1Z5".to_string(),
+            fssai_number: None,
+            invoice_footer_text: None,
+            effective_from: "2026-04-01T00:00:00Z".to_string(),
+            config_version,
+        }
+    }
+
+    #[test]
+    fn stale_config_version_does_not_overwrite_newer_outlet_fiscal_profile() {
+        let db = Db::open_in_memory_for_tests().expect("open db");
+        seed_outlet(db.connection(), "outlet-1");
+
+        let mut newer = sample_fiscal_profile(5);
+        newer.gstin = "27NEWGSTIN0001Z5".to_string();
+        upsert_outlet_fiscal_profile(db.connection(), &newer).expect("insert v5");
+
+        let mut stale = sample_fiscal_profile(3);
+        stale.gstin = "27STALEGSTIN001Z5".to_string();
+        upsert_outlet_fiscal_profile(db.connection(), &stale).expect("stale write must not error");
+
+        let got = list_outlet_fiscal_profiles_for_outlet(db.connection(), "outlet-1").expect("list");
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].config_version, 5, "newer row must survive a stale replay");
+        assert_eq!(got[0].gstin, "27NEWGSTIN0001Z5");
+    }
+
+    fn sample_invoice_series(config_version: i64) -> InvoiceSeries {
+        InvoiceSeries {
+            id: "series-1".to_string(),
+            outlet_id: "outlet-1".to_string(),
+            code: "SALES".to_string(),
+            prefix_template: "FY{FY}/{OUTLET}/".to_string(),
+            reset_policy: "FY".to_string(),
+            padding_width: 6,
+            is_active: true,
+            config_version,
+        }
+    }
+
+    #[test]
+    fn stale_config_version_does_not_overwrite_newer_invoice_series() {
+        let db = Db::open_in_memory_for_tests().expect("open db");
+        seed_outlet(db.connection(), "outlet-1");
+
+        let mut newer = sample_invoice_series(5);
+        newer.is_active = false; // e.g. the series was retired at v5
+        upsert_invoice_series(db.connection(), &newer).expect("insert v5");
+
+        let mut stale = sample_invoice_series(3);
+        stale.is_active = true;
+        upsert_invoice_series(db.connection(), &stale).expect("stale write must not error");
+
+        let got = list_invoice_series_for_outlet(db.connection(), "outlet-1").expect("list");
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].config_version, 5, "newer row must survive a stale replay");
+        assert!(
+            !got[0].is_active,
+            "a stale replay must not resurrect a series retired at a newer config_version"
+        );
+    }
+
+    fn sample_discount_definition(config_version: i64) -> DiscountDefinition {
+        DiscountDefinition {
+            id: "discount-1".to_string(),
+            outlet_id: "outlet-1".to_string(),
+            code: "STAFF".to_string(),
+            name: "Staff 20%".to_string(),
+            scope: "BILL".to_string(),
+            method: "PERCENT".to_string(),
+            value_bps: Some(2000),
+            value_paise: None,
+            max_discount_paise: None,
+            required_permission: None,
+            requires_reason: false,
+            is_active: true,
+            effective_from: "2026-04-01T00:00:00Z".to_string(),
+            effective_to: None,
+            config_version,
+        }
+    }
+
+    #[test]
+    fn stale_config_version_does_not_overwrite_newer_discount_definition() {
+        let db = Db::open_in_memory_for_tests().expect("open db");
+        seed_outlet(db.connection(), "outlet-1");
+
+        let mut newer = sample_discount_definition(5);
+        newer.value_bps = Some(1000); // discount policy tightened at v5
+        upsert_discount_definition(db.connection(), &newer).expect("insert v5");
+
+        let mut stale = sample_discount_definition(3);
+        stale.value_bps = Some(2000);
+        upsert_discount_definition(db.connection(), &stale).expect("stale write must not error");
+
+        let got = list_discount_definitions_for_outlet(db.connection(), "outlet-1").expect("list");
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].config_version, 5, "newer row must survive a stale replay");
+        assert_eq!(
+            got[0].value_bps,
+            Some(1000),
+            "a stale replay must not loosen a discount tightened at a newer config_version"
+        );
+    }
 }
