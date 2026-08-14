@@ -4,16 +4,21 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/holler/backend/internal/outlet"
 	"github.com/holler/backend/internal/platform/httpx"
+	"github.com/holler/backend/internal/platform/id"
 	"github.com/holler/backend/internal/tenant"
 )
 
 // TestPostgresDeviceService_EnrollRotateRevoke_EndToEnd runs the full device
 // lifecycle against a real Postgres, driven through
-// packages/contracts/postgres/0008_device_enrollment.sql. Skips (does not
-// fail) if HOLLER_TEST_DATABASE_URL is unset — see setupPool.
+// packages/contracts/postgres/0008_device_enrollment.sql. Fails loudly (does
+// not skip silently) if HOLLER_TEST_DATABASE_URL is unset — see setupPool
+// in postgres_test.go, which uses internal/platform/testdb.
 func TestPostgresDeviceService_EnrollRotateRevoke_EndToEnd(t *testing.T) {
 	pool := setupPool(t)
 	ctx := context.Background()
@@ -186,5 +191,106 @@ func TestPostgresListEdgeDeviceCredentials_ScopesToOutletNotJustTenant(t *testin
 	}
 	if credsB[0].DeviceID != enrolledB.Device.ID {
 		t.Fatalf("expected outlet B's credential to belong to its own device %s, got device %s", enrolledB.Device.ID, credsB[0].DeviceID)
+	}
+}
+
+// TestPostgresRepository_WithTx_RealRollback_NoOrphanCredentialNoConfigBump
+// closes the gap docs/RESUME.md recorded after T13 retry: atomicity of the
+// credential-write-plus-config-version-bump pair had only ever been proven
+// against fakeDeviceRepo's own hand-written snapshot/restore WithTx — a fake
+// whose rollback semantics the same builder wrote. This drives a REAL
+// pgx.Tx, not a fake, through PostgresRepository.WithTx directly: it inserts
+// a device_credential row successfully, then forces the SECOND statement in
+// the same transaction (BumpOutletConfigVersion) to fail by targeting an
+// outlet id that does not exist, and asserts neither write survived —
+// exactly the atomicity DeviceService.EnrollDevice/RotateCredential/
+// RevokeCredential rely on WithTx to provide in production.
+func TestPostgresRepository_WithTx_RealRollback_NoOrphanCredentialNoConfigBump(t *testing.T) {
+	pool := setupPool(t)
+	ctx := context.Background()
+
+	tenantSvc := tenant.NewService(tenant.NewPostgresRepository(pool))
+	outletsRepo := outlet.NewPostgresRepository(pool)
+	outletSvc := outlet.NewService(outletsRepo)
+
+	org, err := tenantSvc.CreateOrganisation(ctx, "WithTx Rollback Org")
+	if err != nil {
+		t.Fatalf("CreateOrganisation: %v", err)
+	}
+	brand, err := tenantSvc.CreateBrand(ctx, org.ID, "WithTx Rollback Brand")
+	if err != nil {
+		t.Fatalf("CreateBrand: %v", err)
+	}
+	principal := outlet.Principal{TenantID: org.ID}
+	o, err := outletSvc.CreateOutlet(ctx, principal, brand.ID, "WithTx Rollback Outlet", "")
+	if err != nil {
+		t.Fatalf("CreateOutlet: %v", err)
+	}
+	if o.ConfigVersion != 0 {
+		t.Fatalf("expected a freshly created outlet to start at config_version 0, got %d", o.ConfigVersion)
+	}
+
+	device := outlet.Device{
+		ID:        id.New(),
+		OutletID:  o.ID,
+		Kind:      outlet.DeviceKindPOS,
+		Name:      "WithTx Rollback Device",
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+	if err := outletsRepo.InsertDevice(ctx, org.ID, device); err != nil {
+		t.Fatalf("InsertDevice: %v", err)
+	}
+
+	credentialID := id.New()
+	const bogusOutletID = "00000000-0000-0000-0000-000000000000"
+
+	txErr := outletsRepo.WithTx(ctx, func(tx pgx.Tx) error {
+		cred := outlet.DeviceCredential{
+			ID:        credentialID,
+			DeviceID:  device.ID,
+			TenantID:  org.ID,
+			OutletID:  o.ID,
+			Label:     "rollback probe",
+			CreatedAt: time.Now().UTC(),
+		}
+		if err := outletsRepo.InsertCredential(ctx, tx, cred, "not-a-real-hash"); err != nil {
+			return err
+		}
+		// This targets an outlet id that does not exist, forcing
+		// BumpOutletConfigVersion to return httpx.ErrNotFound — the second
+		// statement in the pair fails AFTER the first one succeeded within
+		// the same, still-open transaction.
+		_, err := outletsRepo.BumpOutletConfigVersion(ctx, tx, bogusOutletID)
+		return err
+	})
+	if txErr == nil {
+		t.Fatal("expected WithTx to propagate the forced BumpOutletConfigVersion failure, got nil")
+	}
+	if !errors.Is(txErr, httpx.ErrNotFound) {
+		t.Fatalf("expected the forced failure to be httpx.ErrNotFound, got %v", txErr)
+	}
+
+	// The credential insert must NOT have survived the rollback: no orphan
+	// row, even though InsertCredential itself returned no error.
+	var credentialCount int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM device_credential WHERE id = $1`, credentialID).Scan(&credentialCount); err != nil {
+		t.Fatalf("counting device_credential rows: %v", err)
+	}
+	if credentialCount != 0 {
+		t.Fatalf("expected the credential insert to have been rolled back, found %d row(s) for id %s", credentialCount, credentialID)
+	}
+
+	// The real outlet's config_version must be untouched — the bump inside
+	// the same failed transaction must not have advanced anything, even
+	// though the bump that failed targeted a DIFFERENT (bogus) outlet id;
+	// this proves the whole transaction rolled back, not just the statement
+	// that errored.
+	reread, err := outletSvc.GetOutlet(ctx, principal, o.ID)
+	if err != nil {
+		t.Fatalf("GetOutlet after rollback: %v", err)
+	}
+	if reread.ConfigVersion != 0 {
+		t.Fatalf("expected outlet config_version to remain 0 after rollback, got %d", reread.ConfigVersion)
 	}
 }

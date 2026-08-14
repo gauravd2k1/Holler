@@ -2,22 +2,20 @@ package auth
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/holler/backend/internal/platform/id"
 	"github.com/holler/backend/internal/platform/postgres"
+	"github.com/holler/backend/internal/platform/testdb"
 )
 
-// testPool opens a Postgres pool for integration tests, or skips the test
-// when HOLLER_TEST_DATABASE_URL is unset.
+// testPool opens a Postgres pool for integration tests. See
+// internal/platform/testdb: an unset HOLLER_TEST_DATABASE_URL fails this
+// test loudly by default rather than skipping silently.
 func testPool(t *testing.T) postgres.Pool {
 	t.Helper()
-	url := os.Getenv("HOLLER_TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("HOLLER_TEST_DATABASE_URL not set; skipping Postgres integration test")
-	}
+	url := testdb.RequireDatabaseURL(t)
 	pool, err := postgres.Open(context.Background(), url)
 	if err != nil {
 		t.Fatalf("opening test pool: %v", err)

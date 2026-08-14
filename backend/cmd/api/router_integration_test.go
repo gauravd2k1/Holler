@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strconv"
 	"testing"
@@ -19,22 +18,20 @@ import (
 	"github.com/holler/backend/internal/platform/config"
 	"github.com/holler/backend/internal/platform/crypto"
 	"github.com/holler/backend/internal/platform/postgres"
+	"github.com/holler/backend/internal/platform/testdb"
 	"github.com/holler/backend/internal/tables"
 	"github.com/holler/backend/internal/tenant"
 )
 
 // setupIntegrationPool mirrors backend/internal/kitchen/postgres_test.go's
-// setupPool exactly: same env var gate, same migration path. Gated on
-// HOLLER_TEST_DATABASE_URL, which this environment does not set — this test
-// SKIPS, it does not run, whenever that variable is absent. See this task's
-// final report for which tests actually executed.
+// setupPool: same migration path, same shared testdb gate. See
+// internal/platform/testdb: an unset HOLLER_TEST_DATABASE_URL fails this
+// test loudly by default rather than skipping silently, since this file
+// includes TestBuildRouter_SyncConfigEndToEnd (M2 acceptance item 4).
 func setupIntegrationPool(t *testing.T) postgres.Pool {
 	t.Helper()
 
-	dbURL := os.Getenv("HOLLER_TEST_DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("HOLLER_TEST_DATABASE_URL not set; skipping cmd/api Postgres integration test")
-	}
+	dbURL := testdb.RequireDatabaseURL(t)
 
 	ctx := context.Background()
 	pool, err := postgres.Open(ctx, dbURL)

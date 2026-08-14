@@ -2,7 +2,6 @@ package payments_test
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -15,19 +14,17 @@ import (
 	"github.com/holler/backend/internal/payments"
 	"github.com/holler/backend/internal/platform/id"
 	"github.com/holler/backend/internal/platform/postgres"
+	"github.com/holler/backend/internal/platform/testdb"
 	"github.com/holler/backend/internal/tenant"
 	contracts "github.com/holler/contracts"
 )
 
-// setupPool mirrors backend/internal/ordering/postgres_test.go's setupPool
-// exactly: same env var gate, same migration path.
+// setupPool mirrors backend/internal/ordering/postgres_test.go's setupPool:
+// same migration path, same shared testdb gate.
 func setupPool(t *testing.T) postgres.Pool {
 	t.Helper()
 
-	dbURL := os.Getenv("HOLLER_TEST_DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("HOLLER_TEST_DATABASE_URL not set; skipping payments Postgres integration test")
-	}
+	dbURL := testdb.RequireDatabaseURL(t)
 
 	ctx := context.Background()
 	pool, err := postgres.Open(ctx, dbURL)

@@ -403,3 +403,44 @@ func partitionInto(r *rand.Rand, n, k int) []int {
 	}
 	return out
 }
+
+// TestProperty_TotalsAreLineOrderIndependent is the FIFTH §66 property: "the
+// discount application is order-independent where the spec says it is."
+// ComputeInvoice's per-line arithmetic (computeLineBase, finishInclusiveLine)
+// is applied independently to each line, and every invoice-level total this
+// test checks is a SUM across lines — so permuting the input slice must never
+// change subtotal, discount, taxable value, any tax component, round-off or
+// grand total, even though largestRemainderSplit's tie-break "by bucket
+// index" means the shuffle CAN move which individual EXCLUSIVE line receives
+// a stray remainder paise. That per-line reshuffle is exactly why this
+// property is pinned at the INVOICE level rather than asserting the per-line
+// LineComputation slice is itself a fixed permutation of the original.
+func TestProperty_TotalsAreLineOrderIndependent(t *testing.T) {
+	r := rand.New(rand.NewSource(20260814))
+	for i := 0; i < propertyIterations/5; i++ {
+		lineCount := 2 + r.Intn(10) // need at least 2 lines for a permutation to mean anything
+		lines := make([]Line, lineCount)
+		for j := range lines {
+			lines[j] = randomLine(r, orderItemID(j))
+		}
+
+		_, wantTotals, err := ComputeInvoice(lines)
+		if err != nil {
+			t.Fatalf("iteration %d: unexpected error on original order: %v", i, err)
+		}
+
+		shuffled := make([]Line, lineCount)
+		copy(shuffled, lines)
+		r.Shuffle(len(shuffled), func(a, b int) { shuffled[a], shuffled[b] = shuffled[b], shuffled[a] })
+
+		_, gotTotals, err := ComputeInvoice(shuffled)
+		if err != nil {
+			t.Fatalf("iteration %d: unexpected error on shuffled order: %v", i, err)
+		}
+
+		if gotTotals != wantTotals {
+			t.Fatalf("iteration %d: totals depend on line order.\noriginal lines: %+v\nshuffled lines: %+v\nwant: %+v\ngot:  %+v",
+				i, lines, shuffled, wantTotals, gotTotals)
+		}
+	}
+}

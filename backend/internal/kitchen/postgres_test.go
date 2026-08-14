@@ -2,7 +2,6 @@ package kitchen_test
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -14,22 +13,20 @@ import (
 	"github.com/holler/backend/internal/outlet"
 	"github.com/holler/backend/internal/platform/id"
 	"github.com/holler/backend/internal/platform/postgres"
+	"github.com/holler/backend/internal/platform/testdb"
 	"github.com/holler/backend/internal/tenant"
 	contracts "github.com/holler/contracts"
 )
 
-// setupPool mirrors backend/internal/ordering/postgres_test.go exactly: same
-// env var gate, same migration path (packages/contracts/postgres, which now
-// includes 0006_m2_kitchen_stations_printers.sql — the migration runner
-// globs every *.sql file in that directory, so no extra wiring was needed to
-// pick it up).
+// setupPool mirrors backend/internal/ordering/postgres_test.go: same
+// migration path (packages/contracts/postgres, which now includes
+// 0006_m2_kitchen_stations_printers.sql — the migration runner globs every
+// *.sql file in that directory, so no extra wiring was needed to pick it
+// up) and the shared testdb gate.
 func setupPool(t *testing.T) postgres.Pool {
 	t.Helper()
 
-	dbURL := os.Getenv("HOLLER_TEST_DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("HOLLER_TEST_DATABASE_URL not set; skipping kitchen Postgres integration test")
-	}
+	dbURL := testdb.RequireDatabaseURL(t)
 
 	ctx := context.Background()
 	pool, err := postgres.Open(ctx, dbURL)

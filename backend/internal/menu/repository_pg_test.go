@@ -2,22 +2,19 @@ package menu
 
 import (
 	"context"
-	"os"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/holler/backend/internal/platform/id"
+	"github.com/holler/backend/internal/platform/testdb"
 )
 
 // TestRepository_Postgres exercises the real pgRepository against a live
-// PostgreSQL instance. Set HOLLER_TEST_DATABASE_URL to run it; skipped
-// otherwise so CI without a database still passes.
+// PostgreSQL instance. See internal/platform/testdb: an unset
+// HOLLER_TEST_DATABASE_URL fails this test loudly by default.
 func TestRepository_Postgres(t *testing.T) {
-	dsn := os.Getenv("HOLLER_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("HOLLER_TEST_DATABASE_URL not set; skipping menu repository integration test")
-	}
+	dsn := testdb.RequireDatabaseURL(t)
 
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, dsn)

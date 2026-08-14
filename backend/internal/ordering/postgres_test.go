@@ -2,7 +2,6 @@ package ordering_test
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -13,17 +12,17 @@ import (
 	"github.com/holler/backend/internal/outlet"
 	"github.com/holler/backend/internal/platform/id"
 	"github.com/holler/backend/internal/platform/postgres"
+	"github.com/holler/backend/internal/platform/testdb"
 	"github.com/holler/backend/internal/tenant"
 	contracts "github.com/holler/contracts"
 )
 
+// setupPool uses the shared testdb gate: an unset HOLLER_TEST_DATABASE_URL
+// fails this test loudly by default rather than skipping silently.
 func setupPool(t *testing.T) postgres.Pool {
 	t.Helper()
 
-	dbURL := os.Getenv("HOLLER_TEST_DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("HOLLER_TEST_DATABASE_URL not set; skipping ordering Postgres integration test")
-	}
+	dbURL := testdb.RequireDatabaseURL(t)
 
 	ctx := context.Background()
 	pool, err := postgres.Open(ctx, dbURL)

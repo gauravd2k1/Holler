@@ -3,25 +3,22 @@ package tenant_test
 import (
 	"context"
 	"errors"
-	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/holler/backend/internal/platform/httpx"
 	"github.com/holler/backend/internal/platform/postgres"
+	"github.com/holler/backend/internal/platform/testdb"
 	"github.com/holler/backend/internal/tenant"
 )
 
 // setupPool opens a pool against HOLLER_TEST_DATABASE_URL and applies the
-// frozen contracts migrations. Every test in this file skips, not fails,
-// when the env var is unset — CI without a live Postgres still passes.
+// frozen contracts migrations. See internal/platform/testdb: an unset URL
+// fails the test loudly by default rather than skipping silently.
 func setupPool(t *testing.T) postgres.Pool {
 	t.Helper()
 
-	dbURL := os.Getenv("HOLLER_TEST_DATABASE_URL")
-	if dbURL == "" {
-		t.Skip("HOLLER_TEST_DATABASE_URL not set; skipping tenant Postgres integration test")
-	}
+	dbURL := testdb.RequireDatabaseURL(t)
 
 	ctx := context.Background()
 	pool, err := postgres.Open(ctx, dbURL)
