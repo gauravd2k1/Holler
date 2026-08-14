@@ -109,6 +109,34 @@ The event is self-describing for the reason `ItemRemoved` is: the cloud must rec
 
 `scripts/check-event-type-drift.mjs` carries a `NOT_YET_EMITTED` entry for it naming the T3 retry as the track that must remove it. **That entry surviving past T3 is itself the defect signal.**
 
+## Addendum — 0.4.4: the compliance config write routes enter the OpenAPI spec (2026-08-14)
+
+The T13 track implemented the compliance config write path and mounted it, and its own report flagged that `packages/contracts/openapi/openapi.yaml` carried **no path entry for any of it** — only the response schemas the aggregates already ride in on `GET /sync/config`. The routes shipped and were tested; they were simply undocumented in the contract. 0.4.4 closes that.
+
+**It is eight routes, not six.** The gap was recorded as "the six compliance config write routes" and carried forward that way in `docs/RESUME.md`. Reading `compliance.Handler.Mount` shows eight: the `invoice-series` create and deactivate pair was missed in the original tally. Both are now documented. The miscount is worth recording because it was a count of *undocumented* routes made by reading a summary rather than the mount — exactly the error the spec entry now prevents.
+
+This is **additive and documentation-only**. Every request and response shape was transcribed from the handlers in `backend/internal/compliance/http.go`; no schema was added, no aggregate changed, no handler touched. All eight reference component schemas that already existed at 0.4.3 (`ComplianceVersion`, `TaxProfile`, `TaxRule`, `InvoiceSeries`, `DiscountDefinition`, `OutletFiscalProfile`).
+
+`info.version` in the OpenAPI document was still `"0.3.1"` — it had not been advanced through the 0.4.x line at all, so the document was self-describing as three minor versions behind the package it lives in. It is now `0.4.4`, matching `package.json`.
+
+**Two gaps are documented in the spec text rather than silently fixed**, because closing either is a semantic change needing its own decision:
+
+- Every route is gated on `outlet.manage`, because **no `billing.manage` permission exists** in the frozen `Permission` enum. Whoever may rename a table may therefore also set the GSTIN that prints on every invoice. The spec now says so at the top of the block.
+- A non-`NEVER` `reset_policy` combined with a `prefix_template` lacking the matching date token yields duplicate invoice numbers across periods. It fails loudly at issue time on the UNIQUE index, but is not validated at config-write time. The `prefix_template` description now carries that caution.
+
+**Note on what this does and does not buy.** Nothing machine-checks the OpenAPI document against the handlers — the CI contract-drift check covers TS↔Go types only, and no test parses this file. Route/shape parity was verified here by extracting the paths from `Mount` and diffing against the parsed spec (8 = 8, both directions clean), but that was a one-time check by hand, not a standing gate. **This document can drift from the handlers tomorrow and nothing will go red.** A real generator or a spec-vs-router test is the fix; it is not in this change.
+
+### Self-review against the rubric
+
+| Check | Finding |
+|---|---|
+| App-generated UUIDv7, no DB-side defaults | N/A — no schema change. |
+| No nullable columns in primary keys | N/A — no schema change. |
+| Single authority per §50.1 | Clean. All eight are cloud-owned config writes, human-authenticated, never mounted under `DeviceAuthenticate` and taking no `SyncEnvelope` — the read path stays unwrapped per 0.2.1. |
+| No credential material in audit/logs/wire | Clean — no route here carries a hash or token. |
+| Tenant-scoped uniqueness | N/A — no new constraint. Existing per-outlet code uniqueness unchanged. |
+| Version bump + ADR | 0.4.3 → 0.4.4, this addendum. Additive: paths only. |
+
 ## Consequences
 
 - Builders gain the full billing surface without a further contract change; adding a payment gateway in M7 needs no shape change, only the already-modelled states.

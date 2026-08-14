@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Holler API — Vertical Slice
-  version: "0.3.1"
+  version: "0.4.4"
   description: >
     Covers only the §70 order endpoints needed for the Milestone 1–2 vertical
     slice (Menu → POS Order → Local SQLite → KOT → KDS → Cloud sync). Frozen
@@ -735,6 +735,305 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/RestaurantTable" }
+
+  # --- compliance config write path (added 0.4.4, ADR-016) ----------------
+  #
+  # Eight routes, all mounted by compliance.Handler.Mount. Every one is
+  # HUMAN-authenticated (auth.Authenticate + outlet.manage) and never mounted
+  # under outlet.DeviceAuthenticate: these are management decisions, not device
+  # replay, so they take no SyncEnvelope and are cloud→edge config in the
+  # ADR-009/§50.1 sense. Each write bumps the outlet's config_version inside its
+  # transaction, which is what makes it visible to a subsequent GET /sync/config.
+  #
+  # Known gap, deliberately recorded rather than papered over: these are gated on
+  # `outlet.manage` because no `billing.manage` permission exists in the frozen
+  # Permission enum. Splitting it is a semantic change and needs its own ADR.
+
+  /outlets/{outletId}/compliance-versions:
+    post:
+      summary: >
+        Open a compliance version — the effective-dated envelope every tax rule
+        hangs off (permission outlet.manage; bumps config_version).
+      parameters:
+        - $ref: "#/components/parameters/OutletId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [label, effective_from]
+              properties:
+                label: { type: string }
+                effective_from: { type: string, format: date-time }
+                notes: { type: string, nullable: true }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ComplianceVersion" }
+        "400": { description: Invalid input. }
+        "401": { description: Caller is not authenticated. }
+        "403": { description: Caller lacks outlet.manage on this outlet. }
+        "404": { description: Outlet not found in the caller's tenant. }
+
+  /outlets/{outletId}/tax-profiles:
+    post:
+      summary: >
+        Create a tax profile and, optionally, its rules in one transaction
+        (permission outlet.manage; bumps config_version).
+      parameters:
+        - $ref: "#/components/parameters/OutletId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, name, pricing_mode, is_default]
+              properties:
+                code: { type: string }
+                name: { type: string }
+                pricing_mode: { type: string, enum: [INCLUSIVE, EXCLUSIVE] }
+                is_default: { type: boolean }
+                rules:
+                  type: array
+                  description: >
+                    Created atomically with the profile. A half-populated profile
+                    is rejected before it reaches Postgres, never partially written.
+                  items:
+                    type: object
+                    required: [compliance_version_id, component, rate_bps, effective_from]
+                    properties:
+                      compliance_version_id: { type: string, format: uuid }
+                      component: { type: string, enum: [CGST, SGST, IGST, CESS] }
+                      rate_bps:
+                        type: integer
+                        description: Basis points. Never a float — §66 rounding is exact.
+                      effective_from: { type: string, format: date-time }
+                      effective_to: { type: string, format: date-time, nullable: true }
+      responses:
+        "201":
+          description: Created, with the stored rules echoed back.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/TaxProfile"
+                  - type: object
+                    required: [rules]
+                    properties:
+                      rules:
+                        type: array
+                        items: { $ref: "#/components/schemas/TaxRule" }
+        "400": { description: Invalid input, including a half-populated rule set. }
+        "401": { description: Caller is not authenticated. }
+        "403": { description: Caller lacks outlet.manage on this outlet. }
+        "404": { description: Outlet not found in the caller's tenant. }
+
+  /outlets/{outletId}/tax-profiles/{taxProfileId}/deactivate:
+    post:
+      summary: >
+        Deactivate a tax profile (permission outlet.manage; bumps config_version).
+        Effective-dated deactivation, not deletion — an issued invoice must remain
+        reproducible against the profile that priced it (§31).
+      parameters:
+        - $ref: "#/components/parameters/OutletId"
+        - name: taxProfileId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Deactivated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TaxProfile" }
+        "401": { description: Caller is not authenticated. }
+        "403": { description: Caller lacks outlet.manage on this outlet. }
+        "404": { description: Tax profile not found in the caller's tenant. }
+
+  /outlets/{outletId}/invoice-series:
+    post:
+      summary: >
+        Create an invoice numbering series (permission outlet.manage; bumps
+        config_version).
+      parameters:
+        - $ref: "#/components/parameters/OutletId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, prefix_template, reset_policy, padding_width]
+              properties:
+                code: { type: string }
+                prefix_template:
+                  type: string
+                  description: >
+                    Tokenised, e.g. "FY{FY}/{OUTLET}/". CAUTION: a non-NEVER
+                    reset_policy combined with a prefix lacking the matching date
+                    token yields duplicate numbers across periods. The UNIQUE
+                    index catches it loudly at issue time, but it is not yet
+                    validated here at config-write time.
+                reset_policy: { type: string, enum: [NEVER, FY, MONTH, DAY] }
+                padding_width: { type: integer, minimum: 1, maximum: 12 }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InvoiceSeries" }
+        "400": { description: Invalid input. }
+        "401": { description: Caller is not authenticated. }
+        "403": { description: Caller lacks outlet.manage on this outlet. }
+        "404": { description: Outlet not found in the caller's tenant. }
+
+  /outlets/{outletId}/invoice-series/{seriesId}/deactivate:
+    post:
+      summary: >
+        Deactivate an invoice series (permission outlet.manage; bumps
+        config_version). Numbers already issued from it remain valid and
+        reproducible.
+      parameters:
+        - $ref: "#/components/parameters/OutletId"
+        - name: seriesId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Deactivated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InvoiceSeries" }
+        "401": { description: Caller is not authenticated. }
+        "403": { description: Caller lacks outlet.manage on this outlet. }
+        "404": { description: Invoice series not found in the caller's tenant. }
+
+  /outlets/{outletId}/discount-definitions:
+    post:
+      summary: >
+        Create a discount definition (permission outlet.manage; bumps
+        config_version).
+      parameters:
+        - $ref: "#/components/parameters/OutletId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, name, scope, method, requires_reason, effective_from]
+              properties:
+                code: { type: string }
+                name: { type: string }
+                scope: { type: string, enum: [LINE, BILL] }
+                method: { type: string, enum: [PERCENT, AMOUNT] }
+                value_bps:
+                  type: integer
+                  nullable: true
+                  description: Basis points, for a PERCENT method.
+                value_paise:
+                  type: integer
+                  nullable: true
+                  description: Integer paise, for an AMOUNT method. Never a float.
+                max_discount_paise: { type: integer, nullable: true }
+                required_permission:
+                  type: string
+                  nullable: true
+                  description: >
+                    An additional permission the applying user must hold, beyond
+                    the one that created this definition.
+                requires_reason: { type: boolean }
+                effective_from: { type: string, format: date-time }
+                effective_to: { type: string, format: date-time, nullable: true }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DiscountDefinition" }
+        "400":
+          description: >
+            Invalid input, including a half-populated definition — e.g. a
+            PERCENTAGE method carrying value_paise, or neither value set.
+        "401": { description: Caller is not authenticated. }
+        "403": { description: Caller lacks outlet.manage on this outlet. }
+        "404": { description: Outlet not found in the caller's tenant. }
+
+  /outlets/{outletId}/discount-definitions/{discountId}/deactivate:
+    post:
+      summary: >
+        Deactivate a discount definition (permission outlet.manage; bumps
+        config_version). Discounts already applied to issued invoices are
+        unaffected.
+      parameters:
+        - $ref: "#/components/parameters/OutletId"
+        - name: discountId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Deactivated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DiscountDefinition" }
+        "401": { description: Caller is not authenticated. }
+        "403": { description: Caller lacks outlet.manage on this outlet. }
+        "404": { description: Discount definition not found in the caller's tenant. }
+
+  /outlets/{outletId}/fiscal-profile:
+    post:
+      summary: >
+        Set the outlet's fiscal identity — the legal name, GSTIN and address that
+        print on every GST invoice (permission outlet.manage; bumps
+        config_version).
+
+        Effective-dated and append-only in effect: setting a new profile does not
+        rewrite the one a past invoice was issued under, because §31 requires a
+        reprint to reproduce the original document.
+      parameters:
+        - $ref: "#/components/parameters/OutletId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                [legal_name, trade_name, address_line1, city, state_code,
+                 state_name, pincode, gstin, effective_from]
+              properties:
+                legal_name: { type: string }
+                trade_name: { type: string }
+                address_line1: { type: string }
+                address_line2: { type: string, nullable: true }
+                city: { type: string }
+                state_code:
+                  type: string
+                  description: >
+                    Drives the CGST/SGST vs IGST split — place of supply is
+                    computed from it, not chosen by the caller.
+                state_name: { type: string }
+                pincode: { type: string }
+                gstin: { type: string }
+                fssai_number: { type: string, nullable: true }
+                invoice_footer_text: { type: string, nullable: true }
+                effective_from: { type: string, format: date-time }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OutletFiscalProfile" }
+        "400": { description: Invalid input, including a malformed GSTIN. }
+        "401": { description: Caller is not authenticated. }
+        "403": { description: Caller lacks outlet.manage on this outlet. }
+        "404": { description: Outlet not found in the caller's tenant. }
 
   /menu/categories:
     get:
