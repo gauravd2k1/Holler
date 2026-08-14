@@ -16,10 +16,12 @@ use holler_edge_device::Hub;
 
 use holler_pos_lib::commands::auth::login_impl;
 use holler_pos_lib::commands::kitchen::{
-    list_failed_print_jobs_impl, list_kots_for_order_impl, list_stations_impl,
-    send_order_to_kitchen_impl, transition_kot_status_impl,
+    cancel_kitchen_items_impl, list_failed_print_jobs_impl, list_kots_for_order_impl,
+    list_stations_impl, send_order_to_kitchen_impl, transition_kot_status_impl,
 };
-use holler_pos_lib::commands::menu::{list_menu_categories_impl, list_menu_items_impl};
+use holler_pos_lib::commands::menu::{
+    list_menu_categories_impl, list_menu_item_modifiers_impl, list_menu_items_impl,
+};
 use holler_pos_lib::commands::orders::{
     add_order_item_impl, create_order_impl, get_active_draft_order_impl, get_order_impl,
     list_orders_impl, remove_order_item_impl, update_order_item_quantity_impl,
@@ -124,6 +126,7 @@ fn seed(db: &Db) {
             base_price_paise: 25000,
             is_available: true,
             config_version: 1,
+            tax_profile_id: None,
         },
     )
     .expect("seed menu item");
@@ -1008,6 +1011,7 @@ fn send_to_kitchen_rejects_a_mixed_order_and_names_the_unrouted_item() {
                 base_price_paise: 8000,
                 is_available: true,
                 config_version: 1,
+                tax_profile_id: None,
             },
         )
         .expect("seed unrouted menu item");
@@ -1627,4 +1631,219 @@ fn addition_modifier_and_quantity_change_compose_correctly_after_send_to_kitchen
 
     let all_kots = list_kots_for_order_impl(&state, &order.holler_order_id).expect("list kots");
     assert_eq!(all_kots.len(), 2, "both tickets must be visible to the kitchen");
+}
+
+// ---------------------------------------------------------------- T12 --
+
+/// `#132-C`: cancelling an already-ticketed line must produce a brand-new
+/// CANCELLED-status ticket for the station that had it — the remedy
+/// `DbError::OrderItemAlreadyTicketed`'s message names, now reachable
+/// through a real Tauri command instead of only through
+/// `Db::cancel_kitchen_items_with_outbox` directly.
+#[test]
+fn cancel_kitchen_items_produces_a_new_cancelled_ticket_132c() {
+    let state = seeded_kitchen_state();
+    let order = create_order_impl(
+        &state,
+        "DINE_IN".to_string(),
+        None,
+        vec![NewOrderItemRequest {
+            menu_item_id: "item-1".to_string(),
+            variant_id: None,
+            quantity: 2,
+            unit_price_paise: 25000,
+            notes: None,
+            modifiers: vec![],
+        }],
+    )
+    .expect("create order");
+    holler_pos_lib::commands::orders::confirm_order_impl(&state, &order.holler_order_id)
+        .expect("confirm order");
+    let first_kots = send_order_to_kitchen_impl(&state, &order.holler_order_id).expect("send");
+    let ticketed_order_item_id = first_kots[0].items[0].order_item_id.clone();
+
+    let after_cancel = cancel_kitchen_items_impl(
+        &state,
+        &order.holler_order_id,
+        std::slice::from_ref(&ticketed_order_item_id),
+    )
+    .expect("cancellation must succeed for an already-ticketed line");
+
+    assert_eq!(after_cancel.len(), 1, "one new cancellation ticket");
+    assert_eq!(after_cancel[0].status, "CANCELLED");
+    assert_ne!(after_cancel[0].id, first_kots[0].id, "a new ticket, not a mutation of the first");
+    assert_eq!(after_cancel[0].items[0].order_item_id, ticketed_order_item_id);
+
+    let all_kots = list_kots_for_order_impl(&state, &order.holler_order_id).expect("list kots");
+    assert_eq!(all_kots.len(), 2, "both the original and the cancellation ticket are visible");
+}
+
+/// Cancelling a line that was never ticketed is rejected, not silently
+/// skipped (`Db::cancel_kitchen_items_with_outbox`'s own doc comment).
+#[test]
+fn cancel_kitchen_items_rejects_an_unticketed_line() {
+    let state = seeded_kitchen_state();
+    let order = create_order_impl(
+        &state,
+        "DINE_IN".to_string(),
+        None,
+        vec![NewOrderItemRequest {
+            menu_item_id: "item-1".to_string(),
+            variant_id: None,
+            quantity: 1,
+            unit_price_paise: 25000,
+            notes: None,
+            modifiers: vec![],
+        }],
+    )
+    .expect("create order");
+    holler_pos_lib::commands::orders::confirm_order_impl(&state, &order.holler_order_id)
+        .expect("confirm order");
+    let item_id = order.items[0].id.clone();
+
+    // Never sent to kitchen, so nothing has ticketed this line yet.
+    let err = cancel_kitchen_items_impl(&state, &order.holler_order_id, &[item_id])
+        .expect_err("an unticketed line must not be cancellable");
+    assert_eq!(err.code, "NOT_FOUND");
+}
+
+/// The modifier catalogue read (T12 task 3): closes the gap where the cart's
+/// modifier form mints a client-side `modifier_id` matching no catalogue
+/// row.
+#[test]
+fn list_menu_item_modifiers_returns_the_seeded_catalogue() {
+    let db = Db::open_in_memory_for_tests().expect("open in-memory db");
+    seed(&db);
+    repo::upsert_menu_item_modifier(
+        db.connection(),
+        &model::MenuItemModifier {
+            id: "mod-1".to_string(),
+            menu_item_id: "item-1".to_string(),
+            group_name: "Spice Level".to_string(),
+            option_name: "Extra Spicy".to_string(),
+            price_delta_paise: 0,
+            min_selection: 0,
+            max_selection: 1,
+            config_version: 1,
+        },
+    )
+    .expect("seed modifier");
+    let state = AppState::new(db, OUTLET_ID.to_string(), DEVICE_ID.to_string());
+
+    let modifiers = list_menu_item_modifiers_impl(&state).expect("list modifiers");
+
+    assert_eq!(modifiers.len(), 1);
+    assert_eq!(modifiers[0].id, "mod-1");
+    assert_eq!(modifiers[0].menu_item_id, "item-1");
+    assert_eq!(modifiers[0].group_name, "Spice Level");
+    assert_eq!(modifiers[0].option_name, "Extra Spicy");
+}
+
+/// THE UUID-ON-KOT DEFECT (docs/backlog-m2.md, ADR-016 §6): a printed
+/// kitchen ticket must carry the order's short `#A1`-shaped display number,
+/// never its raw UUID. This does not stop at the unit level — it routes a
+/// real order through `send_order_to_kitchen_impl`'s real best-effort print
+/// attempt, through `holler_edge_printer::adapter::sweep_due_jobs`, through
+/// the real `PathTransport` (ESCPOS_USB), to an ordinary file standing in
+/// for the device path — then reads back the actual bytes a thermal printer
+/// would have received and asserts on their content, per ADR-016 §6's
+/// binding condition that a passing unit test alone is not sufficient
+/// evidence.
+#[test]
+fn a_printed_kot_ticket_carries_the_short_display_number_not_the_order_uuid() {
+    let db = Db::open_in_memory_for_tests().expect("open in-memory db");
+    seed(&db);
+    let conn = db.connection();
+    repo::upsert_station(
+        conn,
+        &model::Station {
+            id: "station-1".to_string(),
+            outlet_id: OUTLET_ID.to_string(),
+            code: "MAIN_KITCHEN".to_string(),
+            name: "Main Kitchen".to_string(),
+            sort_order: 1,
+            is_active: true,
+            config_version: 1,
+        },
+    )
+    .expect("seed station");
+    repo::replace_menu_item_stations(conn, "item-1", &["station-1".to_string()], 1)
+        .expect("seed menu_item_station");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let device_path = dir.path().join("fake_com_port");
+    std::fs::write(&device_path, b"").expect("create fake device path");
+
+    repo::upsert_printer(
+        conn,
+        &model::Printer {
+            id: "printer-1".to_string(),
+            outlet_id: OUTLET_ID.to_string(),
+            name: "Kitchen Printer".to_string(),
+            connection_kind: "ESCPOS_USB".to_string(),
+            address: device_path.to_string_lossy().into_owned(),
+            paper_width_mm: 80,
+            is_active: true,
+            config_version: 1,
+        },
+    )
+    .expect("seed printer");
+    repo::replace_station_printers(conn, "station-1", &["printer-1".to_string()], 1)
+        .expect("seed station_printer");
+
+    let state = AppState::new(db, OUTLET_ID.to_string(), DEVICE_ID.to_string());
+    let order = create_order_impl(
+        &state,
+        "DINE_IN".to_string(),
+        None,
+        vec![NewOrderItemRequest {
+            menu_item_id: "item-1".to_string(),
+            variant_id: None,
+            quantity: 1,
+            unit_price_paise: 25000,
+            notes: None,
+            modifiers: vec![],
+        }],
+    )
+    .expect("create order");
+    holler_pos_lib::commands::orders::confirm_order_impl(&state, &order.holler_order_id)
+        .expect("confirm order");
+
+    let fetched = get_order_impl(&state, &order.holler_order_id)
+        .expect("get_order")
+        .expect("order exists");
+    let display_number = fetched
+        .display_number
+        .clone()
+        .expect("this crate always mints a display_number for an order it creates");
+    assert!(
+        display_number.starts_with('#'),
+        "display_number must be the short #-prefixed shape, got {display_number}"
+    );
+
+    // The real print path: send-to-kitchen queues the job and makes an
+    // immediate best-effort attempt through the real PathTransport, exactly
+    // as `send_order_to_kitchen_impl`'s own doc comment describes.
+    send_order_to_kitchen_impl(&state, &order.holler_order_id).expect("send to kitchen");
+
+    // No failed jobs: the real file-backed transport must have succeeded, so
+    // this is genuinely observing what got written, not a failure path.
+    let failed = list_failed_print_jobs_impl(&state).expect("list failed print jobs");
+    assert!(
+        failed.is_empty(),
+        "the print attempt through the real PathTransport must have succeeded: {failed:?}"
+    );
+
+    let printed = std::fs::read(&device_path).expect("read back the printed bytes");
+    let printed_text = String::from_utf8_lossy(&printed);
+
+    assert!(
+        !printed_text.contains(&order.holler_order_id),
+        "a printed ticket must never carry the raw order UUID; got: {printed_text}"
+    );
+    let bare_number = display_number.trim_start_matches('#');
+    assert!(
+        printed_text.contains(bare_number),
+        "printed ticket must carry the short display number {bare_number}; got: {printed_text}"
+    );
 }

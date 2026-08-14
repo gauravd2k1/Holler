@@ -70,10 +70,15 @@ fn to_kot_dtos(kots: Vec<holler_edge_database::model::Kot>) -> AppResult<Vec<Kot
 }
 
 /// Resolves the human-facing context a print template needs for one order:
-/// its display number (this app has no separate short order number yet —
-/// M1/M2 identify an order by its own id, so that id is what prints) and its
-/// table label, if any. Read-only, best-effort: a table lookup miss leaves
-/// `table_label` `None` rather than failing the whole print attempt.
+/// its short display number (`#A184` shape, contracts 0.4.0 ADR-016 §6,
+/// minted and persisted by `repo::insert_order` for every order this crate
+/// creates) and its table label, if any. Falls back to the raw order id only
+/// for legacy rows written before minting existed (`display_number` is
+/// `Option` for exactly that reason, per `model::Order`'s doc comment) — that
+/// fallback is explicit here, not incidental, because a cook cannot read a
+/// UUID aloud across a hot kitchen. Read-only, best-effort: a table lookup
+/// miss leaves `table_label` `None` rather than failing the whole print
+/// attempt.
 fn build_order_ctx(
     db: &Db,
     order_id: &str,
@@ -100,8 +105,19 @@ fn build_order_ctx(
         None => None,
     };
 
+    // `order.display_number` is minted as the full `#A184`-shaped string
+    // (`repo::format_order_display_number`), but
+    // `holler_edge_printer::adapter::sequence_marker` prepends its own `#`
+    // to build the `#132`/`#132-A` KOT marker (docs/spec/kitchen.md) — so
+    // the leading `#` is stripped here to avoid a doubled `##A184` on the
+    // printed ticket. The bare id fallback carries no `#` to strip.
+    let order_display_number = order
+        .display_number
+        .map(|n| n.trim_start_matches('#').to_string())
+        .unwrap_or(order.id);
+
     Ok(holler_edge_printer::adapter::KotOrderContext {
-        order_display_number: order.id,
+        order_display_number,
         table_label,
     })
 }
@@ -148,6 +164,59 @@ pub fn send_order_to_kitchen_impl(state: &AppState, order_id: &str) -> AppResult
     // active (never terminal), so this always reaches KDS screens as
     // `kot_upserted` — the case a cashier pressing send-to-kitchen exists to
     // produce.
+    for kot in &kots {
+        notify_kot(state.hub.as_deref(), &state.outlet_id, kot);
+    }
+
+    to_kot_dtos(kots)
+}
+
+/// Announces the cancellation of already-ticketed order lines to the
+/// kitchen (`#132-C`, docs/spec/kitchen.md) via
+/// `Db::cancel_kitchen_items_with_outbox` — the remedy `DbError::
+/// OrderItemAlreadyTicketed`'s message names ("cancel the ticketed line via
+/// #132-C, then add a replacement") when T3's quantity guard rejects a
+/// change on an already-ticketed line. Before this command existed that
+/// remedy was unreachable from the UI; this surfaces it as a real action.
+///
+/// Prints one best-effort ticket per newly-created (CANCELLED-status)
+/// station ticket, exactly like `send_order_to_kitchen_impl` — a
+/// print-queue/print-attempt failure never hides the cancellation itself
+/// from the kitchen or from KDS screens.
+pub fn cancel_kitchen_items_impl(
+    state: &AppState,
+    order_id: &str,
+    order_item_ids: &[String],
+) -> AppResult<Vec<Kot>> {
+    let meta = holler_edge_database::model::SendToKitchenMeta {
+        device_id: state.device_id.clone(),
+        occurred_at: now_iso(),
+    };
+
+    let mut db = lock_db(state)?;
+    let kots = db.cancel_kitchen_items_with_outbox(order_id, order_item_ids, &meta)?;
+
+    let now = now_iso();
+    for kot in &kots {
+        if let Err(e) =
+            holler_edge_printer::adapter::queue_kot_for_print(db.connection(), &state.outlet_id, &kot.id, &now, new_id)
+        {
+            eprintln!("failed to queue cancellation KOT {} for print: {e}", kot.id);
+        }
+    }
+
+    if let Err(e) = holler_edge_printer::adapter::sweep_due_jobs(db.connection(), Utc::now(), |oid| {
+        build_order_ctx(&db, oid)
+    }) {
+        eprintln!("print sweep after kitchen-item cancellation failed: {e}");
+    }
+    drop(db);
+
+    // These new tickets are created directly as CANCELLED (a terminal
+    // status), so `notify_kot` announces each as `kot_removed`, matching
+    // `Db::cancel_kitchen_items_with_outbox`'s doc comment: the cancellation
+    // itself is a brand-new ticket, but it must never appear active on a
+    // KDS screen.
     for kot in &kots {
         notify_kot(state.hub.as_deref(), &state.outlet_id, kot);
     }
@@ -233,6 +302,15 @@ pub fn retry_failed_print_jobs_impl(state: &AppState) -> AppResult<Vec<FailedPri
 #[tauri::command]
 pub fn send_order_to_kitchen(state: State<'_, AppState>, order_id: String) -> AppResult<Vec<Kot>> {
     send_order_to_kitchen_impl(&state, &order_id)
+}
+
+#[tauri::command]
+pub fn cancel_kitchen_items(
+    state: State<'_, AppState>,
+    order_id: String,
+    order_item_ids: Vec<String>,
+) -> AppResult<Vec<Kot>> {
+    cancel_kitchen_items_impl(&state, &order_id, &order_item_ids)
 }
 
 #[tauri::command]

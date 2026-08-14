@@ -1430,6 +1430,7 @@ dependencies = [
  "aes-gcm",
  "argon2",
  "base64 0.22.1",
+ "chrono",
  "rand 0.8.7",
  "rusqlite",
  "serde_json",
