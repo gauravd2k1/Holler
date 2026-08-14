@@ -7,6 +7,38 @@ on:
 jobs:
   backend:
     runs-on: ubuntu-latest
+
+    # A live Postgres is REQUIRED for this job, not optional. Before T11 the
+    # backend suite ran here with no database and no HOLLER_TEST_DATABASE_URL,
+    # so ~29 Postgres-backed integration tests skipped silently while the job
+    # reported green — including TestBuildRouter_SyncConfigEndToEnd, the test
+    # M2 acceptance item 4 names by hand. That is the M2 "a skip is not a pass"
+    # failure institutionalised in the pipeline, and it is why
+    # backend/internal/platform/testdb now FAILS on an unset variable instead
+    # of skipping.
+    #
+    # Credentials mirror docker-compose.yml so the CI and local connection
+    # strings are the same. Do NOT "fix" a red backend job by setting
+    # HOLLER_SKIP_PG_TESTS here — that restores exactly the silent green this
+    # service exists to remove.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: holler
+          POSTGRES_PASSWORD: holler_dev
+          POSTGRES_DB: holler
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U holler"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      HOLLER_TEST_DATABASE_URL: postgres://holler:holler_dev@localhost:5432/holler?sslmode=disable
+
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -14,8 +46,20 @@ jobs:
           go-version: "1.22"
       - name: vet
         run: cd backend && go vet ./...
+      # Schema comes from packages/contracts/postgres/*.sql — each Postgres
+      # test calls postgres.Migrate itself, so no separate migrate step is
+      # needed here. A new contract migration needs no CI wiring.
       - name: test
-        run: cd backend && go test ./...
+        run: cd backend && go test -count=1 ./...
+      # Guard the guard: the suite must not be able to report success without
+      # actually running the Postgres-backed tests. If this ever prints a
+      # nonzero count, the job above is green on skips and is lying.
+      - name: assert no silent skips
+        run: |
+          cd backend
+          count=$(go test -count=1 -v ./... 2>&1 | grep -c -- "--- SKIP" || true)
+          echo "skipped tests: $count"
+          test "$count" -eq 0
 
   # Contract-drift check (Milestone 0.5, ADR-008): fixtures under
   # packages/contracts/fixtures/ must round-trip identically through both
