@@ -12,6 +12,7 @@ mod error;
 mod invoice;
 mod migrations;
 pub mod model;
+mod payment;
 mod pragma;
 pub mod repo;
 pub mod tax;
@@ -24,11 +25,12 @@ use rusqlite::Connection;
 
 use crate::crypto::EncryptionKey;
 use crate::model::{
-    Invoice, InvoiceLine, InvoiceLineShare, InvoiceOutboxMeta, IssueInvoiceHeader,
-    IssueInvoiceLinesRequest, Kot, KotStatusHistoryEntry, KotTicketItem, KotTransitionMeta,
-    NewOrder, NewOrderItem, NewOutboxEntry, NewTableSession, Order, OrderConfirmedMeta,
+    CashMovement, CashShift, CashShiftOutboxMeta, CloseCashShiftRequest, Invoice, InvoiceLine,
+    InvoiceLineShare, InvoiceOutboxMeta, IssueInvoiceHeader, IssueInvoiceLinesRequest, Kot,
+    KotStatusHistoryEntry, KotTicketItem, KotTransitionMeta, NewCashShift, NewOrder,
+    NewOrderItem, NewOutboxEntry, NewPayment, NewTableSession, Order, OrderConfirmedMeta,
     OrderItemAddedMeta, OrderItemModifier, OrderItemQuantitySetMeta, OrderItemRemovedMeta,
-    SendToKitchenMeta, Station, TableSession,
+    PaidInOutRequest, Payment, PaymentOutboxMeta, SendToKitchenMeta, Station, TableSession,
 };
 use std::collections::BTreeMap;
 
@@ -1174,6 +1176,100 @@ impl Db {
     /// conservation property is checked over.
     pub fn list_invoices_for_split_group(&self, split_group_id: &str) -> DbResult<Vec<Invoice>> {
         repo::list_invoices_for_split_group(self.connection(), split_group_id)
+    }
+
+    // ------------------------------------------ Milestone 3: payments (T7c) --
+
+    /// Records ONE tender — forward or reversal, decided by
+    /// `new_payment.reverses_payment_id` — plus its `local_outbox` row and
+    /// (for a CASH tender tied to an open shift) its `cash_movement` row,
+    /// all in one transaction. The ONLY writer of the `payment` table in
+    /// this crate: nothing here or in `crate::repo` ever issues an UPDATE
+    /// or DELETE against it (docs/spec/payments.md §Conflict policy). A
+    /// forward tender needs `amount_paise > 0`; a reversal needs a real,
+    /// not-already-fully-reversed original and `amount_paise <= 0` whose
+    /// magnitude does not exceed what remains to be reversed — violations
+    /// reject with a specific [`DbError`] before anything is written.
+    ///
+    /// `cash_movement_id` is caller-supplied (UUIDv7); it is only consumed
+    /// when this tender is CASH and carries a `cash_shift_id`, matching the
+    /// "id always minted, not always used" shape `issue_invoice_with_outbox`
+    /// already has for its line ids.
+    pub fn record_payment_with_outbox(
+        &mut self,
+        new_payment: NewPayment,
+        cash_movement_id: &str,
+        outbox_meta: &PaymentOutboxMeta,
+    ) -> DbResult<(Payment, Option<CashMovement>)> {
+        let tx = self.connection_mut().transaction()?;
+        let result = payment::tender::record_payment(&tx, new_payment, cash_movement_id, outbox_meta)?;
+        tx.commit()?;
+        Ok(result)
+    }
+
+    pub fn get_payment(&self, id: &str) -> DbResult<Option<Payment>> {
+        repo::get_payment(self.connection(), id)
+    }
+
+    pub fn list_payments_for_order(&self, order_id: &str) -> DbResult<Vec<Payment>> {
+        repo::list_payments_for_order(self.connection(), order_id)
+    }
+
+    // ----------------------------------------- Milestone 3: cash shift (T7c) --
+
+    /// Opens a new cash shift (§39) plus its `OPENING_FLOAT` `cash_movement`
+    /// and `CashShiftOpened` `local_outbox` row, all in one transaction.
+    /// Rejects with [`DbError::CashShiftAlreadyOpen`] if the cashier
+    /// already has one open on this device
+    /// (`idx_cash_shift_open_device_cashier`).
+    pub fn open_cash_shift_with_outbox(
+        &mut self,
+        new_shift: NewCashShift,
+        opening_movement_id: &str,
+        outbox_meta: &CashShiftOutboxMeta,
+    ) -> DbResult<(CashShift, Vec<CashMovement>)> {
+        let tx = self.connection_mut().transaction()?;
+        let result = payment::cash_shift::open_cash_shift(&tx, new_shift, opening_movement_id, outbox_meta)?;
+        tx.commit()?;
+        Ok(result)
+    }
+
+    /// Closes an open cash shift (§39). `expected_cash_paise` is always
+    /// DERIVED from the shift's own posted `cash_movement` rows, never
+    /// accepted from a caller. If the derived variance is non-zero and
+    /// `req.variance_reason` is `None` or whitespace-only, the close is
+    /// REJECTED outright — [`DbError::CashVarianceReasonRequired`], no
+    /// write at all — per §39. A zero variance needs no reason.
+    pub fn close_cash_shift_with_outbox(
+        &mut self,
+        req: CloseCashShiftRequest,
+        outbox_meta: &CashShiftOutboxMeta,
+    ) -> DbResult<(CashShift, Vec<CashMovement>)> {
+        let tx = self.connection_mut().transaction()?;
+        let result = payment::cash_shift::close_cash_shift(&tx, req, outbox_meta)?;
+        tx.commit()?;
+        Ok(result)
+    }
+
+    /// Posts a `PAID_IN`/`PAID_OUT` cash movement against an open shift
+    /// (§39: "Paid In, Paid Out"). Rejects a blank reason
+    /// ([`DbError::CashMovementReasonRequired`]) before writing — mirrors
+    /// the `cash_movement` table's own `CHECK`. Not its own outbox event:
+    /// `cash_movement` is a child row that only travels inside the
+    /// `CashShiftOpened`/`CashShiftClosed` payload's `movements` array.
+    pub fn record_paid_in_out_with_outbox(&mut self, req: PaidInOutRequest) -> DbResult<CashMovement> {
+        let tx = self.connection_mut().transaction()?;
+        let movement = payment::cash_shift::record_paid_in_out(&tx, req)?;
+        tx.commit()?;
+        Ok(movement)
+    }
+
+    pub fn get_cash_shift(&self, id: &str) -> DbResult<Option<CashShift>> {
+        repo::get_cash_shift(self.connection(), id)
+    }
+
+    pub fn list_cash_movements_for_shift(&self, cash_shift_id: &str) -> DbResult<Vec<CashMovement>> {
+        repo::list_cash_movements_for_shift(self.connection(), cash_shift_id)
     }
 }
 

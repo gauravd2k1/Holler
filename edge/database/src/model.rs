@@ -821,6 +821,206 @@ pub struct NewInvoiceLine {
     pub total_paise: i64,
 }
 
+// --------------------------------------------- Milestone 3: payments (T7c) --
+// `payment` and `cash_shift` are EDGE-AUTHORITATIVE (ADR-016 §1): the outlet
+// takes money with the uplink down, the cloud only replays. Field sets
+// mirror `packages/contracts/sqlite/0006_m3_billing.sql` exactly.
+//
+// APPEND-ONLY (docs/spec/payments.md §Conflict policy; ADR-016 payment.ts
+// header comment): nothing in this crate ever issues an `UPDATE` or `DELETE`
+// against the `payment` table. A void or refund is a NEW row carrying
+// `reverses_payment_id`, enforced by [`crate::payment::tender`] before any
+// write, mirroring the table's own
+// `CHECK (reverses_payment_id IS NULL OR amount_paise <= 0)`.
+
+/// One tender (§34) — insert shape. Kept separate from [`Payment`] (the
+/// `NewInvoice`/`Invoice` precedent) so a caller cannot supply `version`/
+/// `sync_status`, which this crate always sets itself (`1`/`'PENDING'`) at
+/// insert time.
+#[derive(Debug, Clone)]
+pub struct NewPayment {
+    pub id: String,
+    pub outlet_id: String,
+    pub order_id: String,
+    /// `NULL` for a non-cash tender taken outside an open shift. A CASH
+    /// tender that *is* tied to a shift additionally produces a
+    /// `cash_movement` row — see [`crate::payment::tender::record_payment`].
+    pub cash_shift_id: Option<String>,
+    pub method: String,
+    pub status: String,
+    /// Positive on a forward tender; non-positive (`<= 0`) on a reversal —
+    /// enforced before this ever reaches SQL, not left to the `CHECK` alone
+    /// (§64: the caller gets a typed, actionable error, not a generic
+    /// constraint failure).
+    pub amount_paise: i64,
+    pub tendered_paise: Option<i64>,
+    pub change_paise: Option<i64>,
+    pub reference: Option<String>,
+    pub external_id: Option<String>,
+    /// `Some(original_payment_id)` marks this row as a reversal. `None` for
+    /// every forward tender.
+    pub reverses_payment_id: Option<String>,
+    pub captured_at: Option<String>,
+    pub created_by_user_id: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// One tender, as stored. Field-for-field `payment`
+/// (`0006_m3_billing.sql`) plus nothing else.
+#[derive(Debug, Clone)]
+pub struct Payment {
+    pub id: String,
+    pub outlet_id: String,
+    pub order_id: String,
+    pub cash_shift_id: Option<String>,
+    pub method: String,
+    pub status: String,
+    pub amount_paise: i64,
+    pub tendered_paise: Option<i64>,
+    pub change_paise: Option<i64>,
+    pub reference: Option<String>,
+    pub external_id: Option<String>,
+    pub reverses_payment_id: Option<String>,
+    pub captured_at: Option<String>,
+    pub created_by_user_id: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub version: i64,
+    pub sync_status: String,
+}
+
+/// Caller-supplied fields for the `local_outbox` row a payment write emits
+/// (`PaymentReceived` for a forward tender, `PaymentRefunded` for a
+/// reversal — `crate::payment::tender` decides which). Mirrors
+/// [`InvoiceOutboxMeta`]: the caller supplies only what this crate cannot
+/// derive.
+#[derive(Debug, Clone)]
+pub struct PaymentOutboxMeta {
+    pub outbox_id: String,
+    pub occurred_at: String,
+}
+
+/// Cashier-specific register (§39) — insert shape for opening a shift.
+/// `status`/`closed_at`/`expected_cash_paise`/`actual_cash_paise`/
+/// `variance_paise`/`variance_reason` are never caller-supplied at open
+/// time: the row starts `'OPEN'` with every close-time field `NULL`, and
+/// only [`crate::payment::cash_shift::close_cash_shift`] ever fills them in
+/// (a single in-place transition, the same one-writer shape
+/// `kot.status`/`transition_kot_status_with_outbox` already uses — a shift,
+/// unlike a payment, is a workflow row with exactly one legal transition,
+/// not a financial ledger entry, so it is not append-only).
+#[derive(Debug, Clone)]
+pub struct NewCashShift {
+    pub id: String,
+    pub outlet_id: String,
+    pub device_id: String,
+    pub cashier_user_id: String,
+    pub opened_at: String,
+    pub opening_cash_paise: i64,
+    pub business_date: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// A cash shift, as stored. Field-for-field `cash_shift` (`0006_m3_billing.sql`)
+/// plus nothing else.
+#[derive(Debug, Clone)]
+pub struct CashShift {
+    pub id: String,
+    pub outlet_id: String,
+    pub device_id: String,
+    pub cashier_user_id: String,
+    pub status: String,
+    pub opened_at: String,
+    pub opening_cash_paise: i64,
+    pub closed_at: Option<String>,
+    pub expected_cash_paise: Option<i64>,
+    pub actual_cash_paise: Option<i64>,
+    pub variance_paise: Option<i64>,
+    pub variance_reason: Option<String>,
+    pub business_date: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub version: i64,
+    pub sync_status: String,
+}
+
+/// Caller-supplied fields to close an open shift (§39). `actual_cash_paise`
+/// is the human count; `expected_cash_paise` is always DERIVED by this
+/// crate from the shift's own `cash_movement` rows, never accepted from a
+/// caller — the same "never trust a caller-supplied total" discipline
+/// `add_order_item_with_outbox` applies to `line_total_paise`.
+#[derive(Debug, Clone)]
+pub struct CloseCashShiftRequest {
+    pub cash_shift_id: String,
+    pub actual_cash_paise: i64,
+    pub closed_at: String,
+    pub updated_at: String,
+    /// Mandatory the instant the derived variance is non-zero (§39) —
+    /// [`crate::payment::cash_shift::close_cash_shift`] rejects a non-zero
+    /// variance whose reason is `None` or whitespace-only BEFORE writing
+    /// anything. A zero variance needs no reason, whatever this carries.
+    pub variance_reason: Option<String>,
+}
+
+/// Caller-supplied fields for the `local_outbox` row a shift open/close
+/// emits (`CashShiftOpened`/`CashShiftClosed`).
+#[derive(Debug, Clone)]
+pub struct CashShiftOutboxMeta {
+    pub outbox_id: String,
+    pub occurred_at: String,
+}
+
+/// Every movement of physical cash through the drawer (§39). Child row
+/// inside the shift's payload, append-only: a correction is another
+/// movement, never a rewrite of one already posted. Field-for-field
+/// `cash_movement` (`0006_m3_billing.sql`).
+#[derive(Debug, Clone)]
+pub struct CashMovement {
+    pub id: String,
+    pub cash_shift_id: String,
+    pub kind: String,
+    /// Signed: `PAID_OUT` and `CASH_REFUND` are negative, everything else
+    /// non-negative.
+    pub amount_paise: i64,
+    pub reason: Option<String>,
+    pub payment_id: Option<String>,
+    pub created_by_user_id: String,
+    pub created_at: String,
+}
+
+/// Insert shape for [`CashMovement`] — same rationale as [`NewInvoice`]/
+/// [`NewPayment`].
+#[derive(Debug, Clone)]
+pub struct NewCashMovement {
+    pub id: String,
+    pub cash_shift_id: String,
+    pub kind: String,
+    pub amount_paise: i64,
+    pub reason: Option<String>,
+    pub payment_id: Option<String>,
+    pub created_by_user_id: String,
+    pub created_at: String,
+}
+
+/// A caller-initiated cash drawer movement not backed by a `payment` row —
+/// `PAID_IN`/`PAID_OUT` (§39: "Paid In, Paid Out"). `OPENING_FLOAT`,
+/// `CASH_SALE` and `CASH_REFUND` are only ever produced internally by this
+/// crate (opening a shift / recording a CASH payment / reversing one), never
+/// through this entry point, so a caller cannot mint a movement that looks
+/// like a sale without a payment behind it.
+#[derive(Debug, Clone)]
+pub struct PaidInOutRequest {
+    pub id: String,
+    pub cash_shift_id: String,
+    pub kind: String, // "PAID_IN" | "PAID_OUT"
+    pub amount_paise: i64,
+    pub reason: String,
+    pub created_by_user_id: String,
+    pub created_at: String,
+}
+
 // ------------------------------------------- device_credential_cache (0.4.3) --
 // CONFIG, cloud->edge (ADR-011 pattern extended to devices, ADR-017
 // amendment). Mirrors `packages/contracts/sqlite/0008_edge_device_credential_

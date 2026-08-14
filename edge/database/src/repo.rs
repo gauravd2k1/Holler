@@ -3730,6 +3730,503 @@ pub(crate) fn insert_invoice_created_outbox(
     )
 }
 
+// -------------------------------------------------- Milestone 3: payments (T7c) --
+// `payment` is APPEND-ONLY (docs/spec/payments.md §Conflict policy). This
+// module never issues an UPDATE or DELETE against it — `crate::payment`
+// enforces the amount-sign/reversal rules before calling `insert_payment`,
+// the only writer.
+
+pub(crate) fn insert_payment(tx: &Transaction, p: &NewPayment) -> DbResult<()> {
+    tx.execute(
+        "INSERT INTO payment
+            (id, outlet_id, order_id, cash_shift_id, method, status, amount_paise,
+             tendered_paise, change_paise, reference, external_id, reverses_payment_id,
+             captured_at, created_by_user_id, created_at, updated_at, version, sync_status)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 1, 'PENDING')",
+        params![
+            p.id,
+            p.outlet_id,
+            p.order_id,
+            p.cash_shift_id,
+            p.method,
+            p.status,
+            p.amount_paise,
+            p.tendered_paise,
+            p.change_paise,
+            p.reference,
+            p.external_id,
+            p.reverses_payment_id,
+            p.captured_at,
+            p.created_by_user_id,
+            p.created_at,
+            p.updated_at,
+        ],
+    )?;
+    Ok(())
+}
+
+const PAYMENT_COLUMNS: &str = "id, outlet_id, order_id, cash_shift_id, method, status, \
+    amount_paise, tendered_paise, change_paise, reference, external_id, reverses_payment_id, \
+    captured_at, created_by_user_id, created_at, updated_at, version, sync_status";
+
+fn row_to_payment(row: &rusqlite::Row) -> rusqlite::Result<Payment> {
+    Ok(Payment {
+        id: row.get(0)?,
+        outlet_id: row.get(1)?,
+        order_id: row.get(2)?,
+        cash_shift_id: row.get(3)?,
+        method: row.get(4)?,
+        status: row.get(5)?,
+        amount_paise: row.get(6)?,
+        tendered_paise: row.get(7)?,
+        change_paise: row.get(8)?,
+        reference: row.get(9)?,
+        external_id: row.get(10)?,
+        reverses_payment_id: row.get(11)?,
+        captured_at: row.get(12)?,
+        created_by_user_id: row.get(13)?,
+        created_at: row.get(14)?,
+        updated_at: row.get(15)?,
+        version: row.get(16)?,
+        sync_status: row.get(17)?,
+    })
+}
+
+pub fn get_payment(conn: &Connection, id: &str) -> DbResult<Option<Payment>> {
+    conn.query_row(
+        &format!("SELECT {PAYMENT_COLUMNS} FROM payment WHERE id = ?1"),
+        params![id],
+        row_to_payment,
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+pub(crate) fn get_payment_in_tx(tx: &Transaction, id: &str) -> DbResult<Option<Payment>> {
+    tx.query_row(
+        &format!("SELECT {PAYMENT_COLUMNS} FROM payment WHERE id = ?1"),
+        params![id],
+        row_to_payment,
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+pub fn list_payments_for_order(conn: &Connection, order_id: &str) -> DbResult<Vec<Payment>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {PAYMENT_COLUMNS} FROM payment WHERE order_id = ?1 ORDER BY created_at, id"
+    ))?;
+    let rows = stmt
+        .query_map(params![order_id], row_to_payment)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Every reversal row (`reverses_payment_id = payment_id`) posted so far,
+/// oldest first — what [`crate::payment::tender::validate_reversal`] sums
+/// against the original to derive how much of a payment is left to reverse.
+pub(crate) fn list_reversals_for_payment_in_tx(
+    tx: &Transaction,
+    payment_id: &str,
+) -> DbResult<Vec<Payment>> {
+    let mut stmt = tx.prepare(&format!(
+        "SELECT {PAYMENT_COLUMNS} FROM payment WHERE reverses_payment_id = ?1 ORDER BY created_at, id"
+    ))?;
+    let rows = stmt
+        .query_map(params![payment_id], row_to_payment)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+const EVENT_TYPE_PAYMENT_RECEIVED: &str = "PaymentReceived";
+const EVENT_TYPE_PAYMENT_REFUNDED: &str = "PaymentRefunded";
+
+/// Builds the `PaymentSchema`-shaped JSON embedded in both payment events —
+/// `packages/contracts/src/types/payment.ts`. `allocations` is always `[]`:
+/// this crate does not populate `payment_allocation` (out of T7c's scope;
+/// nothing here claims a payment is allocated to a specific invoice).
+fn payment_json(p: &Payment) -> serde_json::Value {
+    serde_json::json!({
+        "id": p.id,
+        "outlet_id": p.outlet_id,
+        "order_id": p.order_id,
+        "cash_shift_id": p.cash_shift_id,
+        "method": p.method,
+        "status": p.status,
+        "amount_paise": p.amount_paise,
+        "tendered_paise": p.tendered_paise,
+        "change_paise": p.change_paise,
+        "reference": p.reference,
+        "external_id": p.external_id,
+        "reverses_payment_id": p.reverses_payment_id,
+        "captured_at": p.captured_at,
+        "allocations": [],
+        "created_by_user_id": p.created_by_user_id,
+        "created_at": p.created_at,
+        "updated_at": p.updated_at,
+        "version": p.version,
+        "schema_version": 1,
+    })
+}
+
+/// Writes the `local_outbox` row for a forward tender (`PaymentReceived`,
+/// ADR-016 §1: `payment` is EDGE_TO_CLOUD).
+pub(crate) fn insert_payment_received_outbox(
+    tx: &Transaction,
+    p: &Payment,
+    meta: &PaymentOutboxMeta,
+) -> DbResult<()> {
+    let payload = serde_json::json!({
+        "event_id": meta.outbox_id,
+        "event_type": EVENT_TYPE_PAYMENT_RECEIVED,
+        "occurred_at": meta.occurred_at,
+        "outlet_id": p.outlet_id,
+        "schema_version": 1,
+        "data": { "payment": payment_json(p) },
+    })
+    .to_string();
+    insert_outbox_entry(
+        tx,
+        &NewOutboxEntry {
+            id: meta.outbox_id.clone(),
+            aggregate_type: "payment".to_string(),
+            aggregate_id: p.id.clone(),
+            event_type: EVENT_TYPE_PAYMENT_RECEIVED.to_string(),
+            payload_json: payload,
+            created_at: meta.occurred_at.clone(),
+        },
+    )
+}
+
+/// Writes the `local_outbox` row for a reversal (`PaymentRefunded`),
+/// carrying `reverses_payment_id` alongside the reversal row itself so the
+/// cloud never has to infer it (ADR-016 §1; `PaymentRefundedEventSchema`).
+pub(crate) fn insert_payment_refunded_outbox(
+    tx: &Transaction,
+    p: &Payment,
+    reverses_payment_id: &str,
+    meta: &PaymentOutboxMeta,
+) -> DbResult<()> {
+    let payload = serde_json::json!({
+        "event_id": meta.outbox_id,
+        "event_type": EVENT_TYPE_PAYMENT_REFUNDED,
+        "occurred_at": meta.occurred_at,
+        "outlet_id": p.outlet_id,
+        "schema_version": 1,
+        "data": {
+            "payment": payment_json(p),
+            "reverses_payment_id": reverses_payment_id,
+        },
+    })
+    .to_string();
+    insert_outbox_entry(
+        tx,
+        &NewOutboxEntry {
+            id: meta.outbox_id.clone(),
+            aggregate_type: "payment".to_string(),
+            aggregate_id: p.id.clone(),
+            event_type: EVENT_TYPE_PAYMENT_REFUNDED.to_string(),
+            payload_json: payload,
+            created_at: meta.occurred_at.clone(),
+        },
+    )
+}
+
+// ------------------------------------------------ Milestone 3: cash shift (T7c) --
+// `cash_shift` is a workflow row with exactly one legal in-place transition
+// (OPEN -> CLOSED, ADR-016 §1 / §39) — unlike `payment`, this table IS
+// updated in place, once, by `close_cash_shift_in_tx` below. `cash_movement`
+// rows underneath it are append-only, same discipline as `payment`.
+
+pub(crate) fn count_open_cash_shifts_for_device_cashier(
+    tx: &Transaction,
+    device_id: &str,
+    cashier_user_id: &str,
+) -> DbResult<Option<String>> {
+    tx.query_row(
+        "SELECT id FROM cash_shift WHERE device_id = ?1 AND cashier_user_id = ?2 AND status = 'OPEN'",
+        params![device_id, cashier_user_id],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+pub(crate) fn insert_cash_shift(tx: &Transaction, s: &NewCashShift) -> DbResult<()> {
+    tx.execute(
+        "INSERT INTO cash_shift
+            (id, outlet_id, device_id, cashier_user_id, status, opened_at, opening_cash_paise,
+             business_date, created_at, updated_at, version, sync_status)
+         VALUES (?1, ?2, ?3, ?4, 'OPEN', ?5, ?6, ?7, ?8, ?9, 1, 'PENDING')",
+        params![
+            s.id,
+            s.outlet_id,
+            s.device_id,
+            s.cashier_user_id,
+            s.opened_at,
+            s.opening_cash_paise,
+            s.business_date,
+            s.created_at,
+            s.updated_at,
+        ],
+    )?;
+    Ok(())
+}
+
+const CASH_SHIFT_COLUMNS: &str = "id, outlet_id, device_id, cashier_user_id, status, opened_at, \
+    opening_cash_paise, closed_at, expected_cash_paise, actual_cash_paise, variance_paise, \
+    variance_reason, business_date, created_at, updated_at, version, sync_status";
+
+fn row_to_cash_shift(row: &rusqlite::Row) -> rusqlite::Result<CashShift> {
+    Ok(CashShift {
+        id: row.get(0)?,
+        outlet_id: row.get(1)?,
+        device_id: row.get(2)?,
+        cashier_user_id: row.get(3)?,
+        status: row.get(4)?,
+        opened_at: row.get(5)?,
+        opening_cash_paise: row.get(6)?,
+        closed_at: row.get(7)?,
+        expected_cash_paise: row.get(8)?,
+        actual_cash_paise: row.get(9)?,
+        variance_paise: row.get(10)?,
+        variance_reason: row.get(11)?,
+        business_date: row.get(12)?,
+        created_at: row.get(13)?,
+        updated_at: row.get(14)?,
+        version: row.get(15)?,
+        sync_status: row.get(16)?,
+    })
+}
+
+pub fn get_cash_shift(conn: &Connection, id: &str) -> DbResult<Option<CashShift>> {
+    conn.query_row(
+        &format!("SELECT {CASH_SHIFT_COLUMNS} FROM cash_shift WHERE id = ?1"),
+        params![id],
+        row_to_cash_shift,
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+pub(crate) fn get_cash_shift_in_tx(tx: &Transaction, id: &str) -> DbResult<Option<CashShift>> {
+    tx.query_row(
+        &format!("SELECT {CASH_SHIFT_COLUMNS} FROM cash_shift WHERE id = ?1"),
+        params![id],
+        row_to_cash_shift,
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+/// The ONLY place this crate updates a `cash_shift` row after insert — the
+/// single OPEN -> CLOSED transition (§39). Guarded by `AND status = 'OPEN'`
+/// so a double-close (a race or a caller bug) affects zero rows rather than
+/// silently re-closing; the caller checks `status` up front with
+/// [`get_cash_shift_in_tx`] and treats zero rows here as a logic error
+/// rather than the normal not-open rejection path.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn close_cash_shift_in_tx(
+    tx: &Transaction,
+    id: &str,
+    closed_at: &str,
+    expected_cash_paise: i64,
+    actual_cash_paise: i64,
+    variance_paise: i64,
+    variance_reason: Option<&str>,
+    updated_at: &str,
+) -> DbResult<usize> {
+    let n = tx.execute(
+        "UPDATE cash_shift SET status = 'CLOSED', closed_at = ?1, expected_cash_paise = ?2, \
+         actual_cash_paise = ?3, variance_paise = ?4, variance_reason = ?5, updated_at = ?6, \
+         version = version + 1 \
+         WHERE id = ?7 AND status = 'OPEN'",
+        params![
+            closed_at,
+            expected_cash_paise,
+            actual_cash_paise,
+            variance_paise,
+            variance_reason,
+            updated_at,
+            id,
+        ],
+    )?;
+    Ok(n)
+}
+
+pub(crate) fn insert_cash_movement(tx: &Transaction, m: &NewCashMovement) -> DbResult<()> {
+    tx.execute(
+        "INSERT INTO cash_movement (id, cash_shift_id, kind, amount_paise, reason, payment_id, \
+            created_by_user_id, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            m.id,
+            m.cash_shift_id,
+            m.kind,
+            m.amount_paise,
+            m.reason,
+            m.payment_id,
+            m.created_by_user_id,
+            m.created_at,
+        ],
+    )?;
+    Ok(())
+}
+
+const CASH_MOVEMENT_COLUMNS: &str =
+    "id, cash_shift_id, kind, amount_paise, reason, payment_id, created_by_user_id, created_at";
+
+fn row_to_cash_movement(row: &rusqlite::Row) -> rusqlite::Result<CashMovement> {
+    Ok(CashMovement {
+        id: row.get(0)?,
+        cash_shift_id: row.get(1)?,
+        kind: row.get(2)?,
+        amount_paise: row.get(3)?,
+        reason: row.get(4)?,
+        payment_id: row.get(5)?,
+        created_by_user_id: row.get(6)?,
+        created_at: row.get(7)?,
+    })
+}
+
+pub fn list_cash_movements_for_shift(
+    conn: &Connection,
+    cash_shift_id: &str,
+) -> DbResult<Vec<CashMovement>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {CASH_MOVEMENT_COLUMNS} FROM cash_movement WHERE cash_shift_id = ?1 ORDER BY created_at, id"
+    ))?;
+    let rows = stmt
+        .query_map(params![cash_shift_id], row_to_cash_movement)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+pub(crate) fn list_cash_movements_for_shift_in_tx(
+    tx: &Transaction,
+    cash_shift_id: &str,
+) -> DbResult<Vec<CashMovement>> {
+    let mut stmt = tx.prepare(&format!(
+        "SELECT {CASH_MOVEMENT_COLUMNS} FROM cash_movement WHERE cash_shift_id = ?1 ORDER BY created_at, id"
+    ))?;
+    let rows = stmt
+        .query_map(params![cash_shift_id], row_to_cash_movement)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// The derived "Expected Cash" (§39): the sum of every `cash_movement`
+/// posted against the shift so far. Never accepted from a caller — always
+/// recomputed from the movement rows at close time
+/// ([`crate::payment::cash_shift::close_cash_shift`]).
+pub(crate) fn sum_cash_movements_for_shift_in_tx(
+    tx: &Transaction,
+    cash_shift_id: &str,
+) -> DbResult<i64> {
+    let total: Option<i64> = tx.query_row(
+        "SELECT SUM(amount_paise) FROM cash_movement WHERE cash_shift_id = ?1",
+        params![cash_shift_id],
+        |row| row.get(0),
+    )?;
+    Ok(total.unwrap_or(0))
+}
+
+fn cash_movement_json(m: &CashMovement) -> serde_json::Value {
+    serde_json::json!({
+        "id": m.id,
+        "cash_shift_id": m.cash_shift_id,
+        "kind": m.kind,
+        "amount_paise": m.amount_paise,
+        "reason": m.reason,
+        "payment_id": m.payment_id,
+        "created_by_user_id": m.created_by_user_id,
+        "created_at": m.created_at,
+        "schema_version": 1,
+    })
+}
+
+fn cash_shift_json(s: &CashShift, movements: &[CashMovement]) -> serde_json::Value {
+    serde_json::json!({
+        "id": s.id,
+        "outlet_id": s.outlet_id,
+        "device_id": s.device_id,
+        "cashier_user_id": s.cashier_user_id,
+        "status": s.status,
+        "opened_at": s.opened_at,
+        "opening_cash_paise": s.opening_cash_paise,
+        "closed_at": s.closed_at,
+        "expected_cash_paise": s.expected_cash_paise,
+        "actual_cash_paise": s.actual_cash_paise,
+        "variance_paise": s.variance_paise,
+        "variance_reason": s.variance_reason,
+        "business_date": s.business_date,
+        "movements": movements.iter().map(cash_movement_json).collect::<Vec<_>>(),
+        "created_at": s.created_at,
+        "updated_at": s.updated_at,
+        "version": s.version,
+        "schema_version": 1,
+    })
+}
+
+const EVENT_TYPE_CASH_SHIFT_OPENED: &str = "CashShiftOpened";
+const EVENT_TYPE_CASH_SHIFT_CLOSED: &str = "CashShiftClosed";
+
+pub(crate) fn insert_cash_shift_opened_outbox(
+    tx: &Transaction,
+    s: &CashShift,
+    movements: &[CashMovement],
+    meta: &CashShiftOutboxMeta,
+) -> DbResult<()> {
+    let payload = serde_json::json!({
+        "event_id": meta.outbox_id,
+        "event_type": EVENT_TYPE_CASH_SHIFT_OPENED,
+        "occurred_at": meta.occurred_at,
+        "outlet_id": s.outlet_id,
+        "schema_version": 1,
+        "data": { "shift": cash_shift_json(s, movements) },
+    })
+    .to_string();
+    insert_outbox_entry(
+        tx,
+        &NewOutboxEntry {
+            id: meta.outbox_id.clone(),
+            aggregate_type: "cash_shift".to_string(),
+            aggregate_id: s.id.clone(),
+            event_type: EVENT_TYPE_CASH_SHIFT_OPENED.to_string(),
+            payload_json: payload,
+            created_at: meta.occurred_at.clone(),
+        },
+    )
+}
+
+pub(crate) fn insert_cash_shift_closed_outbox(
+    tx: &Transaction,
+    s: &CashShift,
+    movements: &[CashMovement],
+    meta: &CashShiftOutboxMeta,
+) -> DbResult<()> {
+    let payload = serde_json::json!({
+        "event_id": meta.outbox_id,
+        "event_type": EVENT_TYPE_CASH_SHIFT_CLOSED,
+        "occurred_at": meta.occurred_at,
+        "outlet_id": s.outlet_id,
+        "schema_version": 1,
+        "data": { "shift": cash_shift_json(s, movements) },
+    })
+    .to_string();
+    insert_outbox_entry(
+        tx,
+        &NewOutboxEntry {
+            id: meta.outbox_id.clone(),
+            aggregate_type: "cash_shift".to_string(),
+            aggregate_id: s.id.clone(),
+            event_type: EVENT_TYPE_CASH_SHIFT_CLOSED.to_string(),
+            payload_json: payload,
+            created_at: meta.occurred_at.clone(),
+        },
+    )
+}
+
 #[cfg(test)]
 mod m3_billing_config_tests {
     use super::*;

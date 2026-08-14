@@ -135,6 +135,113 @@ pub enum DbError {
         order_item_id: String,
         order_id: String,
     },
+
+    /// A caller tried to record a forward payment (`reverses_payment_id ==
+    /// None`) with a non-positive `amount_paise`. Payments are append-only
+    /// (docs/spec/payments.md §Conflict policy): a forward tender is always
+    /// money coming in, never zero or negative — a correction is a reversal
+    /// row, not a forward row with a strange sign.
+    #[error(
+        "payment amount {amount_paise} paise is invalid for a forward tender; a forward \
+         payment must be > 0 (a correction or refund is a reversal row, with its own \
+         reverses_payment_id and a non-positive amount)"
+    )]
+    ForwardPaymentAmountNotPositive { amount_paise: i64 },
+
+    /// A caller tried to record a reversal (`reverses_payment_id ==
+    /// Some(_)`) with a positive `amount_paise`. Mirrors the `payment` table's
+    /// own `CHECK (reverses_payment_id IS NULL OR amount_paise <= 0)` —
+    /// rejected here first so the caller gets a specific, actionable message
+    /// (§64) rather than a generic SQLite constraint failure.
+    #[error(
+        "reversal amount {amount_paise} paise is invalid for payment {reverses_payment_id}; \
+         a reversal (void or refund) must carry a non-positive amount"
+    )]
+    ReversalAmountNotNonPositive {
+        reverses_payment_id: String,
+        amount_paise: i64,
+    },
+
+    /// A caller tried to reverse a payment id that has no matching `payment`
+    /// row — never a silent no-op, since a reversal with nothing behind it
+    /// would be unaudited money.
+    #[error("payment {payment_id} not found; cannot record a reversal against it")]
+    ReversedPaymentNotFound { payment_id: String },
+
+    /// A caller tried to reverse a payment whose settled amount (its own
+    /// `amount_paise` plus every reversal already posted against it) is
+    /// already zero. Rejected rather than silently doubling the reversal —
+    /// the requirement this crate enforces before any write, not merely
+    /// documents.
+    #[error(
+        "payment {payment_id} is already fully reversed (settled amount is 0); \
+         it cannot be reversed again"
+    )]
+    PaymentAlreadyFullyReversed { payment_id: String },
+
+    /// A caller tried to reverse more than a payment has left to give — the
+    /// requested reversal's magnitude exceeds the payment's remaining
+    /// settled amount. Rejected rather than letting the settled total go
+    /// negative (over-refunding money that was never taken).
+    #[error(
+        "reversal of {requested_paise} paise against payment {payment_id} exceeds its \
+         remaining settled amount of {remaining_paise} paise"
+    )]
+    ReversalExceedsRemaining {
+        payment_id: String,
+        requested_paise: i64,
+        remaining_paise: i64,
+    },
+
+    /// A caller tried to open a second `cash_shift` for a cashier on a
+    /// device that already has one open — the schema's own
+    /// `idx_cash_shift_open_device_cashier` unique index forbids this, but
+    /// this crate checks first so the caller gets a specific, actionable
+    /// message (§64) instead of a raw constraint failure.
+    #[error(
+        "cashier {cashier_user_id} already has an open cash shift ({existing_shift_id}) on \
+         device {device_id}; close it before opening a new one"
+    )]
+    CashShiftAlreadyOpen {
+        device_id: String,
+        cashier_user_id: String,
+        existing_shift_id: String,
+    },
+
+    /// A caller tried to close (or otherwise act on) a `cash_shift` that is
+    /// not currently `OPEN` — either it does not exist, or it was already
+    /// closed. Never a silent no-op.
+    #[error("cash shift {cash_shift_id} is not open (status is {status})")]
+    CashShiftNotOpen {
+        cash_shift_id: String,
+        status: String,
+    },
+
+    /// §39, binding on this crate: a `cash_shift` close whose derived
+    /// variance is non-zero MUST carry a non-blank reason. Caught here
+    /// before any write — a rejected close, not a close that silently
+    /// records an unexplained shortfall or overage. The message states the
+    /// exact variance so staff know whether intervention is necessary and
+    /// what is required of them (§64).
+    #[error(
+        "cash shift {cash_shift_id} close rejected: counted cash differs from expected by \
+         {variance_paise} paise (expected {expected_paise}, counted {actual_paise}); a \
+         non-blank reason is required to close with a variance"
+    )]
+    CashVarianceReasonRequired {
+        cash_shift_id: String,
+        expected_paise: i64,
+        actual_paise: i64,
+        variance_paise: i64,
+    },
+
+    /// A caller tried to post a `PAID_IN`/`PAID_OUT` cash movement with a
+    /// blank reason. Mirrors the `cash_movement` table's own
+    /// `CHECK (kind NOT IN ('PAID_IN','PAID_OUT') OR reason IS NOT NULL)` —
+    /// rejected here first for the same §64 reason as the payment/variance
+    /// checks above.
+    #[error("a {kind} cash movement requires a non-blank reason")]
+    CashMovementReasonRequired { kind: String },
 }
 
 pub type DbResult<T> = Result<T, DbError>;

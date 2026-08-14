@@ -234,6 +234,11 @@ pub fn create_order(db: &mut Db, order_id: &str, unit_price_paise: i64, quantiti
     item_ids
 }
 
+// Not every test binary that includes this shared module calls every helper
+// (each `tests/*.rs` file is compiled as its own crate) — `#[allow]` here
+// rather than in each binary, matching the pattern already needed for a
+// module shared across independent integration test crates.
+#[allow(dead_code)]
 pub fn header(order_id: &str, series_code: &str, business_date: &str, invoice_date: &str) -> IssueInvoiceHeader {
     IssueInvoiceHeader {
         outlet_id: OUTLET_ID.to_string(),
