@@ -42,6 +42,7 @@ interface InvoiceLineLike {
 }
 
 interface InvoiceLike {
+  id: string;
   taxable_value_paise: number;
   cgst_paise: number;
   sgst_paise: number;
@@ -727,6 +728,7 @@ export async function runScenario(
         reference: null,
         cash_shift_id: null,
         reverses_payment_id: null,
+        invoice_id: invoice.id,
         created_by_user_id: info.cashier_user_id,
       });
       log({ action: "record_payment", request: { method, amount_paise: p.amount_paise }, ok: resp.ok, error: resp.error });

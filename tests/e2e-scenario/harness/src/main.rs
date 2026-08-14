@@ -211,6 +211,13 @@ enum Request {
         reference: Option<String>,
         cash_shift_id: Option<String>,
         reverses_payment_id: Option<String>,
+        // Which invoice a FORWARD tender settles (billing.rs's own doc
+        // comment on `record_payment_impl`) — required for the edge-side
+        // over-settlement guard (`FORWARD_PAYMENT_EXCEEDS_REMAINING_DUE`,
+        // T9 retry) to have anything to check against. Ignored by
+        // `record_payment_impl` for a reversal.
+        #[serde(default)]
+        invoice_id: Option<String>,
         created_by_user_id: String,
     },
     ListPaymentsForOrder {
@@ -798,6 +805,7 @@ fn dispatch(h: &mut Harness, req: Request) -> Value {
             reference,
             cash_shift_id,
             reverses_payment_id,
+            invoice_id,
             created_by_user_id,
         } => {
             let sc = h.scenario.as_ref().expect("scenario active");
@@ -811,6 +819,7 @@ fn dispatch(h: &mut Harness, req: Request) -> Value {
                 reference,
                 cash_shift_id,
                 reverses_payment_id,
+                invoice_id,
                 &created_by_user_id,
             ) {
                 Ok(payment) => json!({ "ok": true, "payment": payment }),
