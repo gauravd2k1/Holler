@@ -9,6 +9,7 @@
 pub mod auth;
 pub mod crypto;
 mod error;
+mod invoice;
 mod migrations;
 pub mod model;
 mod pragma;
@@ -23,10 +24,11 @@ use rusqlite::Connection;
 
 use crate::crypto::EncryptionKey;
 use crate::model::{
-    Kot, KotStatusHistoryEntry, KotTicketItem, KotTransitionMeta, NewOrder, NewOrderItem,
-    NewOutboxEntry, NewTableSession, Order, OrderConfirmedMeta, OrderItemAddedMeta,
-    OrderItemModifier, OrderItemQuantitySetMeta, OrderItemRemovedMeta, SendToKitchenMeta,
-    Station, TableSession,
+    Invoice, InvoiceLine, InvoiceLineShare, InvoiceOutboxMeta, IssueInvoiceHeader,
+    IssueInvoiceLinesRequest, Kot, KotStatusHistoryEntry, KotTicketItem, KotTransitionMeta,
+    NewOrder, NewOrderItem, NewOutboxEntry, NewTableSession, Order, OrderConfirmedMeta,
+    OrderItemAddedMeta, OrderItemModifier, OrderItemQuantitySetMeta, OrderItemRemovedMeta,
+    SendToKitchenMeta, Station, TableSession,
 };
 use std::collections::BTreeMap;
 
@@ -1038,6 +1040,141 @@ impl Db {
     pub fn list_kots_for_outlet(&self, outlet_id: &str, station: Option<&str>) -> DbResult<Vec<Kot>> {
         repo::list_kots_for_outlet(self.connection(), outlet_id, station)
     }
+
+    // ---------------------------------------- Milestone 3: invoicing (T7b) --
+
+    /// Issues ONE invoice over `header.order_id` — the whole order, or (via
+    /// [`Db::issue_split_invoices_with_outbox`]) one part of a split group —
+    /// billing exactly `lines`. Writes the `invoice` row, its `invoice_line`
+    /// rows, and the `InvoiceCreated` `local_outbox` row all in the SAME
+    /// SQLite transaction (ADR-007) — there is no lower-level API that lets
+    /// a caller insert an invoice without its outbox row, matching every
+    /// other operational write in this crate.
+    ///
+    /// Rejects with `DbError::InvalidInput` unless `lines` bills every
+    /// `order_item` on the order for EXACTLY its own quantity — the §66
+    /// conservation property, checked before anything is written (an
+    /// unsplit invoice is the `split_count == 1` case of the same rule a
+    /// split group must satisfy across all its parts). Every money field on
+    /// the stored rows comes from [`crate::tax::compute_invoice`] (T7a);
+    /// this method resolves the tax profile/rate/compliance-version/fiscal-
+    /// profile data lookups the engine needs and performs no arithmetic on
+    /// paise or basis points itself.
+    ///
+    /// `invoice_id` and each line's `id` (on [`InvoiceLineShare`]) are
+    /// caller-supplied (UUIDv7) — the number of lines an issuance produces
+    /// is always known to the caller ahead of time, unlike the KOT-fanout
+    /// exception `SendToKitchenMeta` documents.
+    pub fn issue_invoice_with_outbox(
+        &mut self,
+        header: &IssueInvoiceHeader,
+        invoice_id: String,
+        lines: Vec<InvoiceLineShare>,
+        outbox_meta: &InvoiceOutboxMeta,
+    ) -> DbResult<Invoice> {
+        let tx = self.connection_mut().transaction()?;
+        let order_items = repo::list_order_items_in_tx(&tx, &header.order_id)?;
+
+        let req = IssueInvoiceLinesRequest {
+            invoice_id,
+            lines,
+            split_index: 1,
+            split_count: 1,
+        };
+        invoice::assemble::validate_conservation(&order_items, &[req.lines.as_slice()])?;
+
+        let (new_invoice, line_computations) = invoice::assemble::build_invoice(&tx, header, &req)?;
+        let stored = invoice::assemble::persist_invoice(&tx, new_invoice, &req, &line_computations, outbox_meta)?;
+        tx.commit()?;
+        Ok(stored)
+    }
+
+    /// Issues N invoices over `header.order_id` sharing one
+    /// `split_group_id` (ADR-016 §4) — each part independently numbered,
+    /// independently payable, in one shared transaction: either every part
+    /// is issued or none is. `parts` is `(invoice_id, lines)` per part, in
+    /// `split_index` order (1-based, assigned by this method from `parts`'
+    /// position); `outbox_metas` supplies one [`InvoiceOutboxMeta`] per
+    /// part, same order.
+    ///
+    /// Rejects with `DbError::InvalidInput` unless the UNION of every
+    /// part's `lines` bills every `order_item` on the order for EXACTLY its
+    /// own quantity — checked ONCE, across all parts, before any part is
+    /// assembled or written, so a conservation violation never leaves some
+    /// parts issued and others not. This is the binding property from
+    /// ADR-016 §4: `Σ(split invoice lines) = order lines` exactly — no
+    /// loss, no duplication, no double-tax. Group round-off is bounded by
+    /// 50 paise × `split_count` for free: each part's own `round_off_paise`
+    /// is independently bounded to ±50 paise by the `invoice` table's own
+    /// `CHECK`, since each part runs [`crate::tax::compute_invoice`] over
+    /// only its own line subset.
+    pub fn issue_split_invoices_with_outbox(
+        &mut self,
+        header: &IssueInvoiceHeader,
+        split_group_id: String,
+        parts: Vec<(String, Vec<InvoiceLineShare>)>,
+        outbox_metas: &[InvoiceOutboxMeta],
+    ) -> DbResult<Vec<Invoice>> {
+        if parts.is_empty() {
+            return Err(DbError::InvalidInput(
+                "a split issuance needs at least one part".to_string(),
+            ));
+        }
+        if outbox_metas.len() != parts.len() {
+            return Err(DbError::InvalidInput(
+                "one outbox meta is required per split part".to_string(),
+            ));
+        }
+        let split_count = i64::try_from(parts.len())
+            .map_err(|_| DbError::InvalidInput("too many split parts".to_string()))?;
+
+        let tx = self.connection_mut().transaction()?;
+        let order_items = repo::list_order_items_in_tx(&tx, &header.order_id)?;
+
+        let requests: Vec<IssueInvoiceLinesRequest> = parts
+            .into_iter()
+            .enumerate()
+            .map(|(i, (invoice_id, lines))| IssueInvoiceLinesRequest {
+                invoice_id,
+                lines,
+                split_index: i64::try_from(i + 1).expect("split index fits i64"),
+                split_count,
+            })
+            .collect();
+
+        let part_line_slices: Vec<&[InvoiceLineShare]> =
+            requests.iter().map(|r| r.lines.as_slice()).collect();
+        invoice::assemble::validate_conservation(&order_items, &part_line_slices)?;
+
+        let mut results = Vec::with_capacity(requests.len());
+        for (req, meta) in requests.iter().zip(outbox_metas.iter()) {
+            let (mut new_invoice, line_computations) = invoice::assemble::build_invoice(&tx, header, req)?;
+            new_invoice.split_group_id = Some(split_group_id.clone());
+            let stored =
+                invoice::assemble::persist_invoice(&tx, new_invoice, req, &line_computations, meta)?;
+            results.push(stored);
+        }
+        tx.commit()?;
+        Ok(results)
+    }
+
+    pub fn get_invoice(&self, id: &str) -> DbResult<Option<Invoice>> {
+        repo::get_invoice(self.connection(), id)
+    }
+
+    pub fn list_invoice_lines(&self, invoice_id: &str) -> DbResult<Vec<InvoiceLine>> {
+        repo::list_invoice_lines(self.connection(), invoice_id)
+    }
+
+    pub fn list_invoices_for_order(&self, order_id: &str) -> DbResult<Vec<Invoice>> {
+        repo::list_invoices_for_order(self.connection(), order_id)
+    }
+
+    /// Every invoice sharing one `split_group_id` — what the §66
+    /// conservation property is checked over.
+    pub fn list_invoices_for_split_group(&self, split_group_id: &str) -> DbResult<Vec<Invoice>> {
+        repo::list_invoices_for_split_group(self.connection(), split_group_id)
+    }
 }
 
 /// Last-resort seal-on-drop (ADR-011). Without this, any exit path that does
@@ -1276,6 +1413,142 @@ mod tests {
         .expect("seed modifier");
 
         (category_id, item_id, variant_id)
+    }
+
+    fn seed_app_user(db: &Db, outlet_id: &str, user_id: &str) {
+        repo::replace_app_user(
+            db.connection(),
+            &model::AppUser {
+                id: user_id.to_string(),
+                tenant_id: "tenant-1".to_string(),
+                outlet_id: outlet_id.to_string(),
+                email: format!("{user_id}@example.in"),
+                full_name: "Cashier".to_string(),
+                password_hash: "argon2id$dummy".to_string(),
+                pin_hash: None,
+                is_active: true,
+                permissions_json: "[]".to_string(),
+                config_version: 1,
+                updated_at: "2026-08-07T00:00:00Z".to_string(),
+            },
+        )
+        .expect("seed app_user");
+    }
+
+    /// Seeds a minimal, valid billing configuration (T7a's config tables):
+    /// one compliance version, one default active GST-5 tax profile
+    /// (CGST 2.5% + SGST 2.5%), one outlet fiscal profile, and one invoice
+    /// series with the given `code`/`reset_policy`. Every line billed
+    /// through the seeded menu item (see [`seed_menu`]) resolves to this
+    /// profile via the `is_default` fallback, so a test does not need to
+    /// pin `menu_item.tax_profile_id` itself. Returns the tax profile's id.
+    fn seed_billing_config(db: &Db, outlet_id: &str, series_code: &str, reset_policy: &str) -> String {
+        let profile_id = format!("{outlet_id}-profile-gst5");
+        let compliance_version_id = format!("{outlet_id}-cv-1");
+
+        repo::upsert_compliance_version(
+            db.connection(),
+            &model::ComplianceVersion {
+                id: compliance_version_id.clone(),
+                outlet_id: outlet_id.to_string(),
+                label: "GST 2026-04".to_string(),
+                effective_from: "2026-04-01T00:00:00Z".to_string(),
+                notes: None,
+                config_version: 1,
+            },
+        )
+        .expect("seed compliance version");
+
+        repo::upsert_tax_profile(
+            db.connection(),
+            &model::TaxProfile {
+                id: profile_id.clone(),
+                outlet_id: outlet_id.to_string(),
+                code: "GST_5".to_string(),
+                name: "GST 5%".to_string(),
+                pricing_mode: "EXCLUSIVE".to_string(),
+                is_default: true,
+                is_active: true,
+                config_version: 1,
+            },
+        )
+        .expect("seed tax profile");
+
+        for (component, rate_bps) in [("CGST", 250i64), ("SGST", 250i64)] {
+            repo::upsert_tax_rule(
+                db.connection(),
+                &model::TaxRule {
+                    id: format!("{profile_id}-{component}"),
+                    tax_profile_id: profile_id.clone(),
+                    compliance_version_id: compliance_version_id.clone(),
+                    component: component.to_string(),
+                    rate_bps,
+                    effective_from: "2026-04-01T00:00:00Z".to_string(),
+                    effective_to: None,
+                    config_version: 1,
+                },
+            )
+            .expect("seed tax rule");
+        }
+
+        repo::upsert_outlet_fiscal_profile(
+            db.connection(),
+            &model::OutletFiscalProfile {
+                id: format!("{outlet_id}-fiscal-1"),
+                outlet_id: outlet_id.to_string(),
+                legal_name: "Test Restaurant Pvt Ltd".to_string(),
+                trade_name: "Test Outlet".to_string(),
+                address_line1: "123 MG Road".to_string(),
+                address_line2: None,
+                city: "Pune".to_string(),
+                state_code: "27".to_string(),
+                state_name: "Maharashtra".to_string(),
+                pincode: "411001".to_string(),
+                gstin: "27AAAAA0000A1Z5".to_string(),
+                fssai_number: None,
+                invoice_footer_text: None,
+                effective_from: "2026-04-01T00:00:00Z".to_string(),
+                config_version: 1,
+            },
+        )
+        .expect("seed fiscal profile");
+
+        repo::upsert_invoice_series(
+            db.connection(),
+            &model::InvoiceSeries {
+                id: format!("{outlet_id}-series-{series_code}"),
+                outlet_id: outlet_id.to_string(),
+                code: series_code.to_string(),
+                prefix_template: "INV-".to_string(),
+                reset_policy: reset_policy.to_string(),
+                padding_width: 6,
+                is_active: true,
+                config_version: 1,
+            },
+        )
+        .expect("seed invoice series");
+
+        profile_id
+    }
+
+    fn sample_invoice_header(outlet_id: &str, order_id: &str, series_code: &str, user_id: &str) -> IssueInvoiceHeader {
+        IssueInvoiceHeader {
+            outlet_id: outlet_id.to_string(),
+            order_id: order_id.to_string(),
+            series_code: series_code.to_string(),
+            invoice_date: "2026-08-12T12:00:00Z".to_string(),
+            business_date: "2026-08-12".to_string(),
+            customer_name: None,
+            customer_phone: None,
+            customer_gstin: None,
+            place_of_supply_state_code: "27".to_string(),
+            channel: "POS".to_string(),
+            tax_liability_party: "RESTAURANT".to_string(),
+            eco_operator_name: None,
+            eco_operator_gstin: None,
+            supply_classification: None,
+            created_by_user_id: user_id.to_string(),
+        }
     }
 
     fn sample_order_item(
@@ -2905,6 +3178,150 @@ mod tests {
         assert!(!wal.exists());
         assert!(!shm.exists());
         assert!(!crypto::marker_path(&plaintext).exists());
+    }
+
+    /// T7b's own crash-durability proof, same shape as
+    /// `crash_leftovers_are_recovered_not_wiped_and_no_plaintext_survives`
+    /// above, applied to `issue_invoice_with_outbox`: an invoice is issued
+    /// and COMMITTED, the whole `Db` is dropped with no graceful close
+    /// (`simulate_crash_for_tests` — the sealed file is left exactly as a
+    /// killed process would leave it), and a genuinely INDEPENDENT `Db`
+    /// handle reopens the same sealed file and reads the invoice, its
+    /// number, its lines and its totals back unchanged.
+    ///
+    /// This is the "one atomic step" guarantee from
+    /// `repo::next_invoice_sequence_value`'s doc comment made observable:
+    /// the counter bump and the invoice/lines/outbox row all committed
+    /// together before the crash, so nothing here can have partially
+    /// applied.
+    #[test]
+    fn invoice_survives_a_crash_mid_session_and_reads_back_on_independent_reopen() {
+        let dir = tempdir().expect("tempdir");
+        let sealed = dir.path().join("edge.db.enc");
+        let plaintext = dir.path().join("edge.db");
+        let key_bytes = [31u8; 32];
+        let invoice_id = "invoice-crash-1".to_string();
+
+        {
+            let mut db = Db::open(&sealed, &plaintext, EncryptionKey::new(key_bytes))
+                .expect("first open");
+            seed_outlet_and_device(&db, "outlet-1", "device-1");
+            seed_app_user(&db, "outlet-1", "user-1");
+            let (_, item_id, _) = seed_menu(&db, "outlet-1");
+            seed_billing_config(&db, "outlet-1", "SALES", "NEVER");
+
+            let order = sample_order("order-1", "outlet-1", "device-1");
+            let outbox = sample_outbox("order-1");
+            // 20000 paise * 5% (2.5% CGST + 2.5% SGST) = 1000 paise tax,
+            // settling exactly on a whole rupee (21000), so this assertion
+            // is not entangled with the separate round-to-the-rupee step —
+            // that step has its own dedicated coverage in
+            // `tax::engine::tests` and `tests/tax_parity.rs`.
+            let item = sample_order_item("order-item-1", "order-1", &item_id, 20_000);
+            db.create_order_with_outbox(&order, &[item], &outbox)
+                .expect("create order before crash");
+
+            let header = sample_invoice_header("outlet-1", "order-1", "SALES", "user-1");
+            let share = InvoiceLineShare {
+                id: "invline-1".to_string(),
+                order_item_id: "order-item-1".to_string(),
+                quantity: 1,
+                discount_per_unit_paise: 0,
+            };
+            let meta = InvoiceOutboxMeta {
+                outbox_id: "outbox-invoice-1".to_string(),
+                occurred_at: "2026-08-12T12:00:00Z".to_string(),
+            };
+
+            let issued = db
+                .issue_invoice_with_outbox(&header, invoice_id.clone(), vec![share], &meta)
+                .expect("issue invoice before crash");
+            assert_eq!(issued.invoice_number, "INV-000001");
+            assert_eq!(issued.grand_total_paise, 21_000);
+
+            // The crash. Note this is NOT the same as letting `db` drop:
+            // `Drop` now seals and wipes (ADR-011), so a plain drop would
+            // leave no crash artifacts to recover from — see the sibling
+            // order-level test above.
+            db.simulate_crash_for_tests();
+        }
+
+        assert!(plaintext.exists(), "precondition: plaintext left behind");
+        assert!(
+            crypto::marker_path(&plaintext).exists(),
+            "precondition: unclean marker left behind"
+        );
+
+        // A genuinely INDEPENDENT Db handle — a fresh `Db::open` call, not
+        // the one that issued the invoice — reopens the sealed file.
+        let db2 = Db::open(&sealed, &plaintext, EncryptionKey::new(key_bytes))
+            .expect("reopen after crash must succeed");
+
+        let invoice = db2
+            .get_invoice(&invoice_id)
+            .expect("read invoice")
+            .expect("the committed pre-crash invoice must survive recovery");
+        assert_eq!(invoice.invoice_number, "INV-000001");
+        assert_eq!(invoice.status, "ISSUED");
+        assert_eq!(invoice.taxable_value_paise, 20_000);
+        assert_eq!(invoice.cgst_paise, 500);
+        assert_eq!(invoice.sgst_paise, 500);
+        assert_eq!(invoice.round_off_paise, 0);
+        assert_eq!(invoice.grand_total_paise, 21_000);
+
+        let lines = db2.list_invoice_lines(&invoice_id).expect("read lines");
+        assert_eq!(lines.len(), 1, "the invoice's single line must survive recovery too");
+        assert_eq!(lines[0].order_item_id, "order-item-1");
+        assert_eq!(lines[0].quantity, 1);
+        assert_eq!(lines[0].total_paise, 21_000);
+
+        // A second issuance against the same series, in the RECOVERED
+        // session, must continue the counter rather than repeat #000001 —
+        // proving the counter itself, not just the invoice row, survived.
+        let order2 = sample_order("order-2", "outlet-1", "device-1");
+        // Not `sample_outbox`: it always mints id "outbox-1", which the
+        // pre-crash order already committed — collide-on-purpose would defeat
+        // the point of this second write.
+        let outbox2 = NewOutboxEntry {
+            id: "outbox-2".to_string(),
+            aggregate_type: "order".to_string(),
+            aggregate_id: "order-2".to_string(),
+            event_type: "OrderCreated".to_string(),
+            payload_json: "{}".to_string(),
+            created_at: "2026-08-12T13:00:00Z".to_string(),
+        };
+        let item2 = sample_order_item(
+            "order-item-2",
+            "order-2",
+            // Reuse the same seeded menu item id — seed_menu is
+            // deterministic and already ran pre-crash, so its item id
+            // ("item-1") is stable across the crash.
+            "item-1",
+            10_000,
+        );
+        let mut db2 = db2;
+        db2.create_order_with_outbox(&order2, &[item2], &outbox2)
+            .expect("create second order post-recovery");
+        let header2 = sample_invoice_header("outlet-1", "order-2", "SALES", "user-1");
+        let share2 = InvoiceLineShare {
+            id: "invline-2".to_string(),
+            order_item_id: "order-item-2".to_string(),
+            quantity: 1,
+            discount_per_unit_paise: 0,
+        };
+        let meta2 = InvoiceOutboxMeta {
+            outbox_id: "outbox-invoice-2".to_string(),
+            occurred_at: "2026-08-12T13:00:00Z".to_string(),
+        };
+        let issued2 = db2
+            .issue_invoice_with_outbox(&header2, "invoice-2".to_string(), vec![share2], &meta2)
+            .expect("issue second invoice post-recovery");
+        assert_eq!(
+            issued2.invoice_number, "INV-000002",
+            "the counter must continue from where it was before the crash, never repeat #000001"
+        );
+
+        db2.close().expect("close");
     }
 
     /// Same crash scenario, but this time nothing reopens the database

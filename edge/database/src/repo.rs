@@ -463,36 +463,273 @@ pub fn list_menu_item_modifiers_for_outlet(
 // Reserved word: quoted in every statement, including inside format!
 // strings, per the schema comment in 0001_init.sql.
 
-/// Formats a 1-based per-outlet order sequence index as the short
-/// human-facing `#A184`-shaped string (contracts 0.4.0, ADR-016 §6):
-/// `#` + a letter (cycling A-Z as blocks of 999 are exhausted) + a
-/// 1-999 number within that block. Never a raw sequential id — CLAUDE.md
-/// forbids exposing a sequential PK as an identifier, and this is a
-/// display string derived from a count, not a key.
+/// Renders `block` (0-based) as a bijective base-26 letter string: `0` ->
+/// `"A"`, ..., `25` -> `"Z"`, `26` -> `"AA"`, `27` -> `"AB"`, .... This is
+/// the SAME scheme spreadsheet column headers use, chosen because it is a
+/// genuine bijection over non-negative integers — no two blocks ever render
+/// the same letters, for any `block`, without bound. That is precisely the
+/// property the single-letter (`A-Z` mod 26) scheme this replaces did NOT
+/// have: it wrapped at block 26 and silently re-emitted block 0's letter,
+/// which is the T7b gate finding (`#Z999` -> `#A1`, duplicating the
+/// outlet's very first order number). See
+/// [`format_order_display_number`]'s doc comment for the fix as a whole.
+fn block_letters(block: i64) -> String {
+    let mut n = block + 1; // shift to 1-based for the bijective encoding
+    let mut letters = Vec::new();
+    while n > 0 {
+        let rem = (n - 1) % 26;
+        letters.push((b'A' + rem as u8) as char);
+        n = (n - 1) / 26;
+    }
+    letters.iter().rev().collect()
+}
+
+/// Formats a 1-based sequence index (scoped to one outlet's one business
+/// day — see [`mint_order_display_number`]) as the short human-facing
+/// `#A184`-shaped string (contracts 0.4.0, ADR-016 §6): `#` + bijective
+/// base-26 letters (cycling `A`, `B`, ... `Z`, `AA`, `AB`, ... as blocks of
+/// 999 are exhausted) + a `1-999` number within that block. Never a raw
+/// sequential id — CLAUDE.md forbids exposing a sequential PK as an
+/// identifier, and this is a display string derived from a count, not a key.
+///
+/// **The T7b fix, and why it is two changes, not one:** a gate found this
+/// function wrapped at sequence 25975 (block 26, `999*26 = 25974`), where
+/// the old single-letter scheme (`letter = (b'A' + block % 26) as u8`)
+/// re-emitted block 0's letter — `#Z999` rolled to `#A1`, duplicating that
+/// outlet's very first order number. Two cooks holding tickets with the
+/// same number is the exact confusion `display_number` exists to prevent.
+///
+/// 1. [`block_letters`] replaces the `mod 26` letter with a bijective
+///    base-26 encoding, so the FORMATTING FUNCTION ITSELF never produces a
+///    repeat, for any sequence index up to `i64::MAX` — this is what a test
+///    that "drives the counter past its wrap point" can actually prove,
+///    since the old function's collision was in the pure math, not merely
+///    in how far a database ever counted.
+/// 2. [`mint_order_display_number`] additionally resets the counter every
+///    business day rather than counting an outlet's lifetime orders, which
+///    is the useful-in-practice half: `#A1` meaning "the first order today"
+///    is what a restaurant actually wants to see and say aloud, and it
+///    keeps the letter block small under normal volume instead of climbing
+///    toward multi-letter blocks after weeks of service. A wider letter
+///    space alone (this function) would have been sufficient to stop
+///    duplicates; the per-day reset is the deliberate, disclosed choice of
+///    which defensible fix to combine it with (per this track's brief) —
+///    restaurants think in service days, not lifetime counts.
 fn format_order_display_number(sequence_index: i64) -> String {
     let zero_based = sequence_index - 1;
     let block = zero_based / 999;
     let num = zero_based % 999 + 1;
-    let letter = (b'A' + (block % 26) as u8) as char;
-    format!("#{letter}{num}")
+    let letters = block_letters(block);
+    format!("#{letters}{num}")
 }
 
-/// Mints the next short display number for `outlet_id`, inside the same
-/// transaction as the order insert it backs — the count-then-insert runs
-/// on the one write-serialized SQLite connection this outlet's edge process
-/// owns (ADR-013: a single writer over one file), so no two orders can ever
-/// mint the same index. Counting `"order"` rows for the outlet is
-/// deliberately used rather than a dedicated counter table: `packages/contracts`
-/// is frozen and read-only to this crate (ADR-008), and no sequence table
-/// for order numbering exists in it, so this stays entirely inside the one
+/// Mints the next short display number for `outlet_id`, SCOPED TO THE
+/// ORDER'S OWN UTC CALENDAR DAY (the first 10 characters of `created_at`,
+/// which this crate always writes as an ISO8601 UTC string), inside the
+/// same transaction as the order insert it backs — the count-then-insert
+/// runs on the one write-serialized SQLite connection this outlet's edge
+/// process owns (ADR-013: a single writer over one file), so no two orders
+/// can ever mint the same index for the same day.
+///
+/// **UTC calendar day, not the outlet-local business day.** `invoice.
+/// business_date` (ADR-016) is the outlet-local day that may cross midnight
+/// for a real accounting record, and getting that right needs the outlet's
+/// timezone. `display_number` is a lighter-weight kitchen/till convenience,
+/// not a legal document, so this crate deliberately buckets it by the
+/// `"order".created_at` UTC date directly rather than pulling in timezone
+/// conversion for a display string — a disclosed simplification, not an
+/// oversight. The practical effect is a reset that lands within a few hours
+/// of the true local business-day boundary rather than exactly on it.
+///
+/// Counting `"order"` rows for the outlet on this UTC day is deliberately
+/// used rather than a dedicated counter table: `packages/contracts` is
+/// frozen and read-only to this crate (ADR-008), and no sequence table for
+/// order numbering exists in it, so this stays entirely inside the one
 /// column the contract actually added (`display_number`).
-pub(crate) fn mint_order_display_number(tx: &Transaction, outlet_id: &str) -> DbResult<String> {
+pub(crate) fn mint_order_display_number(
+    tx: &Transaction,
+    outlet_id: &str,
+    created_at: &str,
+) -> DbResult<String> {
+    let day = created_at.get(0..10).ok_or_else(|| {
+        crate::error::DbError::InvalidInput(format!(
+            "created_at {created_at:?} is too short to carry a YYYY-MM-DD date"
+        ))
+    })?;
     let existing: i64 = tx.query_row(
-        "SELECT COUNT(*) FROM \"order\" WHERE outlet_id = ?1",
-        params![outlet_id],
+        "SELECT COUNT(*) FROM \"order\" WHERE outlet_id = ?1 AND substr(created_at, 1, 10) = ?2",
+        params![outlet_id, day],
         |row| row.get(0),
     )?;
     Ok(format_order_display_number(existing + 1))
+}
+
+#[cfg(test)]
+mod order_display_number_wrap_tests {
+    use super::*;
+
+    /// The exact defect the T7b gate found: the OLD formatter
+    /// (`letter = (b'A' + block % 26) as u8`) produced `format_order_display_number(25975) == "#A1"`,
+    /// identical to `format_order_display_number(1)`. This test drives the
+    /// counter past that boundary and asserts the CURRENT formatter never
+    /// repeats — it fails immediately against a regression back to the
+    /// `mod 26` scheme.
+    #[test]
+    fn formatter_never_repeats_past_the_old_wrap_point() {
+        let old_wrap_point = 26 * 999 + 1; // 25975: where the old scheme repeated "#A1"
+        let mut seen = std::collections::HashSet::new();
+        for i in 1..=(old_wrap_point + 5_000) {
+            let s = format_order_display_number(i);
+            assert!(
+                seen.insert(s.clone()),
+                "display number {s:?} (index {i}) repeated an earlier index — the wrap regressed"
+            );
+        }
+        // Pin the exact old-collision indices to two DIFFERENT strings.
+        let at_index_1 = format_order_display_number(1);
+        let at_old_wrap = format_order_display_number(old_wrap_point);
+        assert_eq!(at_index_1, "#A1");
+        assert_ne!(
+            at_old_wrap, at_index_1,
+            "index {old_wrap_point} must not collide with index 1 (the old #Z999 -> #A1 defect)"
+        );
+        assert_eq!(at_old_wrap, "#AA1", "block 26 must render as the two-letter block AA, never a repeat of A");
+    }
+
+    /// Drives a full run from 1 well past several old wrap boundaries
+    /// (26, 52, 78 blocks — i.e. the old scheme's 1st/2nd/3rd trips around
+    /// the alphabet) and asserts global uniqueness across the entire run,
+    /// not just around one boundary.
+    #[test]
+    fn formatter_is_unique_across_many_wrap_boundaries() {
+        let mut seen = std::collections::HashSet::new();
+        for i in 1..=(78 * 999 + 100) {
+            let s = format_order_display_number(i);
+            assert!(seen.insert(s), "duplicate display number produced at index {i}");
+        }
+    }
+
+    /// `block_letters` is a genuine bijection: distinct blocks must never
+    /// render identical letters, which is what actually guarantees
+    /// [`format_order_display_number`] cannot wrap into a duplicate no
+    /// matter how large the counter grows.
+    #[test]
+    fn block_letters_never_collide() {
+        let mut seen = std::collections::HashSet::new();
+        for block in 0..3000 {
+            let letters = block_letters(block);
+            assert!(seen.insert(letters), "block_letters({block}) collided with an earlier block");
+        }
+    }
+
+    /// [`mint_order_display_number`] resets to `#A1` for a NEW UTC calendar
+    /// day even after many orders were minted on a previous day — the
+    /// per-business-day half of the T7b fix. A design choice test, not just
+    /// a uniqueness one: it fails if a future change reverts to a lifetime
+    /// counter.
+    #[test]
+    fn mint_resets_to_a1_on_a_new_utc_day() {
+        let mut db = crate::Db::open_in_memory_for_tests().expect("open db");
+        upsert_outlet(
+            db.connection(),
+            &Outlet {
+                id: "outlet-1".to_string(),
+                brand_id: "brand-1".to_string(),
+                name: "Test Outlet".to_string(),
+                timezone: "Asia/Kolkata".to_string(),
+                config_version: 1,
+                created_at: "2026-08-01T00:00:00Z".to_string(),
+                updated_at: "2026-08-01T00:00:00Z".to_string(),
+            },
+        )
+        .expect("seed outlet");
+        upsert_device(
+            db.connection(),
+            &Device {
+                id: "device-1".to_string(),
+                outlet_id: "outlet-1".to_string(),
+                kind: "POS".to_string(),
+                name: "POS 1".to_string(),
+                last_seen_at: None,
+                created_at: "2026-08-01T00:00:00Z".to_string(),
+            },
+        )
+        .expect("seed device");
+
+        fn new_order(id: &str, created_at: &str) -> NewOrder {
+            NewOrder {
+                id: id.to_string(),
+                outlet_id: "outlet-1".to_string(),
+                device_id: "device-1".to_string(),
+                order_type: "DINE_IN".to_string(),
+                status: "DRAFT".to_string(),
+                table_id: None,
+                subtotal_paise: 0,
+                discount_paise: 0,
+                taxes_paise: 0,
+                total_paise: 0,
+                source: "POS".to_string(),
+                external_order_id: None,
+                payment_status: "UNPAID".to_string(),
+                payment_source: None,
+                confirmed_at: None,
+                source_payload_json: None,
+                schema_version: 1,
+                created_at: created_at.to_string(),
+                updated_at: created_at.to_string(),
+            }
+        }
+
+        fn outbox_for(order_id: &str, seq: i64) -> NewOutboxEntry {
+            NewOutboxEntry {
+                id: format!("outbox-{seq}"),
+                aggregate_type: "order".to_string(),
+                aggregate_id: order_id.to_string(),
+                event_type: "OrderCreated".to_string(),
+                payload_json: r#"{"data":{"order":{}}}"#.to_string(),
+                created_at: "2026-08-12T10:00:00Z".to_string(),
+            }
+        }
+
+        db.create_order_with_outbox(
+            &new_order("order-1", "2026-08-12T10:00:00Z"),
+            &[],
+            &outbox_for("order-1", 1),
+        )
+        .expect("insert order 1");
+        let n1 = get_order(db.connection(), "order-1")
+            .expect("read order 1")
+            .expect("order 1 exists")
+            .display_number
+            .expect("order 1 has a display number");
+        assert_eq!(n1, "#A1");
+
+        db.create_order_with_outbox(
+            &new_order("order-2", "2026-08-12T11:00:00Z"),
+            &[],
+            &outbox_for("order-2", 2),
+        )
+        .expect("insert order 2");
+        let n2 = get_order(db.connection(), "order-2")
+            .expect("read order 2")
+            .expect("order 2 exists")
+            .display_number
+            .expect("order 2 has a display number");
+        assert_eq!(n2, "#A2", "same UTC day must continue the count");
+
+        db.create_order_with_outbox(
+            &new_order("order-3", "2026-08-13T00:00:01Z"),
+            &[],
+            &outbox_for("order-3", 3),
+        )
+        .expect("insert order 3");
+        let n3 = get_order(db.connection(), "order-3")
+            .expect("read order 3")
+            .expect("order 3 exists")
+            .display_number
+            .expect("order 3 has a display number");
+        assert_eq!(n3, "#A1", "a new UTC day must reset the count to #A1");
+    }
 }
 
 /// Inserts the `"order"` row, minting its `display_number` internally, and
@@ -500,7 +737,7 @@ pub(crate) fn mint_order_display_number(tx: &Transaction, outlet_id: &str) -> Db
 /// `OrderCreated` outbox payload built before the insert ran — see
 /// [`patch_order_created_display_number`].
 pub(crate) fn insert_order(tx: &Transaction, o: &NewOrder) -> DbResult<String> {
-    let display_number = mint_order_display_number(tx, &o.outlet_id)?;
+    let display_number = mint_order_display_number(tx, &o.outlet_id, &o.created_at)?;
     tx.execute(
         "INSERT INTO \"order\"
             (id, outlet_id, device_id, order_type, status, table_id,
@@ -3070,6 +3307,427 @@ pub fn list_discount_definitions_for_outlet(
         .query_map(params![outlet_id], row_to_discount_definition)?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
+}
+
+// ---------------------------------------------- Milestone 3: invoicing (T7b) --
+// invoice / invoice_line are EDGE-AUTHORITATIVE (ADR-016 §1). invoice_sequence
+// is EDGE-LOCAL: SQLite only, never mirrored, never given an AggregateType or
+// a sync direction (§2) — see [`next_invoice_sequence_value`]'s doc comment
+// for the atomicity argument that makes it §33-safe.
+
+/// Atomically advances the counter for `(series_id, period_key)` and
+/// returns the NEW value, inside the SAME transaction as the `invoice`
+/// insert that will use it (ADR-016 §2/§33, task instructions "the counter
+/// increment and the invoice insert must be one atomic step").
+///
+/// **Why a crash cannot duplicate or burn a number.** `INSERT ... ON
+/// CONFLICT ... RETURNING` is one SQLite statement; SQLite either applies it
+/// in full or not at all, and it never leaves the connection mid-statement.
+/// This call always runs as one statement inside the caller's transaction,
+/// alongside the `invoice`/`invoice_line` inserts that use the value it
+/// returns:
+///   - A crash BEFORE this statement executes: nothing changed. The next
+///     `Db::open` sees the pre-crash counter and the caller's whole
+///     transaction (which never reached `COMMIT`) is gone — the invoice was
+///     never issued, so no number was owed.
+///   - A crash AFTER this statement but BEFORE the enclosing transaction's
+///     `COMMIT`: SQLite's rollback journal/WAL discards the ENTIRE
+///     transaction on the next open, including this statement's effect —
+///     `invoice_sequence.last_value` reverts along with the invoice/lines
+///     that would have used it. The number is neither burned (nothing
+///     observed it — the invoice row it would have numbered does not
+///     exist either) nor reused for a different invoice (a fresh call to
+///     this function after recovery reissues the SAME next value, for a
+///     fresh issuance attempt).
+///   - A crash AFTER `COMMIT` returns: both the counter bump and the
+///     invoice are durable together (ADR-013: WAL mode, single writer, one
+///     file) — there is nothing left to retry.
+///
+/// There is no window in which the counter advances durably without the
+/// invoice it produced also becoming durable, or vice versa — which is
+/// exactly "one atomic step". See
+/// `tests::invoice_survives_a_crash_mid_session_and_reads_back_on_independent_reopen`
+/// in `src/lib.rs` for the test that drops the whole `Db` mid-issue and
+/// reopens an independent handle on the sealed file to prove this (it lives
+/// there, not under `tests/`, because it needs the `#[cfg(test)]`-only
+/// `Db::simulate_crash_for_tests` seam, which is intentionally not part of
+/// this crate's public API).
+pub(crate) fn next_invoice_sequence_value(
+    tx: &Transaction,
+    series_id: &str,
+    period_key: &str,
+    updated_at: &str,
+) -> DbResult<i64> {
+    tx.query_row(
+        "INSERT INTO invoice_sequence (series_id, period_key, last_value, updated_at)
+         VALUES (?1, ?2, 1, ?3)
+         ON CONFLICT(series_id, period_key) DO UPDATE SET
+            last_value = invoice_sequence.last_value + 1,
+            updated_at = excluded.updated_at
+         RETURNING last_value",
+        params![series_id, period_key, updated_at],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
+pub(crate) fn insert_invoice(tx: &Transaction, inv: &NewInvoice) -> DbResult<()> {
+    tx.execute(
+        "INSERT INTO invoice
+            (id, outlet_id, order_id, split_group_id, split_index, split_count,
+             series_id, invoice_number, invoice_date, business_date, status,
+             customer_name, customer_phone, customer_gstin, place_of_supply_state_code,
+             subtotal_paise, discount_paise, taxable_value_paise, cgst_paise, sgst_paise,
+             igst_paise, cess_paise, round_off_paise, grand_total_paise,
+             compliance_version_id, tax_snapshot_json, fiscal_profile_json,
+             channel, tax_liability_party, eco_operator_name, eco_operator_gstin,
+             supply_classification, created_by_user_id, created_at, updated_at,
+             version, sync_status)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'ISSUED',
+                 ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23,
+                 ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, 1, 'PENDING')",
+        params![
+            inv.id,
+            inv.outlet_id,
+            inv.order_id,
+            inv.split_group_id,
+            inv.split_index,
+            inv.split_count,
+            inv.series_id,
+            inv.invoice_number,
+            inv.invoice_date,
+            inv.business_date,
+            inv.customer_name,
+            inv.customer_phone,
+            inv.customer_gstin,
+            inv.place_of_supply_state_code,
+            inv.subtotal_paise,
+            inv.discount_paise,
+            inv.taxable_value_paise,
+            inv.cgst_paise,
+            inv.sgst_paise,
+            inv.igst_paise,
+            inv.cess_paise,
+            inv.round_off_paise,
+            inv.grand_total_paise,
+            inv.compliance_version_id,
+            inv.tax_snapshot_json,
+            inv.fiscal_profile_json,
+            inv.channel,
+            inv.tax_liability_party,
+            inv.eco_operator_name,
+            inv.eco_operator_gstin,
+            inv.supply_classification,
+            inv.created_by_user_id,
+            inv.created_at,
+            inv.updated_at,
+        ],
+    )?;
+    Ok(())
+}
+
+pub(crate) fn insert_invoice_line(tx: &Transaction, l: &NewInvoiceLine) -> DbResult<()> {
+    tx.execute(
+        "INSERT INTO invoice_line
+            (id, invoice_id, order_item_id, line_no, description, hsn_sac, quantity,
+             unit_price_paise, gross_paise, discount_paise, taxable_value_paise,
+             tax_profile_id, cgst_rate_bps, cgst_paise, sgst_rate_bps, sgst_paise,
+             igst_rate_bps, igst_paise, cess_rate_bps, cess_paise, total_paise)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+                 ?16, ?17, ?18, ?19, ?20, ?21)",
+        params![
+            l.id,
+            l.invoice_id,
+            l.order_item_id,
+            l.line_no,
+            l.description,
+            l.hsn_sac,
+            l.quantity,
+            l.unit_price_paise,
+            l.gross_paise,
+            l.discount_paise,
+            l.taxable_value_paise,
+            l.tax_profile_id,
+            l.cgst_rate_bps,
+            l.cgst_paise,
+            l.sgst_rate_bps,
+            l.sgst_paise,
+            l.igst_rate_bps,
+            l.igst_paise,
+            l.cess_rate_bps,
+            l.cess_paise,
+            l.total_paise,
+        ],
+    )?;
+    Ok(())
+}
+
+fn row_to_invoice(row: &rusqlite::Row) -> rusqlite::Result<Invoice> {
+    Ok(Invoice {
+        id: row.get(0)?,
+        outlet_id: row.get(1)?,
+        order_id: row.get(2)?,
+        split_group_id: row.get(3)?,
+        split_index: row.get(4)?,
+        split_count: row.get(5)?,
+        series_id: row.get(6)?,
+        invoice_number: row.get(7)?,
+        invoice_date: row.get(8)?,
+        business_date: row.get(9)?,
+        status: row.get(10)?,
+        cancelled_reason: row.get(11)?,
+        cancelled_at: row.get(12)?,
+        customer_name: row.get(13)?,
+        customer_phone: row.get(14)?,
+        customer_gstin: row.get(15)?,
+        place_of_supply_state_code: row.get(16)?,
+        subtotal_paise: row.get(17)?,
+        discount_paise: row.get(18)?,
+        taxable_value_paise: row.get(19)?,
+        cgst_paise: row.get(20)?,
+        sgst_paise: row.get(21)?,
+        igst_paise: row.get(22)?,
+        cess_paise: row.get(23)?,
+        round_off_paise: row.get(24)?,
+        grand_total_paise: row.get(25)?,
+        compliance_version_id: row.get(26)?,
+        tax_snapshot_json: row.get(27)?,
+        fiscal_profile_json: row.get(28)?,
+        channel: row.get(29)?,
+        tax_liability_party: row.get(30)?,
+        eco_operator_name: row.get(31)?,
+        eco_operator_gstin: row.get(32)?,
+        supply_classification: row.get(33)?,
+        created_by_user_id: row.get(34)?,
+        created_at: row.get(35)?,
+        updated_at: row.get(36)?,
+        version: row.get(37)?,
+        sync_status: row.get(38)?,
+    })
+}
+
+const INVOICE_COLUMNS: &str = "id, outlet_id, order_id, split_group_id, split_index, split_count, \
+    series_id, invoice_number, invoice_date, business_date, status, cancelled_reason, cancelled_at, \
+    customer_name, customer_phone, customer_gstin, place_of_supply_state_code, \
+    subtotal_paise, discount_paise, taxable_value_paise, cgst_paise, sgst_paise, igst_paise, \
+    cess_paise, round_off_paise, grand_total_paise, compliance_version_id, tax_snapshot_json, \
+    fiscal_profile_json, channel, tax_liability_party, eco_operator_name, eco_operator_gstin, \
+    supply_classification, created_by_user_id, created_at, updated_at, version, sync_status";
+
+pub fn get_invoice(conn: &Connection, id: &str) -> DbResult<Option<Invoice>> {
+    conn.query_row(
+        &format!("SELECT {INVOICE_COLUMNS} FROM invoice WHERE id = ?1"),
+        params![id],
+        row_to_invoice,
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+pub fn list_invoices_for_order(conn: &Connection, order_id: &str) -> DbResult<Vec<Invoice>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {INVOICE_COLUMNS} FROM invoice WHERE order_id = ?1 ORDER BY split_index, created_at"
+    ))?;
+    let rows = stmt
+        .query_map(params![order_id], row_to_invoice)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Every invoice sharing one `split_group_id` (ADR-016 §4) — what the §66
+/// conservation property is checked over.
+pub fn list_invoices_for_split_group(
+    conn: &Connection,
+    split_group_id: &str,
+) -> DbResult<Vec<Invoice>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {INVOICE_COLUMNS} FROM invoice WHERE split_group_id = ?1 ORDER BY split_index"
+    ))?;
+    let rows = stmt
+        .query_map(params![split_group_id], row_to_invoice)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+fn row_to_invoice_line(row: &rusqlite::Row) -> rusqlite::Result<InvoiceLine> {
+    Ok(InvoiceLine {
+        id: row.get(0)?,
+        invoice_id: row.get(1)?,
+        order_item_id: row.get(2)?,
+        line_no: row.get(3)?,
+        description: row.get(4)?,
+        hsn_sac: row.get(5)?,
+        quantity: row.get(6)?,
+        unit_price_paise: row.get(7)?,
+        gross_paise: row.get(8)?,
+        discount_paise: row.get(9)?,
+        taxable_value_paise: row.get(10)?,
+        tax_profile_id: row.get(11)?,
+        cgst_rate_bps: row.get(12)?,
+        cgst_paise: row.get(13)?,
+        sgst_rate_bps: row.get(14)?,
+        sgst_paise: row.get(15)?,
+        igst_rate_bps: row.get(16)?,
+        igst_paise: row.get(17)?,
+        cess_rate_bps: row.get(18)?,
+        cess_paise: row.get(19)?,
+        total_paise: row.get(20)?,
+    })
+}
+
+const INVOICE_LINE_COLUMNS: &str = "id, invoice_id, order_item_id, line_no, description, hsn_sac, \
+    quantity, unit_price_paise, gross_paise, discount_paise, taxable_value_paise, tax_profile_id, \
+    cgst_rate_bps, cgst_paise, sgst_rate_bps, sgst_paise, igst_rate_bps, igst_paise, cess_rate_bps, \
+    cess_paise, total_paise";
+
+pub fn list_invoice_lines(conn: &Connection, invoice_id: &str) -> DbResult<Vec<InvoiceLine>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {INVOICE_LINE_COLUMNS} FROM invoice_line WHERE invoice_id = ?1 ORDER BY line_no"
+    ))?;
+    let rows = stmt
+        .query_map(params![invoice_id], row_to_invoice_line)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Transaction-scoped twin of [`list_invoice_lines`], for
+/// [`crate::invoice::assemble`] reading back what it just wrote (inside the
+/// SAME transaction) to build the `InvoiceCreated` outbox payload.
+pub(crate) fn list_invoice_lines_in_tx(tx: &Transaction, invoice_id: &str) -> DbResult<Vec<InvoiceLine>> {
+    let mut stmt = tx.prepare(&format!(
+        "SELECT {INVOICE_LINE_COLUMNS} FROM invoice_line WHERE invoice_id = ?1 ORDER BY line_no"
+    ))?;
+    let rows = stmt
+        .query_map(params![invoice_id], row_to_invoice_line)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+const EVENT_TYPE_INVOICE_CREATED: &str = "InvoiceCreated";
+
+/// Builds the `InvoiceCreated` event envelope + `data` payload, matching
+/// `InvoiceCreatedEventSchema` in `packages/contracts/src/types/events.ts`
+/// exactly (`{ event_id, event_type, occurred_at, outlet_id, schema_version,
+/// data: { invoice: {...InvoiceSchema, lines: [...InvoiceLineSchema] } } }`).
+/// Built from the rows this crate just wrote (`inv`/`lines`), never from
+/// caller-supplied fields, so a caller cannot commit a mismatched event for
+/// a real issuance.
+fn build_invoice_created_payload(
+    inv: &Invoice,
+    lines: &[InvoiceLine],
+    event_id: &str,
+    occurred_at: &str,
+) -> DbResult<String> {
+    let tax_snapshot: serde_json::Value = serde_json::from_str(&inv.tax_snapshot_json)
+        .map_err(|e| crate::error::DbError::InvalidInput(format!("stored tax_snapshot_json is not valid JSON: {e}")))?;
+    let fiscal_profile: serde_json::Value = serde_json::from_str(&inv.fiscal_profile_json)
+        .map_err(|e| crate::error::DbError::InvalidInput(format!("stored fiscal_profile_json is not valid JSON: {e}")))?;
+
+    let lines_json: Vec<serde_json::Value> = lines
+        .iter()
+        .map(|l| {
+            serde_json::json!({
+                "id": l.id,
+                "invoice_id": l.invoice_id,
+                "order_item_id": l.order_item_id,
+                "line_no": l.line_no,
+                "description": l.description,
+                "hsn_sac": l.hsn_sac,
+                "quantity": l.quantity,
+                "unit_price_paise": l.unit_price_paise,
+                "gross_paise": l.gross_paise,
+                "discount_paise": l.discount_paise,
+                "taxable_value_paise": l.taxable_value_paise,
+                "tax_profile_id": l.tax_profile_id,
+                "cgst_rate_bps": l.cgst_rate_bps,
+                "cgst_paise": l.cgst_paise,
+                "sgst_rate_bps": l.sgst_rate_bps,
+                "sgst_paise": l.sgst_paise,
+                "igst_rate_bps": l.igst_rate_bps,
+                "igst_paise": l.igst_paise,
+                "cess_rate_bps": l.cess_rate_bps,
+                "cess_paise": l.cess_paise,
+                "total_paise": l.total_paise,
+                "schema_version": 1,
+            })
+        })
+        .collect();
+
+    let invoice_json = serde_json::json!({
+        "id": inv.id,
+        "outlet_id": inv.outlet_id,
+        "order_id": inv.order_id,
+        "split_group_id": inv.split_group_id,
+        "split_index": inv.split_index,
+        "split_count": inv.split_count,
+        "series_id": inv.series_id,
+        "invoice_number": inv.invoice_number,
+        "invoice_date": inv.invoice_date,
+        "business_date": inv.business_date,
+        "status": inv.status,
+        "cancelled_reason": inv.cancelled_reason,
+        "cancelled_at": inv.cancelled_at,
+        "customer_name": inv.customer_name,
+        "customer_phone": inv.customer_phone,
+        "customer_gstin": inv.customer_gstin,
+        "place_of_supply_state_code": inv.place_of_supply_state_code,
+        "lines": lines_json,
+        "subtotal_paise": inv.subtotal_paise,
+        "discount_paise": inv.discount_paise,
+        "taxable_value_paise": inv.taxable_value_paise,
+        "cgst_paise": inv.cgst_paise,
+        "sgst_paise": inv.sgst_paise,
+        "igst_paise": inv.igst_paise,
+        "cess_paise": inv.cess_paise,
+        "round_off_paise": inv.round_off_paise,
+        "grand_total_paise": inv.grand_total_paise,
+        "compliance_version_id": inv.compliance_version_id,
+        "tax_snapshot": tax_snapshot,
+        "fiscal_profile": fiscal_profile,
+        "channel": inv.channel,
+        "tax_liability_party": inv.tax_liability_party,
+        "eco_operator_name": inv.eco_operator_name,
+        "eco_operator_gstin": inv.eco_operator_gstin,
+        "supply_classification": inv.supply_classification,
+        "created_by_user_id": inv.created_by_user_id,
+        "created_at": inv.created_at,
+        "updated_at": inv.updated_at,
+        "version": inv.version,
+        "schema_version": 1,
+    });
+
+    Ok(serde_json::json!({
+        "event_id": event_id,
+        "event_type": EVENT_TYPE_INVOICE_CREATED,
+        "occurred_at": occurred_at,
+        "outlet_id": inv.outlet_id,
+        "schema_version": 1,
+        "data": { "invoice": invoice_json },
+    })
+    .to_string())
+}
+
+/// Writes the `local_outbox` row for one issued invoice (ADR-016 §1: invoice
+/// is EDGE_TO_CLOUD, so every issuance replays through this event) — the
+/// `InvoiceCreated` analogue of [`insert_order_confirmed_outbox`].
+pub(crate) fn insert_invoice_created_outbox(
+    tx: &Transaction,
+    inv: &Invoice,
+    lines: &[InvoiceLine],
+    meta: &InvoiceOutboxMeta,
+) -> DbResult<()> {
+    let payload = build_invoice_created_payload(inv, lines, &meta.outbox_id, &meta.occurred_at)?;
+    insert_outbox_entry(
+        tx,
+        &NewOutboxEntry {
+            id: meta.outbox_id.clone(),
+            aggregate_type: "invoice".to_string(),
+            aggregate_id: inv.id.clone(),
+            event_type: EVENT_TYPE_INVOICE_CREATED.to_string(),
+            payload_json: payload,
+            created_at: meta.occurred_at.clone(),
+        },
+    )
 }
 
 #[cfg(test)]

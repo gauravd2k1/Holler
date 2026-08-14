@@ -571,6 +571,256 @@ pub struct DiscountDefinition {
     pub config_version: i64,
 }
 
+// --------------------------------------------- Milestone 3: invoicing (T7b) --
+// invoice / invoice_line are EDGE-AUTHORITATIVE (ADR-016 §1): the outlet
+// issues bills with the uplink down, the cloud only replays. invoice_sequence
+// is EDGE-LOCAL (§2): SQLite only, no Postgres mirror, no AggregateType, no
+// sync direction, ever — the counter behind invoice numbering never leaves
+// this machine. Field sets mirror `packages/contracts/sqlite/0006_m3_billing.sql`
+// exactly.
+
+/// The edge-local counter behind one `(series_id, period_key)` bucket
+/// (ADR-016 §2). Never constructed directly by a caller outside this
+/// crate — [`crate::invoice::numbering`] is the only writer, via an atomic
+/// `INSERT ... ON CONFLICT ... RETURNING` inside the same transaction as the
+/// invoice it numbers.
+#[derive(Debug, Clone)]
+pub struct InvoiceSequence {
+    pub series_id: String,
+    pub period_key: String,
+    pub last_value: i64,
+    pub updated_at: String,
+}
+
+/// One order line's SHARE to bill on a particular invoice. For an unsplit
+/// bill there is exactly one share per `order_item`, at its full quantity.
+/// For a split bill (ADR-016 §4) one `order_item` may appear across several
+/// shares, one per split part, whose quantities must sum to the order
+/// item's own `quantity` exactly — the conservation property
+/// [`crate::invoice::assemble::validate_split_conservation`] checks before
+/// anything is written. `order_item_id` is what makes that property
+/// checkable at all (0006's own comment on `invoice_line.order_item_id`).
+#[derive(Debug, Clone)]
+pub struct InvoiceLineShare {
+    /// This `invoice_line`'s own id — caller-supplied (UUIDv7), matching
+    /// every other `New*` row this crate writes except the KOT-fanout
+    /// exception documented on [`SendToKitchenMeta`]. The number of lines an
+    /// issuance produces IS known to the caller ahead of time (one per
+    /// share it supplies), so that exception does not apply here.
+    pub id: String,
+    pub order_item_id: String,
+    /// The quantity THIS share bills — never re-derived from the order
+    /// item's own `quantity`, since a split share is usually less than it.
+    pub quantity: i64,
+    /// Per-unit discount already resolved to paise by the caller. Discount
+    /// POLICY (`discount_definition` resolution) is out of T7b's scope —
+    /// this crate only applies a number it is given, through the same
+    /// tax-engine path as everything else.
+    pub discount_per_unit_paise: i64,
+}
+
+/// Caller-supplied fields to issue ONE invoice — either the sole invoice
+/// over an order, or one part of a split group (ADR-016 §4). `lines` names
+/// which order items (and what quantity of each) this invoice bills; this
+/// crate resolves each line's tax profile/rates itself (via
+/// [`crate::tax::resolve_tax_profile`]/[`crate::tax::resolve_rates`]) rather
+/// than trusting a caller-supplied resolution, mirroring how
+/// `add_order_item_with_outbox` never trusts a caller-supplied
+/// `line_total_paise`.
+#[derive(Debug, Clone)]
+pub struct IssueInvoiceLinesRequest {
+    pub invoice_id: String,
+    pub lines: Vec<InvoiceLineShare>,
+    pub split_index: i64,
+    pub split_count: i64,
+}
+
+/// Header fields shared by every part of one issuance call — one order, one
+/// series, one moment, one biller. Split into its own struct because
+/// [`crate::Db::issue_split_invoices_with_outbox`] takes one of these plus
+/// N [`IssueInvoiceLinesRequest`]s, rather than repeating the header N times.
+#[derive(Debug, Clone)]
+pub struct IssueInvoiceHeader {
+    pub outlet_id: String,
+    pub order_id: String,
+    /// `invoice_series.code` (e.g. `"SALES"`) — resolved to the series row
+    /// (and, through it, the edge-local counter) inside the same
+    /// transaction as the write.
+    pub series_code: String,
+    /// The moment of issue (ISO8601 UTC), sourced from the edge machine's
+    /// own clock by the caller (sync.md §50.1) — never a value handed up
+    /// from anywhere else. Also the instant tax rules/compliance version are
+    /// resolved AT (§31).
+    pub invoice_date: String,
+    /// Outlet-local `YYYY-MM-DD`. Drives both the printed `business_date`
+    /// column and (via `reset_policy`) which `invoice_sequence` bucket this
+    /// issuance counts against.
+    pub business_date: String,
+    pub customer_name: Option<String>,
+    pub customer_phone: Option<String>,
+    pub customer_gstin: Option<String>,
+    pub place_of_supply_state_code: String,
+    pub channel: String,
+    pub tax_liability_party: String,
+    pub eco_operator_name: Option<String>,
+    pub eco_operator_gstin: Option<String>,
+    pub supply_classification: Option<String>,
+    pub created_by_user_id: String,
+}
+
+/// Caller-supplied fields for the `local_outbox` row an invoice issuance
+/// writes (the frozen `InvoiceCreated` event, `packages/contracts/src/types/events.ts`).
+/// Mirrors [`OrderConfirmedMeta`]: the caller supplies only what this crate
+/// cannot derive — the outbox row's own id and the moment it occurred.
+#[derive(Debug, Clone)]
+pub struct InvoiceOutboxMeta {
+    pub outbox_id: String,
+    pub occurred_at: String,
+}
+
+/// One computed, persisted line on an issued invoice. Field-for-field
+/// `invoice_line` (`0006_m3_billing.sql`), plus nothing else — this crate
+/// never adds a column the contract does not carry.
+#[derive(Debug, Clone)]
+pub struct InvoiceLine {
+    pub id: String,
+    pub invoice_id: String,
+    pub order_item_id: String,
+    pub line_no: i64,
+    pub description: String,
+    pub hsn_sac: Option<String>,
+    pub quantity: i64,
+    pub unit_price_paise: i64,
+    pub gross_paise: i64,
+    pub discount_paise: i64,
+    pub taxable_value_paise: i64,
+    pub tax_profile_id: String,
+    pub cgst_rate_bps: i64,
+    pub cgst_paise: i64,
+    pub sgst_rate_bps: i64,
+    pub sgst_paise: i64,
+    pub igst_rate_bps: i64,
+    pub igst_paise: i64,
+    pub cess_rate_bps: i64,
+    pub cess_paise: i64,
+    pub total_paise: i64,
+}
+
+/// One issued (or cancelled) GST invoice. Field-for-field `invoice`
+/// (`0006_m3_billing.sql`); `lines` is not a column — callers that need the
+/// lines call [`crate::repo::list_invoice_lines`] separately, matching the
+/// `Kot`/`KotTicketItem` split already used for kitchen tickets.
+#[derive(Debug, Clone)]
+pub struct Invoice {
+    pub id: String,
+    pub outlet_id: String,
+    pub order_id: String,
+    pub split_group_id: Option<String>,
+    pub split_index: i64,
+    pub split_count: i64,
+    pub series_id: String,
+    pub invoice_number: String,
+    pub invoice_date: String,
+    pub business_date: String,
+    pub status: String,
+    pub cancelled_reason: Option<String>,
+    pub cancelled_at: Option<String>,
+    pub customer_name: Option<String>,
+    pub customer_phone: Option<String>,
+    pub customer_gstin: Option<String>,
+    pub place_of_supply_state_code: String,
+    pub subtotal_paise: i64,
+    pub discount_paise: i64,
+    pub taxable_value_paise: i64,
+    pub cgst_paise: i64,
+    pub sgst_paise: i64,
+    pub igst_paise: i64,
+    pub cess_paise: i64,
+    pub round_off_paise: i64,
+    pub grand_total_paise: i64,
+    pub compliance_version_id: String,
+    pub tax_snapshot_json: String,
+    pub fiscal_profile_json: String,
+    pub channel: String,
+    pub tax_liability_party: String,
+    pub eco_operator_name: Option<String>,
+    pub eco_operator_gstin: Option<String>,
+    pub supply_classification: Option<String>,
+    pub created_by_user_id: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub version: i64,
+    pub sync_status: String,
+}
+
+/// Insert shape for [`Invoice`] — identical field set; kept as a separate
+/// type (the `NewOrder`/`Order` precedent) so a caller cannot accidentally
+/// supply `version`/`sync_status`, which this crate always sets itself
+/// (`1`/`'PENDING'`) at insert time.
+#[derive(Debug, Clone)]
+pub struct NewInvoice {
+    pub id: String,
+    pub outlet_id: String,
+    pub order_id: String,
+    pub split_group_id: Option<String>,
+    pub split_index: i64,
+    pub split_count: i64,
+    pub series_id: String,
+    pub invoice_number: String,
+    pub invoice_date: String,
+    pub business_date: String,
+    pub customer_name: Option<String>,
+    pub customer_phone: Option<String>,
+    pub customer_gstin: Option<String>,
+    pub place_of_supply_state_code: String,
+    pub subtotal_paise: i64,
+    pub discount_paise: i64,
+    pub taxable_value_paise: i64,
+    pub cgst_paise: i64,
+    pub sgst_paise: i64,
+    pub igst_paise: i64,
+    pub cess_paise: i64,
+    pub round_off_paise: i64,
+    pub grand_total_paise: i64,
+    pub compliance_version_id: String,
+    pub tax_snapshot_json: String,
+    pub fiscal_profile_json: String,
+    pub channel: String,
+    pub tax_liability_party: String,
+    pub eco_operator_name: Option<String>,
+    pub eco_operator_gstin: Option<String>,
+    pub supply_classification: Option<String>,
+    pub created_by_user_id: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Insert shape for [`InvoiceLine`] — same rationale as [`NewInvoice`].
+#[derive(Debug, Clone)]
+pub struct NewInvoiceLine {
+    pub id: String,
+    pub invoice_id: String,
+    pub order_item_id: String,
+    pub line_no: i64,
+    pub description: String,
+    pub hsn_sac: Option<String>,
+    pub quantity: i64,
+    pub unit_price_paise: i64,
+    pub gross_paise: i64,
+    pub discount_paise: i64,
+    pub taxable_value_paise: i64,
+    pub tax_profile_id: String,
+    pub cgst_rate_bps: i64,
+    pub cgst_paise: i64,
+    pub sgst_rate_bps: i64,
+    pub sgst_paise: i64,
+    pub igst_rate_bps: i64,
+    pub igst_paise: i64,
+    pub cess_rate_bps: i64,
+    pub cess_paise: i64,
+    pub total_paise: i64,
+}
+
 // ------------------------------------------- device_credential_cache (0.4.3) --
 // CONFIG, cloud->edge (ADR-011 pattern extended to devices, ADR-017
 // amendment). Mirrors `packages/contracts/sqlite/0008_edge_device_credential_
