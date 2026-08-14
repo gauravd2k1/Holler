@@ -1841,9 +1841,31 @@ fn a_printed_kot_ticket_carries_the_short_display_number_not_the_order_uuid() {
         !printed_text.contains(&order.holler_order_id),
         "a printed ticket must never carry the raw order UUID; got: {printed_text}"
     );
+
+    // Exact lines, not a substring check: `bare_number` ("A1") is itself a
+    // substring of a doubled `##A1`/`#A1` marker, so a bare `contains` here
+    // would pass even if `build_order_ctx`'s `#`-strip regressed and
+    // `adapter::sequence_marker` doubled the `#` back on
+    // (docs/retro.md-shaped defect the coordinator's verifier caught: this
+    // exact test previously stayed green against a reintroduced `##A1`).
+    // Pinning the two lines the template actually emits
+    // (`template::render_kot`: `"KOT {sequence_marker}"` / `"Order
+    // {order_display_number}"`) catches that whole class without pinning the
+    // rest of the ticket's layout.
     let bare_number = display_number.trim_start_matches('#');
+    let expected_kot_line = format!("KOT #{bare_number}");
+    let expected_order_line = format!("Order {bare_number}");
     assert!(
-        printed_text.contains(bare_number),
-        "printed ticket must carry the short display number {bare_number}; got: {printed_text}"
+        printed_text.contains(&expected_kot_line),
+        "printed ticket must contain the exact line {expected_kot_line:?}; got: {printed_text}"
+    );
+    assert!(
+        printed_text.contains(&expected_order_line),
+        "printed ticket must contain the exact line {expected_order_line:?}; got: {printed_text}"
+    );
+    assert!(
+        !printed_text.contains("##"),
+        "a doubled '#' means the short number and the KOT sequence marker \
+         collided (the `#`-strip in `build_order_ctx` regressed); got: {printed_text}"
     );
 }
