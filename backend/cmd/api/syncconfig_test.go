@@ -10,6 +10,7 @@ import (
 	contracts "github.com/holler/contracts"
 
 	"github.com/holler/backend/internal/auth"
+	"github.com/holler/backend/internal/compliance"
 	"github.com/holler/backend/internal/kitchen"
 	"github.com/holler/backend/internal/menu"
 	"github.com/holler/backend/internal/outlet"
@@ -64,6 +65,17 @@ func (f fakeKitchenProvider) SyncConfigBundle(ctx context.Context, tenantID, out
 	return f.bundle, nil
 }
 
+type fakeComplianceProvider struct {
+	bundle compliance.ConfigBundle
+}
+
+func (f fakeComplianceProvider) SyncConfigBundle(ctx context.Context, tenantID, outletID string, sinceVersion int) (compliance.ConfigBundle, error) {
+	if tenantID != scTenantID || outletID != scOutletID {
+		return compliance.ConfigBundle{}, httpx.ErrNotFound
+	}
+	return f.bundle, nil
+}
+
 // fakeUsersProvider stands in for auth.Service.ListEdgeUserCache. It applies
 // the same tenant/since_version filtering a real implementation must, so
 // tests can assert the handler passes both through untouched.
@@ -111,6 +123,15 @@ func newTestSyncConfigHandler() *syncConfigHandler {
 				ItemStations:    []contracts.MenuItemStation{{MenuItemID: "item-new", StationID: "station-1"}},
 				Printers:        []contracts.Printer{{ID: "printer-1", OutletID: scOutletID}},
 				StationPrinters: []contracts.StationPrinter{{StationID: "station-1", PrinterID: "printer-1"}},
+			},
+		},
+		fakeComplianceProvider{
+			bundle: compliance.ConfigBundle{
+				ComplianceVersions:  []contracts.ComplianceVersion{},
+				TaxProfiles:         []contracts.TaxProfile{},
+				TaxRules:            []contracts.TaxRule{},
+				InvoiceSeries:       []contracts.InvoiceSeries{},
+				DiscountDefinitions: []contracts.DiscountDefinition{},
 			},
 		},
 		fakeUsersProvider{

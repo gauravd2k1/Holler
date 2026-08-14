@@ -357,6 +357,35 @@ func TestEnvelopeGet_UnwrappedReadPaths(t *testing.T) {
 	}
 }
 
+func TestEnvelopeRoutes_TolerateTrailingSlash(t *testing.T) {
+	outletID := id.New()
+	repo := newFakeRepository(outletID)
+	tableID := setUpTableForSessions(t, repo, outletID)
+	svc := NewService(repo)
+	router := newTestRouter(svc)
+
+	recordID := id.New()
+	openRec := doJSON(t, router, http.MethodPost, "/outlets/"+outletID+"/table-sessions/", openEnvelope(recordID, outletID, tableID, 2, 1))
+	if openRec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 for trailing-slash open, got %d: %s", openRec.Code, openRec.Body.String())
+	}
+
+	listRec := doJSON(t, router, http.MethodGet, "/outlets/"+outletID+"/table-sessions/", nil)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for trailing-slash list, got %d: %s", listRec.Code, listRec.Body.String())
+	}
+
+	getRec := doJSON(t, router, http.MethodGet, "/outlets/"+outletID+"/table-sessions/"+recordID+"/", nil)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for trailing-slash get, got %d: %s", getRec.Code, getRec.Body.String())
+	}
+
+	transitionRec := doJSON(t, router, http.MethodPost, "/outlets/"+outletID+"/table-sessions/"+recordID+"/", transitionEnvelope(recordID, outletID, tableID, "ORDERED", 2))
+	if transitionRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for trailing-slash transition, got %d: %s", transitionRec.Code, transitionRec.Body.String())
+	}
+}
+
 // --- existing guarantees, exercised through the HTTP surface ---------------
 
 func TestEnvelopeOpen_NeverBumpsConfigVersion(t *testing.T) {

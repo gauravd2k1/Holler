@@ -36,18 +36,32 @@ import (
 // two different middleware groups in backend/cmd/api/main.go, which would
 // collide if either used Route() — plain method-specific registration
 // (r.Post/r.Get) has no such conflict, which is exactly REST routing.
+//
+// Each pattern is registered twice — with and without a trailing slash — to
+// preserve the tolerance the old r.Route(...).Post("/") form gave for free
+// (chi's Mount() accepts both "/outlets/x/table-sessions" and
+// "/outlets/x/table-sessions/"). Plain r.Post/r.Get is exact-match only, so
+// without the explicit second registration the trailing-slash variant 404s
+// — a silent behaviour change from before this route was split, found in
+// T8's gate. Neither registration uses r.Route/Mount, so the panic risk
+// above does not reapply.
 func (h *Handlers) MountEnvelopeIngest(r chi.Router) {
 	r.Post("/outlets/{outletId}/table-sessions", h.replayOpenSession)
+	r.Post("/outlets/{outletId}/table-sessions/", h.replayOpenSession)
 	r.Post("/outlets/{outletId}/table-sessions/{sessionId}", h.replaySessionTransition)
+	r.Post("/outlets/{outletId}/table-sessions/{sessionId}/", h.replaySessionTransition)
 }
 
 // MountEnvelopeRead registers the unwrapped GET side of the table_session
 // surface: it returns the aggregate, not an envelope, and is HUMAN-
 // authenticated (there is no protocol reason to gate a read behind a device
-// credential).
+// credential). Each pattern is registered with and without a trailing slash
+// for the same reason as MountEnvelopeIngest above.
 func (h *Handlers) MountEnvelopeRead(r chi.Router) {
 	r.Get("/outlets/{outletId}/table-sessions", h.listOpenSessions)
+	r.Get("/outlets/{outletId}/table-sessions/", h.listOpenSessions)
 	r.Get("/outlets/{outletId}/table-sessions/{sessionId}", h.getSession)
+	r.Get("/outlets/{outletId}/table-sessions/{sessionId}/", h.getSession)
 }
 
 // envelopeWire mirrors contracts.SyncEnvelope (packages/contracts/go/sync.go)

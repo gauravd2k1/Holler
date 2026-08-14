@@ -17,6 +17,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/holler/backend/internal/auth"
+	"github.com/holler/backend/internal/compliance"
 	"github.com/holler/backend/internal/health"
 	"github.com/holler/backend/internal/kitchen"
 	"github.com/holler/backend/internal/menu"
@@ -143,8 +144,19 @@ func buildRouter(pool postgres.Pool, cfg config.Config) *chi.Mux {
 	paymentsSvc := payments.NewService(paymentsRepo)
 	paymentsHandler := payments.NewHandler(paymentsSvc)
 
+	// --- compliance (ADR-016; T13) ------------------------------------------
+	// compliance_version, tax_profile (+ its tax_rule children),
+	// invoice_series, discount_definition and outlet_fiscal_profile are
+	// CLOUD_TO_EDGE config: the cloud is where these get written, unlike
+	// payments' aggregates above. Every route complianceHandler.Mount
+	// registers is HUMAN-authenticated (management decisions), so it belongs
+	// in the human-auth group, not the device-authenticated one.
+	complianceRepo := compliance.NewRepository(pool)
+	complianceSvc := compliance.NewService(complianceRepo)
+	complianceHandler := compliance.NewHandler(complianceSvc)
+
 	// --- composite GET /sync/config ---------------------------------------
-	syncConfig := newSyncConfigHandler(outletSvc, menuSvc, tablesSvc, kitchenSvc, authSvc)
+	syncConfig := newSyncConfigHandler(outletSvc, menuSvc, tablesSvc, kitchenSvc, complianceSvc, authSvc)
 
 	router := httpx.NewRouter()
 	router.Get("/health", health.Handler)
@@ -176,6 +188,7 @@ func buildRouter(pool postgres.Pool, cfg config.Config) *chi.Mux {
 		tablesHandlers.Mount(r)
 		orderingHandler.Mount(r)
 		kitchenHandler.Mount(r)
+		complianceHandler.Mount(r)
 
 		// Device enrollment/rotation/revocation are human-privileged
 		// management actions (a technician or manager acting through an

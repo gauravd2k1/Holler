@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/holler/backend/internal/auth"
+	"github.com/holler/backend/internal/compliance"
 	"github.com/holler/backend/internal/menu"
 	"github.com/holler/backend/internal/ordering"
 	"github.com/holler/backend/internal/outlet"
@@ -47,9 +48,10 @@ func setupPool(t *testing.T) postgres.Pool {
 
 // fixture builds a tenant/brand/outlet/order/order_item chain (so
 // invoice_line.order_item_id and invoice/payment.order_id resolve), an
-// app_user (for created_by_user_id), and — via raw SQL, since no config
-// service owns these yet — the CLOUD_TO_EDGE config rows an invoice
-// references: compliance_version, tax_profile, invoice_series.
+// app_user (for created_by_user_id), and — through
+// backend/internal/compliance.Service, the same write path a real outlet
+// configures itself through, not raw SQL (T13) — the CLOUD_TO_EDGE config
+// rows an invoice references: compliance_version, tax_profile, invoice_series.
 type fixture struct {
 	tenantID          string
 	outletID          string
@@ -136,35 +138,40 @@ func newFixture(t *testing.T, pool postgres.Pool) fixture {
 		t.Fatalf("CreateUser: %v", err)
 	}
 
-	complianceVersionID := id.New()
-	if _, err := pool.Exec(ctx,
-		`INSERT INTO compliance_version (id, outlet_id, label, effective_from, config_version) VALUES ($1,$2,$3,$4,1)`,
-		complianceVersionID, out.ID, "v1-"+complianceVersionID, now,
-	); err != nil {
-		t.Fatalf("seeding compliance_version: %v", err)
+	complianceSvc := compliance.NewService(compliance.NewRepository(pool))
+	configCtx := auth.WithPrincipal(ctx, auth.AuthenticatedPrincipal{
+		UserID:      "principal-user",
+		TenantID:    org.ID,
+		OutletID:    out.ID,
+		Permissions: []auth.Permission{auth.PermissionOutletManage},
+	})
+
+	cv, err := complianceSvc.CreateComplianceVersion(configCtx, org.ID, compliance.NewComplianceVersionInput{
+		OutletID: out.ID, Label: "v1-" + id.New(), EffectiveFrom: now,
+	})
+	if err != nil {
+		t.Fatalf("CreateComplianceVersion: %v", err)
 	}
 
-	taxProfileID := id.New()
-	if _, err := pool.Exec(ctx,
-		`INSERT INTO tax_profile (id, outlet_id, code, name, pricing_mode, is_default, is_active, config_version)
-		 VALUES ($1,$2,$3,$4,'EXCLUSIVE',true,true,1)`,
-		taxProfileID, out.ID, "GST5-"+taxProfileID[:8], "GST 5%",
-	); err != nil {
-		t.Fatalf("seeding tax_profile: %v", err)
+	taxProfile, _, err := complianceSvc.CreateTaxProfile(configCtx, org.ID, compliance.NewTaxProfileInput{
+		OutletID: out.ID, Code: "GST5-" + id.New()[:8], Name: "GST 5%",
+		PricingMode: contracts.PricingModeExclusive, IsDefault: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateTaxProfile: %v", err)
 	}
 
-	seriesID := id.New()
-	if _, err := pool.Exec(ctx,
-		`INSERT INTO invoice_series (id, outlet_id, code, prefix_template, reset_policy, padding_width, is_active, config_version)
-		 VALUES ($1,$2,$3,'FY{FY}/{OUTLET}/','FY',6,true,1)`,
-		seriesID, out.ID, "MAIN-"+seriesID[:8],
-	); err != nil {
-		t.Fatalf("seeding invoice_series: %v", err)
+	series, err := complianceSvc.CreateInvoiceSeries(configCtx, org.ID, compliance.NewInvoiceSeriesInput{
+		OutletID: out.ID, Code: "MAIN-" + id.New()[:8], PrefixTemplate: "FY{FY}/{OUTLET}/",
+		ResetPolicy: contracts.SequenceResetFY, PaddingWidth: 6,
+	})
+	if err != nil {
+		t.Fatalf("CreateInvoiceSeries: %v", err)
 	}
 
 	return fixture{
 		tenantID: org.ID, outletID: out.ID, orderID: orderID, orderItemID: orderItemID,
-		userID: userID, seriesID: seriesID, complianceVersion: complianceVersionID, taxProfileID: taxProfileID,
+		userID: userID, seriesID: series.ID, complianceVersion: cv.ID, taxProfileID: taxProfile.ID,
 	}
 }
 

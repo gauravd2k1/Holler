@@ -7,6 +7,7 @@ import (
 
 	contracts "github.com/holler/contracts"
 
+	"github.com/holler/backend/internal/compliance"
 	"github.com/holler/backend/internal/kitchen"
 	"github.com/holler/backend/internal/menu"
 	"github.com/holler/backend/internal/outlet"
@@ -58,6 +59,16 @@ type kitchenConfigProvider interface {
 	SyncConfigBundle(ctx context.Context, tenantID, outletID string, sinceVersion int) (kitchen.ConfigBundle, error)
 }
 
+// complianceConfigProvider is the minimal seam onto backend/internal/
+// compliance (T13): compliance_version, tax_profile (+ its tax_rule
+// children), invoice_series, discount_definition and the outlet's current
+// outlet_fiscal_profile, pre-filtered by since_version and pre-scoped to the
+// caller's tenant (compliance.Service.SyncConfigBundle calls
+// requireOutletInTenant itself, mirroring kitchen.Service.SyncConfigBundle).
+type complianceConfigProvider interface {
+	SyncConfigBundle(ctx context.Context, tenantID, outletID string, sinceVersion int) (compliance.ConfigBundle, error)
+}
+
 // edgeUserCacheProvider is the minimal seam onto backend/internal/auth this
 // handler needs: users eligible to log in at outletID, with password_hash /
 // pin_hash carried verbatim and permissions already flattened server-side
@@ -107,30 +118,37 @@ type itemConfigWire struct {
 // syncConfigResponse is packages/contracts/openapi/openapi.yaml's
 // GET /sync/config 200 response, all nine required fields.
 type syncConfigResponse struct {
-	ConfigVersion   int                            `json:"config_version"`
-	Users           []contracts.EdgeUserCacheEntry `json:"users"`
-	Tables          []tableConfigWire              `json:"tables"`
-	Categories      []categoryConfigWire           `json:"categories"`
-	Items           []itemConfigWire               `json:"items"`
-	Stations        []contracts.Station            `json:"stations"`
-	ItemStations    []contracts.MenuItemStation    `json:"item_stations"`
-	Printers        []contracts.Printer            `json:"printers"`
-	StationPrinters []contracts.StationPrinter     `json:"station_printers"`
+	ConfigVersion       int                            `json:"config_version"`
+	Users               []contracts.EdgeUserCacheEntry `json:"users"`
+	Tables              []tableConfigWire              `json:"tables"`
+	Categories          []categoryConfigWire           `json:"categories"`
+	Items               []itemConfigWire               `json:"items"`
+	Stations            []contracts.Station            `json:"stations"`
+	ItemStations        []contracts.MenuItemStation    `json:"item_stations"`
+	Printers            []contracts.Printer            `json:"printers"`
+	StationPrinters     []contracts.StationPrinter     `json:"station_printers"`
+	ComplianceVersions  []contracts.ComplianceVersion  `json:"compliance_versions"`
+	TaxProfiles         []contracts.TaxProfile         `json:"tax_profiles"`
+	TaxRules            []contracts.TaxRule            `json:"tax_rules"`
+	InvoiceSeries       []contracts.InvoiceSeries      `json:"invoice_series"`
+	DiscountDefinitions []contracts.DiscountDefinition `json:"discount_definitions"`
+	FiscalProfile       *contracts.OutletFiscalProfile `json:"fiscal_profile"`
 }
 
 // syncConfigHandler assembles the composite bundle. It never runs SQL
 // itself — every field comes from an owning context's already-exported,
 // already-tenant/outlet-scoped Service method.
 type syncConfigHandler struct {
-	outlets outletConfigProvider
-	menu    menuConfigProvider
-	tables  tablesConfigProvider
-	kitchen kitchenConfigProvider
-	users   edgeUserCacheProvider
+	outlets    outletConfigProvider
+	menu       menuConfigProvider
+	tables     tablesConfigProvider
+	kitchen    kitchenConfigProvider
+	compliance complianceConfigProvider
+	users      edgeUserCacheProvider
 }
 
-func newSyncConfigHandler(outlets outletConfigProvider, menuSvc menuConfigProvider, tablesSvc tablesConfigProvider, kitchenSvc kitchenConfigProvider, usersSvc edgeUserCacheProvider) *syncConfigHandler {
-	return &syncConfigHandler{outlets: outlets, menu: menuSvc, tables: tablesSvc, kitchen: kitchenSvc, users: usersSvc}
+func newSyncConfigHandler(outlets outletConfigProvider, menuSvc menuConfigProvider, tablesSvc tablesConfigProvider, kitchenSvc kitchenConfigProvider, complianceSvc complianceConfigProvider, usersSvc edgeUserCacheProvider) *syncConfigHandler {
+	return &syncConfigHandler{outlets: outlets, menu: menuSvc, tables: tablesSvc, kitchen: kitchenSvc, compliance: complianceSvc, users: usersSvc}
 }
 
 // ServeHTTP requires a verified DevicePrincipal in context (ADR-017 §2):
@@ -198,6 +216,11 @@ func (h *syncConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, err)
 		return
 	}
+	complianceBundle, err := h.compliance.SyncConfigBundle(r.Context(), tenantID, outletID, sinceVersion)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
 	users, err := h.users.ListEdgeUserCache(r.Context(), tenantID, outletID, sinceVersion)
 	if err != nil {
 		httpx.Error(w, err)
@@ -205,15 +228,21 @@ func (h *syncConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := syncConfigResponse{
-		ConfigVersion:   o.ConfigVersion,
-		Users:           users,
-		Tables:          filterTables(tbls, sinceVersion),
-		Categories:      filterCategories(cats, sinceVersion),
-		Items:           filterItems(items, sinceVersion),
-		Stations:        bundle.Stations,
-		ItemStations:    bundle.ItemStations,
-		Printers:        bundle.Printers,
-		StationPrinters: bundle.StationPrinters,
+		ConfigVersion:       o.ConfigVersion,
+		Users:               users,
+		Tables:              filterTables(tbls, sinceVersion),
+		Categories:          filterCategories(cats, sinceVersion),
+		Items:               filterItems(items, sinceVersion),
+		Stations:            bundle.Stations,
+		ItemStations:        bundle.ItemStations,
+		Printers:            bundle.Printers,
+		StationPrinters:     bundle.StationPrinters,
+		ComplianceVersions:  complianceBundle.ComplianceVersions,
+		TaxProfiles:         complianceBundle.TaxProfiles,
+		TaxRules:            complianceBundle.TaxRules,
+		InvoiceSeries:       complianceBundle.InvoiceSeries,
+		DiscountDefinitions: complianceBundle.DiscountDefinitions,
+		FiscalProfile:       complianceBundle.FiscalProfile,
 	}
 	if resp.Users == nil {
 		resp.Users = []contracts.EdgeUserCacheEntry{}
