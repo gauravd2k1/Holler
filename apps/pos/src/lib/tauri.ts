@@ -396,12 +396,17 @@ export async function listInvoicesForOrder(orderId: string): Promise<Invoice[]> 
  * null`) or a reversal (void/refund). `cashierUserId` is `created_by_user_id`
  * on the stored row; `cashShiftId` links a CASH tender to the cashier's open
  * shift (so it posts a `cash_movement`) and is `null` for every other method
- * or when no shift is open. Rejects with `FORWARD_PAYMENT_AMOUNT_NOT_POSITIVE`/
- * `REVERSAL_AMOUNT_NOT_NON_POSITIVE`/`REVERSAL_EXCEEDS_REMAINING`/etc — see
- * `billingErrorMessage`. There is no "edit a payment" command: a correction
- * is always a new call here with `reversesPaymentId` set (apps/pos/
- * src-tauri/src/commands/billing.rs `record_payment_impl` — the append-only
- * shape docs/spec/payments.md requires). */
+ * or when no shift is open. `invoiceId` names which invoice a FORWARD tender
+ * settles — required once a bill has been issued, so the edge can reject a
+ * tender that would exceed the invoice's remaining due (T9 retry: the
+ * double-settlement defect, `FORWARD_PAYMENT_EXCEEDS_REMAINING_DUE`); a
+ * reversal ignores it and derives its own target automatically. Rejects with
+ * `FORWARD_PAYMENT_AMOUNT_NOT_POSITIVE`/`REVERSAL_AMOUNT_NOT_NON_POSITIVE`/
+ * `REVERSAL_EXCEEDS_REMAINING`/`FORWARD_PAYMENT_EXCEEDS_REMAINING_DUE`/etc —
+ * see `billingErrorMessage`. There is no "edit a payment" command: a
+ * correction is always a new call here with `reversesPaymentId` set
+ * (apps/pos/src-tauri/src/commands/billing.rs `record_payment_impl` — the
+ * append-only shape docs/spec/payments.md requires). */
 export async function recordPayment(args: {
   orderId: string;
   method: PaymentMethod;
@@ -411,6 +416,7 @@ export async function recordPayment(args: {
   reference: string | null;
   cashShiftId: string | null;
   reversesPaymentId: string | null;
+  invoiceId: string | null;
   createdByUserId: string;
 }): Promise<Payment> {
   try {
@@ -423,6 +429,7 @@ export async function recordPayment(args: {
       reference: args.reference,
       cashShiftId: args.cashShiftId,
       reversesPaymentId: args.reversesPaymentId,
+      invoiceId: args.invoiceId,
       createdByUserId: args.createdByUserId,
     });
     return PaymentSchema.parse(raw);
@@ -504,6 +511,22 @@ export async function recordPaidInOut(args: {
 export async function getCashShift(cashShiftId: string): Promise<CashShift | null> {
   try {
     const raw = await invoke("get_cash_shift", { cashShiftId });
+    return raw === null ? null : CashShiftSchema.parse(raw);
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
+
+/** Recovers `cashierUserId`'s currently OPEN shift on this device, if any
+ * (T9 retry, Defect 2: "cash shift restart is an operational dead end").
+ * Unlike `getCashShift`, this needs no shift id — the POS calls it on
+ * startup, once a cashier is known, to recover a shift orphaned by a
+ * restart automatically rather than leaving it permanently unclosable
+ * (`apps/pos/src-tauri/src/commands/billing.rs` `find_open_cash_shift_impl`,
+ * `holler_edge_database::Db::find_open_cash_shift`). */
+export async function findOpenCashShift(cashierUserId: string): Promise<CashShift | null> {
+  try {
+    const raw = await invoke("find_open_cash_shift", { cashierUserId });
     return raw === null ? null : CashShiftSchema.parse(raw);
   } catch (err) {
     throw toCommandError(err);

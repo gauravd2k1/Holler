@@ -7,7 +7,8 @@
 use holler_edge_database::{model, repo, Db};
 
 use holler_pos_lib::commands::billing::{
-    close_cash_shift_impl, issue_invoice_impl, open_cash_shift_impl, record_payment_impl,
+    close_cash_shift_impl, find_open_cash_shift_impl, issue_invoice_impl, open_cash_shift_impl,
+    record_payment_impl,
 };
 use holler_pos_lib::commands::orders::{create_order_impl, NewOrderItemRequest};
 use holler_pos_lib::state::AppState;
@@ -231,6 +232,8 @@ fn a_split_tender_across_two_methods_is_recorded_as_two_append_only_payments() {
     assert_eq!(invoice.grand_total_paise, 21_000); // Rs.200 + 5% GST
 
     // Split: Rs.100 cash + Rs.110 UPI = Rs.210, matching the §35 shape.
+    // Both name `invoice.id` — T9 retry: this is what lets the edge validate
+    // each tender against the invoice's actual remaining due.
     let cash = record_payment_impl(
         &state,
         &order.holler_order_id,
@@ -241,6 +244,7 @@ fn a_split_tender_across_two_methods_is_recorded_as_two_append_only_payments() {
         None,
         None,
         None,
+        Some(invoice.id.clone()),
         USER_ID,
     )
     .expect("cash tender");
@@ -254,6 +258,7 @@ fn a_split_tender_across_two_methods_is_recorded_as_two_append_only_payments() {
         None,
         None,
         None,
+        Some(invoice.id.clone()),
         USER_ID,
     )
     .expect("upi tender");
@@ -265,6 +270,28 @@ fn a_split_tender_across_two_methods_is_recorded_as_two_append_only_payments() {
     // refine in packages/contracts/src/types/payment.ts).
     assert_eq!(upi.tendered_paise, None);
     assert_eq!(upi.change_paise, None);
+
+    // T9 retry, Defect 1: one paisa more than what remains (already zero
+    // after the split above) must be rejected at the edge, not merely by a
+    // disabled button.
+    let err = record_payment_impl(
+        &state,
+        &order.holler_order_id,
+        "CASH",
+        1,
+        Some(1),
+        Some(0),
+        None,
+        None,
+        None,
+        Some(invoice.id.clone()),
+        USER_ID,
+    )
+    .expect_err("a tender against an already fully-settled invoice must be rejected");
+    assert_eq!(err.code, "FORWARD_PAYMENT_EXCEEDS_REMAINING_DUE");
+    // §64: the message must name the actual amount outstanding, not a
+    // generic failure.
+    assert!(err.message.contains('0'));
 }
 
 #[test]
@@ -288,4 +315,42 @@ fn a_non_zero_variance_close_is_rejected_without_a_reason_and_the_shift_stays_op
     .expect("close with a reason succeeds");
     assert_eq!(with_reason.status, "CLOSED");
     assert_eq!(with_reason.variance_paise, Some(5_000));
+}
+
+/// T9 retry, Defect 2: a POS restart loses the in-memory shift id
+/// (`apps/pos/src/store/cashShift.ts`), but `find_open_cash_shift_impl` —
+/// the same query the POS calls on startup — recovers it through the
+/// command layer without the caller ever supplying a shift id, and the
+/// recovered shift can then be closed normally.
+#[test]
+fn find_open_cash_shift_recovers_after_a_simulated_restart_and_can_then_be_closed() {
+    let state = app_state();
+    assert!(
+        find_open_cash_shift_impl(&state, USER_ID)
+            .expect("query")
+            .is_none(),
+        "nothing open yet"
+    );
+
+    let opened = open_cash_shift_impl(&state, USER_ID, 20_000).expect("open shift");
+
+    // Simulate the restart: nothing about the shift id survives except what
+    // is durable in SQLite — the command layer is asked to find it purely
+    // from device_id (state) + cashier_user_id, no id supplied.
+    let recovered = find_open_cash_shift_impl(&state, USER_ID)
+        .expect("query")
+        .expect("the open shift must be recovered without knowing its id");
+    assert_eq!(recovered.id, opened.id);
+    assert_eq!(recovered.status, "OPEN");
+
+    let closed = close_cash_shift_impl(&state, &recovered.id, 20_000, None)
+        .expect("the recovered shift can be closed normally");
+    assert_eq!(closed.status, "CLOSED");
+
+    assert!(
+        find_open_cash_shift_impl(&state, USER_ID)
+            .expect("query")
+            .is_none(),
+        "a closed shift is no longer found as open"
+    );
 }

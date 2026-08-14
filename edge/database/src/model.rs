@@ -901,6 +901,33 @@ pub struct PaymentOutboxMeta {
     pub occurred_at: String,
 }
 
+/// Insert shape for [`PaymentAllocation`] — how one tender settles against
+/// one invoice (`payment_allocation`, `0006_m3_billing.sql`; ADR-016 §1).
+/// `crate::payment::tender::record_payment` is the only writer: a forward
+/// tender allocates against the invoice its caller names (validated against
+/// the invoice's remaining due before anything is written, T9 retry); a
+/// reversal allocates against whatever invoice its original payment was
+/// allocated to, derived automatically rather than trusted from a caller.
+#[derive(Debug, Clone)]
+pub struct NewPaymentAllocation {
+    pub id: String,
+    pub payment_id: String,
+    pub invoice_id: String,
+    /// Same sign as the payment it comes from — positive on a forward
+    /// tender's allocation, non-positive on a reversal's.
+    pub amount_paise: i64,
+}
+
+/// A `payment_allocation` row, as stored. Field-for-field the table plus
+/// nothing else.
+#[derive(Debug, Clone)]
+pub struct PaymentAllocation {
+    pub id: String,
+    pub payment_id: String,
+    pub invoice_id: String,
+    pub amount_paise: i64,
+}
+
 /// Cashier-specific register (§39) — insert shape for opening a shift.
 /// `status`/`closed_at`/`expected_cash_paise`/`actual_cash_paise`/
 /// `variance_paise`/`variance_reason` are never caller-supplied at open

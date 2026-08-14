@@ -163,6 +163,14 @@ describe("billingErrorMessage", () => {
       billingErrorMessage({ code: "FORWARD_PAYMENT_AMOUNT_NOT_POSITIVE", message: "x" }),
     ).toMatch(/greater than zero/);
   });
+
+  it("surfaces the edge's own message verbatim for a double-settlement rejection (T9 retry)", () => {
+    const err = {
+      code: "FORWARD_PAYMENT_EXCEEDS_REMAINING_DUE",
+      message: "payment of 100 paise exceeds invoice inv-1's remaining due of 0 paise",
+    };
+    expect(billingErrorMessage(err)).toBe(err.message);
+  });
 });
 
 describe("projectedVariancePaise", () => {

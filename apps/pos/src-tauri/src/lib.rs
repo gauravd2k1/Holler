@@ -63,6 +63,7 @@ pub fn run() {
             commands::billing::close_cash_shift,
             commands::billing::record_paid_in_out,
             commands::billing::get_cash_shift,
+            commands::billing::find_open_cash_shift,
         ])
         .build(tauri::generate_context!())
         .expect("error while building the Holler POS application")

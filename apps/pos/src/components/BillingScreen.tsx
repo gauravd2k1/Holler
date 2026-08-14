@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import type { PaymentMethod } from "@holler/contracts";
@@ -15,6 +15,7 @@ import {
   billingErrorMessage,
   canOfferBilling,
   canOfferReversal,
+  isFullySettled,
   isVarianceReasonRequired,
   pendingTenderTotalPaise,
   projectedVariancePaise,
@@ -57,6 +58,7 @@ export function BillingScreen() {
   const principal = useAuthStore((s) => s.principal);
   const openShiftId = useCashShiftStore((s) => s.openShiftId);
   const setOpenShiftId = useCashShiftStore((s) => s.setOpenShiftId);
+  const recoverOpenShift = useCashShiftStore((s) => s.recoverOpenShift);
 
   const orderQuery = useOrderQuery(orderId);
   const invoicesQuery = useInvoicesForOrderQuery(orderId);
@@ -81,6 +83,17 @@ export function BillingScreen() {
   // a real `CASH_VARIANCE_REASON_REQUIRED` response, so the reason field is
   // never hidden again once the edge has said it is mandatory.
   const [varianceReasonRequired, setVarianceReasonRequired] = useState(false);
+
+  // T9 retry, Defect 2: recover a shift orphaned by a POS restart
+  // automatically, the moment a cashier is known — no manual id entry.
+  // `recoverOpenShift` is a no-op once `openShiftId` is already set (e.g.
+  // this session already opened one), so this is safe to run on every mount.
+  useEffect(() => {
+    if (!principal) return;
+    recoverOpenShift(principal.user_id).catch((err: unknown) => {
+      setShiftError(billingErrorMessage(err));
+    });
+  }, [principal, recoverOpenShift]);
 
   const invoices = invoicesQuery.data ?? [];
   const invoice = invoices[0] ?? null;
@@ -141,6 +154,10 @@ export function BillingScreen() {
           reference: null,
           cashShiftId: isCash ? openShiftId : null,
           reversesPaymentId: null,
+          // T9 retry, Defect 1: naming the invoice is what lets the edge
+          // reject a tender that would exceed its remaining due, rather
+          // than trusting a disabled button alone.
+          invoiceId: invoice.id,
           createdByUserId: principal.user_id,
         });
       }
@@ -169,6 +186,9 @@ export function BillingScreen() {
         reference: null,
         cashShiftId: openShiftId,
         reversesPaymentId: paymentId,
+        // A reversal always derives its own allocation target from the
+        // original payment (T9 retry) — this is ignored at the edge.
+        invoiceId: null,
         createdByUserId: principal.user_id,
       });
       await queryClient.invalidateQueries({ queryKey: queryKeys.payments(orderId) });
@@ -226,6 +246,11 @@ export function BillingScreen() {
   const due = invoice ? amountDuePaise(invoice, payments) : 0;
   const enteredTotal = pendingTenderTotalPaise(pendingTenders);
   const remaining = invoice ? remainingAfterPendingPaise(invoice, payments, pendingTenders) : 0;
+  // T9 retry, Defect 1: the UI stops OFFERING an over-settling tender once
+  // the invoice is fully settled — the edge (`validate_forward`) is what
+  // actually enforces this; this only keeps a cashier from being invited to
+  // attempt something that would just be rejected.
+  const billFullySettled = invoice ? isFullySettled(invoice, payments) : false;
   const projectedVariance =
     shiftQuery.data && actualCashRupees.trim() !== ""
       ? projectedVariancePaise(shiftQuery.data, parseRupeesToPaise(actualCashRupees) ?? 0)
@@ -414,9 +439,10 @@ export function BillingScreen() {
               </button>
             </div>
           ))}
-          <button type="button" disabled={!canBill} onClick={addPendingTender}>
+          <button type="button" disabled={!canBill || billFullySettled} onClick={addPendingTender}>
             + Add Tender
           </button>
+          {billFullySettled && <p>This bill is fully settled — no further tender is needed.</p>}
           <p>Entered so far: {formatPaiseAsRupees(enteredTotal)}</p>
           <p>Remaining after entered tenders: {formatPaiseAsRupees(remaining)}</p>
           {tenderError && (
@@ -426,7 +452,7 @@ export function BillingScreen() {
           )}
           <button
             type="button"
-            disabled={!canBill || pendingTenders.length === 0 || submittingTender}
+            disabled={!canBill || billFullySettled || pendingTenders.length === 0 || submittingTender}
             onClick={() => void handleSubmitTenders()}
           >
             {submittingTender ? "Recording…" : "Record Payment(s)"}

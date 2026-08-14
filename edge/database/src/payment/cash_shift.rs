@@ -441,4 +441,93 @@ mod tests {
         let expected = repo::sum_cash_movements_for_shift_in_tx(&tx, "shift-1").expect("sum");
         assert_eq!(expected, 500_000 - 50_000);
     }
+
+    // ------------------------------------------------------- T9 retry: --
+    // ---------------------------------- open-shift recovery (Defect 2) --
+
+    /// The query a POS restart uses to recover an orphaned open shift —
+    /// through the public `Db` API (mirrors `open_cash_shift_with_outbox`,
+    /// which commits internally, rather than this file's `&tx`-scoped
+    /// helpers which never commit).
+    #[test]
+    fn find_open_cash_shift_recovers_the_open_shift_for_device_and_cashier() {
+        use crate::model::CashShiftOutboxMeta;
+
+        let mut db = open_db();
+        assert!(
+            db.find_open_cash_shift("device-1", "user-1")
+                .expect("query")
+                .is_none(),
+            "no shift open yet"
+        );
+
+        let (opened, _movements) = db
+            .open_cash_shift_with_outbox(
+                new_shift("shift-1"),
+                "mv-1",
+                &CashShiftOutboxMeta {
+                    outbox_id: "out-1".to_string(),
+                    occurred_at: "2026-08-14T09:00:00Z".to_string(),
+                },
+            )
+            .expect("open shift");
+
+        let recovered = db
+            .find_open_cash_shift("device-1", "user-1")
+            .expect("query")
+            .expect("the just-opened shift must be found");
+        assert_eq!(recovered.id, opened.id);
+        assert_eq!(recovered.status, "OPEN");
+
+        // A different device/cashier pair finds nothing.
+        assert!(db
+            .find_open_cash_shift("device-1", "user-2")
+            .expect("query")
+            .is_none());
+        assert!(db
+            .find_open_cash_shift("device-2", "user-1")
+            .expect("query")
+            .is_none());
+    }
+
+    /// Once closed, the shift is no longer found by
+    /// [`crate::Db::find_open_cash_shift`] — recovery only ever surfaces a
+    /// shift the cashier can still act on.
+    #[test]
+    fn find_open_cash_shift_does_not_return_a_closed_shift() {
+        use crate::model::{CashShiftOutboxMeta, CloseCashShiftRequest};
+
+        let mut db = open_db();
+        db.open_cash_shift_with_outbox(
+            new_shift("shift-1"),
+            "mv-1",
+            &CashShiftOutboxMeta {
+                outbox_id: "out-1".to_string(),
+                occurred_at: "2026-08-14T09:00:00Z".to_string(),
+            },
+        )
+        .expect("open shift");
+
+        db.close_cash_shift_with_outbox(
+            CloseCashShiftRequest {
+                cash_shift_id: "shift-1".to_string(),
+                actual_cash_paise: 500_000,
+                closed_at: "2026-08-14T18:00:00Z".to_string(),
+                updated_at: "2026-08-14T18:00:00Z".to_string(),
+                variance_reason: None,
+            },
+            &CashShiftOutboxMeta {
+                outbox_id: "out-2".to_string(),
+                occurred_at: "2026-08-14T18:00:00Z".to_string(),
+            },
+        )
+        .expect("close shift");
+
+        assert!(
+            db.find_open_cash_shift("device-1", "user-1")
+                .expect("query")
+                .is_none(),
+            "a closed shift must not be recoverable as \"open\""
+        );
+    }
 }

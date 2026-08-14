@@ -1194,15 +1194,31 @@ impl Db {
     /// `cash_movement_id` is caller-supplied (UUIDv7); it is only consumed
     /// when this tender is CASH and carries a `cash_shift_id`, matching the
     /// "id always minted, not always used" shape `issue_invoice_with_outbox`
-    /// already has for its line ids.
+    /// already has for its line ids. `allocation_id` is the same shape for
+    /// this tender's `payment_allocation` row; `invoice_id` names which
+    /// invoice a FORWARD tender settles (`None` only legal before any
+    /// invoice exists on the order) and is validated against that invoice's
+    /// remaining due — T9 retry, the double-settlement guard
+    /// (`payment::tender::validate_forward`). A reversal ignores
+    /// `invoice_id` and derives its own target from the original payment's
+    /// allocation instead.
     pub fn record_payment_with_outbox(
         &mut self,
         new_payment: NewPayment,
         cash_movement_id: &str,
+        allocation_id: &str,
+        invoice_id: Option<&str>,
         outbox_meta: &PaymentOutboxMeta,
     ) -> DbResult<(Payment, Option<CashMovement>)> {
         let tx = self.connection_mut().transaction()?;
-        let result = payment::tender::record_payment(&tx, new_payment, cash_movement_id, outbox_meta)?;
+        let result = payment::tender::record_payment(
+            &tx,
+            new_payment,
+            cash_movement_id,
+            allocation_id,
+            invoice_id,
+            outbox_meta,
+        )?;
         tx.commit()?;
         Ok(result)
     }
@@ -1266,6 +1282,21 @@ impl Db {
 
     pub fn get_cash_shift(&self, id: &str) -> DbResult<Option<CashShift>> {
         repo::get_cash_shift(self.connection(), id)
+    }
+
+    /// The cashier's currently OPEN shift on this device, if any (T9 retry
+    /// — "cash shift restart is an operational dead end"). Previously the
+    /// only lookup this crate exposed was [`Db::get_cash_shift`] by id,
+    /// which is useless the moment the id itself is lost to an in-memory
+    /// store on a POS restart. The POS calls this on startup, once it knows
+    /// which cashier is logged in, to recover an orphaned open shift
+    /// automatically rather than leaving it permanently unclosable.
+    pub fn find_open_cash_shift(
+        &self,
+        device_id: &str,
+        cashier_user_id: &str,
+    ) -> DbResult<Option<CashShift>> {
+        repo::find_open_cash_shift(self.connection(), device_id, cashier_user_id)
     }
 
     pub fn list_cash_movements_for_shift(&self, cash_shift_id: &str) -> DbResult<Vec<CashMovement>> {

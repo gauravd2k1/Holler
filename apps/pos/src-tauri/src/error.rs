@@ -141,6 +141,15 @@ impl From<holler_edge_database::DbError> for AppError {
             DbError::CashMovementReasonRequired { .. } => {
                 AppError::new("CASH_MOVEMENT_REASON_REQUIRED", message)
             }
+            // T9 retry, Defect 1 (double-settlement): the edge's own message
+            // already names the invoice and the exact remaining due (§64) —
+            // rendered verbatim rather than a vaguer rewrite.
+            DbError::ForwardPaymentExceedsRemainingDue { .. } => {
+                AppError::new("FORWARD_PAYMENT_EXCEEDS_REMAINING_DUE", message)
+            }
+            DbError::InvoiceNotFoundForPayment { .. } => {
+                AppError::new("INVOICE_NOT_FOUND_FOR_PAYMENT", message)
+            }
             _other => AppError::new("STORAGE_ERROR", message),
         }
     }

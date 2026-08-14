@@ -3524,6 +3524,20 @@ pub fn get_invoice(conn: &Connection, id: &str) -> DbResult<Option<Invoice>> {
     .map_err(Into::into)
 }
 
+/// Transaction-scoped twin of [`get_invoice`], for
+/// [`crate::payment::tender::validate_forward`] reading the invoice it is
+/// about to validate a tender against inside the same transaction as the
+/// write (T9 retry: the double-settlement guard).
+pub(crate) fn get_invoice_in_tx(tx: &Transaction, id: &str) -> DbResult<Option<Invoice>> {
+    tx.query_row(
+        &format!("SELECT {INVOICE_COLUMNS} FROM invoice WHERE id = ?1"),
+        params![id],
+        row_to_invoice,
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
 pub fn list_invoices_for_order(conn: &Connection, order_id: &str) -> DbResult<Vec<Invoice>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {INVOICE_COLUMNS} FROM invoice WHERE order_id = ?1 ORDER BY split_index, created_at"
@@ -3838,14 +3852,80 @@ pub(crate) fn list_reversals_for_payment_in_tx(
     Ok(rows)
 }
 
+/// Writes one `payment_allocation` row — how one tender settles against one
+/// invoice (T9 retry: the double-settlement guard needs this table actually
+/// written, not merely present in the schema). Only writer of this table.
+pub(crate) fn insert_payment_allocation(tx: &Transaction, a: &NewPaymentAllocation) -> DbResult<()> {
+    tx.execute(
+        "INSERT INTO payment_allocation (id, payment_id, invoice_id, amount_paise)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![a.id, a.payment_id, a.invoice_id, a.amount_paise],
+    )?;
+    Ok(())
+}
+
+/// Net paise already allocated to `invoice_id` across every
+/// `payment_allocation` row committed so far in this transaction (forward
+/// tenders positive, reversals non-positive — the same signed-sum discipline
+/// [`list_reversals_for_payment_in_tx`]'s caller already uses). What
+/// [`crate::payment::tender::validate_forward`] subtracts from
+/// `invoice.grand_total_paise` to derive remaining due.
+pub(crate) fn sum_payment_allocations_for_invoice_in_tx(
+    tx: &Transaction,
+    invoice_id: &str,
+) -> DbResult<i64> {
+    tx.query_row(
+        "SELECT COALESCE(SUM(amount_paise), 0) FROM payment_allocation WHERE invoice_id = ?1",
+        params![invoice_id],
+        |row| row.get::<_, i64>(0),
+    )
+    .map_err(Into::into)
+}
+
+/// The single invoice `payment_id` was allocated against, if any — what a
+/// reversal derives its own allocation target from, rather than trusting a
+/// caller to re-supply it (T9 retry). `None` when the original payment was
+/// never allocated to an invoice (a cash sale taken before a bill existed)
+/// OR — defensively — when it was allocated to more than one, which nothing
+/// in this crate currently produces; a reversal in that shape simply posts
+/// no allocation of its own rather than guessing which invoice to credit.
+pub(crate) fn invoice_id_for_payment_in_tx(
+    tx: &Transaction,
+    payment_id: &str,
+) -> DbResult<Option<String>> {
+    let mut stmt = tx.prepare(
+        "SELECT invoice_id FROM payment_allocation WHERE payment_id = ?1 ORDER BY id LIMIT 2",
+    )?;
+    let rows: Vec<String> = stmt
+        .query_map(params![payment_id], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(match rows.len() {
+        1 => Some(rows.into_iter().next().expect("len checked == 1")),
+        _ => None,
+    })
+}
+
 const EVENT_TYPE_PAYMENT_RECEIVED: &str = "PaymentReceived";
 const EVENT_TYPE_PAYMENT_REFUNDED: &str = "PaymentRefunded";
 
 /// Builds the `PaymentSchema`-shaped JSON embedded in both payment events —
-/// `packages/contracts/src/types/payment.ts`. `allocations` is always `[]`:
-/// this crate does not populate `payment_allocation` (out of T7c's scope;
-/// nothing here claims a payment is allocated to a specific invoice).
-fn payment_json(p: &Payment) -> serde_json::Value {
+/// `packages/contracts/src/types/payment.ts`. `allocations` carries every
+/// `payment_allocation` row this tender actually produced (T9 retry: the
+/// double-settlement fix wires this table, so the event payload no longer
+/// silently claims a tender is allocated to nothing).
+fn payment_json(p: &Payment, allocations: &[PaymentAllocation]) -> serde_json::Value {
+    let allocations_json: Vec<serde_json::Value> = allocations
+        .iter()
+        .map(|a| {
+            serde_json::json!({
+                "id": a.id,
+                "payment_id": a.payment_id,
+                "invoice_id": a.invoice_id,
+                "amount_paise": a.amount_paise,
+                "schema_version": 1,
+            })
+        })
+        .collect();
     serde_json::json!({
         "id": p.id,
         "outlet_id": p.outlet_id,
@@ -3860,7 +3940,7 @@ fn payment_json(p: &Payment) -> serde_json::Value {
         "external_id": p.external_id,
         "reverses_payment_id": p.reverses_payment_id,
         "captured_at": p.captured_at,
-        "allocations": [],
+        "allocations": allocations_json,
         "created_by_user_id": p.created_by_user_id,
         "created_at": p.created_at,
         "updated_at": p.updated_at,
@@ -3874,6 +3954,7 @@ fn payment_json(p: &Payment) -> serde_json::Value {
 pub(crate) fn insert_payment_received_outbox(
     tx: &Transaction,
     p: &Payment,
+    allocations: &[PaymentAllocation],
     meta: &PaymentOutboxMeta,
 ) -> DbResult<()> {
     let payload = serde_json::json!({
@@ -3882,7 +3963,7 @@ pub(crate) fn insert_payment_received_outbox(
         "occurred_at": meta.occurred_at,
         "outlet_id": p.outlet_id,
         "schema_version": 1,
-        "data": { "payment": payment_json(p) },
+        "data": { "payment": payment_json(p, allocations) },
     })
     .to_string();
     insert_outbox_entry(
@@ -3904,6 +3985,7 @@ pub(crate) fn insert_payment_received_outbox(
 pub(crate) fn insert_payment_refunded_outbox(
     tx: &Transaction,
     p: &Payment,
+    allocations: &[PaymentAllocation],
     reverses_payment_id: &str,
     meta: &PaymentOutboxMeta,
 ) -> DbResult<()> {
@@ -3914,7 +3996,7 @@ pub(crate) fn insert_payment_refunded_outbox(
         "outlet_id": p.outlet_id,
         "schema_version": 1,
         "data": {
-            "payment": payment_json(p),
+            "payment": payment_json(p, allocations),
             "reverses_payment_id": reverses_payment_id,
         },
     })
@@ -4013,6 +4095,30 @@ pub(crate) fn get_cash_shift_in_tx(tx: &Transaction, id: &str) -> DbResult<Optio
     tx.query_row(
         &format!("SELECT {CASH_SHIFT_COLUMNS} FROM cash_shift WHERE id = ?1"),
         params![id],
+        row_to_cash_shift,
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+/// The cashier's currently OPEN shift on this device, if any (T9 retry —
+/// "cash shift restart is an operational dead end"). Mirrors
+/// [`count_open_cash_shifts_for_device_cashier`]'s own query
+/// (`idx_cash_shift_open_device_cashier` guarantees at most one row), but
+/// returns the full row rather than just the id, and is `pub` so the POS can
+/// call it on startup to recover a shift orphaned by a restart — the
+/// automatic recovery this crate previously had no query for at all.
+pub fn find_open_cash_shift(
+    conn: &Connection,
+    device_id: &str,
+    cashier_user_id: &str,
+) -> DbResult<Option<CashShift>> {
+    conn.query_row(
+        &format!(
+            "SELECT {CASH_SHIFT_COLUMNS} FROM cash_shift \
+             WHERE device_id = ?1 AND cashier_user_id = ?2 AND status = 'OPEN'"
+        ),
+        params![device_id, cashier_user_id],
         row_to_cash_shift,
     )
     .optional()

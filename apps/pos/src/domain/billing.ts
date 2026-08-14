@@ -107,6 +107,16 @@ export function billingErrorMessage(err: unknown): string {
       // (error.rs `ReversalExceedsRemaining`) — show it verbatim rather than
       // a vaguer rewrite, per §64.
       return err.message;
+    case "FORWARD_PAYMENT_EXCEEDS_REMAINING_DUE":
+      // T9 retry, Defect 1 (double-settlement): the edge's own message
+      // already names the invoice and the exact amount still outstanding —
+      // show it verbatim rather than a vaguer rewrite, per §64. This is the
+      // rejection a cashier sees if they somehow still attempt an
+      // over-settling tender despite the UI gating "Add Tender" on
+      // `isFullySettled`.
+      return err.message;
+    case "INVOICE_NOT_FOUND_FOR_PAYMENT":
+      return "This bill could not be found — refresh and try again.";
     case "CASH_SHIFT_ALREADY_OPEN":
       return err.message;
     case "CASH_SHIFT_NOT_OPEN":

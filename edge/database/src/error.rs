@@ -242,6 +242,33 @@ pub enum DbError {
     /// checks above.
     #[error("a {kind} cash movement requires a non-blank reason")]
     CashMovementReasonRequired { kind: String },
+
+    /// A forward tender named an `invoice_id` with no matching `invoice`
+    /// row. Never a silent skip of the remaining-due check (T9 retry) —
+    /// a payment cannot be validated against a bill that does not exist.
+    #[error("invoice {invoice_id} not found; cannot record a payment against it")]
+    InvoiceNotFoundForPayment { invoice_id: String },
+
+    /// T9 retry — the double-settlement money defect. A caller tried to
+    /// record a forward tender whose `amount_paise`, added to what is
+    /// already settled against `invoice_id`, would exceed the invoice's
+    /// `grand_total_paise`. Rejected BEFORE any write. Split payments stay
+    /// legal: only the amount that would exceed what remains is rejected,
+    /// never a tender merely because it is not the first or only one. A
+    /// reversal posted against an earlier tender on this invoice restores
+    /// the headroom this check sees, so a refunded bill can legitimately be
+    /// re-tendered.
+    #[error(
+        "payment of {requested_paise} paise exceeds invoice {invoice_id}'s remaining due of \
+         {remaining_paise} paise; this invoice is already fully settled (or would be \
+         overpaid by this tender) — no intervention needed beyond entering a smaller amount \
+         or refunding an existing tender first"
+    )]
+    ForwardPaymentExceedsRemainingDue {
+        invoice_id: String,
+        requested_paise: i64,
+        remaining_paise: i64,
+    },
 }
 
 pub type DbResult<T> = Result<T, DbError>;

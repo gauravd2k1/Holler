@@ -63,15 +63,15 @@ fn a_payment_row_is_never_mutated_by_its_own_reversals() {
     let mut db = open_seeded();
 
     let (original, _) = db
-        .record_payment_with_outbox(forward("pay-1", 200_000), "mv-1", &pay_meta("out-1"))
+        .record_payment_with_outbox(forward("pay-1", 200_000), "mv-1", "a-x", None, &pay_meta("out-1"))
         .expect("forward payment");
     let snapshot_before = db.get_payment("pay-1").expect("read").expect("exists");
 
     let (_r1, _) = db
-        .record_payment_with_outbox(reversal("pay-2", "pay-1", -50_000), "mv-2", &pay_meta("out-2"))
+        .record_payment_with_outbox(reversal("pay-2", "pay-1", -50_000), "mv-2", "a-x", None, &pay_meta("out-2"))
         .expect("partial reversal 1");
     let (_r2, _) = db
-        .record_payment_with_outbox(reversal("pay-3", "pay-1", -30_000), "mv-3", &pay_meta("out-3"))
+        .record_payment_with_outbox(reversal("pay-3", "pay-1", -30_000), "mv-3", "a-x", None, &pay_meta("out-3"))
         .expect("partial reversal 2");
 
     let snapshot_after = db.get_payment("pay-1").expect("read").expect("still exists");
@@ -99,15 +99,15 @@ fn a_payment_row_is_never_mutated_by_its_own_reversals() {
 #[test]
 fn reversal_amount_sign_is_enforced_through_the_public_api() {
     let mut db = open_seeded();
-    db.record_payment_with_outbox(forward("pay-1", 100_000), "mv-1", &pay_meta("out-1"))
+    db.record_payment_with_outbox(forward("pay-1", 100_000), "mv-1", "a-x", None, &pay_meta("out-1"))
         .expect("forward payment");
 
     let err = db
-        .record_payment_with_outbox(reversal("pay-2", "pay-1", 10_000), "mv-2", &pay_meta("out-2"))
+        .record_payment_with_outbox(reversal("pay-2", "pay-1", 10_000), "mv-2", "a-x", None, &pay_meta("out-2"))
         .expect_err("a positive-amount reversal must be rejected");
     assert!(matches!(err, DbError::ReversalAmountNotNonPositive { .. }));
 
-    db.record_payment_with_outbox(reversal("pay-3", "pay-1", -10_000), "mv-3", &pay_meta("out-3"))
+    db.record_payment_with_outbox(reversal("pay-3", "pay-1", -10_000), "mv-3", "a-x", None, &pay_meta("out-3"))
         .expect("a non-positive reversal must be accepted");
 }
 
@@ -117,13 +117,13 @@ fn reversal_amount_sign_is_enforced_through_the_public_api() {
 #[test]
 fn already_fully_reversed_payment_cannot_be_reversed_again_via_public_api() {
     let mut db = open_seeded();
-    db.record_payment_with_outbox(forward("pay-1", 100_000), "mv-1", &pay_meta("out-1"))
+    db.record_payment_with_outbox(forward("pay-1", 100_000), "mv-1", "a-x", None, &pay_meta("out-1"))
         .expect("forward payment");
-    db.record_payment_with_outbox(reversal("pay-2", "pay-1", -100_000), "mv-2", &pay_meta("out-2"))
+    db.record_payment_with_outbox(reversal("pay-2", "pay-1", -100_000), "mv-2", "a-x", None, &pay_meta("out-2"))
         .expect("full reversal");
 
     let err = db
-        .record_payment_with_outbox(reversal("pay-3", "pay-1", -1), "mv-3", &pay_meta("out-3"))
+        .record_payment_with_outbox(reversal("pay-3", "pay-1", -1), "mv-3", "a-x", None, &pay_meta("out-3"))
         .expect_err("reversing an already-fully-reversed payment must be rejected");
     assert!(matches!(err, DbError::PaymentAlreadyFullyReversed { .. }));
 
@@ -167,7 +167,7 @@ fn cash_shift_close_with_non_zero_variance_requires_a_reason() {
     cash_payment.cash_shift_id = Some("shift-1".to_string());
     cash_payment.tendered_paise = Some(70_000);
     cash_payment.change_paise = Some(0);
-    db.record_payment_with_outbox(cash_payment, "mv-sale-1", &pay_meta("pay-out-1"))
+    db.record_payment_with_outbox(cash_payment, "mv-sale-1", "a-x", None, &pay_meta("pay-out-1"))
         .expect("cash payment");
     // Expected cash is now 300_000 (opening) + 70_000 (sale) = 370_000.
 
@@ -242,7 +242,7 @@ fn settled_total_always_equals_forward_plus_reversals_across_many_generated_sequ
         let mut db = open_seeded();
 
         let forward_amount = rng.range1(50_000) * 100; // whole rupees, up to 500,000.00
-        db.record_payment_with_outbox(forward("pay-fwd", forward_amount), "mv-fwd", &pay_meta("out-fwd"))
+        db.record_payment_with_outbox(forward("pay-fwd", forward_amount), "mv-fwd", "a-x", None, &pay_meta("out-fwd"))
             .expect("forward payment");
 
         let n_reversals = rng.range1(5);
@@ -259,6 +259,8 @@ fn settled_total_always_equals_forward_plus_reversals_across_many_generated_sequ
             db.record_payment_with_outbox(
                 reversal(&id, "pay-fwd", -take),
                 &format!("mv-rev-{seed}-{i}"),
+                "a-x",
+                None,
                 &pay_meta(&format!("out-rev-{seed}-{i}")),
             )
             .unwrap_or_else(|e| panic!("seed {seed}: reversal {i} of {take} (remaining {remaining}) failed: {e}"));
@@ -281,6 +283,8 @@ fn settled_total_always_equals_forward_plus_reversals_across_many_generated_sequ
             .record_payment_with_outbox(
                 reversal(&over_id, "pay-fwd", -(remaining + 1)),
                 &format!("mv-over-{seed}"),
+                "a-x",
+                None,
                 &pay_meta(&format!("out-over-{seed}")),
             )
             .expect_err("one paisa beyond what remains must always be rejected");

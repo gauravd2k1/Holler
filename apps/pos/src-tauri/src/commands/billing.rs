@@ -185,6 +185,13 @@ pub fn list_invoices_for_order_impl(state: &AppState, order_id: &str) -> AppResu
 /// so the returned row can never violate `PaymentSchema`'s own
 /// `.refine()` ("tendered_paise is meaningful only on a CASH tender") — a
 /// wire shape the frontend's Zod parse would otherwise reject outright.
+///
+/// `invoice_id` names which invoice a FORWARD tender settles — required the
+/// moment a bill has been issued, so `holler_edge_database` can reject a
+/// tender that would exceed the invoice's remaining due (T9 retry, the
+/// double-settlement defect: `FORWARD_PAYMENT_EXCEEDS_REMAINING_DUE`). It is
+/// ignored for a reversal (`reverses_payment_id.is_some()`), which always
+/// derives its own target from the original payment's allocation instead.
 #[allow(clippy::too_many_arguments)]
 pub fn record_payment_impl(
     state: &AppState,
@@ -196,6 +203,7 @@ pub fn record_payment_impl(
     reference: Option<String>,
     cash_shift_id: Option<String>,
     reverses_payment_id: Option<String>,
+    invoice_id: Option<String>,
     created_by_user_id: &str,
 ) -> AppResult<Payment> {
     let now = now_iso();
@@ -221,13 +229,20 @@ pub fn record_payment_impl(
     };
 
     let cash_movement_id = new_id();
+    let allocation_id = new_id();
     let meta = PaymentOutboxMeta {
         outbox_id: new_id(),
         occurred_at: new_payment.created_at.clone(),
     };
 
     let mut db = lock_db(state)?;
-    let (stored, _movement) = db.record_payment_with_outbox(new_payment, &cash_movement_id, &meta)?;
+    let (stored, _movement) = db.record_payment_with_outbox(
+        new_payment,
+        &cash_movement_id,
+        &allocation_id,
+        invoice_id.as_deref(),
+        &meta,
+    )?;
     Ok(Payment::from(stored))
 }
 
@@ -325,6 +340,25 @@ pub fn get_cash_shift_impl(state: &AppState, cash_shift_id: &str) -> AppResult<O
     Ok(Some(CashShift::from_db(shift, movements)))
 }
 
+/// Recovers `cashier_user_id`'s currently OPEN shift on THIS device, if any
+/// (T9 retry, Defect 2 — "cash shift restart is an operational dead end").
+/// The POS calls this on startup, once it knows which cashier is logged in,
+/// instead of relying on an in-memory id that a restart erases
+/// (`apps/pos/src/store/cashShift.ts`). Automatic recovery, not a manual
+/// id-entry box: a cashier never needs to know a shift id exists.
+pub fn find_open_cash_shift_impl(
+    state: &AppState,
+    cashier_user_id: &str,
+) -> AppResult<Option<CashShift>> {
+    let db = lock_db(state)?;
+    let shift = match db.find_open_cash_shift(&state.device_id, cashier_user_id)? {
+        Some(s) => s,
+        None => return Ok(None),
+    };
+    let movements = db.list_cash_movements_for_shift(&shift.id)?;
+    Ok(Some(CashShift::from_db(shift, movements)))
+}
+
 // -------------------------------------------------------------- commands --
 
 #[tauri::command]
@@ -356,6 +390,7 @@ pub fn record_payment(
     reference: Option<String>,
     cash_shift_id: Option<String>,
     reverses_payment_id: Option<String>,
+    invoice_id: Option<String>,
     created_by_user_id: String,
 ) -> AppResult<Payment> {
     record_payment_impl(
@@ -368,6 +403,7 @@ pub fn record_payment(
         reference,
         cash_shift_id,
         reverses_payment_id,
+        invoice_id,
         &created_by_user_id,
     )
 }
@@ -424,4 +460,12 @@ pub fn get_cash_shift(
     cash_shift_id: String,
 ) -> AppResult<Option<CashShift>> {
     get_cash_shift_impl(&state, &cash_shift_id)
+}
+
+#[tauri::command]
+pub fn find_open_cash_shift(
+    state: State<'_, AppState>,
+    cashier_user_id: String,
+) -> AppResult<Option<CashShift>> {
+    find_open_cash_shift_impl(&state, &cashier_user_id)
 }

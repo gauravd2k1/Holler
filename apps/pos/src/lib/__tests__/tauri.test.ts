@@ -24,6 +24,8 @@ const {
   listStations,
   listFailedPrintJobs,
   retryFailedPrintJobs,
+  recordPayment,
+  findOpenCashShift,
   isTauriCommandError,
 } = await import("../tauri");
 
@@ -435,5 +437,115 @@ describe("listFailedPrintJobs / retryFailedPrintJobs", () => {
     const failed = await retryFailedPrintJobs();
     expect(invokeMock).toHaveBeenCalledWith("retry_failed_print_jobs");
     expect(failed).toEqual([]);
+  });
+});
+
+describe("recordPayment", () => {
+  const VALID_PAYMENT = {
+    id: "018e5a2e-a001-7c3d-9f4e-1234567890ab",
+    outlet_id: "018e5a2e-1a09-7c3d-9f4e-1234567890ab",
+    order_id: "018e5a2e-2b10-7c3d-9f4e-1234567890ab",
+    cash_shift_id: null,
+    method: "CASH",
+    status: "CAPTURED",
+    amount_paise: 105000,
+    tendered_paise: 105000,
+    change_paise: 0,
+    reference: null,
+    external_id: null,
+    reverses_payment_id: null,
+    captured_at: "2026-08-12T14:32:00Z",
+    allocations: [],
+    created_by_user_id: "018e5a2e-3d12-7c3d-9f4e-1234567890ab",
+    created_at: "2026-08-12T14:32:00Z",
+    updated_at: "2026-08-12T14:32:00Z",
+    version: 1,
+    schema_version: 1,
+  };
+
+  // T9 retry, Defect 1: the caller must be able to name which invoice a
+  // forward tender settles, so the edge can reject one that would exceed
+  // its remaining due — verifies the wire shape actually carries `invoiceId`
+  // through to the `record_payment` command, not just that the response
+  // parses.
+  it("passes invoiceId through to the record_payment command", async () => {
+    invokeMock.mockResolvedValue(VALID_PAYMENT);
+    await recordPayment({
+      orderId: VALID_PAYMENT.order_id,
+      method: "CASH",
+      amountPaise: 105000,
+      tenderedPaise: 105000,
+      changePaise: 0,
+      reference: null,
+      cashShiftId: null,
+      reversesPaymentId: null,
+      invoiceId: "018e5a2e-9001-7c3d-9f4e-1234567890ab",
+      createdByUserId: VALID_PAYMENT.created_by_user_id,
+    });
+    expect(invokeMock).toHaveBeenCalledWith(
+      "record_payment",
+      expect.objectContaining({ invoiceId: "018e5a2e-9001-7c3d-9f4e-1234567890ab" }),
+    );
+  });
+
+  it("throws a normalized TauriCommandError on a double-settlement rejection", async () => {
+    invokeMock.mockRejectedValue({
+      code: "FORWARD_PAYMENT_EXCEEDS_REMAINING_DUE",
+      message: "payment of 100 paise exceeds invoice inv-1's remaining due of 0 paise",
+    });
+    await expect(
+      recordPayment({
+        orderId: VALID_PAYMENT.order_id,
+        method: "CASH",
+        amountPaise: 100,
+        tenderedPaise: 100,
+        changePaise: 0,
+        reference: null,
+        cashShiftId: null,
+        reversesPaymentId: null,
+        invoiceId: "018e5a2e-9001-7c3d-9f4e-1234567890ab",
+        createdByUserId: VALID_PAYMENT.created_by_user_id,
+      }),
+    ).rejects.toSatisfy((err: unknown) => isTauriCommandError(err));
+  });
+});
+
+describe("findOpenCashShift", () => {
+  const VALID_SHIFT = {
+    id: "018e5a2e-b001-7c3d-9f4e-1234567890ab",
+    outlet_id: "018e5a2e-1a09-7c3d-9f4e-1234567890ab",
+    device_id: "018e5a2e-1b0a-7c3d-9f4e-1234567890ab",
+    cashier_user_id: "018e5a2e-3d12-7c3d-9f4e-1234567890ab",
+    status: "OPEN",
+    opened_at: "2026-08-12T04:30:00Z",
+    opening_cash_paise: 200000,
+    closed_at: null,
+    expected_cash_paise: null,
+    actual_cash_paise: null,
+    variance_paise: null,
+    variance_reason: null,
+    business_date: "2026-08-12",
+    movements: [],
+    created_at: "2026-08-12T04:30:00Z",
+    updated_at: "2026-08-12T04:30:00Z",
+    version: 1,
+    schema_version: 1,
+  };
+
+  // T9 retry, Defect 2: recovery needs no shift id — only the cashier.
+  it("invokes find_open_cash_shift with only the cashier id and parses the recovered shift", async () => {
+    invokeMock.mockResolvedValue(VALID_SHIFT);
+    const shift = await findOpenCashShift(VALID_SHIFT.cashier_user_id);
+    expect(invokeMock).toHaveBeenCalledWith("find_open_cash_shift", {
+      cashierUserId: VALID_SHIFT.cashier_user_id,
+    });
+    expect(shift?.id).toBe(VALID_SHIFT.id);
+    expect(shift?.status).toBe("OPEN");
+  });
+
+  it("returns null rather than throwing when nothing is open", async () => {
+    invokeMock.mockResolvedValue(null);
+    const shift = await findOpenCashShift(VALID_SHIFT.cashier_user_id);
+    expect(shift).toBeNull();
   });
 });
