@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/holler/backend/internal/platform/httpx"
+	contracts "github.com/holler/contracts"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -162,4 +163,75 @@ func (r *PostgresRepository) touchCredentialLastUsed(ctx context.Context, creden
 		return fmt.Errorf("outlet: touching device credential last_used_at: %w", err)
 	}
 	return nil
+}
+
+// BumpOutletConfigVersion increments outlet.config_version by exactly one —
+// see DeviceRepository's doc comment for why device credential mutations
+// need this (T13, ADR-017 0.4.3 amendment).
+func (r *PostgresRepository) BumpOutletConfigVersion(ctx context.Context, outletID string) (int, error) {
+	var newVersion int
+	err := r.pool.QueryRow(ctx,
+		`UPDATE outlet SET config_version = config_version + 1, updated_at = now()
+		 WHERE id = $1 RETURNING config_version`,
+		outletID,
+	).Scan(&newVersion)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, fmt.Errorf("%w: outlet %s", httpx.ErrNotFound, outletID)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("outlet: bumping outlet config_version: %w", err)
+	}
+	return newVersion, nil
+}
+
+// ListEdgeCredentials returns every device_credential row for outletID,
+// scoped to tenantID via the row's own tenant_id (denormalized onto
+// device_credential at enrollment time, exactly like outlet_id — see
+// 0008_device_enrollment.sql). Never filters on revoked_at/expires_at: a
+// dead credential still syncs (ADR-017 0.4.3 amendment). ConfigVersion is
+// left zero here — device_credential has no config_version column of its
+// own, so the caller (DeviceService.ListEdgeDeviceCredentials) stamps the
+// outlet's own config_version onto every row before returning it.
+func (r *PostgresRepository) ListEdgeCredentials(ctx context.Context, tenantID, outletID string) ([]contracts.EdgeDeviceCredential, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT dc.id, dc.device_id, dc.tenant_id, dc.outlet_id, dc.token_hash, d.kind, dc.revoked_at, dc.expires_at
+		FROM device_credential dc
+		JOIN device d ON d.id = dc.device_id
+		WHERE dc.outlet_id = $1 AND dc.tenant_id = $2
+		ORDER BY dc.created_at
+	`, outletID, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("outlet: listing edge device credentials: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]contracts.EdgeDeviceCredential, 0)
+	for rows.Next() {
+		var c contracts.EdgeDeviceCredential
+		var revokedAt, expiresAt *time.Time
+		if err := rows.Scan(&c.CredentialID, &c.DeviceID, &c.TenantID, &c.OutletID, &c.CredentialHash,
+			&c.DeviceKind, &revokedAt, &expiresAt); err != nil {
+			return nil, fmt.Errorf("outlet: scanning edge device credential: %w", err)
+		}
+		c.RevokedAt = formatEdgeTimestamp(revokedAt)
+		c.ExpiresAt = formatEdgeTimestamp(expiresAt)
+		c.SchemaVersion = 1
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("outlet: iterating edge device credentials: %w", err)
+	}
+	return out, nil
+}
+
+// formatEdgeTimestamp renders a nullable Postgres timestamptz as the RFC3339
+// string EdgeDeviceCredential.RevokedAt/ExpiresAt carry on the wire (unlike
+// most timestamps in this codebase, packages/contracts/go/identity.go types
+// these as *string rather than *time.Time).
+func formatEdgeTimestamp(t *time.Time) *string {
+	if t == nil {
+		return nil
+	}
+	s := t.UTC().Format(time.RFC3339Nano)
+	return &s
 }

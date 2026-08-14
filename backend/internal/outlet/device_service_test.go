@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/holler/backend/internal/platform/httpx"
+	contracts "github.com/holler/contracts"
 )
 
 // fakeDeviceRepo is an in-memory DeviceRepository. Its findCredentialForVerify
@@ -15,16 +16,19 @@ import (
 // PostgresRepository — only code inside package outlet can construct
 // something satisfying DeviceRepository.
 type fakeDeviceRepo struct {
-	devices     map[string]Device
-	credentials map[string]DeviceCredential // credentialID -> row
-	tokenHashes map[string]string           // credentialID -> hash
+	devices        map[string]Device
+	credentials    map[string]DeviceCredential // credentialID -> row
+	tokenHashes    map[string]string           // credentialID -> hash
+	outletVersions map[string]int              // outletID -> config_version, mirrors fakeRepo's outlets map
+	bumpCalls      int
 }
 
 func newFakeDeviceRepo() *fakeDeviceRepo {
 	return &fakeDeviceRepo{
-		devices:     map[string]Device{},
-		credentials: map[string]DeviceCredential{},
-		tokenHashes: map[string]string{},
+		devices:        map[string]Device{},
+		credentials:    map[string]DeviceCredential{},
+		tokenHashes:    map[string]string{},
+		outletVersions: map[string]int{},
 	}
 }
 
@@ -125,11 +129,51 @@ func (f *fakeDeviceRepo) touchCredentialLastUsed(_ context.Context, credentialID
 	return nil
 }
 
+// BumpOutletConfigVersion mutates f.outletVersions directly, which
+// newDeviceTestFixture wires to mirror f.outlets' own Outlet.ConfigVersion
+// field on every call — in production both DeviceRepository and Repository
+// are the same *PostgresRepository over the same outlet row, so a unit test
+// splitting them into two fakes must keep them in sync by hand.
+func (f *fakeDeviceRepo) BumpOutletConfigVersion(_ context.Context, outletID string) (int, error) {
+	f.bumpCalls++
+	f.outletVersions[outletID]++
+	return f.outletVersions[outletID], nil
+}
+
+func (f *fakeDeviceRepo) ListEdgeCredentials(_ context.Context, tenantID, outletID string) ([]contracts.EdgeDeviceCredential, error) {
+	out := make([]contracts.EdgeDeviceCredential, 0)
+	for _, c := range f.credentials {
+		if c.OutletID != outletID || c.TenantID != tenantID {
+			continue
+		}
+		d := f.devices[c.DeviceID]
+		out = append(out, contracts.EdgeDeviceCredential{
+			CredentialID:   c.ID,
+			DeviceID:       c.DeviceID,
+			TenantID:       c.TenantID,
+			OutletID:       c.OutletID,
+			CredentialHash: f.tokenHashes[c.ID],
+			DeviceKind:     string(d.Kind),
+			RevokedAt:      formatEdgeTimestamp(c.RevokedAt),
+			ExpiresAt:      formatEdgeTimestamp(c.ExpiresAt),
+			SchemaVersion:  1,
+		})
+	}
+	return out, nil
+}
+
+// newDeviceTestFixture wires outlets (Repository) and devices
+// (DeviceRepository) so a BumpOutletConfigVersion call through EITHER fake
+// is visible through the OTHER's GetByID/ConfigVersion — see
+// fakeDeviceRepo.BumpOutletConfigVersion's own doc comment for why this
+// syncing is necessary only in the test double, never in production.
 func newDeviceTestFixture() (*fakeRepo, *fakeDeviceRepo, *DeviceService) {
 	outlets := newFakeRepo()
 	outlets.brandTenant["brand-a"] = "tenant-a"
 	outlets.outlets["outlet-a"] = Outlet{ID: "outlet-a", BrandID: "brand-a"}
 	devices := newFakeDeviceRepo()
+	devices.outletVersions["outlet-a"] = 0
+	outlets.onConfigVersionRead = func(outletID string) int { return devices.outletVersions[outletID] }
 	svc := NewDeviceService(outlets, devices, nil)
 	return outlets, devices, svc
 }
@@ -279,5 +323,76 @@ func TestEnrollDevice_RejectsUnknownKind(t *testing.T) {
 	_, err := svc.EnrollDevice(context.Background(), Principal{TenantID: "tenant-a"}, "outlet-a", DeviceKind("TOASTER"), "T-1", "", nil)
 	if !errors.Is(err, httpx.ErrInvalidInput) {
 		t.Fatalf("expected ErrInvalidInput for an unknown device kind, got %v", err)
+	}
+}
+
+// --- ListEdgeDeviceCredentials (T13, ADR-017 0.4.3 amendment) ---------------
+
+func TestListEdgeDeviceCredentials_BumpsAndFiltersBySinceVersion(t *testing.T) {
+	outlets, devices, svc := newDeviceTestFixture()
+	principal := Principal{TenantID: "tenant-a"}
+
+	before := devices.outletVersions["outlet-a"]
+	enrolled, err := svc.EnrollDevice(context.Background(), principal, "outlet-a", DeviceKindKDS, "KDS-1", "", nil)
+	if err != nil {
+		t.Fatalf("EnrollDevice: %v", err)
+	}
+	afterEnroll := devices.outletVersions["outlet-a"]
+	if afterEnroll != before+1 {
+		t.Fatalf("expected exactly one config_version bump on enroll, before=%d after=%d", before, afterEnroll)
+	}
+	_ = outlets
+
+	// A pull at the CURRENT config_version excludes the credential — the
+	// same since_version contract every other config aggregate obeys.
+	atCurrent, err := svc.ListEdgeDeviceCredentials(context.Background(), "tenant-a", "outlet-a", afterEnroll)
+	if err != nil {
+		t.Fatalf("ListEdgeDeviceCredentials at current version: %v", err)
+	}
+	if len(atCurrent) != 0 {
+		t.Fatalf("expected no credentials at the current watermark, got %+v", atCurrent)
+	}
+
+	// A pull BELOW the current config_version returns it, hash intact.
+	stale, err := svc.ListEdgeDeviceCredentials(context.Background(), "tenant-a", "outlet-a", before)
+	if err != nil {
+		t.Fatalf("ListEdgeDeviceCredentials below watermark: %v", err)
+	}
+	if len(stale) != 1 || stale[0].DeviceID != enrolled.Device.ID {
+		t.Fatalf("expected exactly the enrolled device's credential, got %+v", stale)
+	}
+	if stale[0].CredentialHash == "" || stale[0].CredentialHash == enrolled.Token {
+		t.Fatalf("expected a non-empty hash distinct from the plaintext token, got %q", stale[0].CredentialHash)
+	}
+	if stale[0].ConfigVersion != afterEnroll {
+		t.Fatalf("expected the row's reported config_version to equal the outlet's, got %d want %d", stale[0].ConfigVersion, afterEnroll)
+	}
+}
+
+// TestListEdgeDeviceCredentials_RevokedCredentialStillReturned is the direct
+// test for ADR-017's explicit failure mode: "a revoked credential must not
+// look merely un-synced". A caller that filtered on revoked_at IS NULL would
+// make a revoked credential indistinguishable from one never synced at all.
+func TestListEdgeDeviceCredentials_RevokedCredentialStillReturned(t *testing.T) {
+	_, _, svc := newDeviceTestFixture()
+	principal := Principal{TenantID: "tenant-a"}
+
+	enrolled, err := svc.EnrollDevice(context.Background(), principal, "outlet-a", DeviceKindKDS, "KDS-1", "", nil)
+	if err != nil {
+		t.Fatalf("EnrollDevice: %v", err)
+	}
+	if err := svc.RevokeCredential(context.Background(), principal, enrolled.Device.ID, nil); err != nil {
+		t.Fatalf("RevokeCredential: %v", err)
+	}
+
+	creds, err := svc.ListEdgeDeviceCredentials(context.Background(), "tenant-a", "outlet-a", 0)
+	if err != nil {
+		t.Fatalf("ListEdgeDeviceCredentials: %v", err)
+	}
+	if len(creds) != 1 {
+		t.Fatalf("expected the revoked credential to still be present, got %+v", creds)
+	}
+	if creds[0].RevokedAt == nil {
+		t.Fatal("expected revoked_at to be populated, not the row dropped")
 	}
 }

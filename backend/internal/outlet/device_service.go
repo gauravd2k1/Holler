@@ -13,6 +13,7 @@ import (
 	"github.com/holler/backend/internal/platform/crypto"
 	"github.com/holler/backend/internal/platform/httpx"
 	"github.com/holler/backend/internal/platform/id"
+	contracts "github.com/holler/contracts"
 )
 
 // deviceTokenSecretBytes is 256 bits of entropy for the per-device token
@@ -105,6 +106,13 @@ func (s *DeviceService) EnrollDevice(ctx context.Context, principal Principal, o
 	if err != nil {
 		return EnrolledDevice{}, err
 	}
+	// A device credential change must be observable to an edge pulling
+	// GET /sync/config with since_version (T13, ADR-017 0.4.3 amendment):
+	// device_credential carries no config_version column of its own, so
+	// bumping the outlet's is what makes the change visible at all.
+	if _, err := s.devices.BumpOutletConfigVersion(ctx, outletID); err != nil {
+		return EnrolledDevice{}, err
+	}
 
 	s.audit(ctx, principal.TenantID, actorUserID, "device.enroll", device.ID, map[string]interface{}{
 		"device_id": device.ID, "outlet_id": outletID, "kind": string(kind), "name": name,
@@ -138,6 +146,9 @@ func (s *DeviceService) RotateCredential(ctx context.Context, principal Principa
 	if err != nil {
 		return EnrolledDevice{}, err
 	}
+	if _, err := s.devices.BumpOutletConfigVersion(ctx, device.OutletID); err != nil {
+		return EnrolledDevice{}, err
+	}
 
 	s.audit(ctx, principal.TenantID, actorUserID, "device.credential.rotate", device.ID, map[string]interface{}{
 		"device_id": device.ID, "credential_id": issued.CredentialID,
@@ -158,6 +169,9 @@ func (s *DeviceService) RevokeCredential(ctx context.Context, principal Principa
 	}
 	now := s.now().UTC()
 	if err := s.devices.RevokeActiveCredential(ctx, device.ID, now); err != nil {
+		return err
+	}
+	if _, err := s.devices.BumpOutletConfigVersion(ctx, device.OutletID); err != nil {
 		return err
 	}
 	s.audit(ctx, principal.TenantID, actorUserID, "device.credential.revoke", device.ID, map[string]interface{}{
@@ -260,6 +274,51 @@ func (s *DeviceService) VerifyToken(ctx context.Context, token string) (DevicePr
 	_ = s.devices.touchCredentialLastUsed(ctx, row.credentialID, s.now().UTC())
 
 	return DevicePrincipal{DeviceID: row.deviceID, TenantID: row.tenantID, OutletID: row.outletID}, nil
+}
+
+// ListEdgeDeviceCredentials resolves the device_credentials array of
+// GET /sync/config (T13, ADR-017 0.4.3 amendment): every credential enrolled
+// at outletID — active, revoked AND expired, hash intact — so a KDS can
+// verify a LAN handshake against its local cache with the uplink down. Like
+// VerifyToken, this is one of the few places in this package that ever
+// touches a hash; unlike VerifyToken, the hash here is deliberately RETURNED
+// to the caller, because the caller is GET /sync/config itself — the one
+// route in this backend permitted to carry credential material on the wire
+// (mirrors auth.Service.ListEdgeUserCache's identical carve-out for
+// password_hash/pin_hash).
+//
+// device_credential has no config_version column of its own
+// (packages/contracts/postgres/0008_device_enrollment.sql predates the
+// 0.4.3 amendment), so every row reports the OUTLET's current
+// config_version rather than a per-row one — EnrollDevice/RotateCredential/
+// RevokeCredential all bump it, so any credential mutation advances the
+// value every row in this collection reports. That makes this collection
+// coarser than tables/tax_profile/etc (an unrelated config change elsewhere
+// also re-sends every credential, since outlet.config_version is not
+// device-scoped), but sinceVersion still holds: a caller whose watermark
+// already reflects the outlet's current config_version receives none of
+// them, and one behind it receives all of them, credential changes
+// included.
+func (s *DeviceService) ListEdgeDeviceCredentials(ctx context.Context, tenantID, outletID string, sinceVersion int) ([]contracts.EdgeDeviceCredential, error) {
+	if tenantID == "" {
+		return nil, httpx.ErrUnauthorized
+	}
+	out, err := s.outlets.GetByID(ctx, tenantID, outletID)
+	if err != nil {
+		return nil, err
+	}
+	if sinceVersion >= out.ConfigVersion {
+		return []contracts.EdgeDeviceCredential{}, nil
+	}
+
+	creds, err := s.devices.ListEdgeCredentials(ctx, tenantID, outletID)
+	if err != nil {
+		return nil, err
+	}
+	for i := range creds {
+		creds[i].ConfigVersion = out.ConfigVersion
+	}
+	return creds, nil
 }
 
 // audit is a best-effort wrapper: enrollment/rotation/revocation succeed or

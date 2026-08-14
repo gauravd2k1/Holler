@@ -12,6 +12,13 @@ import (
 type fakeRepo struct {
 	outlets     map[string]Outlet
 	brandTenant map[string]string // brandID -> tenantID
+	// onConfigVersionRead, if set, overrides GetByID's returned
+	// ConfigVersion. Used only by device_service_test.go's
+	// newDeviceTestFixture, which splits DeviceRepository and Repository
+	// into two separate fakes the way production's single PostgresRepository
+	// never does, so a config_version bump made through one fake needs an
+	// explicit way to become visible through the other.
+	onConfigVersionRead func(outletID string) int
 }
 
 func newFakeRepo() *fakeRepo {
@@ -40,6 +47,9 @@ func (f *fakeRepo) GetByID(_ context.Context, tenantID, outletID string) (Outlet
 	o, ok := f.outlets[outletID]
 	if !ok || f.brandTenant[o.BrandID] != tenantID {
 		return Outlet{}, httpx.ErrNotFound
+	}
+	if f.onConfigVersionRead != nil {
+		o.ConfigVersion = f.onConfigVersionRead(outletID)
 	}
 	return o, nil
 }

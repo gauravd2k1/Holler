@@ -3,6 +3,8 @@ package outlet
 import (
 	"context"
 	"time"
+
+	contracts "github.com/holler/contracts"
 )
 
 // DeviceKind mirrors the device.kind CHECK constraint in
@@ -108,4 +110,24 @@ type DeviceRepository interface {
 	// authenticated a request. Callers should not fail the request if this
 	// errors.
 	touchCredentialLastUsed(ctx context.Context, credentialID string, now time.Time) error
+
+	// BumpOutletConfigVersion increments outlet.config_version by exactly
+	// one, mirroring backend/internal/tables/kitchen/compliance's own copy of
+	// the same statement. device_credential carries no config_version column
+	// of its own (packages/contracts/postgres/0008_device_enrollment.sql
+	// predates ADR-017's 0.4.3 amendment and was not revised) — T13's
+	// ListEdgeCredentials reports the OUTLET's config_version for every
+	// credential row rather than a per-row one, so this bump is what makes a
+	// credential mutation observable to an edge pulling with since_version.
+	BumpOutletConfigVersion(ctx context.Context, outletID string) (int, error)
+
+	// ListEdgeCredentials returns EVERY device_credential row for outletID —
+	// active, revoked AND expired — WITH credential_hash. This is the one
+	// exception to this package's otherwise-total "no exported method ever
+	// returns a hash" rule (see DeviceCredential's own doc comment above),
+	// mirroring auth.Repository.ListEdgeUserCache's identical exception for
+	// password_hash/pin_hash (ADR-011 applied to devices, ADR-017 0.4.3
+	// amendment). A revoked/expired row is never filtered out here — the
+	// edge learns a credential is dead by syncing it, not by its absence.
+	ListEdgeCredentials(ctx context.Context, tenantID, outletID string) ([]contracts.EdgeDeviceCredential, error)
 }

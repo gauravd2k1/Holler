@@ -79,6 +79,20 @@ type edgeUserCacheProvider interface {
 	ListEdgeUserCache(ctx context.Context, tenantID, outletID string, sinceVersion int) ([]contracts.EdgeUserCacheEntry, error)
 }
 
+// edgeDeviceCredentialProvider is the minimal seam onto
+// backend/internal/outlet.DeviceService (T13, ADR-017 0.4.3 amendment):
+// device_credential rows enrolled at outletID, with credential_hash carried
+// verbatim so a KDS can verify a LAN handshake against its local cache with
+// the uplink down. outlet.DeviceService.ListEdgeDeviceCredentials is the
+// ONLY method in this backend that returns a device credential hash —
+// mirrors edgeUserCacheProvider's identical carve-out for password_hash/
+// pin_hash immediately above. Revoked and expired credentials are NEVER
+// filtered out by this seam (see the method's own doc comment) — the edge
+// learns a credential is dead by syncing it, not by its absence.
+type edgeDeviceCredentialProvider interface {
+	ListEdgeDeviceCredentials(ctx context.Context, tenantID, outletID string, sinceVersion int) ([]contracts.EdgeDeviceCredential, error)
+}
+
 // tableConfigWire, categoryConfigWire and itemConfigWire mirror the
 // RestaurantTable/MenuCategory/MenuItem openapi schemas exactly. They exist
 // here rather than being imported because backend/internal/tables already
@@ -118,37 +132,42 @@ type itemConfigWire struct {
 // syncConfigResponse is packages/contracts/openapi/openapi.yaml's
 // GET /sync/config 200 response, all nine required fields.
 type syncConfigResponse struct {
-	ConfigVersion       int                            `json:"config_version"`
-	Users               []contracts.EdgeUserCacheEntry `json:"users"`
-	Tables              []tableConfigWire              `json:"tables"`
-	Categories          []categoryConfigWire           `json:"categories"`
-	Items               []itemConfigWire               `json:"items"`
-	Stations            []contracts.Station            `json:"stations"`
-	ItemStations        []contracts.MenuItemStation    `json:"item_stations"`
-	Printers            []contracts.Printer            `json:"printers"`
-	StationPrinters     []contracts.StationPrinter     `json:"station_printers"`
-	ComplianceVersions  []contracts.ComplianceVersion  `json:"compliance_versions"`
-	TaxProfiles         []contracts.TaxProfile         `json:"tax_profiles"`
-	TaxRules            []contracts.TaxRule            `json:"tax_rules"`
-	InvoiceSeries       []contracts.InvoiceSeries      `json:"invoice_series"`
-	DiscountDefinitions []contracts.DiscountDefinition `json:"discount_definitions"`
-	FiscalProfile       *contracts.OutletFiscalProfile `json:"fiscal_profile"`
+	ConfigVersion       int                              `json:"config_version"`
+	Users               []contracts.EdgeUserCacheEntry   `json:"users"`
+	Tables              []tableConfigWire                `json:"tables"`
+	Categories          []categoryConfigWire             `json:"categories"`
+	Items               []itemConfigWire                 `json:"items"`
+	Stations            []contracts.Station              `json:"stations"`
+	ItemStations        []contracts.MenuItemStation      `json:"item_stations"`
+	Printers            []contracts.Printer              `json:"printers"`
+	StationPrinters     []contracts.StationPrinter       `json:"station_printers"`
+	ComplianceVersions  []contracts.ComplianceVersion    `json:"compliance_versions"`
+	TaxProfiles         []contracts.TaxProfile           `json:"tax_profiles"`
+	TaxRules            []contracts.TaxRule              `json:"tax_rules"`
+	InvoiceSeries       []contracts.InvoiceSeries        `json:"invoice_series"`
+	DiscountDefinitions []contracts.DiscountDefinition   `json:"discount_definitions"`
+	FiscalProfile       *contracts.OutletFiscalProfile   `json:"fiscal_profile"`
+	DeviceCredentials   []contracts.EdgeDeviceCredential `json:"device_credentials"`
 }
 
 // syncConfigHandler assembles the composite bundle. It never runs SQL
 // itself — every field comes from an owning context's already-exported,
 // already-tenant/outlet-scoped Service method.
 type syncConfigHandler struct {
-	outlets    outletConfigProvider
-	menu       menuConfigProvider
-	tables     tablesConfigProvider
-	kitchen    kitchenConfigProvider
-	compliance complianceConfigProvider
-	users      edgeUserCacheProvider
+	outlets           outletConfigProvider
+	menu              menuConfigProvider
+	tables            tablesConfigProvider
+	kitchen           kitchenConfigProvider
+	compliance        complianceConfigProvider
+	users             edgeUserCacheProvider
+	deviceCredentials edgeDeviceCredentialProvider
 }
 
-func newSyncConfigHandler(outlets outletConfigProvider, menuSvc menuConfigProvider, tablesSvc tablesConfigProvider, kitchenSvc kitchenConfigProvider, complianceSvc complianceConfigProvider, usersSvc edgeUserCacheProvider) *syncConfigHandler {
-	return &syncConfigHandler{outlets: outlets, menu: menuSvc, tables: tablesSvc, kitchen: kitchenSvc, compliance: complianceSvc, users: usersSvc}
+func newSyncConfigHandler(outlets outletConfigProvider, menuSvc menuConfigProvider, tablesSvc tablesConfigProvider, kitchenSvc kitchenConfigProvider, complianceSvc complianceConfigProvider, usersSvc edgeUserCacheProvider, deviceCredentialsSvc edgeDeviceCredentialProvider) *syncConfigHandler {
+	return &syncConfigHandler{
+		outlets: outlets, menu: menuSvc, tables: tablesSvc, kitchen: kitchenSvc, compliance: complianceSvc,
+		users: usersSvc, deviceCredentials: deviceCredentialsSvc,
+	}
 }
 
 // ServeHTTP requires a verified DevicePrincipal in context (ADR-017 §2):
@@ -226,6 +245,11 @@ func (h *syncConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, err)
 		return
 	}
+	deviceCredentials, err := h.deviceCredentials.ListEdgeDeviceCredentials(r.Context(), tenantID, outletID, sinceVersion)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
 
 	resp := syncConfigResponse{
 		ConfigVersion:       o.ConfigVersion,
@@ -243,6 +267,7 @@ func (h *syncConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		InvoiceSeries:       complianceBundle.InvoiceSeries,
 		DiscountDefinitions: complianceBundle.DiscountDefinitions,
 		FiscalProfile:       complianceBundle.FiscalProfile,
+		DeviceCredentials:   deviceCredentials,
 	}
 	if resp.Users == nil {
 		resp.Users = []contracts.EdgeUserCacheEntry{}
@@ -258,6 +283,9 @@ func (h *syncConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if resp.StationPrinters == nil {
 		resp.StationPrinters = []contracts.StationPrinter{}
+	}
+	if resp.DeviceCredentials == nil {
+		resp.DeviceCredentials = []contracts.EdgeDeviceCredential{}
 	}
 
 	httpx.JSON(w, http.StatusOK, resp)

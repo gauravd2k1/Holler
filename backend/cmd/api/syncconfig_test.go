@@ -96,6 +96,23 @@ func (f fakeUsersProvider) ListEdgeUserCache(ctx context.Context, tenantID, outl
 	return out, nil
 }
 
+type fakeDeviceCredentialProvider struct {
+	entries []contracts.EdgeDeviceCredential
+}
+
+func (f fakeDeviceCredentialProvider) ListEdgeDeviceCredentials(ctx context.Context, tenantID, outletID string, sinceVersion int) ([]contracts.EdgeDeviceCredential, error) {
+	if tenantID != scTenantID || outletID != scOutletID {
+		return nil, httpx.ErrNotFound
+	}
+	var out []contracts.EdgeDeviceCredential
+	for _, e := range f.entries {
+		if e.ConfigVersion > sinceVersion {
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}
+
 func pinHashPtr(s string) *string { return &s }
 
 func newTestSyncConfigHandler() *syncConfigHandler {
@@ -148,6 +165,20 @@ func newTestSyncConfigHandler() *syncConfigHandler {
 					Email: "new@example.com", FullName: "New User",
 					PasswordHash: "argon2id-hash-new", PinHash: pinHashPtr("argon2id-pin-new"),
 					IsActive: true, Permissions: []contracts.Permission{auth.PermissionOrderCreate, auth.PermissionUserManage},
+					ConfigVersion: 6, SchemaVersion: 1,
+				},
+			},
+		},
+		fakeDeviceCredentialProvider{
+			entries: []contracts.EdgeDeviceCredential{
+				{
+					CredentialID: "cred-old", DeviceID: "device-old", TenantID: scTenantID, OutletID: scOutletID,
+					CredentialHash: "$argon2id$v=19$fake-old", DeviceKind: "KDS",
+					ConfigVersion: 1, SchemaVersion: 1,
+				},
+				{
+					CredentialID: "cred-new", DeviceID: "device-new", TenantID: scTenantID, OutletID: scOutletID,
+					CredentialHash: "$argon2id$v=19$fake-new", DeviceKind: "POS",
 					ConfigVersion: 6, SchemaVersion: 1,
 				},
 			},
@@ -217,6 +248,47 @@ func TestSyncConfig_AllNineFieldsPresent(t *testing.T) {
 	}
 	if !contains(rec.Body.String(), "argon2id-hash-old") || !contains(rec.Body.String(), "argon2id-hash-new") {
 		t.Errorf("expected password_hash values on the wire: %s", rec.Body.String())
+	}
+}
+
+// TestSyncConfig_DeviceCredentialsPresentWithHashAndSinceVersionFiltering
+// (T13): device_credentials is required in the same response and must
+// carry credential_hash intact, filtered by since_version exactly like
+// tables/categories/items above.
+func TestSyncConfig_DeviceCredentialsPresentWithHashAndSinceVersionFiltering(t *testing.T) {
+	h := newTestSyncConfigHandler()
+	p := testDevicePrincipal()
+	rec := doSyncConfigRequest(t, h, &p, "outlet_id="+scOutletID+"&since_version=0")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if _, ok := body["device_credentials"]; !ok {
+		t.Fatal("missing required field \"device_credentials\"")
+	}
+
+	var resp syncConfigResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decoding into syncConfigResponse: %v", err)
+	}
+	if len(resp.DeviceCredentials) != 2 {
+		t.Fatalf("expected 2 device credentials at since_version=0, got %d", len(resp.DeviceCredentials))
+	}
+	if !contains(rec.Body.String(), "$argon2id$v=19$fake-old") || !contains(rec.Body.String(), "$argon2id$v=19$fake-new") {
+		t.Errorf("expected credential_hash values on the wire: %s", rec.Body.String())
+	}
+
+	filteredRec := doSyncConfigRequest(t, h, &p, "outlet_id="+scOutletID+"&since_version=1")
+	var filtered syncConfigResponse
+	if err := json.Unmarshal(filteredRec.Body.Bytes(), &filtered); err != nil {
+		t.Fatalf("decoding filtered response: %v", err)
+	}
+	if len(filtered.DeviceCredentials) != 1 || filtered.DeviceCredentials[0].CredentialID != "cred-new" {
+		t.Fatalf("expected since_version=1 to exclude cred-old, got %+v", filtered.DeviceCredentials)
 	}
 }
 
