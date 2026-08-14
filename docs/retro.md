@@ -204,3 +204,52 @@ This is the same error as the browser entry above, in a different language: **a 
 ### Note
 
 The fix was falsified before being accepted: restoring one em-dash into a scratch copy reproduced the user's error at the same line with the same message, and the ASCII version executed to its intended early exit. That is the standard this entry exists to enforce.
+
+---
+
+## 2026-08-14 — Three gates that could not fail, and a seam the orchestrator built
+
+Nine tracks landed in one session (T7c, T13 retry, T9 + retry, T10, T11, T11b + retry, contracts 0.4.4, a CI fix). Eight passed their gate; one failed and was fixed. The tracks are not what this entry is about.
+
+Three separate things this project had been counting as evidence turned out to be incapable of producing evidence. They were found on the same day, by different gates, and they are the same failure.
+
+### 1. The backend suite reported green while skipping 29 tests
+
+`HOLLER_TEST_DATABASE_URL` unset caused every Postgres-backed test to `t.Skip`. `go test ./...` exited 0 and printed `ok` for all 12 packages. Among the skipped: `TestBuildRouter_SyncConfigEndToEnd`, which **M2 acceptance item 4 names by hand** as a test that had never run.
+
+M2 recorded "a skip is not a pass" and moved on. The mechanism that produces the skip was left in place, so it produced it again.
+
+### 2. CI had institutionalised the same thing
+
+`.github/workflows/ci.yml` ran `cd backend && go test ./...` on `ubuntu-latest` with **no Postgres service and no `HOLLER_TEST_DATABASE_URL`**. So the pipeline had never once executed a Postgres-backed test, and reported the backend green on every push. The CI story in `CLAUDE.md` — "lint, format, unit, integration" — was partly fictional for the backend, and had been since the job was written.
+
+### 3. The e2e harness had not compiled for two features
+
+`docs/RESUME.md` recorded "the e2e harness (54 scenarios, 0 invariant violations) were green at their last run and untouched since". The harness had not built since ADR-017 device enrollment and M3 Track B landed: `server::start` gained a required `DeviceTokenVerifier`, `MenuItem` gained `tax_profile_id`, `NewOrderItemRequest` gained `modifiers`. Nobody had run it, so nobody saw it fail to build — and "no invariant violations" is what a harness that cannot start reports.
+
+The figure was repeated in status summaries all session, including by this orchestrator, before anyone tried to run it.
+
+### Root cause behind the root cause
+
+The existing entries in this file say it already: *a check that resembles the real thing was accepted in place of the real thing.* This is its terminal form. **A check that does not execute reports the same thing as a check that executes and finds nothing.** Zero failures is the output of a passing suite, a skipped suite, and a suite that cannot compile — and nothing in the output distinguishes them.
+
+Every one of the three had a visible tell that was never read: a skip count, an absent service block, a build error nobody triggered. None was hidden. They were unlooked-at, because the summary line said what everyone wanted.
+
+### 4. The orchestrator built the seam it kept warning about
+
+T11b (scoped to `tests/`) and the T9 retry (scoped to `edge/database` + `apps/pos`) were dispatched in parallel, each told to stay in its directory. The directory partition was clean and both tracks honoured it. But the harness in `tests/` is a **consumer** of `apps/pos`, and the T9 retry added a parameter to `record_payment_impl`. T11b committed on top of that change while verifying against a worktree taken before it, so **its own commit did not build** — re-creating, within the same session, the exact bit-rot it had just been dispatched to fix.
+
+Directory partitioning prevents *edit* conflicts. It does nothing about *interface* conflicts, and the orchestrator applied it as though it did — while telling every verifier that session that "the seam is where the defects are".
+
+### Rules adopted
+
+1. **A suite that cannot fail must be made to fail loudly, not documented.** An unset `HOLLER_TEST_DATABASE_URL` is now a `t.Fatal` via `backend/internal/platform/testdb`, with `HOLLER_SKIP_PG_TESTS=1` as a deliberate opt-in. Noting a hazard in a doc does not remove it; the two M2 acceptance failures were both preceded by the hazard being written down.
+2. **Assert the skip count, not just the exit code.** The backend CI job now fails if any test skips. An exit code cannot distinguish "ran and passed" from "did not run", so something else must.
+3. **Every green number carries the command that produced it and when.** "54 scenarios, 0 violations" survived because it was quoted without a date or a command. A count with no reproduction instruction is a rumour.
+4. **Partition parallel tracks by interface, not only by directory.** Before dispatching concurrent tracks, ask which of them *calls* code another one *owns*. If one does, either serialize them or require the consumer to rebuild against the producer's final commit before its gate.
+5. **A track's own verification must run against the tree it commits to.** Verifying on a scratch worktree taken before a sibling merge proves the code worked somewhere that no longer exists.
+6. **An invariant nobody has watched fail is not a gate.** Invariant 10 (`payment_settlement`) reported `checked && passed` on 54 scenarios before anyone established it *could* go red. It was then falsified deliberately — 12/12 scenarios red, each naming itself with exact paise — and only then counted. Invariant 9 was falsified when written; 10 was not, and the difference was invisible in the report.
+
+### Note
+
+The pattern that caught all three was the same one this file already recommends: ask a verifier to falsify a property the builder did not target. The builder of the harness fix could not see that the harness had never built, because the builder ran it the way it had always been run. The gate ran it against `main`.
