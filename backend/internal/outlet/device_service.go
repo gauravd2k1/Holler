@@ -14,6 +14,7 @@ import (
 	"github.com/holler/backend/internal/platform/httpx"
 	"github.com/holler/backend/internal/platform/id"
 	contracts "github.com/holler/contracts"
+	"github.com/jackc/pgx/v5"
 )
 
 // deviceTokenSecretBytes is 256 bits of entropy for the per-device token
@@ -102,15 +103,27 @@ func (s *DeviceService) EnrollDevice(ctx context.Context, principal Principal, o
 		}
 	}
 
-	issued, err := s.issueCredential(ctx, principal.TenantID, outletID, device.ID, label, now)
+	// The credential insert and the config_version bump that announces it
+	// must commit together or not at all (T13 retry, DEFECT 1): a crash
+	// between them would leave a committed credential no edge ever learns
+	// about, and a retried enroll then reports "device already enrolled"
+	// even though the device can never authenticate.
+	var issued issuedCredential
+	err = s.devices.WithTx(ctx, func(tx pgx.Tx) error {
+		var txErr error
+		issued, txErr = s.issueCredential(ctx, tx, principal.TenantID, outletID, device.ID, label, now)
+		if txErr != nil {
+			return txErr
+		}
+		// A device credential change must be observable to an edge pulling
+		// GET /sync/config with since_version (T13, ADR-017 0.4.3
+		// amendment): device_credential carries no config_version column
+		// of its own, so bumping the outlet's is what makes the change
+		// visible at all.
+		_, txErr = s.devices.BumpOutletConfigVersion(ctx, tx, outletID)
+		return txErr
+	})
 	if err != nil {
-		return EnrolledDevice{}, err
-	}
-	// A device credential change must be observable to an edge pulling
-	// GET /sync/config with since_version (T13, ADR-017 0.4.3 amendment):
-	// device_credential carries no config_version column of its own, so
-	// bumping the outlet's is what makes the change visible at all.
-	if _, err := s.devices.BumpOutletConfigVersion(ctx, outletID); err != nil {
 		return EnrolledDevice{}, err
 	}
 
@@ -139,14 +152,22 @@ func (s *DeviceService) RotateCredential(ctx context.Context, principal Principa
 	}
 
 	now := s.now().UTC()
-	if err := s.devices.RevokeActiveCredential(ctx, device.ID, now); err != nil {
-		return EnrolledDevice{}, err
-	}
-	issued, err := s.issueCredential(ctx, principal.TenantID, device.OutletID, device.ID, label, now)
+	// The revoke, the fresh insert and the config_version bump must all
+	// commit together or not at all (T13 retry, DEFECT 1) — see EnrollDevice.
+	var issued issuedCredential
+	err = s.devices.WithTx(ctx, func(tx pgx.Tx) error {
+		if txErr := s.devices.RevokeActiveCredential(ctx, tx, device.ID, now); txErr != nil {
+			return txErr
+		}
+		var txErr error
+		issued, txErr = s.issueCredential(ctx, tx, principal.TenantID, device.OutletID, device.ID, label, now)
+		if txErr != nil {
+			return txErr
+		}
+		_, txErr = s.devices.BumpOutletConfigVersion(ctx, tx, device.OutletID)
+		return txErr
+	})
 	if err != nil {
-		return EnrolledDevice{}, err
-	}
-	if _, err := s.devices.BumpOutletConfigVersion(ctx, device.OutletID); err != nil {
 		return EnrolledDevice{}, err
 	}
 
@@ -168,10 +189,16 @@ func (s *DeviceService) RevokeCredential(ctx context.Context, principal Principa
 		return err
 	}
 	now := s.now().UTC()
-	if err := s.devices.RevokeActiveCredential(ctx, device.ID, now); err != nil {
-		return err
-	}
-	if _, err := s.devices.BumpOutletConfigVersion(ctx, device.OutletID); err != nil {
+	// The revoke and the config_version bump must commit together or not at
+	// all (T13 retry, DEFECT 1) — see EnrollDevice.
+	err = s.devices.WithTx(ctx, func(tx pgx.Tx) error {
+		if txErr := s.devices.RevokeActiveCredential(ctx, tx, device.ID, now); txErr != nil {
+			return txErr
+		}
+		_, txErr := s.devices.BumpOutletConfigVersion(ctx, tx, device.OutletID)
+		return txErr
+	})
+	if err != nil {
 		return err
 	}
 	s.audit(ctx, principal.TenantID, actorUserID, "device.credential.revoke", device.ID, map[string]interface{}{
@@ -192,7 +219,7 @@ type issuedCredential struct {
 // own id (a public lookup key, not a secret) plus the random secret, so
 // VerifyToken can find the row by id instead of scanning every active
 // credential.
-func (s *DeviceService) issueCredential(ctx context.Context, tenantID, outletID, deviceID, label string, now time.Time) (issuedCredential, error) {
+func (s *DeviceService) issueCredential(ctx context.Context, tx pgx.Tx, tenantID, outletID, deviceID, label string, now time.Time) (issuedCredential, error) {
 	credentialID := id.New()
 	secret, err := generateDeviceSecret()
 	if err != nil {
@@ -211,7 +238,7 @@ func (s *DeviceService) issueCredential(ctx context.Context, tenantID, outletID,
 		Label:     label,
 		CreatedAt: now,
 	}
-	if err := s.devices.InsertCredential(ctx, cred, hash); err != nil {
+	if err := s.devices.InsertCredential(ctx, tx, cred, hash); err != nil {
 		return issuedCredential{}, err
 	}
 	return issuedCredential{CredentialID: credentialID, Token: credentialID + "." + secret}, nil

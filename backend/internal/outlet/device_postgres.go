@@ -30,6 +30,24 @@ func isUniqueViolation(err error) bool {
 // one Postgres pool.
 var _ DeviceRepository = (*PostgresRepository)(nil)
 
+// WithTx runs fn inside a single Postgres transaction, mirroring
+// backend/internal/compliance's pgRepository.WithTx exactly (T13 retry,
+// DEFECT 1) — do not invent a second transaction idiom in this package.
+func (r *PostgresRepository) WithTx(ctx context.Context, fn func(tx pgx.Tx) error) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("outlet: begin tx: %w", err)
+	}
+	if err := fn(tx); err != nil {
+		_ = tx.Rollback(ctx)
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("outlet: commit tx: %w", err)
+	}
+	return nil
+}
+
 func (r *PostgresRepository) InsertDevice(ctx context.Context, tenantID string, d Device) error {
 	tag, err := r.pool.Exec(ctx, `
 		INSERT INTO device (id, outlet_id, kind, name, enrolled_at, created_at, updated_at)
@@ -97,8 +115,8 @@ func (r *PostgresRepository) MarkDeviceEnrolled(ctx context.Context, deviceID st
 	return nil
 }
 
-func (r *PostgresRepository) InsertCredential(ctx context.Context, c DeviceCredential, tokenHash string) error {
-	_, err := r.pool.Exec(ctx, `
+func (r *PostgresRepository) InsertCredential(ctx context.Context, tx pgx.Tx, c DeviceCredential, tokenHash string) error {
+	_, err := tx.Exec(ctx, `
 		INSERT INTO device_credential (id, device_id, tenant_id, outlet_id, token_hash, label, created_at, expires_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 	`, c.ID, c.DeviceID, c.TenantID, c.OutletID, tokenHash, c.Label, c.CreatedAt, c.ExpiresAt)
@@ -115,8 +133,8 @@ func (r *PostgresRepository) InsertCredential(ctx context.Context, c DeviceCrede
 	return nil
 }
 
-func (r *PostgresRepository) RevokeActiveCredential(ctx context.Context, deviceID string, now time.Time) error {
-	_, err := r.pool.Exec(ctx, `
+func (r *PostgresRepository) RevokeActiveCredential(ctx context.Context, tx pgx.Tx, deviceID string, now time.Time) error {
+	_, err := tx.Exec(ctx, `
 		UPDATE device_credential SET revoked_at = $2
 		WHERE device_id = $1 AND revoked_at IS NULL
 	`, deviceID, now)
@@ -167,10 +185,11 @@ func (r *PostgresRepository) touchCredentialLastUsed(ctx context.Context, creden
 
 // BumpOutletConfigVersion increments outlet.config_version by exactly one —
 // see DeviceRepository's doc comment for why device credential mutations
-// need this (T13, ADR-017 0.4.3 amendment).
-func (r *PostgresRepository) BumpOutletConfigVersion(ctx context.Context, outletID string) (int, error) {
+// need this (T13, ADR-017 0.4.3 amendment) and why it now runs inside tx
+// (T13 retry, DEFECT 1).
+func (r *PostgresRepository) BumpOutletConfigVersion(ctx context.Context, tx pgx.Tx, outletID string) (int, error) {
 	var newVersion int
-	err := r.pool.QueryRow(ctx,
+	err := tx.QueryRow(ctx,
 		`UPDATE outlet SET config_version = config_version + 1, updated_at = now()
 		 WHERE id = $1 RETURNING config_version`,
 		outletID,

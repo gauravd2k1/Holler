@@ -115,3 +115,76 @@ func TestPostgresDeviceService_EnrollCrossTenantOutlet_IsNotFound(t *testing.T) 
 		t.Fatalf("expected ErrNotFound enrolling a device at another tenant's outlet, got %v", err)
 	}
 }
+
+// TestPostgresListEdgeDeviceCredentials_ScopesToOutletNotJustTenant is the
+// falsifying test for T13 retry DEFECT 2: a previous gate removed the
+// outlet_id predicate from ListEdgeCredentials' query, keeping only
+// tenant_id, and every existing test still passed. Two branches under one
+// tenant is the ORDINARY case, not an exotic one — GET /sync/config carries
+// Argon2id hash material on the wire, so a pull scoped to outlet A must
+// return only A's credential and never outlet B's, even though both outlets
+// share a tenant.
+func TestPostgresListEdgeDeviceCredentials_ScopesToOutletNotJustTenant(t *testing.T) {
+	pool := setupPool(t)
+	ctx := context.Background()
+
+	tenantSvc := tenant.NewService(tenant.NewPostgresRepository(pool))
+	outletsRepo := outlet.NewPostgresRepository(pool)
+	outletSvc := outlet.NewService(outletsRepo)
+	deviceSvc := outlet.NewDeviceService(outletsRepo, outletsRepo, nil)
+
+	org, err := tenantSvc.CreateOrganisation(ctx, "Two Branch Org")
+	if err != nil {
+		t.Fatalf("CreateOrganisation: %v", err)
+	}
+	brand, err := tenantSvc.CreateBrand(ctx, org.ID, "Two Branch Brand")
+	if err != nil {
+		t.Fatalf("CreateBrand: %v", err)
+	}
+	principal := outlet.Principal{TenantID: org.ID}
+
+	outletA, err := outletSvc.CreateOutlet(ctx, principal, brand.ID, "Branch A", "")
+	if err != nil {
+		t.Fatalf("CreateOutlet A: %v", err)
+	}
+	outletB, err := outletSvc.CreateOutlet(ctx, principal, brand.ID, "Branch B", "")
+	if err != nil {
+		t.Fatalf("CreateOutlet B: %v", err)
+	}
+
+	enrolledA, err := deviceSvc.EnrollDevice(ctx, principal, outletA.ID, outlet.DeviceKindPOS, "POS-A-1", "", nil)
+	if err != nil {
+		t.Fatalf("EnrollDevice at outlet A: %v", err)
+	}
+	enrolledB, err := deviceSvc.EnrollDevice(ctx, principal, outletB.ID, outlet.DeviceKindPOS, "POS-B-1", "", nil)
+	if err != nil {
+		t.Fatalf("EnrollDevice at outlet B: %v", err)
+	}
+
+	credsA, err := deviceSvc.ListEdgeDeviceCredentials(ctx, org.ID, outletA.ID, 0)
+	if err != nil {
+		t.Fatalf("ListEdgeDeviceCredentials for outlet A: %v", err)
+	}
+	if len(credsA) != 1 {
+		t.Fatalf("expected exactly one credential for outlet A, got %d: %+v", len(credsA), credsA)
+	}
+	if credsA[0].DeviceID != enrolledA.Device.ID {
+		t.Fatalf("expected outlet A's credential to belong to its own device %s, got device %s", enrolledA.Device.ID, credsA[0].DeviceID)
+	}
+	for _, c := range credsA {
+		if c.DeviceID == enrolledB.Device.ID {
+			t.Fatalf("outlet A's credential pull leaked outlet B's device credential: %+v", c)
+		}
+	}
+
+	credsB, err := deviceSvc.ListEdgeDeviceCredentials(ctx, org.ID, outletB.ID, 0)
+	if err != nil {
+		t.Fatalf("ListEdgeDeviceCredentials for outlet B: %v", err)
+	}
+	if len(credsB) != 1 {
+		t.Fatalf("expected exactly one credential for outlet B, got %d: %+v", len(credsB), credsB)
+	}
+	if credsB[0].DeviceID != enrolledB.Device.ID {
+		t.Fatalf("expected outlet B's credential to belong to its own device %s, got device %s", enrolledB.Device.ID, credsB[0].DeviceID)
+	}
+}

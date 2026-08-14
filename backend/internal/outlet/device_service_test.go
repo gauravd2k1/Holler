@@ -9,6 +9,7 @@ import (
 
 	"github.com/holler/backend/internal/platform/httpx"
 	contracts "github.com/holler/contracts"
+	"github.com/jackc/pgx/v5"
 )
 
 // fakeDeviceRepo is an in-memory DeviceRepository. Its findCredentialForVerify
@@ -21,6 +22,17 @@ type fakeDeviceRepo struct {
 	tokenHashes    map[string]string           // credentialID -> hash
 	outletVersions map[string]int              // outletID -> config_version, mirrors fakeRepo's outlets map
 	bumpCalls      int
+
+	// failBumpForOutlet, when non-empty, makes BumpOutletConfigVersion
+	// return an error for that outletID. Combined with WithTx's
+	// snapshot/restore below, this is what lets
+	// TestEnrollDevice_CredentialAndBumpAreAtomic (and its rotate/revoke
+	// siblings) falsify a regression where the bump is ever pulled back out
+	// of the transaction (T13 retry, DEFECT 1): if InsertCredential/
+	// RevokeActiveCredential were called directly against the maps instead
+	// of through WithTx's snapshot, this failure would no longer roll them
+	// back.
+	failBumpForOutlet string
 }
 
 func newFakeDeviceRepo() *fakeDeviceRepo {
@@ -30,6 +42,35 @@ func newFakeDeviceRepo() *fakeDeviceRepo {
 		tokenHashes:    map[string]string{},
 		outletVersions: map[string]int{},
 	}
+}
+
+// WithTx snapshots credentials/tokenHashes/outletVersions before running fn
+// and restores that snapshot if fn returns an error, so the in-memory fake
+// gives the same all-or-nothing guarantee a real Postgres transaction does.
+// This is what makes TestEnrollDevice_CredentialAndBumpAreAtomic (and its
+// rotate/revoke siblings) an actual regression test rather than one that
+// merely exercises the happy path (T13 retry, DEFECT 1).
+func (f *fakeDeviceRepo) WithTx(_ context.Context, fn func(tx pgx.Tx) error) error {
+	credsBackup := make(map[string]DeviceCredential, len(f.credentials))
+	for k, v := range f.credentials {
+		credsBackup[k] = v
+	}
+	hashesBackup := make(map[string]string, len(f.tokenHashes))
+	for k, v := range f.tokenHashes {
+		hashesBackup[k] = v
+	}
+	versionsBackup := make(map[string]int, len(f.outletVersions))
+	for k, v := range f.outletVersions {
+		versionsBackup[k] = v
+	}
+
+	if err := fn(nil); err != nil {
+		f.credentials = credsBackup
+		f.tokenHashes = hashesBackup
+		f.outletVersions = versionsBackup
+		return err
+	}
+	return nil
 }
 
 func (f *fakeDeviceRepo) InsertDevice(_ context.Context, _ string, d Device) error {
@@ -71,7 +112,7 @@ func (f *fakeDeviceRepo) MarkDeviceEnrolled(_ context.Context, deviceID string, 
 	return nil
 }
 
-func (f *fakeDeviceRepo) InsertCredential(_ context.Context, c DeviceCredential, tokenHash string) error {
+func (f *fakeDeviceRepo) InsertCredential(_ context.Context, _ pgx.Tx, c DeviceCredential, tokenHash string) error {
 	for _, existing := range f.credentials {
 		if existing.DeviceID == c.DeviceID && existing.RevokedAt == nil {
 			return httpx.ErrConflict
@@ -82,7 +123,7 @@ func (f *fakeDeviceRepo) InsertCredential(_ context.Context, c DeviceCredential,
 	return nil
 }
 
-func (f *fakeDeviceRepo) RevokeActiveCredential(_ context.Context, deviceID string, now time.Time) error {
+func (f *fakeDeviceRepo) RevokeActiveCredential(_ context.Context, _ pgx.Tx, deviceID string, now time.Time) error {
 	for id, c := range f.credentials {
 		if c.DeviceID == deviceID && c.RevokedAt == nil {
 			c.RevokedAt = &now
@@ -134,7 +175,10 @@ func (f *fakeDeviceRepo) touchCredentialLastUsed(_ context.Context, credentialID
 // field on every call — in production both DeviceRepository and Repository
 // are the same *PostgresRepository over the same outlet row, so a unit test
 // splitting them into two fakes must keep them in sync by hand.
-func (f *fakeDeviceRepo) BumpOutletConfigVersion(_ context.Context, outletID string) (int, error) {
+func (f *fakeDeviceRepo) BumpOutletConfigVersion(_ context.Context, _ pgx.Tx, outletID string) (int, error) {
+	if f.failBumpForOutlet != "" && f.failBumpForOutlet == outletID {
+		return 0, errors.New("simulated config_version bump failure")
+	}
 	f.bumpCalls++
 	f.outletVersions[outletID]++
 	return f.outletVersions[outletID], nil
@@ -323,6 +367,76 @@ func TestEnrollDevice_RejectsUnknownKind(t *testing.T) {
 	_, err := svc.EnrollDevice(context.Background(), Principal{TenantID: "tenant-a"}, "outlet-a", DeviceKind("TOASTER"), "T-1", "", nil)
 	if !errors.Is(err, httpx.ErrInvalidInput) {
 		t.Fatalf("expected ErrInvalidInput for an unknown device kind, got %v", err)
+	}
+}
+
+// --- T13 retry, DEFECT 1: credential write / config_version bump atomicity -
+
+// TestEnrollDevice_CredentialAndBumpAreAtomic is the falsifying test for
+// DEFECT 1: if InsertCredential and BumpOutletConfigVersion are ever split
+// back into two independent, non-transactional calls, the credential insert
+// will have already been committed by the time the (simulated) bump
+// failure is observed, and this test goes red because the credential is
+// still present after EnrollDevice returned an error.
+func TestEnrollDevice_CredentialAndBumpAreAtomic(t *testing.T) {
+	_, devices, svc := newDeviceTestFixture()
+	devices.failBumpForOutlet = "outlet-a"
+	principal := Principal{TenantID: "tenant-a"}
+
+	_, err := svc.EnrollDevice(context.Background(), principal, "outlet-a", DeviceKindPOS, "POS-1", "", nil)
+	if err == nil {
+		t.Fatal("expected EnrollDevice to fail when the config_version bump fails")
+	}
+	if len(devices.credentials) != 0 {
+		t.Fatalf("expected the credential insert to roll back with the failed bump, got %d credentials", len(devices.credentials))
+	}
+}
+
+// TestRotateCredential_RevokeInsertAndBumpAreAtomic is DEFECT 1's falsifying
+// test for RotateCredential: a failed bump must roll back both the revoke of
+// the old credential and the insert of the new one, leaving the device
+// exactly as it was before rotation was attempted.
+func TestRotateCredential_RevokeInsertAndBumpAreAtomic(t *testing.T) {
+	_, devices, svc := newDeviceTestFixture()
+	principal := Principal{TenantID: "tenant-a"}
+
+	enrolled, err := svc.EnrollDevice(context.Background(), principal, "outlet-a", DeviceKindPOS, "POS-1", "", nil)
+	if err != nil {
+		t.Fatalf("EnrollDevice: %v", err)
+	}
+
+	devices.failBumpForOutlet = "outlet-a"
+	if _, err := svc.RotateCredential(context.Background(), principal, enrolled.Device.ID, "rotation 1", nil); err == nil {
+		t.Fatal("expected RotateCredential to fail when the config_version bump fails")
+	}
+
+	if len(devices.credentials) != 1 {
+		t.Fatalf("expected exactly the original credential to survive the rolled-back rotation, got %d", len(devices.credentials))
+	}
+	if _, err := svc.VerifyToken(context.Background(), enrolled.Token); err != nil {
+		t.Fatalf("expected the pre-rotation token to still verify after the rolled-back rotation, got %v", err)
+	}
+}
+
+// TestRevokeCredential_RevokeAndBumpAreAtomic is DEFECT 1's falsifying test
+// for RevokeCredential: a failed bump must roll back the revoke, leaving the
+// original token still able to authenticate.
+func TestRevokeCredential_RevokeAndBumpAreAtomic(t *testing.T) {
+	_, devices, svc := newDeviceTestFixture()
+	principal := Principal{TenantID: "tenant-a"}
+
+	enrolled, err := svc.EnrollDevice(context.Background(), principal, "outlet-a", DeviceKindPOS, "POS-1", "", nil)
+	if err != nil {
+		t.Fatalf("EnrollDevice: %v", err)
+	}
+
+	devices.failBumpForOutlet = "outlet-a"
+	if err := svc.RevokeCredential(context.Background(), principal, enrolled.Device.ID, nil); err == nil {
+		t.Fatal("expected RevokeCredential to fail when the config_version bump fails")
+	}
+
+	if _, err := svc.VerifyToken(context.Background(), enrolled.Token); err != nil {
+		t.Fatalf("expected the token to still verify after the rolled-back revoke, got %v", err)
 	}
 }
 
