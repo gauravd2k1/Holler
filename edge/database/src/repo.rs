@@ -287,12 +287,12 @@ pub fn upsert_menu_category(conn: &Connection, c: &MenuCategory) -> DbResult<()>
 
 pub fn upsert_menu_item(conn: &Connection, m: &MenuItem) -> DbResult<()> {
     conn.execute(
-        "INSERT INTO menu_item (id, outlet_id, category_id, name, base_price_paise, is_available, config_version)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "INSERT INTO menu_item (id, outlet_id, category_id, name, base_price_paise, is_available, config_version, tax_profile_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
          ON CONFLICT(id) DO UPDATE SET
             outlet_id = excluded.outlet_id, category_id = excluded.category_id, name = excluded.name,
             base_price_paise = excluded.base_price_paise, is_available = excluded.is_available,
-            config_version = excluded.config_version
+            config_version = excluded.config_version, tax_profile_id = excluded.tax_profile_id
          WHERE excluded.config_version >= menu_item.config_version",
         params![
             m.id,
@@ -301,7 +301,8 @@ pub fn upsert_menu_item(conn: &Connection, m: &MenuItem) -> DbResult<()> {
             m.name,
             m.base_price_paise,
             bool_to_i64(m.is_available),
-            m.config_version
+            m.config_version,
+            m.tax_profile_id,
         ],
     )?;
     Ok(())
@@ -378,7 +379,7 @@ pub fn list_menu_categories_for_outlet(
 
 pub fn list_menu_items_for_outlet(conn: &Connection, outlet_id: &str) -> DbResult<Vec<MenuItem>> {
     let mut stmt = conn.prepare(
-        "SELECT id, outlet_id, category_id, name, base_price_paise, is_available, config_version
+        "SELECT id, outlet_id, category_id, name, base_price_paise, is_available, config_version, tax_profile_id
          FROM menu_item WHERE outlet_id = ?1 ORDER BY name",
     )?;
     let rows = stmt
@@ -391,6 +392,7 @@ pub fn list_menu_items_for_outlet(conn: &Connection, outlet_id: &str) -> DbResul
                 base_price_paise: row.get(4)?,
                 is_available: i64_to_bool(row.get(5)?),
                 config_version: row.get(6)?,
+                tax_profile_id: row.get(7)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -2715,5 +2717,550 @@ mod device_credential_cache_tests {
             .expect("row must exist");
         assert_eq!(got.config_version, 5, "newer row must survive a stale replay");
         assert_eq!(got.credential_hash, "argon2id$fake-verifier");
+    }
+}
+
+// -------------------------------------- Milestone 3: billing config (T7a) --
+// compliance_version / tax_profile / tax_rule / outlet_fiscal_profile /
+// invoice_series / discount_definition are CONFIG aggregates (ADR-016 §1):
+// cloud→edge, versioned by config_version, replaced wholesale — same
+// upsert-with-guard pattern as `upsert_station`/`upsert_printer` above. A
+// stale bundle (config_version older than or equal to what is already
+// stored) must never regress a newer row — the `WHERE excluded.config_version
+// >= <table>.config_version` clause on every statement below is that guard.
+
+pub fn upsert_compliance_version(conn: &Connection, v: &ComplianceVersion) -> DbResult<()> {
+    conn.execute(
+        "INSERT INTO compliance_version (id, outlet_id, label, effective_from, notes, config_version)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(id) DO UPDATE SET
+            outlet_id = excluded.outlet_id, label = excluded.label,
+            effective_from = excluded.effective_from, notes = excluded.notes,
+            config_version = excluded.config_version
+         WHERE excluded.config_version >= compliance_version.config_version",
+        params![v.id, v.outlet_id, v.label, v.effective_from, v.notes, v.config_version],
+    )?;
+    Ok(())
+}
+
+fn row_to_compliance_version(row: &rusqlite::Row) -> rusqlite::Result<ComplianceVersion> {
+    Ok(ComplianceVersion {
+        id: row.get(0)?,
+        outlet_id: row.get(1)?,
+        label: row.get(2)?,
+        effective_from: row.get(3)?,
+        notes: row.get(4)?,
+        config_version: row.get(5)?,
+    })
+}
+
+const COMPLIANCE_VERSION_COLUMNS: &str = "id, outlet_id, label, effective_from, notes, config_version";
+
+pub fn list_compliance_versions_for_outlet(
+    conn: &Connection,
+    outlet_id: &str,
+) -> DbResult<Vec<ComplianceVersion>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {COMPLIANCE_VERSION_COLUMNS} FROM compliance_version WHERE outlet_id = ?1 ORDER BY effective_from"
+    ))?;
+    let rows = stmt
+        .query_map(params![outlet_id], row_to_compliance_version)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+pub fn upsert_tax_profile(conn: &Connection, p: &TaxProfile) -> DbResult<()> {
+    conn.execute(
+        "INSERT INTO tax_profile (id, outlet_id, code, name, pricing_mode, is_default, is_active, config_version)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         ON CONFLICT(id) DO UPDATE SET
+            outlet_id = excluded.outlet_id, code = excluded.code, name = excluded.name,
+            pricing_mode = excluded.pricing_mode, is_default = excluded.is_default,
+            is_active = excluded.is_active, config_version = excluded.config_version
+         WHERE excluded.config_version >= tax_profile.config_version",
+        params![
+            p.id,
+            p.outlet_id,
+            p.code,
+            p.name,
+            p.pricing_mode,
+            bool_to_i64(p.is_default),
+            bool_to_i64(p.is_active),
+            p.config_version
+        ],
+    )?;
+    Ok(())
+}
+
+fn row_to_tax_profile(row: &rusqlite::Row) -> rusqlite::Result<TaxProfile> {
+    Ok(TaxProfile {
+        id: row.get(0)?,
+        outlet_id: row.get(1)?,
+        code: row.get(2)?,
+        name: row.get(3)?,
+        pricing_mode: row.get(4)?,
+        is_default: i64_to_bool(row.get(5)?),
+        is_active: i64_to_bool(row.get(6)?),
+        config_version: row.get(7)?,
+    })
+}
+
+const TAX_PROFILE_COLUMNS: &str =
+    "id, outlet_id, code, name, pricing_mode, is_default, is_active, config_version";
+
+pub fn list_tax_profiles_for_outlet(conn: &Connection, outlet_id: &str) -> DbResult<Vec<TaxProfile>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {TAX_PROFILE_COLUMNS} FROM tax_profile WHERE outlet_id = ?1 ORDER BY code"
+    ))?;
+    let rows = stmt
+        .query_map(params![outlet_id], row_to_tax_profile)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+pub fn upsert_tax_rule(conn: &Connection, r: &TaxRule) -> DbResult<()> {
+    conn.execute(
+        "INSERT INTO tax_rule
+            (id, tax_profile_id, compliance_version_id, component, rate_bps, effective_from, effective_to, config_version)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         ON CONFLICT(id) DO UPDATE SET
+            tax_profile_id = excluded.tax_profile_id, compliance_version_id = excluded.compliance_version_id,
+            component = excluded.component, rate_bps = excluded.rate_bps,
+            effective_from = excluded.effective_from, effective_to = excluded.effective_to,
+            config_version = excluded.config_version
+         WHERE excluded.config_version >= tax_rule.config_version",
+        params![
+            r.id,
+            r.tax_profile_id,
+            r.compliance_version_id,
+            r.component,
+            r.rate_bps,
+            r.effective_from,
+            r.effective_to,
+            r.config_version
+        ],
+    )?;
+    Ok(())
+}
+
+fn row_to_tax_rule(row: &rusqlite::Row) -> rusqlite::Result<TaxRule> {
+    Ok(TaxRule {
+        id: row.get(0)?,
+        tax_profile_id: row.get(1)?,
+        compliance_version_id: row.get(2)?,
+        component: row.get(3)?,
+        rate_bps: row.get(4)?,
+        effective_from: row.get(5)?,
+        effective_to: row.get(6)?,
+        config_version: row.get(7)?,
+    })
+}
+
+const TAX_RULE_COLUMNS: &str =
+    "id, tax_profile_id, compliance_version_id, component, rate_bps, effective_from, effective_to, config_version";
+
+/// Every rule for one profile, across every compliance version — the shape
+/// `tax::resolve_rates` filters down by `(profile_id, compliance_version_id,
+/// at)`. Not outlet-scoped in SQL because `tax_rule` carries no `outlet_id`
+/// of its own (it hangs off `tax_profile_id`, the `menu_item_variant`
+/// precedent) — callers already have the profile id from
+/// `tax::resolve_tax_profile`.
+pub fn list_tax_rules_for_profile(conn: &Connection, tax_profile_id: &str) -> DbResult<Vec<TaxRule>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {TAX_RULE_COLUMNS} FROM tax_rule WHERE tax_profile_id = ?1 ORDER BY effective_from"
+    ))?;
+    let rows = stmt
+        .query_map(params![tax_profile_id], row_to_tax_rule)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+pub fn upsert_outlet_fiscal_profile(conn: &Connection, f: &OutletFiscalProfile) -> DbResult<()> {
+    conn.execute(
+        "INSERT INTO outlet_fiscal_profile
+            (id, outlet_id, legal_name, trade_name, address_line1, address_line2, city,
+             state_code, state_name, pincode, gstin, fssai_number, invoice_footer_text,
+             effective_from, config_version)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+         ON CONFLICT(id) DO UPDATE SET
+            outlet_id = excluded.outlet_id, legal_name = excluded.legal_name,
+            trade_name = excluded.trade_name, address_line1 = excluded.address_line1,
+            address_line2 = excluded.address_line2, city = excluded.city,
+            state_code = excluded.state_code, state_name = excluded.state_name,
+            pincode = excluded.pincode, gstin = excluded.gstin,
+            fssai_number = excluded.fssai_number, invoice_footer_text = excluded.invoice_footer_text,
+            effective_from = excluded.effective_from, config_version = excluded.config_version
+         WHERE excluded.config_version >= outlet_fiscal_profile.config_version",
+        params![
+            f.id,
+            f.outlet_id,
+            f.legal_name,
+            f.trade_name,
+            f.address_line1,
+            f.address_line2,
+            f.city,
+            f.state_code,
+            f.state_name,
+            f.pincode,
+            f.gstin,
+            f.fssai_number,
+            f.invoice_footer_text,
+            f.effective_from,
+            f.config_version
+        ],
+    )?;
+    Ok(())
+}
+
+fn row_to_outlet_fiscal_profile(row: &rusqlite::Row) -> rusqlite::Result<OutletFiscalProfile> {
+    Ok(OutletFiscalProfile {
+        id: row.get(0)?,
+        outlet_id: row.get(1)?,
+        legal_name: row.get(2)?,
+        trade_name: row.get(3)?,
+        address_line1: row.get(4)?,
+        address_line2: row.get(5)?,
+        city: row.get(6)?,
+        state_code: row.get(7)?,
+        state_name: row.get(8)?,
+        pincode: row.get(9)?,
+        gstin: row.get(10)?,
+        fssai_number: row.get(11)?,
+        invoice_footer_text: row.get(12)?,
+        effective_from: row.get(13)?,
+        config_version: row.get(14)?,
+    })
+}
+
+const OUTLET_FISCAL_PROFILE_COLUMNS: &str = "id, outlet_id, legal_name, trade_name, address_line1, \
+    address_line2, city, state_code, state_name, pincode, gstin, fssai_number, invoice_footer_text, \
+    effective_from, config_version";
+
+pub fn list_outlet_fiscal_profiles_for_outlet(
+    conn: &Connection,
+    outlet_id: &str,
+) -> DbResult<Vec<OutletFiscalProfile>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {OUTLET_FISCAL_PROFILE_COLUMNS} FROM outlet_fiscal_profile WHERE outlet_id = ?1 ORDER BY effective_from"
+    ))?;
+    let rows = stmt
+        .query_map(params![outlet_id], row_to_outlet_fiscal_profile)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+pub fn upsert_invoice_series(conn: &Connection, s: &InvoiceSeries) -> DbResult<()> {
+    conn.execute(
+        "INSERT INTO invoice_series
+            (id, outlet_id, code, prefix_template, reset_policy, padding_width, is_active, config_version)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         ON CONFLICT(id) DO UPDATE SET
+            outlet_id = excluded.outlet_id, code = excluded.code,
+            prefix_template = excluded.prefix_template, reset_policy = excluded.reset_policy,
+            padding_width = excluded.padding_width, is_active = excluded.is_active,
+            config_version = excluded.config_version
+         WHERE excluded.config_version >= invoice_series.config_version",
+        params![
+            s.id,
+            s.outlet_id,
+            s.code,
+            s.prefix_template,
+            s.reset_policy,
+            s.padding_width,
+            bool_to_i64(s.is_active),
+            s.config_version
+        ],
+    )?;
+    Ok(())
+}
+
+fn row_to_invoice_series(row: &rusqlite::Row) -> rusqlite::Result<InvoiceSeries> {
+    Ok(InvoiceSeries {
+        id: row.get(0)?,
+        outlet_id: row.get(1)?,
+        code: row.get(2)?,
+        prefix_template: row.get(3)?,
+        reset_policy: row.get(4)?,
+        padding_width: row.get(5)?,
+        is_active: i64_to_bool(row.get(6)?),
+        config_version: row.get(7)?,
+    })
+}
+
+const INVOICE_SERIES_COLUMNS: &str =
+    "id, outlet_id, code, prefix_template, reset_policy, padding_width, is_active, config_version";
+
+pub fn list_invoice_series_for_outlet(conn: &Connection, outlet_id: &str) -> DbResult<Vec<InvoiceSeries>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {INVOICE_SERIES_COLUMNS} FROM invoice_series WHERE outlet_id = ?1 ORDER BY code"
+    ))?;
+    let rows = stmt
+        .query_map(params![outlet_id], row_to_invoice_series)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+pub fn upsert_discount_definition(conn: &Connection, d: &DiscountDefinition) -> DbResult<()> {
+    conn.execute(
+        "INSERT INTO discount_definition
+            (id, outlet_id, code, name, scope, method, value_bps, value_paise, max_discount_paise,
+             required_permission, requires_reason, is_active, effective_from, effective_to, config_version)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+         ON CONFLICT(id) DO UPDATE SET
+            outlet_id = excluded.outlet_id, code = excluded.code, name = excluded.name,
+            scope = excluded.scope, method = excluded.method, value_bps = excluded.value_bps,
+            value_paise = excluded.value_paise, max_discount_paise = excluded.max_discount_paise,
+            required_permission = excluded.required_permission, requires_reason = excluded.requires_reason,
+            is_active = excluded.is_active, effective_from = excluded.effective_from,
+            effective_to = excluded.effective_to, config_version = excluded.config_version
+         WHERE excluded.config_version >= discount_definition.config_version",
+        params![
+            d.id,
+            d.outlet_id,
+            d.code,
+            d.name,
+            d.scope,
+            d.method,
+            d.value_bps,
+            d.value_paise,
+            d.max_discount_paise,
+            d.required_permission,
+            bool_to_i64(d.requires_reason),
+            bool_to_i64(d.is_active),
+            d.effective_from,
+            d.effective_to,
+            d.config_version
+        ],
+    )?;
+    Ok(())
+}
+
+fn row_to_discount_definition(row: &rusqlite::Row) -> rusqlite::Result<DiscountDefinition> {
+    Ok(DiscountDefinition {
+        id: row.get(0)?,
+        outlet_id: row.get(1)?,
+        code: row.get(2)?,
+        name: row.get(3)?,
+        scope: row.get(4)?,
+        method: row.get(5)?,
+        value_bps: row.get(6)?,
+        value_paise: row.get(7)?,
+        max_discount_paise: row.get(8)?,
+        required_permission: row.get(9)?,
+        requires_reason: i64_to_bool(row.get(10)?),
+        is_active: i64_to_bool(row.get(11)?),
+        effective_from: row.get(12)?,
+        effective_to: row.get(13)?,
+        config_version: row.get(14)?,
+    })
+}
+
+const DISCOUNT_DEFINITION_COLUMNS: &str = "id, outlet_id, code, name, scope, method, value_bps, \
+    value_paise, max_discount_paise, required_permission, requires_reason, is_active, \
+    effective_from, effective_to, config_version";
+
+pub fn list_discount_definitions_for_outlet(
+    conn: &Connection,
+    outlet_id: &str,
+) -> DbResult<Vec<DiscountDefinition>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {DISCOUNT_DEFINITION_COLUMNS} FROM discount_definition WHERE outlet_id = ?1 ORDER BY code"
+    ))?;
+    let rows = stmt
+        .query_map(params![outlet_id], row_to_discount_definition)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+#[cfg(test)]
+mod m3_billing_config_tests {
+    use super::*;
+    use crate::Db;
+
+    fn seed_outlet(conn: &Connection, outlet_id: &str) {
+        upsert_outlet(
+            conn,
+            &Outlet {
+                id: outlet_id.to_string(),
+                brand_id: "brand-1".to_string(),
+                name: "Test Outlet".to_string(),
+                timezone: "Asia/Kolkata".to_string(),
+                config_version: 1,
+                created_at: "2026-08-14T00:00:00Z".to_string(),
+                updated_at: "2026-08-14T00:00:00Z".to_string(),
+            },
+        )
+        .expect("seed outlet");
+    }
+
+    fn sample_profile(config_version: i64) -> TaxProfile {
+        TaxProfile {
+            id: "profile-1".to_string(),
+            outlet_id: "outlet-1".to_string(),
+            code: "GST_5_RESTAURANT".to_string(),
+            name: "GST 5% Restaurant".to_string(),
+            pricing_mode: "EXCLUSIVE".to_string(),
+            is_default: true,
+            is_active: true,
+            config_version,
+        }
+    }
+
+    #[test]
+    fn tax_profile_round_trips() {
+        let db = Db::open_in_memory_for_tests().expect("open db");
+        seed_outlet(db.connection(), "outlet-1");
+        upsert_tax_profile(db.connection(), &sample_profile(1)).expect("insert");
+
+        let got = list_tax_profiles_for_outlet(db.connection(), "outlet-1").expect("list");
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].code, "GST_5_RESTAURANT");
+        assert!(got[0].is_default);
+    }
+
+    /// Mirrors `upsert_station`'s config_version guard: a stale config bundle
+    /// must never regress an already-newer row.
+    #[test]
+    fn stale_config_version_does_not_overwrite_newer_tax_profile() {
+        let db = Db::open_in_memory_for_tests().expect("open db");
+        seed_outlet(db.connection(), "outlet-1");
+        let mut newer = sample_profile(5);
+        newer.name = "Newer Name".to_string();
+        upsert_tax_profile(db.connection(), &newer).expect("insert v5");
+
+        let mut stale = sample_profile(3);
+        stale.name = "Stale Name".to_string();
+        upsert_tax_profile(db.connection(), &stale).expect("stale write must not error");
+
+        let got = list_tax_profiles_for_outlet(db.connection(), "outlet-1").expect("list");
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].config_version, 5, "newer row must survive a stale replay");
+        assert_eq!(got[0].name, "Newer Name");
+    }
+
+    #[test]
+    fn compliance_version_tax_rule_and_fiscal_profile_round_trip() {
+        let db = Db::open_in_memory_for_tests().expect("open db");
+        seed_outlet(db.connection(), "outlet-1");
+        upsert_tax_profile(db.connection(), &sample_profile(1)).expect("profile");
+
+        upsert_compliance_version(
+            db.connection(),
+            &ComplianceVersion {
+                id: "cv-1".to_string(),
+                outlet_id: "outlet-1".to_string(),
+                label: "GST 2026-04".to_string(),
+                effective_from: "2026-04-01T00:00:00Z".to_string(),
+                notes: None,
+                config_version: 1,
+            },
+        )
+        .expect("compliance version");
+
+        upsert_tax_rule(
+            db.connection(),
+            &TaxRule {
+                id: "rule-1".to_string(),
+                tax_profile_id: "profile-1".to_string(),
+                compliance_version_id: "cv-1".to_string(),
+                component: "CGST".to_string(),
+                rate_bps: 250,
+                effective_from: "2026-04-01T00:00:00Z".to_string(),
+                effective_to: None,
+                config_version: 1,
+            },
+        )
+        .expect("tax rule");
+
+        upsert_outlet_fiscal_profile(
+            db.connection(),
+            &OutletFiscalProfile {
+                id: "fiscal-1".to_string(),
+                outlet_id: "outlet-1".to_string(),
+                legal_name: "Test Restaurant Pvt Ltd".to_string(),
+                trade_name: "Test Restaurant".to_string(),
+                address_line1: "123 Main St".to_string(),
+                address_line2: None,
+                city: "Pune".to_string(),
+                state_code: "27".to_string(),
+                state_name: "Maharashtra".to_string(),
+                pincode: "411001".to_string(),
+                gstin: "27AAAAA0000A1Z5".to_string(),
+                fssai_number: None,
+                invoice_footer_text: None,
+                effective_from: "2026-04-01T00:00:00Z".to_string(),
+                config_version: 1,
+            },
+        )
+        .expect("fiscal profile");
+
+        assert_eq!(
+            list_compliance_versions_for_outlet(db.connection(), "outlet-1")
+                .expect("list")
+                .len(),
+            1
+        );
+        let rules = list_tax_rules_for_profile(db.connection(), "profile-1").expect("list");
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].rate_bps, 250);
+        assert_eq!(
+            list_outlet_fiscal_profiles_for_outlet(db.connection(), "outlet-1")
+                .expect("list")
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn invoice_series_and_discount_definition_round_trip() {
+        let db = Db::open_in_memory_for_tests().expect("open db");
+        seed_outlet(db.connection(), "outlet-1");
+
+        upsert_invoice_series(
+            db.connection(),
+            &InvoiceSeries {
+                id: "series-1".to_string(),
+                outlet_id: "outlet-1".to_string(),
+                code: "SALES".to_string(),
+                prefix_template: "FY{FY}/{OUTLET}/".to_string(),
+                reset_policy: "FY".to_string(),
+                padding_width: 6,
+                is_active: true,
+                config_version: 1,
+            },
+        )
+        .expect("series");
+
+        upsert_discount_definition(
+            db.connection(),
+            &DiscountDefinition {
+                id: "discount-1".to_string(),
+                outlet_id: "outlet-1".to_string(),
+                code: "STAFF".to_string(),
+                name: "Staff 20%".to_string(),
+                scope: "BILL".to_string(),
+                method: "PERCENT".to_string(),
+                value_bps: Some(2000),
+                value_paise: None,
+                max_discount_paise: None,
+                required_permission: None,
+                requires_reason: false,
+                is_active: true,
+                effective_from: "2026-04-01T00:00:00Z".to_string(),
+                effective_to: None,
+                config_version: 1,
+            },
+        )
+        .expect("discount");
+
+        assert_eq!(
+            list_invoice_series_for_outlet(db.connection(), "outlet-1")
+                .expect("list")
+                .len(),
+            1
+        );
+        let discounts = list_discount_definitions_for_outlet(db.connection(), "outlet-1").expect("list");
+        assert_eq!(discounts.len(), 1);
+        assert_eq!(discounts[0].value_bps, Some(2000));
     }
 }

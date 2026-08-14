@@ -13,6 +13,7 @@ mod migrations;
 pub mod model;
 mod pragma;
 pub mod repo;
+pub mod tax;
 
 pub use error::{DbError, DbResult};
 
@@ -1244,6 +1245,7 @@ mod tests {
                 base_price_paise: 25000,
                 is_available: true,
                 config_version: 1,
+                tax_profile_id: None,
             },
         )
         .expect("seed menu item");
@@ -3059,6 +3061,7 @@ mod tests {
                 base_price_paise: unit_price_paise,
                 is_available: true,
                 config_version: 1,
+                tax_profile_id: None,
             },
         )
         .expect("seed menu item");
@@ -3222,6 +3225,7 @@ mod tests {
                 base_price_paise: unit_price_paise,
                 is_available: true,
                 config_version: 1,
+                tax_profile_id: None,
             },
         )
         .expect("seed menu item");
@@ -3564,6 +3568,7 @@ mod tests {
                 base_price_paise: 8000,
                 is_available: true,
                 config_version: 1,
+                tax_profile_id: None,
             },
         )
         .expect("seed unrouted menu item");
@@ -3646,6 +3651,7 @@ mod tests {
                 base_price_paise: 5000,
                 is_available: true,
                 config_version: 1,
+                tax_profile_id: None,
             },
         )
         .expect("seed unrouted-only menu item");
@@ -4118,6 +4124,7 @@ mod tests {
                 base_price_paise: 5000,
                 is_available: true,
                 config_version: 1,
+                tax_profile_id: None,
             },
         )
         .expect("seed second menu item");

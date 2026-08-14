@@ -42,5 +42,14 @@ thiserror = "1"
 # the JSON shape frozen in packages/contracts/src/types/events.ts.
 serde_json = "1"
 
+# RFC3339 instant parsing/comparison for the Milestone 3 tax engine's
+# effective-dated resolution (`src/tax/resolve.rs`, ADR-016 Task 2). Every
+# timestamp column in this crate is still stored and passed around as a plain
+# ISO8601 `String` (unchanged elsewhere) — chrono is used only internally,
+# at the point resolution needs true instant comparison rather than a string
+# read/write round-trip. "clock"/"std" only; no wasm/js features needed on
+# this target.
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+
 [dev-dependencies]
 tempfile = "3"

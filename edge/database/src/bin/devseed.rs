@@ -249,6 +249,7 @@ fn seed(db: &Db, password_hash: &str) -> Result<(), holler_edge_database::DbErro
                 base_price_paise: price,
                 is_available: true,
                 config_version: CONFIG_VERSION,
+                tax_profile_id: None,
             },
         )?;
         repo::replace_menu_item_stations(conn, id, &[STATION_ID.to_string()], CONFIG_VERSION)?;

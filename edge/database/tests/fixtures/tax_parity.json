@@ -1,0 +1,1556 @@
+{
+  "compute_cases": [
+    {
+      "name": "exclusive_worked_example",
+      "lines": [
+        {
+          "order_item_id": "item-1",
+          "description": "Butter Chicken",
+          "quantity": 2,
+          "unit_price_paise": 32000,
+          "discount_per_unit_paise": 0,
+          "tax_profile_id": "gst5",
+          "pricing_mode": "EXCLUSIVE",
+          "rates": [
+            {
+              "component": "CGST",
+              "rate_bps": 250
+            },
+            {
+              "component": "SGST",
+              "rate_bps": 250
+            }
+          ]
+        },
+        {
+          "order_item_id": "item-2",
+          "description": "Coke",
+          "quantity": 1,
+          "unit_price_paise": 6000,
+          "discount_per_unit_paise": 0,
+          "tax_profile_id": "gst5",
+          "pricing_mode": "EXCLUSIVE",
+          "rates": [
+            {
+              "component": "CGST",
+              "rate_bps": 250
+            },
+            {
+              "component": "SGST",
+              "rate_bps": 250
+            }
+          ]
+        },
+        {
+          "order_item_id": "item-3",
+          "description": "Sweetened Beverage",
+          "quantity": 1,
+          "unit_price_paise": 5000,
+          "discount_per_unit_paise": 0,
+          "tax_profile_id": "gst12cess",
+          "pricing_mode": "EXCLUSIVE",
+          "rates": [
+            {
+              "component": "CGST",
+              "rate_bps": 600
+            },
+            {
+              "component": "SGST",
+              "rate_bps": 600
+            },
+            {
+              "component": "CESS",
+              "rate_bps": 280
+            }
+          ]
+        }
+      ],
+      "line_computations": [
+        {
+          "order_item_id": "item-1",
+          "quantity": 2,
+          "unit_price_paise": 32000,
+          "gross_paise": 64000,
+          "discount_paise": 0,
+          "taxable_value_paise": 64000,
+          "tax_profile_id": "gst5",
+          "cgst_rate_bps": 250,
+          "cgst_paise": 1600,
+          "sgst_rate_bps": 250,
+          "sgst_paise": 1600,
+          "igst_rate_bps": 0,
+          "igst_paise": 0,
+          "cess_rate_bps": 0,
+          "cess_paise": 0,
+          "total_paise": 67200
+        },
+        {
+          "order_item_id": "item-2",
+          "quantity": 1,
+          "unit_price_paise": 6000,
+          "gross_paise": 6000,
+          "discount_paise": 0,
+          "taxable_value_paise": 6000,
+          "tax_profile_id": "gst5",
+          "cgst_rate_bps": 250,
+          "cgst_paise": 150,
+          "sgst_rate_bps": 250,
+          "sgst_paise": 150,
+          "igst_rate_bps": 0,
+          "igst_paise": 0,
+          "cess_rate_bps": 0,
+          "cess_paise": 0,
+          "total_paise": 6300
+        },
+        {
+          "order_item_id": "item-3",
+          "quantity": 1,
+          "unit_price_paise": 5000,
+          "gross_paise": 5000,
+          "discount_paise": 0,
+          "taxable_value_paise": 5000,
+          "tax_profile_id": "gst12cess",
+          "cgst_rate_bps": 600,
+          "cgst_paise": 300,
+          "sgst_rate_bps": 600,
+          "sgst_paise": 300,
+          "igst_rate_bps": 0,
+          "igst_paise": 0,
+          "cess_rate_bps": 280,
+          "cess_paise": 140,
+          "total_paise": 5740
+        }
+      ],
+      "totals": {
+        "subtotal_paise": 75000,
+        "discount_paise": 0,
+        "taxable_value_paise": 75000,
+        "cgst_paise": 2050,
+        "sgst_paise": 2050,
+        "igst_paise": 0,
+        "cess_paise": 140,
+        "round_off_paise": -40,
+        "grand_total_paise": 79200
+      }
+    },
+    {
+      "name": "inclusive_reconstructs_gross",
+      "lines": [
+        {
+          "order_item_id": "item-1",
+          "description": "Thali",
+          "quantity": 1,
+          "unit_price_paise": 10500,
+          "discount_per_unit_paise": 0,
+          "tax_profile_id": "gst5",
+          "pricing_mode": "INCLUSIVE",
+          "rates": [
+            {
+              "component": "CGST",
+              "rate_bps": 250
+            },
+            {
+              "component": "SGST",
+              "rate_bps": 250
+            }
+          ]
+        },
+        {
+          "order_item_id": "item-2",
+          "description": "Lassi",
+          "quantity": 3,
+          "unit_price_paise": 9900,
+          "discount_per_unit_paise": 0,
+          "tax_profile_id": "gst5",
+          "pricing_mode": "INCLUSIVE",
+          "rates": [
+            {
+              "component": "CGST",
+              "rate_bps": 250
+            },
+            {
+              "component": "SGST",
+              "rate_bps": 250
+            }
+          ]
+        }
+      ],
+      "line_computations": [
+        {
+          "order_item_id": "item-1",
+          "quantity": 1,
+          "unit_price_paise": 10500,
+          "gross_paise": 10500,
+          "discount_paise": 0,
+          "taxable_value_paise": 10000,
+          "tax_profile_id": "gst5",
+          "cgst_rate_bps": 250,
+          "cgst_paise": 250,
+          "sgst_rate_bps": 250,
+          "sgst_paise": 250,
+          "igst_rate_bps": 0,
+          "igst_paise": 0,
+          "cess_rate_bps": 0,
+          "cess_paise": 0,
+          "total_paise": 10500
+        },
+        {
+          "order_item_id": "item-2",
+          "quantity": 3,
+          "unit_price_paise": 9900,
+          "gross_paise": 29700,
+          "discount_paise": 0,
+          "taxable_value_paise": 28286,
+          "tax_profile_id": "gst5",
+          "cgst_rate_bps": 250,
+          "cgst_paise": 707,
+          "sgst_rate_bps": 250,
+          "sgst_paise": 707,
+          "igst_rate_bps": 0,
+          "igst_paise": 0,
+          "cess_rate_bps": 0,
+          "cess_paise": 0,
+          "total_paise": 29700
+        }
+      ],
+      "totals": {
+        "subtotal_paise": 40200,
+        "discount_paise": 0,
+        "taxable_value_paise": 38286,
+        "cgst_paise": 957,
+        "sgst_paise": 957,
+        "igst_paise": 0,
+        "cess_paise": 0,
+        "round_off_paise": 0,
+        "grand_total_paise": 40200
+      }
+    },
+    {
+      "name": "zero_and_single_paise_lines",
+      "lines": [
+        {
+          "order_item_id": "free-item",
+          "description": "Complimentary Papad",
+          "quantity": 1,
+          "unit_price_paise": 0,
+          "discount_per_unit_paise": 0,
+          "tax_profile_id": "gst5",
+          "pricing_mode": "EXCLUSIVE",
+          "rates": [
+            {
+              "component": "CGST",
+              "rate_bps": 250
+            },
+            {
+              "component": "SGST",
+              "rate_bps": 250
+            }
+          ]
+        },
+        {
+          "order_item_id": "one-paise",
+          "description": "Rounding stress",
+          "quantity": 1,
+          "unit_price_paise": 1,
+          "discount_per_unit_paise": 0,
+          "tax_profile_id": "gst5",
+          "pricing_mode": "EXCLUSIVE",
+          "rates": [
+            {
+              "component": "CGST",
+              "rate_bps": 250
+            },
+            {
+              "component": "SGST",
+              "rate_bps": 250
+            }
+          ]
+        }
+      ],
+      "line_computations": [
+        {
+          "order_item_id": "free-item",
+          "quantity": 1,
+          "unit_price_paise": 0,
+          "gross_paise": 0,
+          "discount_paise": 0,
+          "taxable_value_paise": 0,
+          "tax_profile_id": "gst5",
+          "cgst_rate_bps": 250,
+          "cgst_paise": 0,
+          "sgst_rate_bps": 250,
+          "sgst_paise": 0,
+          "igst_rate_bps": 0,
+          "igst_paise": 0,
+          "cess_rate_bps": 0,
+          "cess_paise": 0,
+          "total_paise": 0
+        },
+        {
+          "order_item_id": "one-paise",
+          "quantity": 1,
+          "unit_price_paise": 1,
+          "gross_paise": 1,
+          "discount_paise": 0,
+          "taxable_value_paise": 1,
+          "tax_profile_id": "gst5",
+          "cgst_rate_bps": 250,
+          "cgst_paise": 0,
+          "sgst_rate_bps": 250,
+          "sgst_paise": 0,
+          "igst_rate_bps": 0,
+          "igst_paise": 0,
+          "cess_rate_bps": 0,
+          "cess_paise": 0,
+          "total_paise": 1
+        }
+      ],
+      "totals": {
+        "subtotal_paise": 1,
+        "discount_paise": 0,
+        "taxable_value_paise": 1,
+        "cgst_paise": 0,
+        "sgst_paise": 0,
+        "igst_paise": 0,
+        "cess_paise": 0,
+        "round_off_paise": -1,
+        "grand_total_paise": 0
+      }
+    },
+    {
+      "name": "half_paise_boundary_18pct",
+      "lines": [
+        {
+          "order_item_id": "boundary-1",
+          "description": "Boundary Item",
+          "quantity": 1,
+          "unit_price_paise": 25,
+          "discount_per_unit_paise": 0,
+          "tax_profile_id": "gst18",
+          "pricing_mode": "EXCLUSIVE",
+          "rates": [
+            {
+              "component": "CGST",
+              "rate_bps": 900
+            },
+            {
+              "component": "SGST",
+              "rate_bps": 900
+            }
+          ]
+        },
+        {
+          "order_item_id": "boundary-2",
+          "description": "Boundary Item Inclusive",
+          "quantity": 1,
+          "unit_price_paise": 1025,
+          "discount_per_unit_paise": 0,
+          "tax_profile_id": "gst5",
+          "pricing_mode": "INCLUSIVE",
+          "rates": [
+            {
+              "component": "CGST",
+              "rate_bps": 250
+            },
+            {
+              "component": "SGST",
+              "rate_bps": 250
+            }
+          ]
+        }
+      ],
+      "line_computations": [
+        {
+          "order_item_id": "boundary-1",
+          "quantity": 1,
+          "unit_price_paise": 25,
+          "gross_paise": 25,
+          "discount_paise": 0,
+          "taxable_value_paise": 25,
+          "tax_profile_id": "gst18",
+          "cgst_rate_bps": 900,
+          "cgst_paise": 2,
+          "sgst_rate_bps": 900,
+          "sgst_paise": 2,
+          "igst_rate_bps": 0,
+          "igst_paise": 0,
+          "cess_rate_bps": 0,
+          "cess_paise": 0,
+          "total_paise": 29
+        },
+        {
+          "order_item_id": "boundary-2",
+          "quantity": 1,
+          "unit_price_paise": 1025,
+          "gross_paise": 1025,
+          "discount_paise": 0,
+          "taxable_value_paise": 976,
+          "tax_profile_id": "gst5",
+          "cgst_rate_bps": 250,
+          "cgst_paise": 25,
+          "sgst_rate_bps": 250,
+          "sgst_paise": 24,
+          "igst_rate_bps": 0,
+          "igst_paise": 0,
+          "cess_rate_bps": 0,
+          "cess_paise": 0,
+          "total_paise": 1025
+        }
+      ],
+      "totals": {
+        "subtotal_paise": 1050,
+        "discount_paise": 0,
+        "taxable_value_paise": 1001,
+        "cgst_paise": 27,
+        "sgst_paise": 26,
+        "igst_paise": 0,
+        "cess_paise": 0,
+        "round_off_paise": 46,
+        "grand_total_paise": 1100
+      }
+    },
+    {
+      "name": "many_small_lines",
+      "lines": [
+        {
+          "order_item_id": "small-0",
+          "description": "Small Line",
+          "quantity": 1,
+          "unit_price_paise": 13,
+          "discount_per_unit_paise": 0,
+          "tax_profile_id": "gst5",
+          "pricing_mode": "EXCLUSIVE",
+          "rates": [
+            {
+              "component": "CGST",
+              "rate_bps": 250
+            },
+            {
+              "component": "SGST",
+              "rate_bps": 250
+            }
+          ]
+        },
+        {
+          "order_item_id": "small-1",
+          "description": "Small Line",
+          "quantity": 1,
+          "unit_price_paise": 14,
+          "discount_per_unit_paise": 0,
+          "tax_profile_id": "gst5",
+          "pricing_mode": "EXCLUSIVE",
+          "rates": [
+            {
+              "component": "CGST",
+              "rate_bps": 250
+            },
+            {
+              "component": "SGST",
+              "rate_bps": 250
+            }
+          ]
+        },
+        {
+          "order_item_id": "small-2",
+          "description": "Small Line",
+          "quantity": 1,
+          "unit_price_paise": 15,
+          "discount_per_unit_paise": 0,
+          "tax_profile_id": "gst5",
+          "pricing_mode": "EXCLUSIVE",
+          "rates": [
+            {
+              "component": "CGST",
+              "rate_bps": 250
+            },
+            {
+              "component": "SGST",
+              "rate_bps": 250
+            }
+          ]
+        },
+        {
+          "order_item_id": "small-3",
+          "description": "Small Line",
+          "quantity": 1,
+          "unit_price_paise": 16,
+          "discount_per_unit_paise": 0,
+          "tax_profile_id": "gst5",
+          "pricing_mode": "EXCLUSIVE",
+          "rates": [
+            {
+              "component": "CGST",
+              "rate_bps": 250
+            },
+            {
+              "component": "SGST",
+              "rate_bps": 250
+            }
+          ]
+        },
+        {
+          "order_item_id": "small-4",
+          "description": "Small Line",
+          "quantity": 1,
+          "unit_price_paise": 17,
+          "discount_per_unit_paise": 0,
+          "tax_profile_id": "gst5",
+          "pricing_mode": "EXCLUSIVE",
+          "rates": [
+            {
+              "component": "CGST",
+              "rate_bps": 250
+            },
+            {
+              "component": "SGST",
+              "rate_bps": 250
+            }
+          ]
+        },
+        {
+          "order_item_id": "small-5",
+          "description": "Small Line",
+          "quantity": 1,
+          "unit_price_paise": 18,
+          "discount_per_unit_paise": 0,
+          "tax_profile_id": "gst5",
+          "pricing_mode": "EXCLUSIVE",
+          "rates": [
+            {
+              "component": "CGST",
+              "rate_bps": 250
+            },
+            {
+              "component": "SGST",
+              "rate_bps": 250
+            }
+          ]
+        },
+        {
+          "order_item_id": "small-6",
+          "description": "Small Line",
+          "quantity": 1,
+          "unit_price_paise": 19,
+          "discount_per_unit_paise": 0,
+          "tax_profile_id": "gst5",
+          "pricing_mode": "EXCLUSIVE",
+          "rates": [
+            {
+              "component": "CGST",
+              "rate_bps": 250
+            },
+            {
+              "component": "SGST",
+              "rate_bps": 250
+            }
+          ]
+        },
+        {
+          "order_item_id": "small-7",
+          "description": "Small Line",
+          "quantity": 1,
+          "unit_price_paise": 20,
+          "discount_per_unit_paise": 0,
+          "tax_profile_id": "gst5",
+          "pricing_mode": "EXCLUSIVE",
+          "rates": [
+            {
+              "component": "CGST",
+              "rate_bps": 250
+            },
+            {
+              "component": "SGST",
+              "rate_bps": 250
+            }
+          ]
+        },
+        {
+          "order_item_id": "small-8",
+          "description": "Small Line",
+          "quantity": 1,
+          "unit_price_paise": 21,
+          "discount_per_unit_paise": 0,
+          "tax_profile_id": "gst5",
+          "pricing_mode": "EXCLUSIVE",
+          "rates": [
+            {
+              "component": "CGST",
+              "rate_bps": 250
+            },
+            {
+              "component": "SGST",
+              "rate_bps": 250
+            }
+          ]
+        },
+        {
+          "order_item_id": "small-9",
+          "description": "Small Line",
+          "quantity": 1,
+          "unit_price_paise": 22,
+          "discount_per_unit_paise": 0,
+          "tax_profile_id": "gst5",
+          "pricing_mode": "EXCLUSIVE",
+          "rates": [
+            {
+              "component": "CGST",
+              "rate_bps": 250
+            },
+            {
+              "component": "SGST",
+              "rate_bps": 250
+            }
+          ]
+        },
+        {
+          "order_item_id": "small-10",
+          "description": "Small Line",
+          "quantity": 1,
+          "unit_price_paise": 23,
+          "discount_per_unit_paise": 0,
+          "tax_profile_id": "gst5",
+          "pricing_mode": "EXCLUSIVE",
+          "rates": [
+            {
+              "component": "CGST",
+              "rate_bps": 250
+            },
+            {
+              "component": "SGST",
+              "rate_bps": 250
+            }
+          ]
+        },
+        {
+          "order_item_id": "small-11",
+          "description": "Small Line",
+          "quantity": 1,
+          "unit_price_paise": 24,
+          "discount_per_unit_paise": 0,
+          "tax_profile_id": "gst5",
+          "pricing_mode": "EXCLUSIVE",
+          "rates": [
+            {
+              "component": "CGST",
+              "rate_bps": 250
+            },
+            {
+              "component": "SGST",
+              "rate_bps": 250
+            }
+          ]
+        },
+        {
+          "order_item_id": "small-12",
+          "description": "Small Line",
+          "quantity": 1,
+          "unit_price_paise": 25,
+          "discount_per_unit_paise": 0,
+          "tax_profile_id": "gst5",
+          "pricing_mode": "EXCLUSIVE",
+          "rates": [
+            {
+              "component": "CGST",
+              "rate_bps": 250
+            },
+            {
+              "component": "SGST",
+              "rate_bps": 250
+            }
+          ]
+        },
+        {
+          "order_item_id": "small-13",
+          "description": "Small Line",
+          "quantity": 1,
+          "unit_price_paise": 26,
+          "discount_per_unit_paise": 0,
+          "tax_profile_id": "gst5",
+          "pricing_mode": "EXCLUSIVE",
+          "rates": [
+            {
+              "component": "CGST",
+              "rate_bps": 250
+            },
+            {
+              "component": "SGST",
+              "rate_bps": 250
+            }
+          ]
+        },
+        {
+          "order_item_id": "small-14",
+          "description": "Small Line",
+          "quantity": 1,
+          "unit_price_paise": 27,
+          "discount_per_unit_paise": 0,
+          "tax_profile_id": "gst5",
+          "pricing_mode": "EXCLUSIVE",
+          "rates": [
+            {
+              "component": "CGST",
+              "rate_bps": 250
+            },
+            {
+              "component": "SGST",
+              "rate_bps": 250
+            }
+          ]
+        }
+      ],
+      "line_computations": [
+        {
+          "order_item_id": "small-0",
+          "quantity": 1,
+          "unit_price_paise": 13,
+          "gross_paise": 13,
+          "discount_paise": 0,
+          "taxable_value_paise": 13,
+          "tax_profile_id": "gst5",
+          "cgst_rate_bps": 250,
+          "cgst_paise": 0,
+          "sgst_rate_bps": 250,
+          "sgst_paise": 0,
+          "igst_rate_bps": 0,
+          "igst_paise": 0,
+          "cess_rate_bps": 0,
+          "cess_paise": 0,
+          "total_paise": 13
+        },
+        {
+          "order_item_id": "small-1",
+          "quantity": 1,
+          "unit_price_paise": 14,
+          "gross_paise": 14,
+          "discount_paise": 0,
+          "taxable_value_paise": 14,
+          "tax_profile_id": "gst5",
+          "cgst_rate_bps": 250,
+          "cgst_paise": 0,
+          "sgst_rate_bps": 250,
+          "sgst_paise": 0,
+          "igst_rate_bps": 0,
+          "igst_paise": 0,
+          "cess_rate_bps": 0,
+          "cess_paise": 0,
+          "total_paise": 14
+        },
+        {
+          "order_item_id": "small-2",
+          "quantity": 1,
+          "unit_price_paise": 15,
+          "gross_paise": 15,
+          "discount_paise": 0,
+          "taxable_value_paise": 15,
+          "tax_profile_id": "gst5",
+          "cgst_rate_bps": 250,
+          "cgst_paise": 0,
+          "sgst_rate_bps": 250,
+          "sgst_paise": 0,
+          "igst_rate_bps": 0,
+          "igst_paise": 0,
+          "cess_rate_bps": 0,
+          "cess_paise": 0,
+          "total_paise": 15
+        },
+        {
+          "order_item_id": "small-3",
+          "quantity": 1,
+          "unit_price_paise": 16,
+          "gross_paise": 16,
+          "discount_paise": 0,
+          "taxable_value_paise": 16,
+          "tax_profile_id": "gst5",
+          "cgst_rate_bps": 250,
+          "cgst_paise": 0,
+          "sgst_rate_bps": 250,
+          "sgst_paise": 0,
+          "igst_rate_bps": 0,
+          "igst_paise": 0,
+          "cess_rate_bps": 0,
+          "cess_paise": 0,
+          "total_paise": 16
+        },
+        {
+          "order_item_id": "small-4",
+          "quantity": 1,
+          "unit_price_paise": 17,
+          "gross_paise": 17,
+          "discount_paise": 0,
+          "taxable_value_paise": 17,
+          "tax_profile_id": "gst5",
+          "cgst_rate_bps": 250,
+          "cgst_paise": 0,
+          "sgst_rate_bps": 250,
+          "sgst_paise": 0,
+          "igst_rate_bps": 0,
+          "igst_paise": 0,
+          "cess_rate_bps": 0,
+          "cess_paise": 0,
+          "total_paise": 17
+        },
+        {
+          "order_item_id": "small-5",
+          "quantity": 1,
+          "unit_price_paise": 18,
+          "gross_paise": 18,
+          "discount_paise": 0,
+          "taxable_value_paise": 18,
+          "tax_profile_id": "gst5",
+          "cgst_rate_bps": 250,
+          "cgst_paise": 0,
+          "sgst_rate_bps": 250,
+          "sgst_paise": 0,
+          "igst_rate_bps": 0,
+          "igst_paise": 0,
+          "cess_rate_bps": 0,
+          "cess_paise": 0,
+          "total_paise": 18
+        },
+        {
+          "order_item_id": "small-6",
+          "quantity": 1,
+          "unit_price_paise": 19,
+          "gross_paise": 19,
+          "discount_paise": 0,
+          "taxable_value_paise": 19,
+          "tax_profile_id": "gst5",
+          "cgst_rate_bps": 250,
+          "cgst_paise": 0,
+          "sgst_rate_bps": 250,
+          "sgst_paise": 0,
+          "igst_rate_bps": 0,
+          "igst_paise": 0,
+          "cess_rate_bps": 0,
+          "cess_paise": 0,
+          "total_paise": 19
+        },
+        {
+          "order_item_id": "small-7",
+          "quantity": 1,
+          "unit_price_paise": 20,
+          "gross_paise": 20,
+          "discount_paise": 0,
+          "taxable_value_paise": 20,
+          "tax_profile_id": "gst5",
+          "cgst_rate_bps": 250,
+          "cgst_paise": 1,
+          "sgst_rate_bps": 250,
+          "sgst_paise": 1,
+          "igst_rate_bps": 0,
+          "igst_paise": 0,
+          "cess_rate_bps": 0,
+          "cess_paise": 0,
+          "total_paise": 22
+        },
+        {
+          "order_item_id": "small-8",
+          "quantity": 1,
+          "unit_price_paise": 21,
+          "gross_paise": 21,
+          "discount_paise": 0,
+          "taxable_value_paise": 21,
+          "tax_profile_id": "gst5",
+          "cgst_rate_bps": 250,
+          "cgst_paise": 1,
+          "sgst_rate_bps": 250,
+          "sgst_paise": 1,
+          "igst_rate_bps": 0,
+          "igst_paise": 0,
+          "cess_rate_bps": 0,
+          "cess_paise": 0,
+          "total_paise": 23
+        },
+        {
+          "order_item_id": "small-9",
+          "quantity": 1,
+          "unit_price_paise": 22,
+          "gross_paise": 22,
+          "discount_paise": 0,
+          "taxable_value_paise": 22,
+          "tax_profile_id": "gst5",
+          "cgst_rate_bps": 250,
+          "cgst_paise": 1,
+          "sgst_rate_bps": 250,
+          "sgst_paise": 1,
+          "igst_rate_bps": 0,
+          "igst_paise": 0,
+          "cess_rate_bps": 0,
+          "cess_paise": 0,
+          "total_paise": 24
+        },
+        {
+          "order_item_id": "small-10",
+          "quantity": 1,
+          "unit_price_paise": 23,
+          "gross_paise": 23,
+          "discount_paise": 0,
+          "taxable_value_paise": 23,
+          "tax_profile_id": "gst5",
+          "cgst_rate_bps": 250,
+          "cgst_paise": 1,
+          "sgst_rate_bps": 250,
+          "sgst_paise": 1,
+          "igst_rate_bps": 0,
+          "igst_paise": 0,
+          "cess_rate_bps": 0,
+          "cess_paise": 0,
+          "total_paise": 25
+        },
+        {
+          "order_item_id": "small-11",
+          "quantity": 1,
+          "unit_price_paise": 24,
+          "gross_paise": 24,
+          "discount_paise": 0,
+          "taxable_value_paise": 24,
+          "tax_profile_id": "gst5",
+          "cgst_rate_bps": 250,
+          "cgst_paise": 1,
+          "sgst_rate_bps": 250,
+          "sgst_paise": 1,
+          "igst_rate_bps": 0,
+          "igst_paise": 0,
+          "cess_rate_bps": 0,
+          "cess_paise": 0,
+          "total_paise": 26
+        },
+        {
+          "order_item_id": "small-12",
+          "quantity": 1,
+          "unit_price_paise": 25,
+          "gross_paise": 25,
+          "discount_paise": 0,
+          "taxable_value_paise": 25,
+          "tax_profile_id": "gst5",
+          "cgst_rate_bps": 250,
+          "cgst_paise": 1,
+          "sgst_rate_bps": 250,
+          "sgst_paise": 1,
+          "igst_rate_bps": 0,
+          "igst_paise": 0,
+          "cess_rate_bps": 0,
+          "cess_paise": 0,
+          "total_paise": 27
+        },
+        {
+          "order_item_id": "small-13",
+          "quantity": 1,
+          "unit_price_paise": 26,
+          "gross_paise": 26,
+          "discount_paise": 0,
+          "taxable_value_paise": 26,
+          "tax_profile_id": "gst5",
+          "cgst_rate_bps": 250,
+          "cgst_paise": 1,
+          "sgst_rate_bps": 250,
+          "sgst_paise": 1,
+          "igst_rate_bps": 0,
+          "igst_paise": 0,
+          "cess_rate_bps": 0,
+          "cess_paise": 0,
+          "total_paise": 28
+        },
+        {
+          "order_item_id": "small-14",
+          "quantity": 1,
+          "unit_price_paise": 27,
+          "gross_paise": 27,
+          "discount_paise": 0,
+          "taxable_value_paise": 27,
+          "tax_profile_id": "gst5",
+          "cgst_rate_bps": 250,
+          "cgst_paise": 1,
+          "sgst_rate_bps": 250,
+          "sgst_paise": 1,
+          "igst_rate_bps": 0,
+          "igst_paise": 0,
+          "cess_rate_bps": 0,
+          "cess_paise": 0,
+          "total_paise": 29
+        }
+      ],
+      "totals": {
+        "subtotal_paise": 300,
+        "discount_paise": 0,
+        "taxable_value_paise": 300,
+        "cgst_paise": 8,
+        "sgst_paise": 8,
+        "igst_paise": 0,
+        "cess_paise": 0,
+        "round_off_paise": -16,
+        "grand_total_paise": 300
+      }
+    },
+    {
+      "name": "cess_stacked_on_gst",
+      "lines": [
+        {
+          "order_item_id": "cess-1",
+          "description": "Aerated Drink",
+          "quantity": 3,
+          "unit_price_paise": 4500,
+          "discount_per_unit_paise": 0,
+          "tax_profile_id": "gst12cess",
+          "pricing_mode": "EXCLUSIVE",
+          "rates": [
+            {
+              "component": "CGST",
+              "rate_bps": 600
+            },
+            {
+              "component": "SGST",
+              "rate_bps": 600
+            },
+            {
+              "component": "CESS",
+              "rate_bps": 280
+            }
+          ]
+        },
+        {
+          "order_item_id": "cess-2",
+          "description": "Aerated Drink Inclusive",
+          "quantity": 2,
+          "unit_price_paise": 5600,
+          "discount_per_unit_paise": 0,
+          "tax_profile_id": "gst12cess",
+          "pricing_mode": "INCLUSIVE",
+          "rates": [
+            {
+              "component": "CGST",
+              "rate_bps": 600
+            },
+            {
+              "component": "SGST",
+              "rate_bps": 600
+            },
+            {
+              "component": "CESS",
+              "rate_bps": 280
+            }
+          ]
+        }
+      ],
+      "line_computations": [
+        {
+          "order_item_id": "cess-1",
+          "quantity": 3,
+          "unit_price_paise": 4500,
+          "gross_paise": 13500,
+          "discount_paise": 0,
+          "taxable_value_paise": 13500,
+          "tax_profile_id": "gst12cess",
+          "cgst_rate_bps": 600,
+          "cgst_paise": 810,
+          "sgst_rate_bps": 600,
+          "sgst_paise": 810,
+          "igst_rate_bps": 0,
+          "igst_paise": 0,
+          "cess_rate_bps": 280,
+          "cess_paise": 378,
+          "total_paise": 15498
+        },
+        {
+          "order_item_id": "cess-2",
+          "quantity": 2,
+          "unit_price_paise": 5600,
+          "gross_paise": 11200,
+          "discount_paise": 0,
+          "taxable_value_paise": 9756,
+          "tax_profile_id": "gst12cess",
+          "cgst_rate_bps": 600,
+          "cgst_paise": 586,
+          "sgst_rate_bps": 600,
+          "sgst_paise": 585,
+          "igst_rate_bps": 0,
+          "igst_paise": 0,
+          "cess_rate_bps": 280,
+          "cess_paise": 273,
+          "total_paise": 11200
+        }
+      ],
+      "totals": {
+        "subtotal_paise": 24700,
+        "discount_paise": 0,
+        "taxable_value_paise": 23256,
+        "cgst_paise": 1396,
+        "sgst_paise": 1395,
+        "igst_paise": 0,
+        "cess_paise": 651,
+        "round_off_paise": 2,
+        "grand_total_paise": 26700
+      }
+    },
+    {
+      "name": "igst_only",
+      "lines": [
+        {
+          "order_item_id": "igst-1",
+          "description": "Interstate Delivery Item",
+          "quantity": 4,
+          "unit_price_paise": 18500,
+          "discount_per_unit_paise": 500,
+          "tax_profile_id": "igst12",
+          "pricing_mode": "EXCLUSIVE",
+          "rates": [
+            {
+              "component": "IGST",
+              "rate_bps": 1200
+            }
+          ]
+        }
+      ],
+      "line_computations": [
+        {
+          "order_item_id": "igst-1",
+          "quantity": 4,
+          "unit_price_paise": 18500,
+          "gross_paise": 74000,
+          "discount_paise": 2000,
+          "taxable_value_paise": 72000,
+          "tax_profile_id": "igst12",
+          "cgst_rate_bps": 0,
+          "cgst_paise": 0,
+          "sgst_rate_bps": 0,
+          "sgst_paise": 0,
+          "igst_rate_bps": 1200,
+          "igst_paise": 8640,
+          "cess_rate_bps": 0,
+          "cess_paise": 0,
+          "total_paise": 80640
+        }
+      ],
+      "totals": {
+        "subtotal_paise": 74000,
+        "discount_paise": 2000,
+        "taxable_value_paise": 72000,
+        "cgst_paise": 0,
+        "sgst_paise": 0,
+        "igst_paise": 8640,
+        "cess_paise": 0,
+        "round_off_paise": -40,
+        "grand_total_paise": 80600
+      }
+    },
+    {
+      "name": "fully_exempt",
+      "lines": [
+        {
+          "order_item_id": "exempt-1",
+          "description": "Fresh Fruit Plate",
+          "quantity": 2,
+          "unit_price_paise": 12000,
+          "discount_per_unit_paise": 0,
+          "tax_profile_id": "exempt",
+          "pricing_mode": "EXCLUSIVE",
+          "rates": []
+        }
+      ],
+      "line_computations": [
+        {
+          "order_item_id": "exempt-1",
+          "quantity": 2,
+          "unit_price_paise": 12000,
+          "gross_paise": 24000,
+          "discount_paise": 0,
+          "taxable_value_paise": 24000,
+          "tax_profile_id": "exempt",
+          "cgst_rate_bps": 0,
+          "cgst_paise": 0,
+          "sgst_rate_bps": 0,
+          "sgst_paise": 0,
+          "igst_rate_bps": 0,
+          "igst_paise": 0,
+          "cess_rate_bps": 0,
+          "cess_paise": 0,
+          "total_paise": 24000
+        }
+      ],
+      "totals": {
+        "subtotal_paise": 24000,
+        "discount_paise": 0,
+        "taxable_value_paise": 24000,
+        "cgst_paise": 0,
+        "sgst_paise": 0,
+        "igst_paise": 0,
+        "cess_paise": 0,
+        "round_off_paise": 0,
+        "grand_total_paise": 24000
+      }
+    },
+    {
+      "name": "mixed_pricing_modes_one_invoice",
+      "lines": [
+        {
+          "order_item_id": "mix-1",
+          "description": "Butter Naan (exclusive)",
+          "quantity": 4,
+          "unit_price_paise": 4000,
+          "discount_per_unit_paise": 0,
+          "tax_profile_id": "gst5",
+          "pricing_mode": "EXCLUSIVE",
+          "rates": [
+            {
+              "component": "CGST",
+              "rate_bps": 250
+            },
+            {
+              "component": "SGST",
+              "rate_bps": 250
+            }
+          ]
+        },
+        {
+          "order_item_id": "mix-2",
+          "description": "Thali (inclusive)",
+          "quantity": 2,
+          "unit_price_paise": 31500,
+          "discount_per_unit_paise": 0,
+          "tax_profile_id": "gst5",
+          "pricing_mode": "INCLUSIVE",
+          "rates": [
+            {
+              "component": "CGST",
+              "rate_bps": 250
+            },
+            {
+              "component": "SGST",
+              "rate_bps": 250
+            }
+          ]
+        },
+        {
+          "order_item_id": "mix-3",
+          "description": "Beer (inclusive, IGST)",
+          "quantity": 1,
+          "unit_price_paise": 22000,
+          "discount_per_unit_paise": 1000,
+          "tax_profile_id": "igst12",
+          "pricing_mode": "INCLUSIVE",
+          "rates": [
+            {
+              "component": "IGST",
+              "rate_bps": 1200
+            }
+          ]
+        }
+      ],
+      "line_computations": [
+        {
+          "order_item_id": "mix-1",
+          "quantity": 4,
+          "unit_price_paise": 4000,
+          "gross_paise": 16000,
+          "discount_paise": 0,
+          "taxable_value_paise": 16000,
+          "tax_profile_id": "gst5",
+          "cgst_rate_bps": 250,
+          "cgst_paise": 400,
+          "sgst_rate_bps": 250,
+          "sgst_paise": 400,
+          "igst_rate_bps": 0,
+          "igst_paise": 0,
+          "cess_rate_bps": 0,
+          "cess_paise": 0,
+          "total_paise": 16800
+        },
+        {
+          "order_item_id": "mix-2",
+          "quantity": 2,
+          "unit_price_paise": 31500,
+          "gross_paise": 63000,
+          "discount_paise": 0,
+          "taxable_value_paise": 60000,
+          "tax_profile_id": "gst5",
+          "cgst_rate_bps": 250,
+          "cgst_paise": 1500,
+          "sgst_rate_bps": 250,
+          "sgst_paise": 1500,
+          "igst_rate_bps": 0,
+          "igst_paise": 0,
+          "cess_rate_bps": 0,
+          "cess_paise": 0,
+          "total_paise": 63000
+        },
+        {
+          "order_item_id": "mix-3",
+          "quantity": 1,
+          "unit_price_paise": 22000,
+          "gross_paise": 22000,
+          "discount_paise": 1000,
+          "taxable_value_paise": 18750,
+          "tax_profile_id": "igst12",
+          "cgst_rate_bps": 0,
+          "cgst_paise": 0,
+          "sgst_rate_bps": 0,
+          "sgst_paise": 0,
+          "igst_rate_bps": 1200,
+          "igst_paise": 2250,
+          "cess_rate_bps": 0,
+          "cess_paise": 0,
+          "total_paise": 21000
+        }
+      ],
+      "totals": {
+        "subtotal_paise": 101000,
+        "discount_paise": 1000,
+        "taxable_value_paise": 94750,
+        "cgst_paise": 1900,
+        "sgst_paise": 1900,
+        "igst_paise": 2250,
+        "cess_paise": 0,
+        "round_off_paise": 0,
+        "grand_total_paise": 100800
+      }
+    },
+    {
+      "name": "mixed_rate_three_profiles",
+      "lines": [
+        {
+          "order_item_id": "prof-a-1",
+          "description": "Veg Thali",
+          "quantity": 2,
+          "unit_price_paise": 25000,
+          "discount_per_unit_paise": 0,
+          "tax_profile_id": "food5",
+          "pricing_mode": "EXCLUSIVE",
+          "rates": [
+            {
+              "component": "CGST",
+              "rate_bps": 250
+            },
+            {
+              "component": "SGST",
+              "rate_bps": 250
+            }
+          ]
+        },
+        {
+          "order_item_id": "prof-a-2",
+          "description": "Roti",
+          "quantity": 6,
+          "unit_price_paise": 2500,
+          "discount_per_unit_paise": 0,
+          "tax_profile_id": "food5",
+          "pricing_mode": "INCLUSIVE",
+          "rates": [
+            {
+              "component": "CGST",
+              "rate_bps": 250
+            },
+            {
+              "component": "SGST",
+              "rate_bps": 250
+            }
+          ]
+        },
+        {
+          "order_item_id": "prof-b-1",
+          "description": "Imported Whiskey",
+          "quantity": 1,
+          "unit_price_paise": 85000,
+          "discount_per_unit_paise": 0,
+          "tax_profile_id": "liquor18",
+          "pricing_mode": "EXCLUSIVE",
+          "rates": [
+            {
+              "component": "CGST",
+              "rate_bps": 900
+            },
+            {
+              "component": "SGST",
+              "rate_bps": 900
+            }
+          ]
+        },
+        {
+          "order_item_id": "prof-b-2",
+          "description": "Local Beer",
+          "quantity": 3,
+          "unit_price_paise": 18000,
+          "discount_per_unit_paise": 500,
+          "tax_profile_id": "liquor18",
+          "pricing_mode": "INCLUSIVE",
+          "rates": [
+            {
+              "component": "CGST",
+              "rate_bps": 900
+            },
+            {
+              "component": "SGST",
+              "rate_bps": 900
+            }
+          ]
+        },
+        {
+          "order_item_id": "prof-c-1",
+          "description": "Packaged Aerated Drink",
+          "quantity": 5,
+          "unit_price_paise": 6000,
+          "discount_per_unit_paise": 0,
+          "tax_profile_id": "cess12",
+          "pricing_mode": "EXCLUSIVE",
+          "rates": [
+            {
+              "component": "CGST",
+              "rate_bps": 600
+            },
+            {
+              "component": "SGST",
+              "rate_bps": 600
+            },
+            {
+              "component": "CESS",
+              "rate_bps": 280
+            }
+          ]
+        },
+        {
+          "order_item_id": "prof-c-2",
+          "description": "Ice Cream Sundae",
+          "quantity": 2,
+          "unit_price_paise": 15000,
+          "discount_per_unit_paise": 0,
+          "tax_profile_id": "cess12",
+          "pricing_mode": "INCLUSIVE",
+          "rates": [
+            {
+              "component": "CGST",
+              "rate_bps": 600
+            },
+            {
+              "component": "SGST",
+              "rate_bps": 600
+            },
+            {
+              "component": "CESS",
+              "rate_bps": 280
+            }
+          ]
+        }
+      ],
+      "line_computations": [
+        {
+          "order_item_id": "prof-a-1",
+          "quantity": 2,
+          "unit_price_paise": 25000,
+          "gross_paise": 50000,
+          "discount_paise": 0,
+          "taxable_value_paise": 50000,
+          "tax_profile_id": "food5",
+          "cgst_rate_bps": 250,
+          "cgst_paise": 1250,
+          "sgst_rate_bps": 250,
+          "sgst_paise": 1250,
+          "igst_rate_bps": 0,
+          "igst_paise": 0,
+          "cess_rate_bps": 0,
+          "cess_paise": 0,
+          "total_paise": 52500
+        },
+        {
+          "order_item_id": "prof-a-2",
+          "quantity": 6,
+          "unit_price_paise": 2500,
+          "gross_paise": 15000,
+          "discount_paise": 0,
+          "taxable_value_paise": 14286,
+          "tax_profile_id": "food5",
+          "cgst_rate_bps": 250,
+          "cgst_paise": 357,
+          "sgst_rate_bps": 250,
+          "sgst_paise": 357,
+          "igst_rate_bps": 0,
+          "igst_paise": 0,
+          "cess_rate_bps": 0,
+          "cess_paise": 0,
+          "total_paise": 15000
+        },
+        {
+          "order_item_id": "prof-b-1",
+          "quantity": 1,
+          "unit_price_paise": 85000,
+          "gross_paise": 85000,
+          "discount_paise": 0,
+          "taxable_value_paise": 85000,
+          "tax_profile_id": "liquor18",
+          "cgst_rate_bps": 900,
+          "cgst_paise": 7650,
+          "sgst_rate_bps": 900,
+          "sgst_paise": 7650,
+          "igst_rate_bps": 0,
+          "igst_paise": 0,
+          "cess_rate_bps": 0,
+          "cess_paise": 0,
+          "total_paise": 100300
+        },
+        {
+          "order_item_id": "prof-b-2",
+          "quantity": 3,
+          "unit_price_paise": 18000,
+          "gross_paise": 54000,
+          "discount_paise": 1500,
+          "taxable_value_paise": 44492,
+          "tax_profile_id": "liquor18",
+          "cgst_rate_bps": 900,
+          "cgst_paise": 4004,
+          "sgst_rate_bps": 900,
+          "sgst_paise": 4004,
+          "igst_rate_bps": 0,
+          "igst_paise": 0,
+          "cess_rate_bps": 0,
+          "cess_paise": 0,
+          "total_paise": 52500
+        },
+        {
+          "order_item_id": "prof-c-1",
+          "quantity": 5,
+          "unit_price_paise": 6000,
+          "gross_paise": 30000,
+          "discount_paise": 0,
+          "taxable_value_paise": 30000,
+          "tax_profile_id": "cess12",
+          "cgst_rate_bps": 600,
+          "cgst_paise": 1800,
+          "sgst_rate_bps": 600,
+          "sgst_paise": 1800,
+          "igst_rate_bps": 0,
+          "igst_paise": 0,
+          "cess_rate_bps": 280,
+          "cess_paise": 840,
+          "total_paise": 34440
+        },
+        {
+          "order_item_id": "prof-c-2",
+          "quantity": 2,
+          "unit_price_paise": 15000,
+          "gross_paise": 30000,
+          "discount_paise": 0,
+          "taxable_value_paise": 26132,
+          "tax_profile_id": "cess12",
+          "cgst_rate_bps": 600,
+          "cgst_paise": 1568,
+          "sgst_rate_bps": 600,
+          "sgst_paise": 1568,
+          "igst_rate_bps": 0,
+          "igst_paise": 0,
+          "cess_rate_bps": 280,
+          "cess_paise": 732,
+          "total_paise": 30000
+        }
+      ],
+      "totals": {
+        "subtotal_paise": 264000,
+        "discount_paise": 1500,
+        "taxable_value_paise": 249910,
+        "cgst_paise": 16629,
+        "sgst_paise": 16629,
+        "igst_paise": 0,
+        "cess_paise": 1572,
+        "round_off_paise": -40,
+        "grand_total_paise": 284700
+      }
+    }
+  ]
+}

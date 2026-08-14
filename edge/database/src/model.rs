@@ -68,6 +68,13 @@ pub struct MenuItem {
     pub base_price_paise: i64,
     pub is_available: bool,
     pub config_version: i64,
+    /// The item's own pinned tax profile (contracts 0.4.2,
+    /// `packages/contracts/sqlite/0007_menu_item_tax_profile.sql`). `None`
+    /// means "use the outlet's default profile" — [`crate::tax::resolve_tax_profile`]
+    /// is the one place that fallback happens; a `Some` that does not resolve
+    /// to an active profile at the item's outlet is a config error, never a
+    /// silent fallback (see that function's doc comment).
+    pub tax_profile_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -450,6 +457,118 @@ pub struct OutboxEntry {
     pub created_at: String,
     pub published_at: Option<String>,
     pub attempt_count: i64,
+}
+
+// --------------------------------------------- Milestone 3: billing config --
+// compliance_version / tax_profile / tax_rule / outlet_fiscal_profile /
+// invoice_series / discount_definition are CONFIG aggregates (ADR-016 §1):
+// cloud→edge, versioned by config_version, replaced wholesale — the same
+// station/printer precedent from Milestone 2. This crate stores what sync
+// gives it and never originates a row in any of the six. Field sets mirror
+// `packages/contracts/sqlite/0006_m3_billing.sql` exactly.
+
+/// A named, versioned tax ruleset (`compliance_version`). Invoices pin
+/// themselves to one by id so a bill stays reproducible after the rules
+/// change (§31) — see `tax::resolve_compliance_version`.
+#[derive(Debug, Clone)]
+pub struct ComplianceVersion {
+    pub id: String,
+    pub outlet_id: String,
+    pub label: String,
+    pub effective_from: String,
+    pub notes: Option<String>,
+    pub config_version: i64,
+}
+
+/// What a menu item (or the outlet default) points at for tax treatment.
+/// Never a percentage scattered on the item itself (§31).
+#[derive(Debug, Clone)]
+pub struct TaxProfile {
+    pub id: String,
+    pub outlet_id: String,
+    pub code: String,
+    pub name: String,
+    /// `"INCLUSIVE"` or `"EXCLUSIVE"` — matches the `CHECK` in
+    /// `0006_m3_billing.sql`. Kept as the raw stored string here, the same
+    /// convention as `Order.status`; `tax::domain::PricingMode` is the typed
+    /// form the compute engine works in.
+    pub pricing_mode: String,
+    pub is_default: bool,
+    pub is_active: bool,
+    pub config_version: i64,
+}
+
+/// One component rate inside a profile, effective-dated. Child row
+/// travelling in its parent's config bundle (the `menu_item_variant`
+/// precedent), not an aggregate of its own.
+#[derive(Debug, Clone)]
+pub struct TaxRule {
+    pub id: String,
+    pub tax_profile_id: String,
+    pub compliance_version_id: String,
+    /// `"CGST" | "SGST" | "IGST" | "CESS"` — the raw stored string;
+    /// `tax::domain::TaxComponent` is the typed form.
+    pub component: String,
+    pub rate_bps: i64,
+    pub effective_from: String,
+    pub effective_to: Option<String>,
+    pub config_version: i64,
+}
+
+/// The seller identity printed on a GST invoice (§33), effective-dated.
+#[derive(Debug, Clone)]
+pub struct OutletFiscalProfile {
+    pub id: String,
+    pub outlet_id: String,
+    pub legal_name: String,
+    pub trade_name: String,
+    pub address_line1: String,
+    pub address_line2: Option<String>,
+    pub city: String,
+    pub state_code: String,
+    pub state_name: String,
+    pub pincode: String,
+    pub gstin: String,
+    pub fssai_number: Option<String>,
+    pub invoice_footer_text: Option<String>,
+    pub effective_from: String,
+    pub config_version: i64,
+}
+
+/// The DEFINITION of an invoice number series (ADR-016 §2). The counter
+/// (`invoice_sequence`) is edge-local and out of this track's scope (T7b).
+#[derive(Debug, Clone)]
+pub struct InvoiceSeries {
+    pub id: String,
+    pub outlet_id: String,
+    pub code: String,
+    pub prefix_template: String,
+    pub reset_policy: String,
+    pub padding_width: i64,
+    pub is_active: bool,
+    pub config_version: i64,
+}
+
+/// A discount a cashier may apply (§28). Exactly one of `value_bps`/
+/// `value_paise` is set, decided by `method` — enforced by a `CHECK` at the
+/// schema layer, mirrored here only as the storage shape, not re-validated.
+#[derive(Debug, Clone)]
+pub struct DiscountDefinition {
+    pub id: String,
+    pub outlet_id: String,
+    pub code: String,
+    pub name: String,
+    pub scope: String,
+    pub method: String,
+    pub value_bps: Option<i64>,
+    pub value_paise: Option<i64>,
+    pub max_discount_paise: Option<i64>,
+    pub required_permission: Option<String>,
+    pub requires_reason: bool,
+    pub is_active: bool,
+    pub effective_from: String,
+    pub effective_to: Option<String>,
+    pub config_version: i64,
 }
 
 // ------------------------------------------- device_credential_cache (0.4.3) --
