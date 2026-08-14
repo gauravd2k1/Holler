@@ -22,14 +22,31 @@ const HARNESS_MANIFEST = process.env.HOLLER_E2E_FALSIFY_MANIFEST
   ? path.resolve(process.env.HOLLER_E2E_FALSIFY_MANIFEST)
   : path.resolve(__dirname, "../../harness/Cargo.toml");
 
+export interface ModifierFixture {
+  id: string;
+  group_name: string;
+  option_name: string;
+  price_delta_paise: number;
+}
+
 export interface TemplateInfo {
   outlet_id: string;
   pos_device_id: string;
   kds_device_id: string;
+  /** `<credential_id>.<secret>` — the connection's first frame (ADR-017
+   * amendment, apps/kds/src/lib/lanConfig.ts's AUTHENTICATION note). */
+  kds_device_token: string;
+  cashier_user_id: string;
   stations: { single: string; multi_extra: string };
   tables: [string, string];
   items: {
-    single_station: { id: string; unit_price_paise: number; variant_id: string; modifier_ids: string[] };
+    single_station: {
+      id: string;
+      unit_price_paise: number;
+      variant_id: string;
+      modifier_ids: string[];
+      modifiers: ModifierFixture[];
+    };
     single_station_2: { id: string; unit_price_paise: number };
     multi_station: { id: string; unit_price_paise: number };
     no_station: { id: string; unit_price_paise: number };

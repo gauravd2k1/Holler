@@ -6,7 +6,9 @@ export type InvariantId =
   | "5_money"
   | "6_durability"
   | "7_outbox"
-  | "8_status_echo";
+  | "8_status_echo"
+  | "9_tax_reconciliation"
+  | "10_payment_settlement";
 
 export const ALL_INVARIANTS: InvariantId[] = [
   "1_state_machine",
@@ -17,6 +19,8 @@ export const ALL_INVARIANTS: InvariantId[] = [
   "6_durability",
   "7_outbox",
   "8_status_echo",
+  "9_tax_reconciliation",
+  "10_payment_settlement",
 ];
 
 export interface InvariantOutcome {

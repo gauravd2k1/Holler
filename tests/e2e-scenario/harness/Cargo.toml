@@ -26,3 +26,10 @@ holler-edge-device = { path = "../../../edge/device" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v7"] }
+# Mints the one device_credential_cache row this harness seeds for its KDS
+# fixture (edge/device now requires a verifiable device_token on every LAN
+# connection, ADR-017 amendment) — same version edge/database uses for the
+# format holler_edge_database::auth::verify_password parses, so a hash
+# minted here verifies there byte-for-byte.
+argon2 = { version = "0.5", default-features = false, features = ["alloc"] }
+base64 = "0.22"

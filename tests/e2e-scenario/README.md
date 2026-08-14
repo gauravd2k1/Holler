@@ -58,23 +58,31 @@ Deterministic (`mulberry32`, seeded) — `src/rng.ts`. Every scenario's own
 seed, and the run's base seed, are printed and recorded in the report; any
 failure is reproducible with the same `--seed`.
 
-Action vocabulary (`src/runner.ts`): create draft (always the first action);
-add item (same item repeatedly is a normal outcome of the random pick, not a
+Action vocabulary (`src/runner.ts`): create draft (always the first action,
+occasionally with a real modifier price delta attached — see below); add
+item (same item repeatedly is a normal outcome of the random pick, not a
 special case); remove item; change order type; set/change/clear table;
-confirm; a coverage probe that attempts to add an item after confirm (see
-Findings); send to kitchen; send again (idempotency); a probe for an illegal
-`NEW -> SERVED` transition (and a second, later-state illegal-transition
-probe) before any legal walk moves a ticket off `NEW`; a legal walk through
-`ACKNOWLEDGED -> PREPARING -> READY -> SERVED`, split randomly between
-POS-driven (`transition_kot` over the bridge) and KDS-driven
+confirm; a `#132-A` amendment probe that adds an item to the CONFIRMED order
+(see Findings); send to kitchen; send again (idempotency); a probe for an
+illegal `NEW -> SERVED` transition (and a second, later-state illegal-
+transition probe) before any legal walk moves a ticket off `NEW`; a legal
+walk through `ACKNOWLEDGED -> PREPARING -> READY -> SERVED`, split randomly
+between POS-driven (`transition_kot` over the bridge) and KDS-driven
 (`requestStatusChange` over the real WebSocket); acking an unknown/stale KOT
-id; disconnecting and reconnecting the KDS client mid-sequence; and a
-crash-and-recover step at a random point (mid-DRAFT or post-send).
+id; disconnecting and reconnecting the KDS client mid-sequence; a
+crash-and-recover step at a random point (mid-DRAFT or post-send); and
+(T11b) billing — issue a GST invoice for the order and record a payment
+sequence against it (usually a genuine two-tender split, occasionally with a
+reversal), whenever the order left DRAFT with at least one line.
 
 Fixtures cover all three order types, ≥2 tables, ≥2 stations, an item with a
-variant and modifiers (though modifiers cannot actually be attached to an
-order line — see Findings), a multi-station item, and a deliberately
-unrouted item, per the spec.
+variant and modifiers, a multi-station item, and a deliberately unrouted
+item, per the spec. Modifiers are attached via real requests to
+`create_order`/`add_order_item` (M3 Track B landed the wire field this
+harness previously could not reach); billing fixtures (a GST-5% tax profile,
+an outlet fiscal profile, an active `SALES` invoice series) are seeded by the
+harness itself alongside the station/menu-item augmentation, since `devseed`
+provides none of them (T11b).
 
 ## Crash simulation
 
@@ -120,6 +128,18 @@ sidesteps the problem entirely and is a more faithful simulation besides.
    under-count still fails, which is the property that matters).
 8. **Status echo** — a KDS-driven status change is reflected through the
    POS's own read command (`list_kots`) within 2s.
+9. **Tax reconciliation** (T11b) — every invoice line's
+   `taxable_value_paise + cgst + sgst + igst + cess == total_paise`; every
+   per-line component sums exactly to the invoice-level total of that
+   component; and `taxable_value + Σtax components + round_off_paise ==
+   grand_total_paise`, all in integer paise (never a float comparison). Every
+   paise field checked must be a non-negative integer, except
+   `round_off_paise` which may legitimately be negative.
+10. **Payment settlement** (T11b) — forward tenders (positive `amount_paise`)
+    plus any reversals (non-positive, `reverses_payment_id` set) recorded
+    against an order never sum past that order's invoice `grand_total_paise`,
+    checked both against what this scenario itself recorded and against the
+    persisted `list_payments_for_order` row set independently.
 
 ## Findings (coverage gaps and product defects — not fixed by this track)
 
@@ -130,19 +150,40 @@ default; set `HOLLER_E2E_REPORT_DIR` to redirect it (e.g. for a CI artifact
 upload step). Each run's CLI output prints the exact path used. As of this
 track's own verification run:
 
-- **Modifiers are unreachable at the order-item level.**
-  `commands::orders::NewOrderItemRequest` carries no modifiers field —
-  `apps/pos/src-tauri/src/commands/orders.rs` states this explicitly.
-  `MenuItemModifier` rows exist and price deltas are seeded (via the
-  Masala Chai fixture, mirroring `devseed`), but no shipped command can
-  attach one to an order line.
 - **`cancel_kitchen_items_with_outbox` has no Tauri command.** Unreachable
   from the shipped surface — per the track brief, not faked and not added
   here.
-- **No shipped command can add an item to an order once it has left
-  DRAFT.** `add_order_item` enforces DRAFT-only. Partial add-then-send /
-  KOT `#132-A` amendments are therefore also unreachable, for the same
-  underlying reason as the cancellation gap above.
+- **Split-bill invoicing is unreachable from the shipped surface (T11b).**
+  `holler_edge_database::Db::issue_split_invoices_with_outbox` exists but
+  `apps/pos/src-tauri/src/commands/billing.rs` deliberately excludes it from
+  M3's command surface (`docs/m3-planning.md`) — `issue_invoice` always
+  bills the whole order at `split_count == 1`. The "a split bill's parts sum
+  to the whole" money invariant this track was asked to add cannot be
+  exercised end to end for the same reason cancellation and (formerly)
+  modifiers could not.
+- **A per-line discount is unreachable from the shipped surface (T11b).**
+  `billing.rs`'s `build_invoice_lines` hard-codes `discount_per_unit_paise:
+  0` for every invoice line — no command lets a cashier apply one.
+- **PRODUCT DEFECT (harness bit-rot, closed by T11b): the harness itself
+  had not compiled since device enrollment (ADR-017) and M3 Track B landed.**
+  `edge/device::server::start` gained a required `DeviceTokenVerifier`
+  argument, `MenuItem` gained a required `tax_profile_id` field, and
+  `NewOrderItemRequest` gained a required `modifiers` field — none reflected
+  in `harness/src/main.rs`, so `cargo build` failed outright. Separately, the
+  harness's own `#132-A` amendment probe still asserted the *pre-Track-B*
+  behaviour (`add_item` after CONFIRMED must be rejected with
+  `ORDER_NOT_DRAFT`) after the product had been deliberately widened to
+  allow exactly that — once the harness was made to compile again, this
+  probe alone turned invariant 1 red on all 54/54 scenarios. Both are
+  harness staleness, not product defects; `docs/RESUME.md`'s claim that
+  "Not re-run this session: the e2e harness (54 scenarios)" is the reason
+  neither was caught earlier — the harness had silently stopped being a
+  gate. Fixed here: the LAN server is now wired with a real
+  `CachedCredentialVerifier` against one harness-seeded KDS device
+  credential (Argon2id-hashed, verified for real — see `hash_device_secret`
+  in `main.rs`); `MenuItem`/`NewOrderItemRequest` construction sites are
+  updated; and the amendment probe now asserts the current, documented
+  `#132-A` behaviour (success while CONFIRMED/SENT_TO_KITCHEN/PREPARING).
 - ~~**PRODUCT DEFECT — `zero-station-item-send` (named regression).**~~
   **CLOSED at M3 Track A.** `send_order_to_kitchen_with_outbox_inner`
   (`edge/database/src/lib.rs`) used to silently skip a line item with no
@@ -177,3 +218,39 @@ exercised a KOT, with correct cascading detail (subsequent legal
 transitions from the now-corrupted `SERVED` state were, correctly, also
 rejected). `git status --porcelain edge/ apps/pos/src-tauri` was empty
 throughout and after — the real crates were never touched.
+
+**T11b repeated this for the two new invariants**, using the same
+`HOLLER_E2E_FALSIFY_MANIFEST` scratch-mirror pattern (a `git worktree` at the
+last known-green commit, since a concurrent Track A defect fix left the real
+repo's `edge/database` mid-edit and non-compiling at the time — see "Known
+limitations" below): `edge/database/src/tax/engine.rs`'s `round_off_paise`
+computation was deliberately off by one paise. The break was caught
+immediately by every scenario that reached billing, surfaced as invariant
+9 (`9_tax_reconciliation`) — in this run even earlier, at `issue_invoice`'s
+own SQLite `CHECK` constraint on `grand_total_paise`, so the corruption never
+even reached a persisted row. Reverting the injected line restored an
+all-green run (54/54 scenarios, invariants 1–10 all `checked && passed`).
+`git diff edge/database/src/tax/engine.rs` was empty after the revert — the
+real crate was left exactly as found.
+
+## Known limitations (T11b)
+
+- **The CI job now asserts per-invariant, not just harness-level fatals**
+  (`scenario.test.ts`, since M3 Track A/T2 closed the last known invariant-
+  level defect) — a single new violation anywhere fails the job. No baseline
+  of known-failing scenarios exists because none is currently needed: every
+  invariant, including the two T11b added, passes on the full 54-scenario
+  CI run as of this track. If a future defect makes a specific invariant
+  genuinely and durably fail, prefer fixing it; only fall back to a named,
+  logged baseline (per the T11b brief) if the fix is out of scope for the
+  track that found it — silently loosening an assertion is never the right
+  call.
+- **This run required a clean scratch mirror of the repo**, not the working
+  tree, because a separate track was mid-edit in `edge/database` (a
+  double-settlement fix) and left it non-compiling. `HOLLER_E2E_FALSIFY_
+  MANIFEST` already existed for exactly this "point the bridge at a
+  different checkout" need; T11b's own verification run used a
+  `git worktree` at the last known-green commit rather than stashing the
+  other track's uncommitted work. Once that track lands, re-run the suite
+  against the real working tree before trusting it as the standing CI gate
+  again.

@@ -64,6 +64,7 @@ export class KdsDriver {
       url: `ws://127.0.0.1:${this.info.port}/kds`,
       outletId: this.info.outlet_id,
       deviceId: this.info.kds_device_id,
+      deviceToken: this.info.kds_device_token,
       station: null,
       heartbeatTimeoutMs: 10_000,
       reconnectDelayMs: 250,
