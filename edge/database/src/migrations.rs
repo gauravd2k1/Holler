@@ -272,13 +272,79 @@ mod tests {
             columns.iter().any(|c| c == "preparation_time_minutes"),
             "expected preparation_time_minutes column on \"order\" after 0005"
         );
+    }
+
+    /// The hard-coded-count form of this check (`assert_eq!(MIGRATIONS.len(), 11)`)
+    /// only caught someone bumping the constant without registering a
+    /// migration. It could never catch the actual failure mode that shipped
+    /// three dead migrations (0009-0011, ADR-016 0.4.5): a new
+    /// `NNNN_*.sql` file landing in `packages/contracts/sqlite/` and nobody
+    /// adding the matching entry to `MIGRATIONS`.
+    ///
+    /// This test instead compares the registered list against the directory
+    /// itself, in both directions: every `*.sql` on disk must be registered,
+    /// and every registered name must still exist on disk (catching a typo'd
+    /// or stale entry too).
+    ///
+    /// The migrations are embedded at compile time via `include_str!`, so
+    /// this crate has no *build* dependency on `packages/contracts` being
+    /// present at a particular relative path at runtime — but this specific
+    /// test does need to walk that directory to compare against it. If the
+    /// directory cannot be found, that is reported as a hard failure
+    /// (`panic!`), never a silent pass: a check that reads as coverage but
+    /// quietly skips when the path is missing is worse than no check, per
+    /// the repeated bug class this track was asked to close.
+    #[test]
+    fn every_contract_sqlite_file_is_registered_and_vice_versa() {
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let contracts_dir = std::path::Path::new(manifest_dir)
+            .join("..")
+            .join("..")
+            .join("packages")
+            .join("contracts")
+            .join("sqlite");
+
+        let entries = std::fs::read_dir(&contracts_dir).unwrap_or_else(|e| {
+            panic!(
+                "cannot read contracts sqlite directory at {}: {e}. \
+                 This test must fail loudly, not skip, when it cannot find \
+                 the directory it is supposed to verify against.",
+                contracts_dir.display()
+            )
+        });
+
+        let mut on_disk: Vec<String> = entries
+            .map(|entry| entry.expect("readable directory entry"))
+            .filter(|entry| {
+                entry
+                    .path()
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("sql"))
+            })
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        on_disk.sort();
+
+        assert!(
+            !on_disk.is_empty(),
+            "found zero .sql files in {} — this almost certainly means the \
+             path is wrong, not that contracts is empty",
+            contracts_dir.display()
+        );
+
+        let mut registered: Vec<String> = MIGRATIONS
+            .iter()
+            .map(|(name, _)| name.to_string())
+            .collect();
+        registered.sort();
 
         assert_eq!(
-            MIGRATIONS.len(),
-            11,
-            "expected exactly 11 registered migrations after contracts 0.4.5 \
-             (0009 payment append-only triggers, 0010 print_job invoice ref, \
-             0011 menu_item.hsn_sac)"
+            on_disk, registered,
+            "MIGRATIONS in edge/database/src/migrations.rs must list exactly \
+             the .sql files present in packages/contracts/sqlite/, no more \
+             and no fewer — a file on disk but not in this list silently \
+             never applies to any edge database (the 0009-0011 bug); an \
+             entry in this list with no file on disk is stale"
         );
     }
 
