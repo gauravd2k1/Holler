@@ -131,12 +131,36 @@ impl PrintJob {
     }
 }
 
-/// A failed job joined with the printer name, for the staff-visible failure
-/// view (`docs/spec/hardware-printing.md`: "Print failures must be visible
-/// to staff").
+/// A failed job joined with the printer name and whichever of its two
+/// possible parents (`kot`/`invoice`) it actually has, for the staff-visible
+/// failure view (`docs/spec/hardware-printing.md`: "Print failures must be
+/// visible to staff", §64).
+///
+/// Exactly one of `kot_station`/`invoice_number` is `Some`, mirroring
+/// [`PrintJob::target`] — this type is deliberately not a second, parallel
+/// notion of "what kind of job is this". [`FailedPrintJobView::target`]
+/// delegates straight to `self.job.target()` so a caller matches on the same
+/// enum everywhere rather than re-deriving the CHECK's meaning by testing
+/// which display field is populated.
+///
+/// A KOT job carries its station (a cook needs to know where the ticket was
+/// headed). An invoice job carries its invoice number (a cashier needs to
+/// know which bill failed) — there is no station for a bill to carry; the
+/// frozen `printer` table has no "bill printer" role, and inventing one here
+/// would be a contract change this fix does not make.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FailedPrintJobView {
     pub job: PrintJob,
     pub printer_name: String,
-    pub kot_station: String,
+    pub kot_station: Option<String>,
+    pub invoice_number: Option<String>,
+}
+
+impl FailedPrintJobView {
+    /// What this failed job prints, decoded the same way [`PrintJob::target`]
+    /// is. The one place a caller should ask "is this a KOT or an invoice
+    /// job?" — never by checking which display field is `Some`.
+    pub fn target(&self) -> Result<PrintJobTarget<'_>, &'static str> {
+        self.job.target()
+    }
 }

@@ -241,23 +241,26 @@ pub fn mark_failed(conn: &Connection, job_id: &str, error: &str, now: &str) -> P
 
 /// Failed jobs, for the staff-visible failure view T5 renders in the POS
 /// (docs/spec/hardware-printing.md "Print failures must be visible to
-/// staff"). Joined with the printer name and the kot's station so the view
-/// does not need a second round trip per row.
+/// staff", §64). Joined with the printer name and, depending on
+/// [`PrintJob::target`], the KOT's station or the invoice's number, so the
+/// view does not need a second round trip per row.
 ///
-/// **KOT jobs only** — the `JOIN kot` is deliberately inner, so an invoice
-/// job (whose `kot_id` is `NULL`) is excluded rather than joined away to
-/// nothing. Surfacing failed invoice print jobs to staff is real scope this
-/// track does not close: [`FailedPrintJobView`] has no invoice-shaped
-/// equivalent yet, and adding one means deciding what "station" means for a
-/// bill (see `queue_invoice_for_print`'s doc comment on the same open
-/// question). Left as a reported gap, not silently dropped.
+/// **Both kinds of failed job** — a `print_job` fails whether it prints a
+/// KOT or an invoice, and a cashier waiting on a bill that silently
+/// exhausted its retries is exactly the failure mode §64 exists to close
+/// (docs/retro.md, 2026-08-14 class of defect). `k`/`i` are `LEFT JOIN`ed
+/// (never `JOIN`): the CHECK on `print_job` guarantees exactly one of
+/// `kot_id`/`invoice_id` is set per row, so exactly one of `k.station`/
+/// `i.invoice_number` comes back non-NULL per row — an inner join on either
+/// would silently drop the other kind, which is the exact bug this fixes.
 pub fn list_failed_jobs(conn: &Connection) -> PrinterResult<Vec<FailedPrintJobView>> {
     let mut stmt = conn.prepare(
         "SELECT pj.id, pj.kot_id, pj.invoice_id, pj.printer_id, pj.status, pj.attempt_count, pj.last_error,
-                pj.created_at, pj.updated_at, p.name, k.station
+                pj.created_at, pj.updated_at, p.name, k.station, i.invoice_number
          FROM print_job pj
          JOIN printer p ON p.id = pj.printer_id
-         JOIN kot k ON k.id = pj.kot_id
+         LEFT JOIN kot k ON k.id = pj.kot_id
+         LEFT JOIN invoice i ON i.id = pj.invoice_id
          WHERE pj.status = 'FAILED'
          ORDER BY pj.updated_at DESC",
     )?;
@@ -269,6 +272,7 @@ pub fn list_failed_jobs(conn: &Connection) -> PrinterResult<Vec<FailedPrintJobVi
             job,
             printer_name: row.get(9)?,
             kot_station: row.get(10)?,
+            invoice_number: row.get(11)?,
         });
     }
     Ok(out)
@@ -519,8 +523,107 @@ mod tests {
         let failed = list_failed_jobs(conn).unwrap();
         assert_eq!(failed.len(), 1);
         assert_eq!(failed[0].printer_name, "Tandoor Printer");
-        assert_eq!(failed[0].kot_station, "MAIN_KITCHEN");
+        assert_eq!(failed[0].kot_station.as_deref(), Some("MAIN_KITCHEN"));
+        assert_eq!(failed[0].invoice_number, None);
         assert_eq!(failed[0].job.last_error.as_deref(), Some("out of paper"));
+        assert_eq!(
+            failed[0].target().unwrap(),
+            crate::model::PrintJobTarget::Kot("kot-1")
+        );
+    }
+
+    /// §64: a failed invoice job must be as visible to staff as a failed KOT
+    /// job — the defect this test guards against is `list_failed_jobs`
+    /// inner-joining `kot` and silently excluding any job whose `kot_id` is
+    /// `NULL`. Falsified by hand: reverting the `LEFT JOIN kot`/`LEFT JOIN
+    /// invoice` in `list_failed_jobs` back to `JOIN kot k ON k.id =
+    /// pj.kot_id` makes this test fail with `failed.len() == 0` (the row is
+    /// silently dropped, not merely mislabelled) — confirmed, then reverted
+    /// to the shipped `LEFT JOIN` form, which passes.
+    #[test]
+    fn list_failed_jobs_surfaces_a_failed_invoice_job() {
+        let (_dir, db) = open_test_db();
+        let conn = db.connection();
+        seed_invoice_and_printer(conn, "invoice-1", "printer-1");
+        let job = enqueue_invoice_job(
+            conn,
+            "job-1",
+            "invoice-1",
+            "printer-1",
+            "2026-08-07T10:00:00Z",
+        )
+        .unwrap();
+        mark_failed(conn, &job.id, "printer offline", "2026-08-07T10:00:05Z").unwrap();
+
+        let failed = list_failed_jobs(conn).unwrap();
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0].printer_name, "Front Counter Printer");
+        assert_eq!(failed[0].kot_station, None);
+        assert_eq!(failed[0].invoice_number.as_deref(), Some("FY26/PNQ/000001"));
+        assert_eq!(failed[0].job.last_error.as_deref(), Some("printer offline"));
+        assert_eq!(
+            failed[0].target().unwrap(),
+            crate::model::PrintJobTarget::Invoice("invoice-1")
+        );
+    }
+
+    /// A mixed failure set — one failed KOT job and one failed invoice job —
+    /// must return both, each correctly typed and neither corrupting the
+    /// other's display fields (the class of bug a careless single `LEFT
+    /// JOIN` swap could introduce: e.g. reading the KOT row's station onto
+    /// the invoice row, or vice versa).
+    #[test]
+    fn list_failed_jobs_returns_both_kot_and_invoice_failures_distinctly() {
+        let (_dir, db) = open_test_db();
+        let conn = db.connection();
+        seed_kot_and_printer(conn, "kot-1", "printer-1");
+        seed_invoice_only_on_existing_order(conn, "invoice-1");
+        conn.execute(
+            "INSERT INTO printer (id, outlet_id, name, connection_kind, address, paper_width_mm, is_active, config_version)
+             VALUES ('printer-2', 'outlet-1', 'Front Counter Printer', 'ESCPOS_NETWORK', '192.168.1.60:9100', 80, 1, 1)",
+            [],
+        )
+        .unwrap();
+
+        let kot_job =
+            enqueue_job(conn, "job-1", "kot-1", "printer-1", "2026-08-07T10:00:00Z").unwrap();
+        mark_failed(conn, &kot_job.id, "out of paper", "2026-08-07T10:00:05Z").unwrap();
+
+        let invoice_job = enqueue_invoice_job(
+            conn,
+            "job-2",
+            "invoice-1",
+            "printer-2",
+            "2026-08-07T10:01:00Z",
+        )
+        .unwrap();
+        mark_failed(
+            conn,
+            &invoice_job.id,
+            "printer offline",
+            "2026-08-07T10:01:05Z",
+        )
+        .unwrap();
+
+        let mut failed = list_failed_jobs(conn).unwrap();
+        assert_eq!(failed.len(), 2, "both failed jobs must be visible to staff");
+        failed.sort_by(|a, b| a.job.id.cmp(&b.job.id));
+
+        assert_eq!(failed[0].job.id, "job-1");
+        assert_eq!(
+            failed[0].target().unwrap(),
+            crate::model::PrintJobTarget::Kot("kot-1")
+        );
+        assert_eq!(failed[0].kot_station.as_deref(), Some("MAIN_KITCHEN"));
+        assert_eq!(failed[0].invoice_number, None);
+
+        assert_eq!(failed[1].job.id, "job-2");
+        assert_eq!(
+            failed[1].target().unwrap(),
+            crate::model::PrintJobTarget::Invoice("invoice-1")
+        );
+        assert_eq!(failed[1].kot_station, None);
+        assert_eq!(failed[1].invoice_number.as_deref(), Some("FY26/PNQ/000001"));
     }
 
     #[test]
