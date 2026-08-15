@@ -127,6 +127,7 @@ fn seed(db: &Db) {
             is_available: true,
             config_version: 1,
             tax_profile_id: None,
+            hsn_sac: Some("9963".to_string()),
         },
     )
     .expect("seed menu item");
@@ -1012,6 +1013,7 @@ fn send_to_kitchen_rejects_a_mixed_order_and_names_the_unrouted_item() {
                 is_available: true,
                 config_version: 1,
                 tax_profile_id: None,
+                hsn_sac: Some("9963".to_string()),
             },
         )
         .expect("seed unrouted menu item");

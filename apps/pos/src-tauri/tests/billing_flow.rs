@@ -87,6 +87,7 @@ fn seed_billing_config(db: &Db) {
             is_available: true,
             config_version: 1,
             tax_profile_id: None,
+            hsn_sac: Some("9963".to_string()),
         },
     )
     .expect("seed menu item");
