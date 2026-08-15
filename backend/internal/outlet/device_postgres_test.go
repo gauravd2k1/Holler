@@ -294,3 +294,127 @@ func TestPostgresRepository_WithTx_RealRollback_NoOrphanCredentialNoConfigBump(t
 		t.Fatalf("expected outlet config_version to remain 0 after rollback, got %d", reread.ConfigVersion)
 	}
 }
+
+// TestPostgresEnrollDevice_CredentialRowConfigVersionMatchesOutletBump is the
+// falsifying test for a refactor that puts InsertCredential back before
+// BumpOutletConfigVersion (contracts 0.4.5, ADR-017 addendum): it queries the
+// row's config_version directly out of Postgres — bypassing DeviceService and
+// any in-memory stamping — and asserts it equals the version the SAME
+// EnrollDevice call bumped the outlet to. If the write order ever inverts
+// back to insert-then-bump, InsertCredential would run before the bump
+// exists, so the row would carry a stale (pre-bump) config_version and this
+// assertion would fail.
+func TestPostgresEnrollDevice_CredentialRowConfigVersionMatchesOutletBump(t *testing.T) {
+	pool := setupPool(t)
+	ctx := context.Background()
+
+	tenantSvc := tenant.NewService(tenant.NewPostgresRepository(pool))
+	outletsRepo := outlet.NewPostgresRepository(pool)
+	outletSvc := outlet.NewService(outletsRepo)
+	deviceSvc := outlet.NewDeviceService(outletsRepo, outletsRepo, nil)
+
+	org, err := tenantSvc.CreateOrganisation(ctx, "Config Version Order Org")
+	if err != nil {
+		t.Fatalf("CreateOrganisation: %v", err)
+	}
+	brand, err := tenantSvc.CreateBrand(ctx, org.ID, "Config Version Order Brand")
+	if err != nil {
+		t.Fatalf("CreateBrand: %v", err)
+	}
+	principal := outlet.Principal{TenantID: org.ID}
+	o, err := outletSvc.CreateOutlet(ctx, principal, brand.ID, "Config Version Order Outlet", "")
+	if err != nil {
+		t.Fatalf("CreateOutlet: %v", err)
+	}
+
+	enrolled, err := deviceSvc.EnrollDevice(ctx, principal, o.ID, outlet.DeviceKindPOS, "POS-CV-1", "", nil)
+	if err != nil {
+		t.Fatalf("EnrollDevice: %v", err)
+	}
+
+	afterEnroll, err := outletSvc.GetOutlet(ctx, principal, o.ID)
+	if err != nil {
+		t.Fatalf("GetOutlet: %v", err)
+	}
+	if afterEnroll.ConfigVersion == 0 {
+		t.Fatal("expected EnrollDevice to have bumped the outlet's config_version above zero")
+	}
+
+	var rowConfigVersion int
+	if err := pool.QueryRow(ctx,
+		`SELECT config_version FROM device_credential WHERE id = $1`,
+		enrolled.CredentialID,
+	).Scan(&rowConfigVersion); err != nil {
+		t.Fatalf("querying device_credential.config_version directly: %v", err)
+	}
+
+	if rowConfigVersion != afterEnroll.ConfigVersion {
+		t.Fatalf("expected the credential row's config_version (%d) to equal the outlet bump it was written under (%d) — "+
+			"a mismatch means InsertCredential ran before BumpOutletConfigVersion", rowConfigVersion, afterEnroll.ConfigVersion)
+	}
+}
+
+// TestPostgresRevokeCredential_RowConfigVersionAdvances is the direct test
+// for the addendum's "more dangerous half": a revocation that does not
+// advance its own row's config_version would never reach an edge pulling
+// GET /sync/config with a watermark between the enroll version and the
+// revoke version, so the edge would keep honouring a credential the cloud
+// has already revoked. This queries Postgres directly, bypassing
+// DeviceService, so it catches a regression in RevokeActiveCredential's SQL
+// itself, not merely in a caller's bookkeeping.
+func TestPostgresRevokeCredential_RowConfigVersionAdvances(t *testing.T) {
+	pool := setupPool(t)
+	ctx := context.Background()
+
+	tenantSvc := tenant.NewService(tenant.NewPostgresRepository(pool))
+	outletsRepo := outlet.NewPostgresRepository(pool)
+	outletSvc := outlet.NewService(outletsRepo)
+	deviceSvc := outlet.NewDeviceService(outletsRepo, outletsRepo, nil)
+
+	org, err := tenantSvc.CreateOrganisation(ctx, "Revoke Config Version Org")
+	if err != nil {
+		t.Fatalf("CreateOrganisation: %v", err)
+	}
+	brand, err := tenantSvc.CreateBrand(ctx, org.ID, "Revoke Config Version Brand")
+	if err != nil {
+		t.Fatalf("CreateBrand: %v", err)
+	}
+	principal := outlet.Principal{TenantID: org.ID}
+	o, err := outletSvc.CreateOutlet(ctx, principal, brand.ID, "Revoke Config Version Outlet", "")
+	if err != nil {
+		t.Fatalf("CreateOutlet: %v", err)
+	}
+
+	enrolled, err := deviceSvc.EnrollDevice(ctx, principal, o.ID, outlet.DeviceKindPOS, "POS-RV-1", "", nil)
+	if err != nil {
+		t.Fatalf("EnrollDevice: %v", err)
+	}
+
+	var enrollRowConfigVersion int
+	if err := pool.QueryRow(ctx,
+		`SELECT config_version FROM device_credential WHERE id = $1`,
+		enrolled.CredentialID,
+	).Scan(&enrollRowConfigVersion); err != nil {
+		t.Fatalf("querying device_credential.config_version after enroll: %v", err)
+	}
+
+	if err := deviceSvc.RevokeCredential(ctx, principal, enrolled.Device.ID, nil); err != nil {
+		t.Fatalf("RevokeCredential: %v", err)
+	}
+
+	var revokedAt *time.Time
+	var revokeRowConfigVersion int
+	if err := pool.QueryRow(ctx,
+		`SELECT revoked_at, config_version FROM device_credential WHERE id = $1`,
+		enrolled.CredentialID,
+	).Scan(&revokedAt, &revokeRowConfigVersion); err != nil {
+		t.Fatalf("querying device_credential row after revoke: %v", err)
+	}
+	if revokedAt == nil {
+		t.Fatal("expected revoked_at to be populated after RevokeCredential")
+	}
+	if revokeRowConfigVersion <= enrollRowConfigVersion {
+		t.Fatalf("expected revocation to advance the row's own config_version above its enroll-time value (%d), got %d",
+			enrollRowConfigVersion, revokeRowConfigVersion)
+	}
+}

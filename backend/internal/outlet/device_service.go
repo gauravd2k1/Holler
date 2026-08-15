@@ -103,24 +103,21 @@ func (s *DeviceService) EnrollDevice(ctx context.Context, principal Principal, o
 		}
 	}
 
-	// The credential insert and the config_version bump that announces it
-	// must commit together or not at all (T13 retry, DEFECT 1): a crash
-	// between them would leave a committed credential no edge ever learns
-	// about, and a retried enroll then reports "device already enrolled"
-	// even though the device can never authenticate.
+	// The bump and the credential insert must commit together or not at all
+	// (T13 retry, DEFECT 1): a crash between them would leave a committed
+	// credential no edge ever learns about, and a retried enroll then
+	// reports "device already enrolled" even though the device can never
+	// authenticate. Since contracts 0.4.5 the order also matters on its own
+	// terms: the row must carry the version the outlet is bumped TO, so the
+	// bump runs FIRST and its returned version is threaded into the insert
+	// (ADR-017 0.4.5 addendum) — never insert-then-bump.
 	var issued issuedCredential
 	err = s.devices.WithTx(ctx, func(tx pgx.Tx) error {
-		var txErr error
-		issued, txErr = s.issueCredential(ctx, tx, principal.TenantID, outletID, device.ID, label, now)
+		newVersion, txErr := s.devices.BumpOutletConfigVersion(ctx, tx, outletID)
 		if txErr != nil {
 			return txErr
 		}
-		// A device credential change must be observable to an edge pulling
-		// GET /sync/config with since_version (T13, ADR-017 0.4.3
-		// amendment): device_credential carries no config_version column
-		// of its own, so bumping the outlet's is what makes the change
-		// visible at all.
-		_, txErr = s.devices.BumpOutletConfigVersion(ctx, tx, outletID)
+		issued, txErr = s.issueCredential(ctx, tx, principal.TenantID, outletID, device.ID, label, now, newVersion)
 		return txErr
 	})
 	if err != nil {
@@ -152,19 +149,21 @@ func (s *DeviceService) RotateCredential(ctx context.Context, principal Principa
 	}
 
 	now := s.now().UTC()
-	// The revoke, the fresh insert and the config_version bump must all
-	// commit together or not at all (T13 retry, DEFECT 1) — see EnrollDevice.
+	// The bump, the revoke of the old credential and the insert of the new
+	// one must all commit together or not at all (T13 retry, DEFECT 1) — see
+	// EnrollDevice. The bump runs FIRST (ADR-017 0.4.5 addendum): both the
+	// revoked row and the fresh row must carry the version the outlet is
+	// bumped TO.
 	var issued issuedCredential
 	err = s.devices.WithTx(ctx, func(tx pgx.Tx) error {
-		if txErr := s.devices.RevokeActiveCredential(ctx, tx, device.ID, now); txErr != nil {
-			return txErr
-		}
-		var txErr error
-		issued, txErr = s.issueCredential(ctx, tx, principal.TenantID, device.OutletID, device.ID, label, now)
+		newVersion, txErr := s.devices.BumpOutletConfigVersion(ctx, tx, device.OutletID)
 		if txErr != nil {
 			return txErr
 		}
-		_, txErr = s.devices.BumpOutletConfigVersion(ctx, tx, device.OutletID)
+		if txErr := s.devices.RevokeActiveCredential(ctx, tx, device.ID, now, newVersion); txErr != nil {
+			return txErr
+		}
+		issued, txErr = s.issueCredential(ctx, tx, principal.TenantID, device.OutletID, device.ID, label, now, newVersion)
 		return txErr
 	})
 	if err != nil {
@@ -189,14 +188,18 @@ func (s *DeviceService) RevokeCredential(ctx context.Context, principal Principa
 		return err
 	}
 	now := s.now().UTC()
-	// The revoke and the config_version bump must commit together or not at
-	// all (T13 retry, DEFECT 1) — see EnrollDevice.
+	// The bump and the revoke must commit together or not at all (T13 retry,
+	// DEFECT 1) — see EnrollDevice. The bump runs FIRST (ADR-017 0.4.5
+	// addendum): the revoked row must carry the version the outlet is
+	// bumped TO, or the revocation would never reach an edge pulling
+	// GET /sync/config — the edge would keep honouring a credential the
+	// cloud has revoked.
 	err = s.devices.WithTx(ctx, func(tx pgx.Tx) error {
-		if txErr := s.devices.RevokeActiveCredential(ctx, tx, device.ID, now); txErr != nil {
+		newVersion, txErr := s.devices.BumpOutletConfigVersion(ctx, tx, device.OutletID)
+		if txErr != nil {
 			return txErr
 		}
-		_, txErr := s.devices.BumpOutletConfigVersion(ctx, tx, device.OutletID)
-		return txErr
+		return s.devices.RevokeActiveCredential(ctx, tx, device.ID, now, newVersion)
 	})
 	if err != nil {
 		return err
@@ -218,8 +221,10 @@ type issuedCredential struct {
 // and persists only the hash. The plaintext is composed of the credential's
 // own id (a public lookup key, not a secret) plus the random secret, so
 // VerifyToken can find the row by id instead of scanning every active
-// credential.
-func (s *DeviceService) issueCredential(ctx context.Context, tx pgx.Tx, tenantID, outletID, deviceID, label string, now time.Time) (issuedCredential, error) {
+// credential. configVersion must be the value BumpOutletConfigVersion just
+// returned within the SAME transaction (ADR-017 0.4.5 addendum) — every
+// caller of issueCredential bumps before calling it.
+func (s *DeviceService) issueCredential(ctx context.Context, tx pgx.Tx, tenantID, outletID, deviceID, label string, now time.Time, configVersion int) (issuedCredential, error) {
 	credentialID := id.New()
 	secret, err := generateDeviceSecret()
 	if err != nil {
@@ -231,12 +236,13 @@ func (s *DeviceService) issueCredential(ctx context.Context, tx pgx.Tx, tenantID
 	}
 
 	cred := DeviceCredential{
-		ID:        credentialID,
-		DeviceID:  deviceID,
-		TenantID:  tenantID,
-		OutletID:  outletID,
-		Label:     label,
-		CreatedAt: now,
+		ID:            credentialID,
+		DeviceID:      deviceID,
+		TenantID:      tenantID,
+		OutletID:      outletID,
+		Label:         label,
+		CreatedAt:     now,
+		ConfigVersion: configVersion,
 	}
 	if err := s.devices.InsertCredential(ctx, tx, cred, hash); err != nil {
 		return issuedCredential{}, err
@@ -305,27 +311,31 @@ func (s *DeviceService) VerifyToken(ctx context.Context, token string) (DevicePr
 
 // ListEdgeDeviceCredentials resolves the device_credentials array of
 // GET /sync/config (T13, ADR-017 0.4.3 amendment): every credential enrolled
-// at outletID — active, revoked AND expired, hash intact — so a KDS can
-// verify a LAN handshake against its local cache with the uplink down. Like
-// VerifyToken, this is one of the few places in this package that ever
-// touches a hash; unlike VerifyToken, the hash here is deliberately RETURNED
-// to the caller, because the caller is GET /sync/config itself — the one
-// route in this backend permitted to carry credential material on the wire
-// (mirrors auth.Service.ListEdgeUserCache's identical carve-out for
+// at outletID whose OWN config_version exceeds sinceVersion — active,
+// revoked AND expired, hash intact — so a KDS can verify a LAN handshake
+// against its local cache with the uplink down. Like VerifyToken, this is
+// one of the few places in this package that ever touches a hash; unlike
+// VerifyToken, the hash here is deliberately RETURNED to the caller, because
+// the caller is GET /sync/config itself — the one route in this backend
+// permitted to carry credential material on the wire (mirrors
+// auth.Service.ListEdgeUserCache's identical carve-out for
 // password_hash/pin_hash).
 //
-// device_credential has no config_version column of its own
-// (packages/contracts/postgres/0008_device_enrollment.sql predates the
-// 0.4.3 amendment), so every row reports the OUTLET's current
-// config_version rather than a per-row one — EnrollDevice/RotateCredential/
-// RevokeCredential all bump it, so any credential mutation advances the
-// value every row in this collection reports. That makes this collection
-// coarser than tables/tax_profile/etc (an unrelated config change elsewhere
-// also re-sends every credential, since outlet.config_version is not
-// device-scoped), but sinceVersion still holds: a caller whose watermark
-// already reflects the outlet's current config_version receives none of
-// them, and one behind it receives all of them, credential changes
-// included.
+// Since contracts 0.4.5, device_credential carries its OWN config_version
+// column (packages/contracts/postgres/0010_device_credential_config_version.sql),
+// stamped at write time by InsertCredential/RevokeActiveCredential to the
+// value the outlet was just bumped to. Filtering is therefore row-granular
+// like every sibling config table (station, printer, menu_item_station,
+// restaurant_table) — an unrelated config change elsewhere in the outlet no
+// longer re-sends the whole credential collection.
+//
+// The early return below is still a valid optimisation, not a
+// reintroduction of outlet-granular filtering: no credential row's
+// config_version can ever exceed the outlet's own current config_version
+// (every write stamps a value returned by the SAME bump, and versions only
+// increase), so sinceVersion >= out.ConfigVersion guarantees zero rows would
+// satisfy WHERE config_version > sinceVersion — it only skips the query,
+// never changes the result.
 func (s *DeviceService) ListEdgeDeviceCredentials(ctx context.Context, tenantID, outletID string, sinceVersion int) ([]contracts.EdgeDeviceCredential, error) {
 	if tenantID == "" {
 		return nil, httpx.ErrUnauthorized
@@ -338,14 +348,7 @@ func (s *DeviceService) ListEdgeDeviceCredentials(ctx context.Context, tenantID,
 		return []contracts.EdgeDeviceCredential{}, nil
 	}
 
-	creds, err := s.devices.ListEdgeCredentials(ctx, tenantID, outletID)
-	if err != nil {
-		return nil, err
-	}
-	for i := range creds {
-		creds[i].ConfigVersion = out.ConfigVersion
-	}
-	return creds, nil
+	return s.devices.ListEdgeCredentials(ctx, tenantID, outletID, sinceVersion)
 }
 
 // audit is a best-effort wrapper: enrollment/rotation/revocation succeed or

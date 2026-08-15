@@ -117,9 +117,9 @@ func (r *PostgresRepository) MarkDeviceEnrolled(ctx context.Context, deviceID st
 
 func (r *PostgresRepository) InsertCredential(ctx context.Context, tx pgx.Tx, c DeviceCredential, tokenHash string) error {
 	_, err := tx.Exec(ctx, `
-		INSERT INTO device_credential (id, device_id, tenant_id, outlet_id, token_hash, label, created_at, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-	`, c.ID, c.DeviceID, c.TenantID, c.OutletID, tokenHash, c.Label, c.CreatedAt, c.ExpiresAt)
+		INSERT INTO device_credential (id, device_id, tenant_id, outlet_id, token_hash, label, created_at, expires_at, config_version)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+	`, c.ID, c.DeviceID, c.TenantID, c.OutletID, tokenHash, c.Label, c.CreatedAt, c.ExpiresAt, c.ConfigVersion)
 	if err != nil {
 		if isUniqueViolation(err) {
 			// idx_device_credential_active: two live credentials for one
@@ -133,11 +133,11 @@ func (r *PostgresRepository) InsertCredential(ctx context.Context, tx pgx.Tx, c 
 	return nil
 }
 
-func (r *PostgresRepository) RevokeActiveCredential(ctx context.Context, tx pgx.Tx, deviceID string, now time.Time) error {
+func (r *PostgresRepository) RevokeActiveCredential(ctx context.Context, tx pgx.Tx, deviceID string, now time.Time, configVersion int) error {
 	_, err := tx.Exec(ctx, `
-		UPDATE device_credential SET revoked_at = $2
+		UPDATE device_credential SET revoked_at = $2, config_version = $3
 		WHERE device_id = $1 AND revoked_at IS NULL
-	`, deviceID, now)
+	`, deviceID, now, configVersion)
 	if err != nil {
 		return fmt.Errorf("outlet: revoking active device credential: %w", err)
 	}
@@ -203,22 +203,29 @@ func (r *PostgresRepository) BumpOutletConfigVersion(ctx context.Context, tx pgx
 	return newVersion, nil
 }
 
-// ListEdgeCredentials returns every device_credential row for outletID,
-// scoped to tenantID via the row's own tenant_id (denormalized onto
-// device_credential at enrollment time, exactly like outlet_id — see
-// 0008_device_enrollment.sql). Never filters on revoked_at/expires_at: a
-// dead credential still syncs (ADR-017 0.4.3 amendment). ConfigVersion is
-// left zero here — device_credential has no config_version column of its
-// own, so the caller (DeviceService.ListEdgeDeviceCredentials) stamps the
-// outlet's own config_version onto every row before returning it.
-func (r *PostgresRepository) ListEdgeCredentials(ctx context.Context, tenantID, outletID string) ([]contracts.EdgeDeviceCredential, error) {
+// ListEdgeCredentials returns every device_credential row for outletID whose
+// OWN config_version exceeds sinceVersion, scoped to tenantID via the row's
+// own tenant_id (denormalized onto device_credential at enrollment time,
+// exactly like outlet_id — see 0008_device_enrollment.sql) AND to outletID
+// (0010_device_credential_config_version.sql's idx_device_credential_outlet_
+// version supports this predicate) — deliberately keeping BOTH predicates:
+// tenant_id alone is not enough to keep one outlet's Argon2id hashes from
+// another outlet under the same tenant
+// (TestPostgresListEdgeDeviceCredentials_ScopesToOutletNotJustTenant). Never
+// filters on revoked_at/expires_at: a dead credential still syncs (ADR-017
+// 0.4.3 amendment) — rejection is decided by those fields at the edge, never
+// by a row's absence from this result. Since contracts 0.4.5 every row
+// carries its OWN config_version, stamped at write time by
+// InsertCredential/RevokeActiveCredential to the value the outlet was just
+// bumped to — this method no longer needs to (and must not) overwrite it.
+func (r *PostgresRepository) ListEdgeCredentials(ctx context.Context, tenantID, outletID string, sinceVersion int) ([]contracts.EdgeDeviceCredential, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT dc.id, dc.device_id, dc.tenant_id, dc.outlet_id, dc.token_hash, d.kind, dc.revoked_at, dc.expires_at
+		SELECT dc.id, dc.device_id, dc.tenant_id, dc.outlet_id, dc.token_hash, d.kind, dc.revoked_at, dc.expires_at, dc.config_version
 		FROM device_credential dc
 		JOIN device d ON d.id = dc.device_id
-		WHERE dc.outlet_id = $1 AND dc.tenant_id = $2
+		WHERE dc.outlet_id = $1 AND dc.tenant_id = $2 AND dc.config_version > $3
 		ORDER BY dc.created_at
-	`, outletID, tenantID)
+	`, outletID, tenantID, sinceVersion)
 	if err != nil {
 		return nil, fmt.Errorf("outlet: listing edge device credentials: %w", err)
 	}
@@ -229,7 +236,7 @@ func (r *PostgresRepository) ListEdgeCredentials(ctx context.Context, tenantID, 
 		var c contracts.EdgeDeviceCredential
 		var revokedAt, expiresAt *time.Time
 		if err := rows.Scan(&c.CredentialID, &c.DeviceID, &c.TenantID, &c.OutletID, &c.CredentialHash,
-			&c.DeviceKind, &revokedAt, &expiresAt); err != nil {
+			&c.DeviceKind, &revokedAt, &expiresAt, &c.ConfigVersion); err != nil {
 			return nil, fmt.Errorf("outlet: scanning edge device credential: %w", err)
 		}
 		c.RevokedAt = formatEdgeTimestamp(revokedAt)

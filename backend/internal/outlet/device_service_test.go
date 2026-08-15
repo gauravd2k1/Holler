@@ -123,10 +123,11 @@ func (f *fakeDeviceRepo) InsertCredential(_ context.Context, _ pgx.Tx, c DeviceC
 	return nil
 }
 
-func (f *fakeDeviceRepo) RevokeActiveCredential(_ context.Context, _ pgx.Tx, deviceID string, now time.Time) error {
+func (f *fakeDeviceRepo) RevokeActiveCredential(_ context.Context, _ pgx.Tx, deviceID string, now time.Time, configVersion int) error {
 	for id, c := range f.credentials {
 		if c.DeviceID == deviceID && c.RevokedAt == nil {
 			c.RevokedAt = &now
+			c.ConfigVersion = configVersion
 			f.credentials[id] = c
 		}
 	}
@@ -184,10 +185,10 @@ func (f *fakeDeviceRepo) BumpOutletConfigVersion(_ context.Context, _ pgx.Tx, ou
 	return f.outletVersions[outletID], nil
 }
 
-func (f *fakeDeviceRepo) ListEdgeCredentials(_ context.Context, tenantID, outletID string) ([]contracts.EdgeDeviceCredential, error) {
+func (f *fakeDeviceRepo) ListEdgeCredentials(_ context.Context, tenantID, outletID string, sinceVersion int) ([]contracts.EdgeDeviceCredential, error) {
 	out := make([]contracts.EdgeDeviceCredential, 0)
 	for _, c := range f.credentials {
-		if c.OutletID != outletID || c.TenantID != tenantID {
+		if c.OutletID != outletID || c.TenantID != tenantID || c.ConfigVersion <= sinceVersion {
 			continue
 		}
 		d := f.devices[c.DeviceID]
@@ -201,6 +202,7 @@ func (f *fakeDeviceRepo) ListEdgeCredentials(_ context.Context, tenantID, outlet
 			RevokedAt:      formatEdgeTimestamp(c.RevokedAt),
 			ExpiresAt:      formatEdgeTimestamp(c.ExpiresAt),
 			SchemaVersion:  1,
+			ConfigVersion:  c.ConfigVersion,
 		})
 	}
 	return out, nil

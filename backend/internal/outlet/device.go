@@ -57,6 +57,12 @@ type DeviceCredential struct {
 	ExpiresAt  *time.Time
 	RevokedAt  *time.Time
 	LastUsedAt *time.Time
+	// ConfigVersion is the value outlet.config_version was bumped TO by the
+	// same transaction that writes this row (contracts 0.4.5, ADR-017
+	// addendum). The caller must bump first and pass the returned version in
+	// here — never the other way around, or the row would carry a value the
+	// outlet has not yet reached.
+	ConfigVersion int
 }
 
 // deviceCredentialVerifyRow is the ONLY place in this package a token hash
@@ -101,18 +107,28 @@ type DeviceRepository interface {
 	// a credential; a no-op if already set.
 	MarkDeviceEnrolled(ctx context.Context, deviceID string, now time.Time) error
 
-	// InsertCredential adds a new credential row within tx. The caller is
-	// responsible for having revoked any prior active credential first —
-	// this method does not enforce idx_device_credential_active itself,
-	// relying on the partial unique index to fail the insert if it would
-	// violate the "one active credential per device" invariant. Runs inside
-	// tx so the insert and the outlet config_version bump that must
-	// accompany it commit or roll back together (T13 retry, DEFECT 1).
+	// InsertCredential adds a new credential row within tx, carrying
+	// c.ConfigVersion (contracts 0.4.5). The caller must have already bumped
+	// the outlet's config_version in the same tx and set c.ConfigVersion to
+	// the value returned, so the row carries the version the outlet is
+	// bumped TO, never a stale one. The caller is also responsible for
+	// having revoked any prior active credential first — this method does
+	// not enforce idx_device_credential_active itself, relying on the
+	// partial unique index to fail the insert if it would violate the "one
+	// active credential per device" invariant. Runs inside tx so the insert
+	// and the outlet config_version bump that must accompany it commit or
+	// roll back together (T13 retry, DEFECT 1).
 	InsertCredential(ctx context.Context, tx pgx.Tx, c DeviceCredential, tokenHash string) error
-	// RevokeActiveCredential stamps revoked_at on deviceID's current active
-	// credential (revoked_at IS NULL), if any, within tx. Not an error if
-	// none exists. Runs inside tx for the same reason as InsertCredential.
-	RevokeActiveCredential(ctx context.Context, tx pgx.Tx, deviceID string, now time.Time) error
+	// RevokeActiveCredential stamps revoked_at AND config_version on
+	// deviceID's current active credential (revoked_at IS NULL), if any,
+	// within tx. configVersion must be the value BumpOutletConfigVersion
+	// just returned in the same tx (contracts 0.4.5) — a revocation that
+	// does not advance its own row's config_version would never reach an
+	// edge pulling GET /sync/config, which would keep honouring a
+	// credential the cloud has revoked. Not an error if no active
+	// credential exists. Runs inside tx for the same reason as
+	// InsertCredential.
+	RevokeActiveCredential(ctx context.Context, tx pgx.Tx, deviceID string, now time.Time, configVersion int) error
 	// HasActiveCredential reports whether deviceID currently holds a live
 	// credential.
 	HasActiveCredential(ctx context.Context, deviceID string) (bool, error)
@@ -129,22 +145,21 @@ type DeviceRepository interface {
 	// one, mirroring backend/internal/tables/kitchen/compliance's own copy of
 	// the same statement, and runs inside tx (T13 retry, DEFECT 1) so it
 	// commits atomically with the InsertCredential/RevokeActiveCredential
-	// call it is always paired with. device_credential carries no
-	// config_version column of its own (packages/contracts/postgres/
-	// 0008_device_enrollment.sql predates ADR-017's 0.4.3 amendment and was
-	// not revised) — T13's ListEdgeCredentials reports the OUTLET's
-	// config_version for every credential row rather than a per-row one, so
-	// this bump is what makes a credential mutation observable to an edge
-	// pulling with since_version.
+	// call it is always paired with. Since contracts 0.4.5, callers MUST
+	// call this FIRST within the tx and pass its returned version into
+	// InsertCredential/RevokeActiveCredential — the credential row must
+	// carry the value the outlet is bumped TO, never insert-then-bump.
 	BumpOutletConfigVersion(ctx context.Context, tx pgx.Tx, outletID string) (int, error)
 
-	// ListEdgeCredentials returns EVERY device_credential row for outletID —
-	// active, revoked AND expired — WITH credential_hash. This is the one
-	// exception to this package's otherwise-total "no exported method ever
-	// returns a hash" rule (see DeviceCredential's own doc comment above),
-	// mirroring auth.Repository.ListEdgeUserCache's identical exception for
+	// ListEdgeCredentials returns every device_credential row for outletID
+	// whose OWN config_version exceeds sinceVersion — active, revoked AND
+	// expired — WITH credential_hash. This is the one exception to this
+	// package's otherwise-total "no exported method ever returns a hash"
+	// rule (see DeviceCredential's own doc comment above), mirroring
+	// auth.Repository.ListEdgeUserCache's identical exception for
 	// password_hash/pin_hash (ADR-011 applied to devices, ADR-017 0.4.3
-	// amendment). A revoked/expired row is never filtered out here — the
-	// edge learns a credential is dead by syncing it, not by its absence.
-	ListEdgeCredentials(ctx context.Context, tenantID, outletID string) ([]contracts.EdgeDeviceCredential, error)
+	// amendment). A revoked/expired row is never filtered out on that
+	// basis — the edge learns a credential is dead by syncing it, not by
+	// its absence.
+	ListEdgeCredentials(ctx context.Context, tenantID, outletID string, sinceVersion int) ([]contracts.EdgeDeviceCredential, error)
 }
