@@ -6,6 +6,7 @@
   "base_price_paise": 41000,
   "is_available": true,
   "tax_profile_id": "018e5a2e-9301-7c3d-9f4e-1234567890ab",
+  "hsn_sac": "9963",
   "config_version": 7,
   "schema_version": 1
 }

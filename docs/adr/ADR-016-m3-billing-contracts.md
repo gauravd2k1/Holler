@@ -137,6 +137,57 @@ This is **additive and documentation-only**. Every request and response shape wa
 | Tenant-scoped uniqueness | N/A — no new constraint. Existing per-outlet code uniqueness unchanged. |
 | Version bump + ADR | 0.4.3 → 0.4.4, this addendum. Additive: paths only. |
 
+## Addendum — 0.4.5: append-only enforced, invoices printable, HSN/SAC sourced (2026-08-15)
+
+Three changes, all driven by defects that only became visible once something consumed the contract.
+
+### 1. `payment` append-only is now enforced by the storage engine
+
+`sqlite/0009_payment_append_only_triggers.sql` adds `BEFORE UPDATE` and `BEFORE DELETE` triggers on `payment` that `RAISE(ABORT)`.
+
+Append-only was already the design (§53, and this ADR's own reasoning) and the T7c gate confirmed `repo::insert_payment` is the sole writer with no `UPDATE payment`/`DELETE FROM payment` anywhere in the workspace. But that same gate found `Db::connection()` is plain `pub`, returns `&rusqlite::Connection` whose `execute` takes `&self`, and is held by `edge/device`, `edge/printer` and `edge/sync` **in production code** — while its doc comment claimed it was not exposed beyond the crate. The guarantee rested on nobody writing a line of raw SQL the type system permits and the codebase already demonstrates elsewhere.
+
+Narrowing that visibility would touch three sibling crates and was rejected as the wrong tool here. Triggers move the rule into the engine with no change to any sibling API.
+
+**Scope is `payment` only, deliberately.** `cash_shift` is legitimately mutable — `close_cash_shift_in_tx` performs the OPEN→CLOSED transition, guarded by `WHERE ... AND status = 'OPEN'`. A blanket no-update trigger there would break a correct path. `payment_allocation` is insert-only in practice but was wired only at `dc1c5be` and has not had the workspace-wide audit `payment` has had; covering it is deferred rather than assumed.
+
+### 2. `print_job` can reference an invoice
+
+T10 built the GST invoice renderer and its gate found it had **zero callers**: `print_job.kot_id` was `NOT NULL REFERENCES kot(id)`, so no shape existed by which an invoice could become a print job. A rendered invoice could not reach a printer at all.
+
+`sqlite/0010_print_job_invoice_ref.sql` rebuilds the table with nullable `kot_id`, a new nullable `invoice_id`, and a CHECK that **exactly one** is set. Edge-local as before — no Postgres mirror, still absent from `AggregateType` (ADR-014 §3).
+
+**The alternative — a separate `invoice_print_job` table — was rejected.** It would duplicate the spool's queue, retry-with-backoff, attempt counting and failure surfacing, and those are exactly the parts that are hard to get right and must not diverge between two copies. A print job is a print job; what it prints does not change how it queues or retries. The cost is that `kot_id` becomes nullable, which is a change to an existing frozen column and the reason this is a table rebuild rather than an `ALTER`. **This shape was chosen by the orchestrator on a recommendation, not specified by the requester — it is the most reversible-if-wrong decision in this version, and reversing it means moving invoice jobs to their own table, not undoing a column.**
+
+The original `UNIQUE(kot_id, printer_id)` became **partial**: SQLite treats NULLs as distinct in a UNIQUE index, so once `kot_id` was nullable the unqualified index would have permitted unlimited `(NULL, printer)` rows, silently losing idempotency for invoice jobs. Each kind now has its own guarded index.
+
+### 3. `menu_item.hsn_sac` — the source that did not exist
+
+`invoice_line.hsn_sac` has existed since 0006 and has been NULL on **every line ever issued**, because `assemble.rs:226` hard-coded `None` — no table in the frozen contract carried a code to read. A GST tax invoice must print the HSN (goods) or SAC (services) code per line, so this is a compliance defect, not a cosmetic gap. It surfaced only once T10 rendered an invoice and there was a blank field to notice.
+
+**On `menu_item`, not `tax_profile`.** Both were candidates and the requester left it open. HSN/SAC classifies *what is sold*; a tax profile classifies *how it is rated*. They correlate but are not the same axis, and collapsing them loses the ordinary Indian-restaurant case: prepared food is SAC 9963 while packaged bottled water is HSN 2201, and both routinely sit under one 5% profile. Hanging the code off the profile would force every item sharing a rate to share a code.
+
+**Nullable, and not a licence to print a blank code.** Nullable because this is additive over catalogues that have none, and because a `NOT NULL` with an invented default (`'9963'` for everything) would stamp a plausible, wrong, legally-meaningful code on packaged goods — a wrong HSN is worse than a missing one because it looks configured. The completeness rule therefore lives at **issue time**: an invoice must not issue with a line whose `hsn_sac` is NULL, and the error must name the item so a manager can fix the catalogue. **That guard, and the §66/harness assertion that no issued invoice line carries a NULL HSN/SAC, are the accompanying track's work. This migration supplies the source of truth; it does not by itself close the compliance defect, and M3 cannot claim "GST complete" until that track lands.**
+
+`invoice_line.hsn_sac` stays nullable and stays a snapshot, written from the resolved value at issue time and never re-read — exactly as `invoice_line.description` already behaves, because §31 requires a reprint to reproduce the original document.
+
+This is the only part of 0.4.5 that changes a wire type: `MenuItem` gains `hsn_sac` in TS, Go and the `menu_item` fixture, kept in lockstep and verified by the existing drift tests.
+
+### Self-review against the rubric
+
+| Check | Finding |
+|---|---|
+| App-generated UUIDv7, no DB-side defaults | N/A — no new identifiers. |
+| No nullable columns in primary keys | Clean. `print_job`'s PK remains `id`; the newly nullable `kot_id` is not part of any key, and its partial unique index is explicitly guarded `WHERE kot_id IS NOT NULL`. |
+| Single authority per §50.1 | Clean. `print_job` stays edge-local with no sync direction; `menu_item.hsn_sac` is cloud-owned config, cloud→edge, like every other `menu_item` column. |
+| No credential material in audit/logs/wire | N/A — none of these carry credential material. |
+| Tenant-scoped uniqueness | Clean. Both `print_job` unique indexes are scoped by a specific document plus printer, never global. |
+| Additive + version bump + ADR | Items 1 and 3 additive. **Item 2 relaxes an existing NOT NULL**, which is why it is a table rebuild and is called out here rather than filed as routine. 0.4.4 → 0.4.5, this addendum. |
+
+### Verification performed before commit
+
+Not a claim that it should work — what was run. All eleven SQLite migrations applied in order into a fresh in-memory database, and all eleven Postgres migrations applied into a dropped-and-recreated schema. Then each new constraint was **falsified**: `UPDATE payment` and `DELETE FROM payment` rejected by name while inserting a reversal row still succeeds; `cash_shift` close still permitted, confirming the triggers do not touch it; `print_job` rejecting neither-set and both-set, accepting kot-only and invoice-only, rejecting a duplicate `(invoice, printer)` and a duplicate `(kot, printer)`, and accepting a second invoice at the same printer. TS and Go drift tests pass with the updated fixture.
+
 ## Consequences
 
 - Builders gain the full billing surface without a further contract change; adding a payment gateway in M7 needs no shape change, only the already-modelled states.

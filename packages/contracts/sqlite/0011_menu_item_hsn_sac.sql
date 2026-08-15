@@ -1,0 +1,51 @@
+-- Holler Edge SQLite — menu_item gains hsn_sac.
+-- Contracts 0.4.5, ADR-016 addendum.
+--
+-- CONFIG, cloud->edge, like every other menu_item column. The cloud owns it and
+-- bumps outlet.config_version; the edge caches it and reads it at billing time.
+--
+-- WHY. invoice_line.hsn_sac has existed since 0006 and has been NULL on every
+-- line ever issued, because edge/database/src/invoice/assemble.rs hard-coded
+-- `None` -- there was nowhere to read a value FROM. No table in the frozen
+-- contract carried an HSN/SAC code. The T10 gate found this only once something
+-- rendered an invoice and there was a blank field to notice.
+--
+-- A GST tax invoice must carry the HSN (goods) or SAC (services) code per line.
+-- Without it the document is not compliant, so this is a compliance defect
+-- rather than a cosmetic gap.
+--
+-- WHY menu_item AND NOT tax_profile.
+--
+-- Both were candidates. HSN/SAC classifies WHAT IS SOLD; a tax profile
+-- classifies HOW IT IS RATED. They correlate but are not the same axis, and
+-- collapsing them loses real cases: prepared restaurant food is SAC 9963 while
+-- packaged bottled water is HSN 2201, and both may sit under one 5% profile.
+-- Hanging the code off tax_profile would force every item sharing a rate to
+-- share a code, which is wrong in exactly the mixed-catalogue case an Indian
+-- restaurant actually has (food, packaged goods, and MRP items side by side).
+--
+-- So it lives on the item, next to the item's other identity.
+--
+-- NULLABLE, deliberately, and NOT a licence to print a blank code.
+--
+-- Nullable because this is an additive migration over existing outlets whose
+-- catalogues have no codes yet, and because a NOT NULL with an invented
+-- default ('9963' for everything) would silently stamp a plausible, wrong,
+-- legally-meaningful code on packaged goods. A wrong HSN is worse than a
+-- missing one: it looks configured.
+--
+-- The rule this column is subject to therefore lives at ISSUE time, not here:
+-- an invoice must not issue with a line whose hsn_sac is NULL, and the failure
+-- must name the item so a manager can fix the catalogue. That guard, and the
+-- §66/harness assertion that no issued invoice line carries a NULL HSN/SAC,
+-- are the accompanying track's work -- see the ADR-016 0.4.5 addendum. This
+-- migration supplies the source of truth; it does not by itself close the
+-- compliance defect.
+--
+-- invoice_line.hsn_sac stays NULLABLE and stays a SNAPSHOT. It is written from
+-- the resolved menu_item value at issue time and never re-read from live
+-- config afterwards, exactly as invoice_line.description already behaves --
+-- §31 requires a reprint to reproduce the original document, so a later
+-- catalogue correction must not rewrite an issued invoice.
+
+ALTER TABLE menu_item ADD COLUMN hsn_sac TEXT;

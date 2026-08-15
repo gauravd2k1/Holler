@@ -103,3 +103,31 @@ This also closes the remaining half of hole 1. §1 named the defect as a mis-enr
 ## Status note
 
 This ADR fixes the **contract shape and the rules**. The mechanism — the enrollment route, credential verification on both paths, and the query-string move — is Milestone 3 tracks T1 and T4. Until those pass their gate, the three holes remain open and no pilot deployment is defensible.
+
+## Addendum — 0.4.5: per-row `config_version` on `device_credential` (2026-08-15)
+
+`device_credential` was the only config-bearing table in the contract without its own `config_version`. `station`, `printer`, `menu_item_station` and `restaurant_table` all declare `config_version INTEGER NOT NULL` and are written with the outlet's freshly bumped value; `device_credential` had none, so `DeviceService.ListEdgeDeviceCredentials` substituted the **outlet's** current version into every row it returned.
+
+That was correctness-preserving and coarse. `since_version` filtering still held — an edge at the outlet's current version received nothing, one behind received everything — but it was outlet-granular where every sibling is row-granular. An unrelated config change elsewhere in the outlet (a renamed table, a new station) re-sent the entire credential collection, Argon2id hashes included, to every enrolled node.
+
+`postgres/0010_device_credential_config_version.sql` adds the column, backfills each row from its outlet's current version, sets `NOT NULL`, and indexes `(outlet_id, config_version)`.
+
+**The wire type does not change.** `EdgeDeviceCredential` has declared `config_version` since 0.4.3; only the *source* of the value changes. TS and Go mirrors are untouched and the drift tests are unaffected — which is why this is a schema-only bump.
+
+**Two consequences recorded rather than discovered later:**
+
+- **The write order inverts.** The credential row must carry the value the outlet is bumped *to*, so `BumpOutletConfigVersion` must run first and `InsertCredential` second, with the returned version. `RevokeActiveCredential` must **also** stamp the new version alongside `revoked_at` — a revocation that does not advance its own row's version would never reach the edge, and that is the more dangerous half: the edge would keep honouring a credential the cloud has revoked. This is only safe because the T13 retry (`eef7464`) put all three of enroll/rotate/revoke inside one `WithTx`. Before that commit this migration would have introduced a race rather than removed one.
+- **One extra full send.** Any edge whose watermark sits below its outlet's current version re-receives every credential once on its first pull after the migration. Correct — it would have received them all anyway under the old filter — and it happens exactly once.
+
+A credential whose `outlet_id` does not resolve is left NULL by the backfill and fails the `SET NOT NULL` loudly. That is intended: a credential with no resolvable outlet is a data defect worth stopping a migration for, not something to paper over with a default.
+
+### Self-review against the rubric
+
+| Check | Finding |
+|---|---|
+| App-generated UUIDv7, no DB-side defaults | N/A — no new identifiers. |
+| No nullable columns in primary keys | Clean — not part of any PK; nullable only transiently during backfill. |
+| Single authority per §50.1 | Clean. `device_credential` stays cloud-only and gains no sync direction; `config_version` is cloud-assigned and edge-read. |
+| No credential material in audit/logs/wire | Clean — unchanged. The hash still travels only on `/sync/config` to an enrolled node. |
+| Tenant-scoped uniqueness | N/A — no new uniqueness constraint. |
+| Additive + version bump + ADR | Additive. 0.4.4 → 0.4.5, this addendum. |

@@ -41,6 +41,26 @@ export const MenuItemSchema = z.object({
   // Re-pointing an item at a different profile tomorrow must never alter what
   // a bill issued today says it charged (§31 reproducibility).
   tax_profile_id: z.string().uuid().nullable(),
+  // Added at 0.4.5 (ADR-016 addendum). The HSN (goods) or SAC (services) code
+  // a GST tax invoice must print for this item's lines.
+  //
+  // Lives here rather than on TaxProfile because HSN/SAC classifies WHAT IS
+  // SOLD while a profile classifies HOW IT IS RATED: prepared food (SAC 9963)
+  // and packaged bottled water (HSN 2201) routinely share one 5% profile, so
+  // hanging the code off the profile would force them to share a code.
+  //
+  // NULLABLE, and not a licence to print a blank code. Nullable because this
+  // was additive over catalogues that had none, and because a default of
+  // '9963' for everything would stamp a plausible, wrong, legally-meaningful
+  // code on packaged goods — a wrong HSN is worse than a missing one, because
+  // it looks configured. The completeness rule lives at ISSUE time: an invoice
+  // must not issue with a line whose hsn_sac is NULL, and the error must name
+  // the item so the catalogue can be fixed.
+  //
+  // Like tax_profile_id, an INPUT to resolution and never a substitute for the
+  // snapshot — invoice_line.hsn_sac stores what was applied, so correcting a
+  // catalogue tomorrow never rewrites a bill issued today (§31).
+  hsn_sac: z.string().nullable(),
   config_version: z.number().int(),
   schema_version: z.literal(1),
 });
