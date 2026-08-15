@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import {
   getCashShift,
   getOrder,
+  listDiscountDefinitions,
   listFailedPrintJobs,
   listInvoicesForOrder,
   listKotsForOrder,
@@ -27,6 +28,7 @@ export const queryKeys = {
   invoices: (orderId: string) => ["invoices", orderId] as const,
   payments: (orderId: string) => ["payments", orderId] as const,
   cashShift: (cashShiftId: string) => ["cash-shift", cashShiftId] as const,
+  discountDefinitions: ["discount-definitions"] as const,
 };
 
 export function useMenuItemsQuery() {
@@ -99,5 +101,12 @@ export function useCashShiftQuery(cashShiftId: string | null) {
     queryKey: queryKeys.cashShift(cashShiftId ?? "none"),
     queryFn: () => getCashShift(cashShiftId as string),
     enabled: cashShiftId !== null,
+  });
+}
+
+export function useDiscountDefinitionsQuery() {
+  return useQuery({
+    queryKey: queryKeys.discountDefinitions,
+    queryFn: listDiscountDefinitions,
   });
 }

@@ -1,17 +1,28 @@
 import { describe, expect, it } from "vitest";
-import type { AuthenticatedPrincipal, CashShift, Invoice, Payment } from "@holler/contracts";
+import type {
+  AuthenticatedPrincipal,
+  CashShift,
+  DiscountDefinition,
+  Invoice,
+  Payment,
+} from "@holler/contracts";
 import invoiceFixture from "@holler/contracts/fixtures/invoice.json";
 import cashShiftFixture from "@holler/contracts/fixtures/cash_shift.json";
 import {
   amountDuePaise,
   billingErrorMessage,
+  canApplyDiscount,
   canOfferBilling,
   canOfferReversal,
+  discountRequiresReason,
+  isDiscountOfferable,
   isFullySettled,
   isVarianceReasonRequired,
   pendingTenderTotalPaise,
+  previewLineDiscountPerUnitPaise,
   projectedVariancePaise,
   remainingAfterPendingPaise,
+  stagedDiscountsAreComplete,
   totalSettledPaise,
 } from "../billing";
 
@@ -168,6 +179,161 @@ describe("billingErrorMessage", () => {
     const err = {
       code: "FORWARD_PAYMENT_EXCEEDS_REMAINING_DUE",
       message: "payment of 100 paise exceeds invoice inv-1's remaining due of 0 paise",
+    };
+    expect(billingErrorMessage(err)).toBe(err.message);
+  });
+});
+
+function discountDefinition(overrides: Partial<DiscountDefinition>): DiscountDefinition {
+  return {
+    id: "018e5a2e-9000-7c3d-9f4e-1234567890ab",
+    outlet_id: "018e5a2e-1a09-7c3d-9f4e-1234567890ab",
+    code: "STAFF10",
+    name: "Staff 10%",
+    scope: "LINE",
+    method: "PERCENT",
+    value_bps: 1000,
+    value_paise: null,
+    max_discount_paise: null,
+    required_permission: null,
+    requires_reason: false,
+    is_active: true,
+    effective_from: "2020-01-01T00:00:00Z",
+    effective_to: null,
+    config_version: 1,
+    schema_version: 1,
+    ...overrides,
+  };
+}
+
+describe("isDiscountOfferable", () => {
+  const now = "2026-08-15T12:00:00Z";
+
+  it("offers an active, effective, LINE-scope discount", () => {
+    expect(isDiscountOfferable(discountDefinition({}), now)).toBe(true);
+  });
+
+  it("never offers a BILL-scope discount — unimplemented, not silently narrowed", () => {
+    expect(isDiscountOfferable(discountDefinition({ scope: "BILL" }), now)).toBe(false);
+  });
+
+  it("never offers an inactive discount", () => {
+    expect(isDiscountOfferable(discountDefinition({ is_active: false }), now)).toBe(false);
+  });
+
+  it("never offers a discount that is not yet effective", () => {
+    expect(
+      isDiscountOfferable(discountDefinition({ effective_from: "2027-01-01T00:00:00Z" }), now),
+    ).toBe(false);
+  });
+
+  it("never offers a discount past its effective_to", () => {
+    expect(
+      isDiscountOfferable(discountDefinition({ effective_to: "2026-01-01T00:00:00Z" }), now),
+    ).toBe(false);
+  });
+});
+
+describe("discountRequiresReason / canApplyDiscount", () => {
+  it("reflects the definition's own requires_reason flag", () => {
+    expect(discountRequiresReason(discountDefinition({ requires_reason: true }))).toBe(true);
+    expect(discountRequiresReason(discountDefinition({ requires_reason: false }))).toBe(false);
+  });
+
+  it("permits any authenticated principal when no permission is named", () => {
+    expect(canApplyDiscount(principal([]), discountDefinition({}))).toBe(true);
+    expect(canApplyDiscount(null, discountDefinition({}))).toBe(false);
+  });
+
+  it("requires the named permission when one is set", () => {
+    // No dedicated billing permission exists yet (ADR-016 0.4.4 addendum) —
+    // a real discount_definition names one of the existing Permission enum
+    // values, so this uses one rather than inventing a string outside it.
+    const def = discountDefinition({ required_permission: "order.void" });
+    expect(canApplyDiscount(principal(["order.modify"]), def)).toBe(false);
+    expect(canApplyDiscount(principal(["order.void"]), def)).toBe(true);
+  });
+});
+
+describe("previewLineDiscountPerUnitPaise", () => {
+  it("computes a PERCENT discount by integer basis points, never a float multiply", () => {
+    // 10% (1000 bps) of Rs.325.00 (32500 paise) = 3250 paise exactly.
+    const def = discountDefinition({ method: "PERCENT", value_bps: 1000 });
+    expect(previewLineDiscountPerUnitPaise(def, 32_500)).toBe(3_250);
+  });
+
+  it("rounds a PERCENT discount half-up", () => {
+    // 15% of Rs.0.33 (33 paise): 33*1500 = 49500; /10000 = 4.95 -> 5.
+    const def = discountDefinition({ method: "PERCENT", value_bps: 1500 });
+    expect(previewLineDiscountPerUnitPaise(def, 33)).toBe(5);
+  });
+
+  it("caps a PERCENT discount at max_discount_paise", () => {
+    // 50% of Rs.500.00 (50000 paise) = 25000, capped to 5000.
+    const def = discountDefinition({ method: "PERCENT", value_bps: 5000, max_discount_paise: 5_000 });
+    expect(previewLineDiscountPerUnitPaise(def, 50_000)).toBe(5_000);
+  });
+
+  it("uses the configured paise value verbatim for an AMOUNT discount", () => {
+    const def = discountDefinition({ method: "AMOUNT", value_bps: null, value_paise: 5_000 });
+    expect(previewLineDiscountPerUnitPaise(def, 32_500)).toBe(5_000);
+  });
+});
+
+describe("stagedDiscountsAreComplete", () => {
+  it("is complete when nothing requires a reason", () => {
+    const def = discountDefinition({ id: "d1", requires_reason: false });
+    const byId = new Map([["d1", def]]);
+    expect(
+      stagedDiscountsAreComplete(
+        [{ orderItemId: "item-1", discountDefinitionId: "d1", reason: "" }],
+        byId,
+      ),
+    ).toBe(true);
+  });
+
+  it("is incomplete when a required reason is blank, complete once typed", () => {
+    const def = discountDefinition({ id: "d1", requires_reason: true });
+    const byId = new Map([["d1", def]]);
+    expect(
+      stagedDiscountsAreComplete(
+        [{ orderItemId: "item-1", discountDefinitionId: "d1", reason: "   " }],
+        byId,
+      ),
+    ).toBe(false);
+    expect(
+      stagedDiscountsAreComplete(
+        [{ orderItemId: "item-1", discountDefinitionId: "d1", reason: "manager approved" }],
+        byId,
+      ),
+    ).toBe(true);
+  });
+});
+
+describe("billingErrorMessage — discount codes (ADR-016 §28)", () => {
+  it("surfaces the edge's own message for a missing reason", () => {
+    const err = { code: "DISCOUNT_REASON_REQUIRED", message: "discount 'MGR_COMP' requires a reason" };
+    expect(billingErrorMessage(err)).toBe(err.message);
+  });
+
+  it("surfaces the edge's own message for a denied permission", () => {
+    const err = {
+      code: "DISCOUNT_PERMISSION_DENIED",
+      message: "applying discount 'OVERRIDE20' requires the 'bill.discount.override' permission",
+    };
+    expect(billingErrorMessage(err)).toBe(err.message);
+  });
+
+  it("names BILL scope as unavailable rather than a generic failure", () => {
+    expect(billingErrorMessage({ code: "DISCOUNT_SCOPE_NOT_SUPPORTED", message: "x" })).toMatch(
+      /not available/,
+    );
+  });
+
+  it("surfaces the edge tax engine's own validity message verbatim", () => {
+    const err = {
+      code: "INVALID_INPUT",
+      message: "discount_per_unit_paise must not exceed unit_price_paise",
     };
     expect(billingErrorMessage(err)).toBe(err.message);
   });

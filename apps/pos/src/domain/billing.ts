@@ -4,7 +4,14 @@
 // nothing here computes a tax or tender amount the edge did not already
 // return (CLAUDE.md: the edge computes, the UI formats).
 
-import type { AuthenticatedPrincipal, CashShift, Invoice, Payment } from "@holler/contracts";
+import type {
+  AuthenticatedPrincipal,
+  CanonicalOrder,
+  CashShift,
+  DiscountDefinition,
+  Invoice,
+  Payment,
+} from "@holler/contracts";
 import { sumPaise } from "./money";
 import { hasPermission } from "./permissions";
 import { isTauriCommandError } from "../lib/tauri";
@@ -74,6 +81,107 @@ export function canOfferReversal(principal: AuthenticatedPrincipal | null): bool
   return hasPermission(principal, "order.void");
 }
 
+// -------------------------------------------------------------- discounts --
+// ADR-016 §28, docs/spec/compliance.md. The edge (`apps/pos/src-tauri/src/
+// domain/discount.rs`) is AUTHORITATIVE for every one of these gates —
+// `requires_reason`/`required_permission` are re-checked there and the
+// invoice is rejected outright if either fails, regardless of what this
+// module decides. Everything below exists only so the cashier is not
+// invited to attempt something the edge will refuse, and so the discount
+// preview shown before "Issue Bill" is pressed matches what the edge will
+// actually compute — it is never trusted as the final figure.
+
+const BPS_DENOMINATOR = 10000;
+
+/** Only a `LINE`-scope, currently-active, currently-effective discount can
+ * be offered at all — `BILL` scope is unimplemented (this track's disclosed
+ * limitation) and an inactive/not-yet-effective row is config a manager has
+ * queued up but not turned on. `nowIso` is injected (never read from a bare
+ * `Date`/`new Date()` here) so this stays a pure, testable function. */
+export function isDiscountOfferable(def: DiscountDefinition, nowIso: string): boolean {
+  if (def.scope !== "LINE") return false;
+  if (!def.is_active) return false;
+  if (def.effective_from > nowIso) return false;
+  if (def.effective_to !== null && def.effective_to < nowIso) return false;
+  return true;
+}
+
+export function discountRequiresReason(def: DiscountDefinition): boolean {
+  return def.requires_reason;
+}
+
+/** `true` only when `def` names no permission, or the principal already
+ * carries it. A `required_permission` naming a value outside the frozen
+ * `Permission` enum (the contract types it as a bare string, not the enum,
+ * precisely so a discount can name a permission that gap will eventually
+ * close) still compares correctly here — this checks plain string
+ * membership, not an enum cast. */
+export function canApplyDiscount(
+  principal: AuthenticatedPrincipal | null,
+  def: DiscountDefinition,
+): boolean {
+  if (!principal) return false;
+  if (def.required_permission === null) return true;
+  const granted: readonly string[] = principal.permissions;
+  return granted.includes(def.required_permission);
+}
+
+/** Integer basis-point/paise preview of what applying `def` to one line
+ * (`unitPricePaise`) will produce — mirrors the rounding policy of
+ * `apps/pos/src-tauri/src/domain/discount.rs::resolve_line_discount_per_unit_paise`
+ * (half-up, capped by `max_discount_paise` for PERCENT) using only integer
+ * arithmetic, never a float division of basis points. This is a PREVIEW for
+ * the billing screen only — CLAUDE.md "the edge computes, the UI formats"
+ * still holds: `issueInvoice` never sends this number, only the definition
+ * id and reason, and the edge recomputes it independently. */
+export function previewLineDiscountPerUnitPaise(
+  def: DiscountDefinition,
+  unitPricePaise: number,
+): number {
+  if (def.method === "PERCENT") {
+    const bps = def.value_bps ?? 0;
+    const raw = unitPricePaise * bps;
+    const computed = Math.trunc((raw + BPS_DENOMINATOR / 2) / BPS_DENOMINATOR);
+    return def.max_discount_paise !== null ? Math.min(computed, def.max_discount_paise) : computed;
+  }
+  return def.value_paise ?? 0;
+}
+
+/** One line's discount as the cashier has staged it in the billing UI,
+ * before `issueInvoice` is called — UI state, not a wire shape. */
+export interface StagedLineDiscount {
+  orderItemId: string;
+  discountDefinitionId: string;
+  reason: string;
+}
+
+/** `true` once every staged discount satisfies its own definition's
+ * `requires_reason` gate — used to enable/disable the "Issue Bill" control
+ * so a cashier is not invited to submit a request the edge will reject for
+ * a missing reason. Does NOT check `required_permission` (that is already
+ * enforced by only offering the definition via `canApplyDiscount` in the
+ * first place, so a staged entry can only exist for a definition the
+ * cashier is already permitted to use). */
+export function stagedDiscountsAreComplete(
+  staged: readonly StagedLineDiscount[],
+  definitionsById: ReadonlyMap<string, DiscountDefinition>,
+): boolean {
+  return staged.every((s) => {
+    const def = definitionsById.get(s.discountDefinitionId);
+    if (!def) return false;
+    return !def.requires_reason || s.reason.trim() !== "";
+  });
+}
+
+/** The order line a staged discount applies to, purely for showing its name/
+ * quantity/unit price on the billing screen next to the discount picker. */
+export function orderItemById(
+  order: CanonicalOrder | null | undefined,
+  orderItemId: string,
+): CanonicalOrder["items"][number] | undefined {
+  return order?.items.find((i) => i.id === orderItemId);
+}
+
 // ----------------------------------------------------------- error display --
 // §64 is binding: every one of these must tell a cashier whether
 // intervention is necessary and what it is, never "Something went wrong".
@@ -128,6 +236,25 @@ export function billingErrorMessage(err: unknown): string {
       return err.message;
     case "CASH_MOVEMENT_REASON_REQUIRED":
       return "A reason is required for a paid-in or paid-out entry.";
+    // ADR-016 §28 discount gates (apps/pos/src-tauri/src/domain/discount.rs)
+    // — every one of these is the edge's OWN enforcement of a governance
+    // field the UI already tried to honour; if one of these is ever seen it
+    // means the staged discount reached the edge despite that, so the
+    // edge's own specific message is shown verbatim rather than re-worded.
+    case "DISCOUNT_REASON_REQUIRED":
+    case "DISCOUNT_PERMISSION_DENIED":
+    case "DISCOUNT_NOT_ACTIVE":
+    case "DISCOUNT_DEFINITION_NOT_FOUND":
+      return err.message;
+    case "DISCOUNT_SCOPE_NOT_SUPPORTED":
+      return "Bill-level discounts are not available in this version — apply a per-item discount instead.";
+    case "DISCOUNT_MISCONFIGURED":
+      return `${err.message} — ask a manager to fix this discount's configuration.`;
+    case "INVALID_INPUT":
+      // The edge tax engine's own validity guard on a resolved discount
+      // (non-negative, not exceeding the line's unit price) — its message
+      // already names which rule was violated.
+      return err.message;
     default:
       return "Could not complete the billing action. Please try again.";
   }

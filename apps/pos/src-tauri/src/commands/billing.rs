@@ -23,17 +23,32 @@
 //! `order.void` for a reversal (refund/void a tender), the closest existing
 //! permissions, not a new claim on the frozen contract.
 
+use std::collections::HashMap;
+
 use holler_edge_database::model::{
-    CashShiftOutboxMeta, CloseCashShiftRequest, InvoiceLineShare, InvoiceOutboxMeta,
-    IssueInvoiceHeader, NewCashShift, NewPayment, PaidInOutRequest, PaymentOutboxMeta,
+    CashShiftOutboxMeta, CloseCashShiftRequest, DiscountDefinition as DbDiscountDefinition,
+    InvoiceLineShare, InvoiceOutboxMeta, IssueInvoiceHeader, NewCashShift, NewPayment,
+    PaidInOutRequest, PaymentOutboxMeta,
 };
 use holler_edge_database::Db;
 use tauri::State;
 
-use crate::dto::{CashMovement, CashShift, Invoice, Payment};
+use crate::domain::discount::resolve_line_discount_per_unit_paise;
+use crate::dto::{CashMovement, CashShift, DiscountDefinition, Invoice, Payment};
 use crate::error::{AppError, AppResult};
 use crate::ids::{new_id, now_iso};
 use crate::state::AppState;
+
+/// One cashier-chosen discount application, submitted alongside `issue_invoice`
+/// (docs/spec/compliance.md, ADR-016 §28). `reason` is `None`/blank unless the
+/// cashier actually typed one — `domain::discount::resolve_line_discount_per_unit_paise`
+/// is what decides whether that is acceptable for the named definition.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct LineDiscountInput {
+    pub order_item_id: String,
+    pub discount_definition_id: String,
+    pub reason: Option<String>,
+}
 
 fn lock_db(state: &AppState) -> AppResult<std::sync::MutexGuard<'_, Db>> {
     state.db.lock().map_err(|_| AppError {
@@ -51,8 +66,13 @@ fn business_date_from(instant_iso: &str) -> String {
     instant_iso.get(0..10).unwrap_or(instant_iso).to_string()
 }
 
+/// `discounts_by_item` carries each line's already-resolved
+/// `discount_per_unit_paise` (see `resolve_line_discounts` below) — a line
+/// with no entry gets `0`, exactly the prior hard-coded behaviour, so an
+/// order billed with no discount applied is unaffected byte-for-byte.
 fn build_invoice_lines(
     items: &[holler_edge_database::model::OrderItem],
+    discounts_by_item: &HashMap<String, i64>,
 ) -> Vec<InvoiceLineShare> {
     items
         .iter()
@@ -60,9 +80,83 @@ fn build_invoice_lines(
             id: new_id(),
             order_item_id: item.id.clone(),
             quantity: item.quantity,
-            discount_per_unit_paise: 0,
+            discount_per_unit_paise: discounts_by_item.get(&item.id).copied().unwrap_or(0),
         })
         .collect()
+}
+
+/// Resolves every cashier-supplied `LineDiscountInput` into the per-unit
+/// paise figure `build_invoice_lines` needs, per §28/ADR-016. Looks up each
+/// named `discount_definition` from this outlet's own config (never trusts
+/// the frontend's copy of it) and the caller's real, currently-stored
+/// permission set (never trusts a claimed permission) — `requires_reason`/
+/// `required_permission` are enforced here, not merely displayed
+/// (task requirement: "binding, not advisory").
+///
+/// This performs no tax arithmetic — it only turns a governance row plus a
+/// line's snapshot `unit_price_paise` into ONE input number
+/// (`holler_edge_database::tax::engine::compute_line_base`'s own guards
+/// still validate that number is non-negative and does not exceed
+/// `unit_price_paise`, deliberately left to fire on whatever this produces).
+fn resolve_line_discounts(
+    items: &[holler_edge_database::model::OrderItem],
+    definitions: &[DbDiscountDefinition],
+    caller_permissions: &[String],
+    now: &str,
+    inputs: &[LineDiscountInput],
+) -> AppResult<HashMap<String, i64>> {
+    let mut resolved = HashMap::with_capacity(inputs.len());
+    for input in inputs {
+        let item = items
+            .iter()
+            .find(|i| i.id == input.order_item_id)
+            .ok_or_else(|| AppError {
+                code: "ORDER_ITEM_NOT_FOUND",
+                message: format!(
+                    "order item {} is not on this order — cannot apply a discount to it",
+                    input.order_item_id
+                ),
+            })?;
+        let def = definitions
+            .iter()
+            .find(|d| d.id == input.discount_definition_id)
+            .ok_or_else(|| AppError {
+                code: "DISCOUNT_DEFINITION_NOT_FOUND",
+                message: format!(
+                    "discount {} is not configured for this outlet",
+                    input.discount_definition_id
+                ),
+            })?;
+        if def.effective_from.as_str() > now
+            || def.effective_to.as_deref().is_some_and(|to| to < now)
+        {
+            return Err(AppError {
+                code: "DISCOUNT_NOT_ACTIVE",
+                message: format!("discount '{}' is not effective right now", def.code),
+            });
+        }
+        let per_unit = resolve_line_discount_per_unit_paise(
+            def,
+            item.unit_price_paise,
+            input.reason.as_deref(),
+            caller_permissions,
+        )?;
+        resolved.insert(input.order_item_id.clone(), per_unit);
+    }
+    Ok(resolved)
+}
+
+/// The real permission set for `user_id` — read fresh from `app_user` rather
+/// than trusted from the caller (the same discipline `issue_invoice_impl`
+/// already applies to every other billing input). Empty if the row's
+/// `permissions_json` fails to parse, which just means "grants nothing"
+/// rather than a hard failure — a missing discount permission is a legible
+/// `DISCOUNT_PERMISSION_DENIED` from `resolve_line_discounts`, not a crash.
+fn caller_permissions(db: &Db, user_id: &str) -> AppResult<Vec<String>> {
+    let user = holler_edge_database::repo::get_app_user_by_id(db.connection(), user_id)?;
+    Ok(user
+        .and_then(|u| serde_json::from_str::<Vec<String>>(&u.permissions_json).ok())
+        .unwrap_or_default())
 }
 
 /// The `outlet_fiscal_profile` effective for this outlet right now — the
@@ -88,6 +182,7 @@ pub fn issue_invoice_impl(
     state: &AppState,
     order_id: &str,
     created_by_user_id: &str,
+    discounts: &[LineDiscountInput],
 ) -> AppResult<Invoice> {
     let now = now_iso();
     let mut db = lock_db(state)?;
@@ -103,6 +198,17 @@ pub fn issue_invoice_impl(
             message: "this order has no lines to bill".into(),
         });
     }
+
+    let discounts_by_item = if discounts.is_empty() {
+        HashMap::new()
+    } else {
+        let definitions = holler_edge_database::repo::list_discount_definitions_for_outlet(
+            db.connection(),
+            &state.outlet_id,
+        )?;
+        let permissions = caller_permissions(&db, created_by_user_id)?;
+        resolve_line_discounts(&items, &definitions, &permissions, &now, discounts)?
+    };
 
     let fiscal_profiles = holler_edge_database::repo::list_outlet_fiscal_profiles_for_outlet(
         db.connection(),
@@ -149,7 +255,7 @@ pub fn issue_invoice_impl(
         created_by_user_id: created_by_user_id.to_string(),
     };
 
-    let lines = build_invoice_lines(&items);
+    let lines = build_invoice_lines(&items, &discounts_by_item);
     let invoice_id = new_id();
     let meta = InvoiceOutboxMeta {
         outbox_id: new_id(),
@@ -162,6 +268,22 @@ pub fn issue_invoice_impl(
         code: "SERIALIZATION_ERROR",
         message: e.to_string(),
     })
+}
+
+/// This outlet's discount catalogue (`discount_definition`, CLOUD_TO_EDGE
+/// config, ADR-016 §1) — read-only, so the POS can offer a cashier a real
+/// choice instead of a free-text discount box. Includes inactive/not-yet-
+/// effective rows too; the frontend and `resolve_line_discounts` both apply
+/// the effective/active gate at the moment a discount is actually used, not
+/// at list time, so a manager can see a future-dated discount already
+/// queued up.
+pub fn list_discount_definitions_impl(state: &AppState) -> AppResult<Vec<DiscountDefinition>> {
+    let db = lock_db(state)?;
+    let defs = holler_edge_database::repo::list_discount_definitions_for_outlet(
+        db.connection(),
+        &state.outlet_id,
+    )?;
+    Ok(defs.into_iter().map(DiscountDefinition::from).collect())
 }
 
 pub fn list_invoices_for_order_impl(state: &AppState, order_id: &str) -> AppResult<Vec<Invoice>> {
@@ -366,8 +488,14 @@ pub fn issue_invoice(
     state: State<'_, AppState>,
     order_id: String,
     created_by_user_id: String,
+    discounts: Option<Vec<LineDiscountInput>>,
 ) -> AppResult<Invoice> {
-    issue_invoice_impl(&state, &order_id, &created_by_user_id)
+    issue_invoice_impl(
+        &state,
+        &order_id,
+        &created_by_user_id,
+        &discounts.unwrap_or_default(),
+    )
 }
 
 #[tauri::command]
@@ -376,6 +504,11 @@ pub fn list_invoices_for_order(
     order_id: String,
 ) -> AppResult<Vec<Invoice>> {
     list_invoices_for_order_impl(&state, &order_id)
+}
+
+#[tauri::command]
+pub fn list_discount_definitions(state: State<'_, AppState>) -> AppResult<Vec<DiscountDefinition>> {
+    list_discount_definitions_impl(&state)
 }
 
 #[tauri::command]

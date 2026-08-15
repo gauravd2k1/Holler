@@ -57,6 +57,7 @@ pub fn run() {
             commands::kitchen::retry_failed_print_jobs,
             commands::billing::issue_invoice,
             commands::billing::list_invoices_for_order,
+            commands::billing::list_discount_definitions,
             commands::billing::record_payment,
             commands::billing::list_payments_for_order,
             commands::billing::open_cash_shift,

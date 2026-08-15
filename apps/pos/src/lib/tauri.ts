@@ -9,6 +9,7 @@ import {
   CanonicalOrderSchema,
   CashMovementSchema,
   CashShiftSchema,
+  DiscountDefinitionSchema,
   InvoiceSchema,
   KotSchema,
   MenuItemSchema,
@@ -22,6 +23,7 @@ import {
   type CashMovement,
   type CashMovementKind,
   type CashShift,
+  type DiscountDefinition,
   type Invoice,
   type Kot,
   type MenuItem,
@@ -368,15 +370,42 @@ export async function retryFailedPrintJobs(): Promise<FailedPrintJob[]> {
 // invokes the command and validates the wire shape; it never derives a
 // paise amount of its own (CLAUDE.md §Money).
 
+/** One cashier-chosen discount application, submitted alongside `issueInvoice`
+ * — mirrors `apps/pos/src-tauri/src/commands/billing.rs` `LineDiscountInput`.
+ * `reason` is required only when the named `discount_definition.requires_reason`
+ * is `true`; the edge (not this layer) is what actually enforces that,
+ * rejecting with `DISCOUNT_REASON_REQUIRED` if it is missing. */
+export interface LineDiscountRequest {
+  orderItemId: string;
+  discountDefinitionId: string;
+  reason: string | null;
+}
+
 /** Issues a GST invoice over every line currently on `orderId`, unsplit
  * (`split_count == 1` — split bills are out of this milestone's POS surface,
- * apps/pos/src-tauri/src/commands/billing.rs). Rejects with
- * `NOTHING_TO_BILL`, `NO_FISCAL_PROFILE_CONFIGURED` or
- * `NO_ACTIVE_INVOICE_SERIES` if outlet config is incomplete — see
- * `billingErrorMessage`. */
-export async function issueInvoice(orderId: string, createdByUserId: string): Promise<Invoice> {
+ * apps/pos/src-tauri/src/commands/billing.rs). `discounts` is optional and
+ * defaults to none applied — omitting it bills every line at full price,
+ * unchanged from before this discount surface existed. Rejects with
+ * `NOTHING_TO_BILL`, `NO_FISCAL_PROFILE_CONFIGURED`, `NO_ACTIVE_INVOICE_SERIES`,
+ * `DISCOUNT_REASON_REQUIRED`, `DISCOUNT_PERMISSION_DENIED`,
+ * `DISCOUNT_SCOPE_NOT_SUPPORTED`, `DISCOUNT_DEFINITION_NOT_FOUND`,
+ * `DISCOUNT_NOT_ACTIVE` or `INVALID_INPUT` (the edge tax engine's own guard
+ * on a malformed discount) — see `billingErrorMessage`. */
+export async function issueInvoice(
+  orderId: string,
+  createdByUserId: string,
+  discounts: readonly LineDiscountRequest[] = [],
+): Promise<Invoice> {
   try {
-    const raw = await invoke("issue_invoice", { orderId, createdByUserId });
+    const raw = await invoke("issue_invoice", {
+      orderId,
+      createdByUserId,
+      discounts: discounts.map((d) => ({
+        order_item_id: d.orderItemId,
+        discount_definition_id: d.discountDefinitionId,
+        reason: d.reason,
+      })),
+    });
     return InvoiceSchema.parse(raw);
   } catch (err) {
     throw toCommandError(err);
@@ -387,6 +416,19 @@ export async function listInvoicesForOrder(orderId: string): Promise<Invoice[]> 
   try {
     const raw = await invoke<unknown[]>("list_invoices_for_order", { orderId });
     return raw.map((i) => InvoiceSchema.parse(i));
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
+
+/** This outlet's discount catalogue (`discount_definition`, CLOUD_TO_EDGE
+ * config, ADR-016 §1) — apps/pos/src-tauri/src/commands/billing.rs
+ * `list_discount_definitions`. Includes inactive/not-yet-effective rows;
+ * `domain/billing.ts` filters what is actually offerable right now. */
+export async function listDiscountDefinitions(): Promise<DiscountDefinition[]> {
+  try {
+    const raw = await invoke<unknown[]>("list_discount_definitions");
+    return raw.map((d) => DiscountDefinitionSchema.parse(d));
   } catch (err) {
     throw toCommandError(err);
   }

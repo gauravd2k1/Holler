@@ -122,6 +122,25 @@ fn build_order_ctx(
     })
 }
 
+/// Compatibility stopgap for `holler_edge_printer::adapter::sweep_due_jobs`'s
+/// second context-builder parameter (`order_ctx_for_invoice`, added for
+/// invoice-linked print jobs per ADR-016 0.4.5's `print_job.invoice_id`).
+/// Nothing in `apps/pos` enqueues an invoice print job yet — no command in
+/// this crate calls `holler_edge_printer::adapter::queue_invoice_for_print`
+/// (or equivalent) — so every job this sweep ever actually attempts here is
+/// still KOT-linked, and this closure is unreachable in practice. It fails
+/// loudly rather than fabricating a context if that ever changes, so a
+/// stray invoice job would surface as a named, legible print failure
+/// (`FAILED` + this message) instead of a silent wrong print. Wiring a real
+/// invoice print path through this crate is out of this track's scope.
+fn invoice_print_ctx_unwired(
+    _invoice_id: &str,
+) -> holler_edge_printer::PrinterResult<holler_edge_printer::adapter::InvoiceOrderContext> {
+    Err(holler_edge_printer::PrinterError::NotFound(
+        "invoice printing is not wired in apps/pos yet",
+    ))
+}
+
 /// Sends an order to the kitchen: generates the station tickets
 /// (`Db::send_order_to_kitchen_with_outbox`), then queues each one for print
 /// and makes one immediate best-effort attempt to actually print it
@@ -153,9 +172,12 @@ pub fn send_order_to_kitchen_impl(state: &AppState, order_id: &str) -> AppResult
         }
     }
 
-    if let Err(e) = holler_edge_printer::adapter::sweep_due_jobs(db.connection(), Utc::now(), |oid| {
-        build_order_ctx(&db, oid)
-    }) {
+    if let Err(e) = holler_edge_printer::adapter::sweep_due_jobs(
+        db.connection(),
+        Utc::now(),
+        |oid| build_order_ctx(&db, oid),
+        invoice_print_ctx_unwired,
+    ) {
         eprintln!("print sweep after send-to-kitchen failed: {e}");
     }
     drop(db);
@@ -205,9 +227,12 @@ pub fn cancel_kitchen_items_impl(
         }
     }
 
-    if let Err(e) = holler_edge_printer::adapter::sweep_due_jobs(db.connection(), Utc::now(), |oid| {
-        build_order_ctx(&db, oid)
-    }) {
+    if let Err(e) = holler_edge_printer::adapter::sweep_due_jobs(
+        db.connection(),
+        Utc::now(),
+        |oid| build_order_ctx(&db, oid),
+        invoice_print_ctx_unwired,
+    ) {
         eprintln!("print sweep after kitchen-item cancellation failed: {e}");
     }
     drop(db);
@@ -292,9 +317,12 @@ pub fn list_failed_print_jobs_impl(state: &AppState) -> AppResult<Vec<FailedPrin
 /// this does not reset or bypass backoff.
 pub fn retry_failed_print_jobs_impl(state: &AppState) -> AppResult<Vec<FailedPrintJob>> {
     let db = lock_db(state)?;
-    holler_edge_printer::adapter::sweep_due_jobs(db.connection(), Utc::now(), |oid| {
-        build_order_ctx(&db, oid)
-    })?;
+    holler_edge_printer::adapter::sweep_due_jobs(
+        db.connection(),
+        Utc::now(),
+        |oid| build_order_ctx(&db, oid),
+        invoice_print_ctx_unwired,
+    )?;
     let failed = holler_edge_printer::spool::list_failed_jobs(db.connection())?;
     Ok(failed.into_iter().map(FailedPrintJob::from).collect())
 }

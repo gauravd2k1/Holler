@@ -4,7 +4,9 @@ import { useQueryClient } from "@tanstack/react-query";
 import type { PaymentMethod } from "@holler/contracts";
 import {
   useCashShiftQuery,
+  useDiscountDefinitionsQuery,
   useInvoicesForOrderQuery,
+  useMenuItemsQuery,
   useOrderQuery,
   usePaymentsForOrderQuery,
   queryKeys,
@@ -13,20 +15,27 @@ import { formatPaiseAsRupees, parseRupeesToPaise } from "../domain/money";
 import {
   amountDuePaise,
   billingErrorMessage,
+  canApplyDiscount,
   canOfferBilling,
   canOfferReversal,
+  discountRequiresReason,
+  isDiscountOfferable,
   isFullySettled,
   isVarianceReasonRequired,
   pendingTenderTotalPaise,
+  previewLineDiscountPerUnitPaise,
   projectedVariancePaise,
   remainingAfterPendingPaise,
+  stagedDiscountsAreComplete,
   type PendingTenderEntry,
+  type StagedLineDiscount,
 } from "../domain/billing";
 import {
   closeCashShift,
   issueInvoice,
   openCashShift,
   recordPayment,
+  type LineDiscountRequest,
 } from "../lib/tauri";
 import { useAuthStore } from "../store/auth";
 import { useCashShiftStore } from "../store/cashShift";
@@ -64,9 +73,16 @@ export function BillingScreen() {
   const invoicesQuery = useInvoicesForOrderQuery(orderId);
   const paymentsQuery = usePaymentsForOrderQuery(orderId);
   const shiftQuery = useCashShiftQuery(openShiftId);
+  const menuItemsQuery = useMenuItemsQuery();
+  const discountDefinitionsQuery = useDiscountDefinitionsQuery();
 
   const [issueError, setIssueError] = useState<string | null>(null);
   const [issuing, setIssuing] = useState(false);
+
+  // Discounts staged before the bill is issued — LINE scope only (BILL scope
+  // is not implemented in this build, ADR-016 §28). Keyed by order_item_id:
+  // one discount per line at most.
+  const [stagedDiscounts, setStagedDiscounts] = useState<Record<string, StagedLineDiscount>>({});
 
   const [pendingTenders, setPendingTenders] = useState<PendingTender[]>([]);
   const [tenderError, setTenderError] = useState<string | null>(null);
@@ -100,13 +116,59 @@ export function BillingScreen() {
   const payments = paymentsQuery.data ?? [];
   const canBill = canOfferBilling(principal);
   const canVoid = canOfferReversal(principal);
+  const menuItems = menuItemsQuery.data ?? [];
+  const nowIso = new Date().toISOString();
+  const offerableDiscounts = (discountDefinitionsQuery.data ?? []).filter((d) =>
+    isDiscountOfferable(d, nowIso),
+  );
+  const discountsById = new Map(offerableDiscounts.map((d) => [d.id, d] as const));
+  const orderItems = orderQuery.data?.items ?? [];
+  const stagedList = Object.values(stagedDiscounts);
+  // Disabled, not merely visually gated, per §28: the "Issue Bill" control
+  // itself stays off until every staged discount either needs no reason or
+  // already has one — the edge's own `DISCOUNT_REASON_REQUIRED` rejection is
+  // the authority, this only avoids inviting a doomed submission.
+  const discountsReady = stagedDiscountsAreComplete(stagedList, discountsById);
+
+  function menuItemName(menuItemId: string): string {
+    return menuItems.find((m) => m.id === menuItemId)?.name ?? menuItemId;
+  }
+
+  function setLineDiscount(orderItemId: string, discountDefinitionId: string) {
+    if (discountDefinitionId === "") {
+      setStagedDiscounts((prev) => {
+        const next = { ...prev };
+        delete next[orderItemId];
+        return next;
+      });
+      return;
+    }
+    setStagedDiscounts((prev) => ({
+      ...prev,
+      [orderItemId]: { orderItemId, discountDefinitionId, reason: prev[orderItemId]?.reason ?? "" },
+    }));
+  }
+
+  function setLineDiscountReason(orderItemId: string, reason: string) {
+    setStagedDiscounts((prev) => {
+      const existing = prev[orderItemId];
+      if (!existing) return prev;
+      return { ...prev, [orderItemId]: { ...existing, reason } };
+    });
+  }
 
   async function handleIssueInvoice() {
     if (!orderId || !principal) return;
     setIssuing(true);
     setIssueError(null);
     try {
-      await issueInvoice(orderId, principal.user_id);
+      const discounts: LineDiscountRequest[] = stagedList.map((s) => ({
+        orderItemId: s.orderItemId,
+        discountDefinitionId: s.discountDefinitionId,
+        reason: s.reason.trim() === "" ? null : s.reason.trim(),
+      }));
+      await issueInvoice(orderId, principal.user_id, discounts);
+      setStagedDiscounts({});
       await queryClient.invalidateQueries({ queryKey: queryKeys.invoices(orderId) });
     } catch (err) {
       setIssueError(billingErrorMessage(err));
@@ -319,13 +381,69 @@ export function BillingScreen() {
         )}
       </section>
 
+      {!invoice && !invoicesQuery.isLoading && orderItems.length > 0 && (
+        <section className="discount-panel">
+          <h2>Discounts</h2>
+          {/* LINE scope only — a discount naming BILL scope is not offered
+              here at all (§28, this track's disclosed limitation). */}
+          {offerableDiscounts.length === 0 && <p>No discount is currently configured for this outlet.</p>}
+          {offerableDiscounts.length > 0 &&
+            orderItems.map((item) => {
+              const staged = stagedDiscounts[item.id];
+              const stagedDef = staged ? discountsById.get(staged.discountDefinitionId) : undefined;
+              const applicableDiscounts = offerableDiscounts.filter((d) =>
+                canApplyDiscount(principal, d),
+              );
+              return (
+                <div key={item.id} className="discount-line-row">
+                  <span>
+                    {menuItemName(item.menu_item_id)} x{item.quantity} (
+                    {formatPaiseAsRupees(item.unit_price_paise)}/ea)
+                  </span>
+                  <select
+                    value={staged?.discountDefinitionId ?? ""}
+                    onChange={(e) => setLineDiscount(item.id, e.target.value)}
+                  >
+                    <option value="">No discount</option>
+                    {applicableDiscounts.map((d) => (
+                      <option key={d.id} value={d.id}>
+                        {d.name}
+                      </option>
+                    ))}
+                  </select>
+                  {stagedDef && (
+                    <span>
+                      -{formatPaiseAsRupees(previewLineDiscountPerUnitPaise(stagedDef, item.unit_price_paise))}
+                      /ea (preview — the edge recomputes this on issue)
+                    </span>
+                  )}
+                  {stagedDef && discountRequiresReason(stagedDef) && (
+                    <input
+                      placeholder="Reason for discount (required)"
+                      value={staged?.reason ?? ""}
+                      onChange={(e) => setLineDiscountReason(item.id, e.target.value)}
+                    />
+                  )}
+                </div>
+              );
+            })}
+        </section>
+      )}
+
       <section className="invoice-panel">
         <h2>Bill</h2>
         {invoicesQuery.isLoading && <p>Loading bill…</p>}
         {!invoice && !invoicesQuery.isLoading && (
-          <button type="button" disabled={!canBill || issuing} onClick={() => void handleIssueInvoice()}>
+          <button
+            type="button"
+            disabled={!canBill || issuing || !discountsReady}
+            onClick={() => void handleIssueInvoice()}
+          >
             {issuing ? "Issuing…" : "Issue Bill"}
           </button>
+        )}
+        {!discountsReady && (
+          <p>Every discount that requires a reason needs one entered before the bill can be issued.</p>
         )}
         {issueError && (
           <p className="billing-error" role="alert">
@@ -342,6 +460,7 @@ export function BillingScreen() {
                 <tr>
                   <th>Item</th>
                   <th>Qty</th>
+                  <th>Discount</th>
                   <th>Taxable</th>
                   <th>CGST</th>
                   <th>SGST</th>
@@ -354,6 +473,7 @@ export function BillingScreen() {
                   <tr key={line.id}>
                     <td>{line.description}</td>
                     <td>{line.quantity}</td>
+                    <td>{formatPaiseAsRupees(line.discount_paise)}</td>
                     <td>{formatPaiseAsRupees(line.taxable_value_paise)}</td>
                     <td>{formatPaiseAsRupees(line.cgst_paise)}</td>
                     <td>{formatPaiseAsRupees(line.sgst_paise)}</td>
@@ -364,6 +484,7 @@ export function BillingScreen() {
               </tbody>
             </table>
             <p>Subtotal: {formatPaiseAsRupees(invoice.subtotal_paise)}</p>
+            <p>Discount: {formatPaiseAsRupees(invoice.discount_paise)}</p>
             <p>Round off: {formatPaiseAsRupees(invoice.round_off_paise)}</p>
             <p className="grand-total">Grand Total: {formatPaiseAsRupees(invoice.grand_total_paise)}</p>
             <p className="amount-due">Amount Due: {formatPaiseAsRupees(due)}</p>

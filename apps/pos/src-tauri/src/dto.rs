@@ -590,6 +590,53 @@ pub struct FailedPrintJob {
 // computes no tax or tender arithmetic of its own (CLAUDE.md: the edge
 // computes, the UI formats).
 
+/// Mirrors `packages/contracts/src/types/tax.ts` `DiscountDefinitionSchema`
+/// field-for-field. Read-only here — this crate never writes a
+/// `discount_definition` row (CLOUD_TO_EDGE config, ADR-016 §1); a POS
+/// command only reads the outlet's catalogue to offer a cashier a choice.
+#[derive(Debug, Clone, Serialize)]
+pub struct DiscountDefinition {
+    pub id: String,
+    pub outlet_id: String,
+    pub code: String,
+    pub name: String,
+    pub scope: String,
+    pub method: String,
+    pub value_bps: Option<i64>,
+    pub value_paise: Option<i64>,
+    pub max_discount_paise: Option<i64>,
+    pub required_permission: Option<String>,
+    pub requires_reason: bool,
+    pub is_active: bool,
+    pub effective_from: String,
+    pub effective_to: Option<String>,
+    pub config_version: i64,
+    pub schema_version: u8,
+}
+
+impl From<db::DiscountDefinition> for DiscountDefinition {
+    fn from(d: db::DiscountDefinition) -> Self {
+        Self {
+            id: d.id,
+            outlet_id: d.outlet_id,
+            code: d.code,
+            name: d.name,
+            scope: d.scope,
+            method: d.method,
+            value_bps: d.value_bps,
+            value_paise: d.value_paise,
+            max_discount_paise: d.max_discount_paise,
+            required_permission: d.required_permission,
+            requires_reason: d.requires_reason,
+            is_active: d.is_active,
+            effective_from: d.effective_from,
+            effective_to: d.effective_to,
+            config_version: d.config_version,
+            schema_version: 1,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct InvoiceLine {
     pub id: String,
@@ -874,10 +921,20 @@ impl CashShift {
 }
 
 impl From<holler_edge_printer::model::FailedPrintJobView> for FailedPrintJob {
+    /// `job.kot_id` became `Option<String>` when `print_job` gained a
+    /// nullable `kot_id`/`invoice_id` pair (ADR-016 0.4.5) — this DTO's own
+    /// `kot_id: String` field predates that and mirrors this crate's own
+    /// (KOT-only) `list_failed_print_jobs`/`retry_failed_print_jobs`
+    /// surface, which never enqueues an invoice-linked job (see
+    /// `commands::kitchen::invoice_print_ctx_unwired`). `.unwrap_or_default()`
+    /// is therefore never actually empty for a row this crate produces
+    /// today; widening this DTO to `Option<String>` (and giving the failure
+    /// view an invoice-aware label) is invoice-printing work, out of this
+    /// track's scope.
     fn from(v: holler_edge_printer::model::FailedPrintJobView) -> Self {
         Self {
             id: v.job.id,
-            kot_id: v.job.kot_id,
+            kot_id: v.job.kot_id.unwrap_or_default(),
             printer_id: v.job.printer_id,
             status: v.job.status.as_db_str().to_string(),
             attempt_count: v.job.attempt_count,
@@ -885,7 +942,9 @@ impl From<holler_edge_printer::model::FailedPrintJobView> for FailedPrintJob {
             created_at: v.job.created_at,
             updated_at: v.job.updated_at,
             printer_name: v.printer_name,
-            kot_station: v.kot_station,
+            // Same stopgap as `kot_id` above — `None` for an invoice-linked
+            // job, which this crate never produces today.
+            kot_station: v.kot_station.unwrap_or_default(),
             schema_version: 1,
         }
     }

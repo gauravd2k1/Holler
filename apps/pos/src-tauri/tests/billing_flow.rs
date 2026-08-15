@@ -8,7 +8,7 @@ use holler_edge_database::{model, repo, Db};
 
 use holler_pos_lib::commands::billing::{
     close_cash_shift_impl, find_open_cash_shift_impl, issue_invoice_impl, open_cash_shift_impl,
-    record_payment_impl,
+    record_payment_impl, LineDiscountInput,
 };
 use holler_pos_lib::commands::orders::{create_order_impl, NewOrderItemRequest};
 use holler_pos_lib::state::AppState;
@@ -177,6 +177,380 @@ fn seed_billing_config(db: &Db) {
     .expect("seed invoice series");
 }
 
+/// Seeds one `discount_definition` row directly (bypassing any caller-side
+/// shape checks, the same way `seed_billing_config` seeds every other config
+/// row) so a test can control every governance field independently.
+#[allow(clippy::too_many_arguments)]
+fn seed_discount_definition(
+    db: &Db,
+    id: &str,
+    code: &str,
+    scope: &str,
+    method: &str,
+    value_bps: Option<i64>,
+    value_paise: Option<i64>,
+    max_discount_paise: Option<i64>,
+    required_permission: Option<&str>,
+    requires_reason: bool,
+) {
+    repo::upsert_discount_definition(
+        db.connection(),
+        &model::DiscountDefinition {
+            id: id.to_string(),
+            outlet_id: OUTLET_ID.to_string(),
+            code: code.to_string(),
+            name: code.to_string(),
+            scope: scope.to_string(),
+            method: method.to_string(),
+            value_bps,
+            value_paise,
+            max_discount_paise,
+            required_permission: required_permission.map(str::to_string),
+            requires_reason,
+            is_active: true,
+            effective_from: "2020-01-01T00:00:00Z".to_string(),
+            effective_to: None,
+            config_version: 1,
+        },
+    )
+    .expect("seed discount definition");
+}
+
+/// The worked example this track's report cites verbatim: 2 x Rs.200.00
+/// (unit_price_paise 20000), a 10% LINE discount, GST 5% (2.5% CGST + 2.5%
+/// SGST) EXCLUSIVE pricing.
+///
+/// Per unit: 10% of Rs.200.00 = Rs.20.00 (2000 paise) discount.
+/// Gross = 2 x 20000 = 40000. Discount = 2 x 2000 = 4000. Net (taxable) =
+/// 36000. CGST = SGST = 36000 * 2.5% = 900 each -> tax = 1800.
+/// Grand total = 36000 + 1800 = 37800 (already a whole rupee, round_off 0).
+#[test]
+fn a_line_discount_reduces_the_taxable_value_and_gst_is_computed_on_the_net() {
+    let state = app_state();
+    {
+        let db = state.db.lock().expect("lock");
+        seed_discount_definition(
+            &db,
+            "disc-staff10",
+            "STAFF10",
+            "LINE",
+            "PERCENT",
+            Some(1000), // 10.00%
+            None,
+            None,
+            None,
+            false,
+        );
+    }
+
+    let order = create_order_impl(
+        &state,
+        "DINE_IN".to_string(),
+        None,
+        vec![NewOrderItemRequest {
+            menu_item_id: "item-1".to_string(),
+            variant_id: None,
+            quantity: 2,
+            unit_price_paise: 20_000,
+            notes: None,
+            modifiers: vec![],
+        }],
+    )
+    .expect("create order");
+
+    let invoice = issue_invoice_impl(
+        &state,
+        &order.holler_order_id,
+        USER_ID,
+        &[LineDiscountInput {
+            order_item_id: order.items[0].id.clone(),
+            discount_definition_id: "disc-staff10".to_string(),
+            reason: None,
+        }],
+    )
+    .expect("issue invoice with a line discount");
+
+    let line = &invoice.lines[0];
+    assert_eq!(line.gross_paise, 40_000, "gross is the undiscounted amount");
+    assert_eq!(line.discount_paise, 4_000, "discount reduces the taxable base, not the gross");
+    assert_eq!(line.taxable_value_paise, 36_000, "GST is computed on the post-discount net");
+    assert_eq!(line.cgst_paise, 900);
+    assert_eq!(line.sgst_paise, 900);
+    assert_eq!(line.total_paise, 36_000 + 900 + 900);
+
+    assert_eq!(invoice.discount_paise, 4_000);
+    assert_eq!(invoice.taxable_value_paise, 36_000);
+    assert_eq!(invoice.cgst_paise, 900);
+    assert_eq!(invoice.sgst_paise, 900);
+    // Conservation: components sum to the tax total, and
+    // grand_total = Σ(components) + round_off, |round_off| <= 50 (ADR-016 §3).
+    let pre_round =
+        invoice.taxable_value_paise + invoice.cgst_paise + invoice.sgst_paise + invoice.igst_paise
+            + invoice.cess_paise;
+    assert_eq!(invoice.grand_total_paise, pre_round + invoice.round_off_paise);
+    assert!(invoice.round_off_paise.abs() <= 50);
+    assert_eq!(invoice.grand_total_paise, 37_800);
+    assert_eq!(invoice.round_off_paise, 0);
+}
+
+/// Falsification companion to the worked example above: with NO discount
+/// supplied, the same order must produce the pre-M3-track figures
+/// (`issuing_a_bill_computes_gst_and_the_grand_total_matches_the_line_total`)
+/// — proving the discount path only fires when actually asked for.
+#[test]
+fn no_discount_supplied_bills_at_full_price_exactly_as_before() {
+    let state = app_state();
+    let order = create_order_impl(
+        &state,
+        "DINE_IN".to_string(),
+        None,
+        vec![NewOrderItemRequest {
+            menu_item_id: "item-1".to_string(),
+            variant_id: None,
+            quantity: 2,
+            unit_price_paise: 20_000,
+            notes: None,
+            modifiers: vec![],
+        }],
+    )
+    .expect("create order");
+
+    let invoice =
+        issue_invoice_impl(&state, &order.holler_order_id, USER_ID, &[]).expect("issue invoice");
+    assert_eq!(invoice.lines[0].discount_paise, 0);
+    assert_eq!(invoice.taxable_value_paise, 40_000);
+    assert_eq!(invoice.grand_total_paise, 42_000);
+}
+
+/// §28/ADR-016 binding: `requires_reason` must actually block application,
+/// not merely be advisory — no reason, no discount, and the invoice is never
+/// issued at all (all-or-nothing, matching every other billing guard here).
+#[test]
+fn a_discount_requiring_a_reason_is_rejected_without_one() {
+    let state = app_state();
+    {
+        let db = state.db.lock().expect("lock");
+        seed_discount_definition(
+            &db, "disc-mgr", "MGR_COMP", "LINE", "AMOUNT", None, Some(5_000), None, None, true,
+        );
+    }
+    let order = create_order_impl(
+        &state,
+        "DINE_IN".to_string(),
+        None,
+        vec![NewOrderItemRequest {
+            menu_item_id: "item-1".to_string(),
+            variant_id: None,
+            quantity: 1,
+            unit_price_paise: 20_000,
+            notes: None,
+            modifiers: vec![],
+        }],
+    )
+    .expect("create order");
+
+    let err = issue_invoice_impl(
+        &state,
+        &order.holler_order_id,
+        USER_ID,
+        &[LineDiscountInput {
+            order_item_id: order.items[0].id.clone(),
+            discount_definition_id: "disc-mgr".to_string(),
+            reason: None,
+        }],
+    )
+    .expect_err("a discount requiring a reason must be rejected without one");
+    assert_eq!(err.code, "DISCOUNT_REASON_REQUIRED");
+
+    // Supplying the reason is what unblocks it — the SAME call, only the
+    // reason changed.
+    let ok = issue_invoice_impl(
+        &state,
+        &order.holler_order_id,
+        USER_ID,
+        &[LineDiscountInput {
+            order_item_id: order.items[0].id.clone(),
+            discount_definition_id: "disc-mgr".to_string(),
+            reason: Some("manager comp — customer complaint".to_string()),
+        }],
+    )
+    .expect("a real reason satisfies the gate");
+    assert_eq!(ok.lines[0].discount_paise, 5_000);
+}
+
+/// §28/ADR-016 binding: `required_permission` must actually block a cashier
+/// lacking it — the seeded `USER_ID` carries `permissions_json: "[]"`
+/// (`seed_billing_config`), so it never satisfies a definition naming a
+/// permission.
+#[test]
+fn a_discount_requiring_a_permission_is_rejected_for_a_user_lacking_it() {
+    let state = app_state();
+    {
+        let db = state.db.lock().expect("lock");
+        seed_discount_definition(
+            &db,
+            "disc-override",
+            "OVERRIDE20",
+            "LINE",
+            "PERCENT",
+            Some(2000),
+            None,
+            None,
+            Some("bill.discount.override"),
+            false,
+        );
+    }
+    let order = create_order_impl(
+        &state,
+        "DINE_IN".to_string(),
+        None,
+        vec![NewOrderItemRequest {
+            menu_item_id: "item-1".to_string(),
+            variant_id: None,
+            quantity: 1,
+            unit_price_paise: 20_000,
+            notes: None,
+            modifiers: vec![],
+        }],
+    )
+    .expect("create order");
+
+    let err = issue_invoice_impl(
+        &state,
+        &order.holler_order_id,
+        USER_ID,
+        &[LineDiscountInput {
+            order_item_id: order.items[0].id.clone(),
+            discount_definition_id: "disc-override".to_string(),
+            reason: None,
+        }],
+    )
+    .expect_err("a user lacking the required permission must be rejected");
+    assert_eq!(err.code, "DISCOUNT_PERMISSION_DENIED");
+}
+
+/// BILL scope is reported unimplemented, not silently narrowed to a line
+/// discount it was never defined as.
+#[test]
+fn a_bill_scope_discount_is_rejected_as_unimplemented() {
+    let state = app_state();
+    {
+        let db = state.db.lock().expect("lock");
+        seed_discount_definition(
+            &db, "disc-bill", "BILL_FLAT", "BILL", "AMOUNT", None, Some(1_000), None, None, false,
+        );
+    }
+    let order = create_order_impl(
+        &state,
+        "DINE_IN".to_string(),
+        None,
+        vec![NewOrderItemRequest {
+            menu_item_id: "item-1".to_string(),
+            variant_id: None,
+            quantity: 1,
+            unit_price_paise: 20_000,
+            notes: None,
+            modifiers: vec![],
+        }],
+    )
+    .expect("create order");
+
+    let err = issue_invoice_impl(
+        &state,
+        &order.holler_order_id,
+        USER_ID,
+        &[LineDiscountInput {
+            order_item_id: order.items[0].id.clone(),
+            discount_definition_id: "disc-bill".to_string(),
+            reason: None,
+        }],
+    )
+    .expect_err("BILL scope must not be silently applied");
+    assert_eq!(err.code, "DISCOUNT_SCOPE_NOT_SUPPORTED");
+}
+
+/// The negative-discount case turned out to be guarded one layer BEFORE the
+/// tax engine: `sqlite/0006_m3_billing.sql`'s own
+/// `CHECK(value_paise IS NULL OR value_paise >= 0)` rejects the write
+/// itself, so a negative `discount_definition.value_paise` can never reach
+/// `issue_invoice` at all through any path, this one included. This test
+/// records that finding rather than asserting a wrong one: seeding a
+/// negative `value_paise` fails at `upsert_discount_definition`, before any
+/// order or invoice is ever involved.
+#[test]
+fn a_negative_discount_value_is_rejected_by_sqlite_before_it_can_ever_reach_billing() {
+    let state = app_state();
+    let db = state.db.lock().expect("lock");
+    let err = repo::upsert_discount_definition(
+        db.connection(),
+        &model::DiscountDefinition {
+            id: "disc-neg".to_string(),
+            outlet_id: OUTLET_ID.to_string(),
+            code: "NEGATIVE".to_string(),
+            name: "NEGATIVE".to_string(),
+            scope: "LINE".to_string(),
+            method: "AMOUNT".to_string(),
+            value_bps: None,
+            value_paise: Some(-500),
+            max_discount_paise: None,
+            required_permission: None,
+            requires_reason: false,
+            is_active: true,
+            effective_from: "2020-01-01T00:00:00Z".to_string(),
+            effective_to: None,
+            config_version: 1,
+        },
+    )
+    .expect_err("a negative value_paise must be rejected by the storage layer's own CHECK");
+    assert!(format!("{err}").contains("value_paise"));
+}
+
+/// Proves the edge tax engine's own OVER-LIMIT guard fires THROUGH this
+/// command path, not merely at the engine's own unit-test level: an AMOUNT
+/// discount whose configured `value_paise` exceeds the line's
+/// `unit_price_paise` — a shape SQLite's CHECK does not and cannot catch
+/// (it has no line to compare against) — is still rejected, with a legible
+/// §64 code, by `edge/database/src/tax/engine.rs::compute_line_base`.
+#[test]
+fn the_edges_own_discount_guard_fires_through_issue_invoice_for_an_excessive_discount() {
+    let state = app_state();
+    {
+        let db = state.db.lock().expect("lock");
+        seed_discount_definition(
+            &db, "disc-huge", "TOO_BIG", "LINE", "AMOUNT", None, Some(1_000_000), None, None,
+            false,
+        );
+    }
+    let order = create_order_impl(
+        &state,
+        "DINE_IN".to_string(),
+        None,
+        vec![NewOrderItemRequest {
+            menu_item_id: "item-1".to_string(),
+            variant_id: None,
+            quantity: 1,
+            unit_price_paise: 20_000,
+            notes: None,
+            modifiers: vec![],
+        }],
+    )
+    .expect("create order");
+
+    let excessive_err = issue_invoice_impl(
+        &state,
+        &order.holler_order_id,
+        USER_ID,
+        &[LineDiscountInput {
+            order_item_id: order.items[0].id.clone(),
+            discount_definition_id: "disc-huge".to_string(),
+            reason: None,
+        }],
+    )
+    .expect_err("a discount exceeding unit_price_paise must be rejected");
+    assert_eq!(excessive_err.code, "INVALID_INPUT");
+    assert!(excessive_err.message.contains("unit_price_paise"));
+}
+
 fn app_state() -> AppState {
     let db = Db::open_in_memory_for_tests().expect("open db");
     seed_billing_config(&db);
@@ -201,7 +575,7 @@ fn issuing_a_bill_computes_gst_and_the_grand_total_matches_the_line_total() {
     )
     .expect("create order");
 
-    let invoice = issue_invoice_impl(&state, &order.holler_order_id, USER_ID).expect("issue invoice");
+    let invoice = issue_invoice_impl(&state, &order.holler_order_id, USER_ID, &[]).expect("issue invoice");
 
     // 2 x Rs.200 = Rs.400 taxable, +2.5% CGST +2.5% SGST = Rs.20 tax -> Rs.420.
     assert_eq!(invoice.taxable_value_paise, 40_000);
@@ -229,7 +603,7 @@ fn a_split_tender_across_two_methods_is_recorded_as_two_append_only_payments() {
         }],
     )
     .expect("create order");
-    let invoice = issue_invoice_impl(&state, &order.holler_order_id, USER_ID).expect("issue invoice");
+    let invoice = issue_invoice_impl(&state, &order.holler_order_id, USER_ID, &[]).expect("issue invoice");
     assert_eq!(invoice.grand_total_paise, 21_000); // Rs.200 + 5% GST
 
     // Split: Rs.100 cash + Rs.110 UPI = Rs.210, matching the §35 shape.
