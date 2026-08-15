@@ -253,3 +253,62 @@ Directory partitioning prevents *edit* conflicts. It does nothing about *interfa
 ### Note
 
 The pattern that caught all three was the same one this file already recommends: ask a verifier to falsify a property the builder did not target. The builder of the harness fix could not see that the harness had never built, because the builder ran it the way it had always been run. The gate ran it against `main`.
+
+---
+
+## 2026-08-15 — One contract field broke five consumers, and the migration that added it was inert
+
+Contracts 0.4.5 added four things. Verifying them looked thorough and was not.
+
+### What was verified, and what that proved
+
+The migrations were checked by applying every `*.sql` file directly into a fresh SQLite database and a recreated Postgres schema, then **falsifying each new constraint**: `UPDATE`/`DELETE` on `payment` rejected by name while a reversal insert still succeeded, `cash_shift` close still permitted, `print_job` rejecting neither-set/both-set/duplicates. All of it passed. All of it was real.
+
+None of it proved the edge would ever run those files.
+
+`edge/database/src/migrations.rs` registered migrations only through `0008`. The three new files sat on disk, **unregistered and therefore inert**, through the whole release. The payment append-only triggers did not exist in any real edge database. Neither did `print_job.invoice_id` or `menu_item.hsn_sac`. It was found by the next track, which needed the column and discovered it was not there.
+
+**The artifact was verified; the path was not.** This is the same error the 2026-08-14 entry describes — a check that resembles the real thing accepted in place of the real thing — committed one day after that entry was written, by the author of that entry.
+
+### The consequence that made it worse
+
+Because the constraint was inert, verifying it in a scratch database could not fail. The partial index
+
+```sql
+CREATE UNIQUE INDEX idx_print_job_kot_printer
+  ON print_job(kot_id, printer_id) WHERE kot_id IS NOT NULL;
+```
+
+was necessary and correct: SQLite treats NULLs as distinct in a UNIQUE index, so once `kot_id` became nullable an unqualified index would have permitted unlimited `(NULL, printer)` rows and silently lost idempotency for invoice jobs. But SQLite also requires an `ON CONFLICT` **target to match a partial index's WHERE clause**, and `edge/printer/src/spool.rs` still said `ON CONFLICT(kot_id, printer_id)`. Six spool tests broke — the moment the migration was registered, not when it was written. The index was reasoned about carefully in isolation and its only consumer was never opened.
+
+### Five consumers, one field
+
+`menu_item.hsn_sac` is one nullable column. Adding it broke, in sequence:
+
+| Consumer | How it broke | Caught by |
+|---|---|---|
+| `edge/database` migrations | file never registered | the next track needing the column |
+| `edge/sync` | `MenuItem` struct literal | a build, after the fix above |
+| `edge/device` | `MenuItem` struct literal | running the crate |
+| `apps/pos/src-tauri` | three `MenuItem` literals | the final sweep |
+| `edge/printer` | partial-index `ON CONFLICT` (from `print_job`, same release) | running the crate |
+
+Plus `edge/sync` had *already* been broken since 0.4.2 by `tax_profile_id`, unnoticed for two releases.
+
+Every consumer builds `MenuItem` by struct literal, so a field addition breaks all of them simultaneously. **That is the correct design** — the compile error is what should have caught `tax_profile_id` at 0.4.2, and `..Default::default()` would have silently absorbed it instead. The defect is not the literals. It is that nothing tells the author of a contract change which crates they have just broken, and nothing runs those crates.
+
+### Root cause behind the root cause
+
+Contract changes were being treated as edits to `packages/contracts/`. They are not. **A contract change is a multi-crate change**, and the contract directory is only the first file touched. The frozen-contract discipline (ADR-008) makes the *shape* review rigorous while leaving the *blast radius* entirely unexamined — the rubric asks about authority, uniqueness and credential material, and never asks "what calls this?"
+
+### Rules adopted
+
+1. **Verify the runner, not the file.** A migration is verified when a database built by the application's own migration path is inspected and shows the change. Applying SQL by hand proves the SQL parses. Query `sqlite_master` (or the equivalent) through the real code path.
+2. **A contract change is not complete until every consumer builds and its tests run.** Enumerate consumers before writing the migration — `grep` the type name across the workspace — and list them in the ADR. The 0.4.5 addendum listed none, which is why five were found one at a time over several hours.
+3. **Changing a constraint means opening its consumers.** A partial index, a CHECK, a NOT NULL: find the queries that write the table and read them. `ON CONFLICT` in particular must match a partial index's predicate, and no test in the *owning* crate will tell you.
+4. **Extend the contract review rubric with blast radius.** Alongside authority and uniqueness, the self-review must answer: which crates construct or query this shape, and have they been built? A rubric that only examines the shape passes a change that breaks five callers.
+5. **Fixture values are behaviour when a guard reads them.** `hsn_sac: None` in a fixture is not a placeholder once issuance rejects a NULL code — it turns every billing test into a rejection test. Give fixtures deliberate, plausible values.
+
+### Note
+
+The count assertion that was supposed to catch the unregistered migration was `assert_eq!(MIGRATIONS.len(), 11)` — a hand-maintained literal, which catches nothing that a person bumping it by hand would not also bump. It has been replaced with a symmetric comparison against the contracts directory that **panics with the path if the directory cannot be read**, rather than skipping. A check that silently passes when it cannot find its inputs is the same failure one level up, and this file already records three instances of it.
