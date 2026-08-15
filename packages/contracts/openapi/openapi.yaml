@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Holler API — Vertical Slice
-  version: "0.4.4"
+  version: "0.4.6"
   description: >
     Covers only the §70 order endpoints needed for the Milestone 1–2 vertical
     slice (Menu → POS Order → Local SQLite → KOT → KDS → Cloud sync). Frozen
@@ -2228,7 +2228,15 @@ components:
 
     MenuItem:
       type: object
-      required: [id, outlet_id, category_id, name, base_price_paise, is_available, config_version]
+      # Drifted from the canonical TS/Go types for three fields until 0.4.6:
+      # tax_profile_id (added 0.4.2), hsn_sac (added 0.4.5) and schema_version
+      # (present since the type was written). Found by the edge/sync build fix,
+      # not by a check — nothing machine-compares this document to
+      # src/types/*.ts or go/*.go, so it can drift again tomorrow and nothing
+      # goes red. See the ADR-016 0.4.4 addendum's note on that gap.
+      required:
+        [id, outlet_id, category_id, name, base_price_paise, is_available,
+         config_version, schema_version]
       properties:
         id: { type: string, format: uuid }
         outlet_id: { type: string, format: uuid }
@@ -2236,7 +2244,33 @@ components:
         name: { type: string }
         base_price_paise: { type: integer, description: integer paise, never float }
         is_available: { type: boolean }
+        tax_profile_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            Added 0.4.2. Which TaxProfile prices this item; null means "use the
+            outlet's default profile", which keeps a single-rate restaurant
+            configuration-free. An INPUT to resolution, never a substitute for
+            the snapshot — invoice_line stores what was applied, so re-pointing
+            an item tomorrow never rewrites a bill issued today (§31).
+        hsn_sac:
+          type: string
+          nullable: true
+          description: >
+            Added 0.4.5. The HSN (goods) or SAC (services) code a GST tax
+            invoice must print for this item's lines. On the item rather than
+            the tax profile because HSN/SAC classifies what is sold while a
+            profile classifies how it is rated — prepared food (SAC 9963) and
+            packaged water (HSN 2201) routinely share one 5% profile.
+
+            Nullable, and not a licence to print a blank code: an invoice must
+            not issue with a line whose hsn_sac is null, and the edge rejects
+            issuance naming the offending items. No fallback code is
+            substituted — a wrong HSN is worse than a missing one because it
+            looks configured.
         config_version: { type: integer }
+        schema_version: { type: integer, enum: [1] }
 
     OrderType:
       type: string
