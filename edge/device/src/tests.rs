@@ -131,6 +131,16 @@ fn seed_one_active_kot(db: &mut Db) -> String {
             name: "Burger".to_string(),
             base_price_paise: 25000,
             is_available: true,
+            // No `tax_profile` row is seeded in this KOT/KDS fixture (this
+            // crate never assembles an invoice), so `None` here is a
+            // deliberate, schema-legal choice, not a silently dropped real
+            // value — see contracts 0.4.2 (`0007_menu_item_tax_profile.sql`,
+            // nullable FK).
+            tax_profile_id: None,
+            // Contracts 0.4.5 (`0011_menu_item_hsn_sac.sql`). Nullable, but
+            // given a real value here anyway so this fixture matches what a
+            // seeded restaurant menu item actually carries.
+            hsn_sac: Some("2106".to_string()),
             config_version: 1,
         },
     )

@@ -51,7 +51,7 @@ pub fn enqueue_job(
         .execute(
             "INSERT INTO print_job (id, kot_id, printer_id, status, attempt_count, last_error, created_at, updated_at)
              VALUES (?1, ?2, ?3, 'QUEUED', 0, NULL, ?4, ?4)
-             ON CONFLICT (kot_id, printer_id) DO NOTHING",
+             ON CONFLICT (kot_id, printer_id) WHERE kot_id IS NOT NULL DO NOTHING",
             params![id, kot_id, printer_id, now],
         )?;
 
@@ -362,6 +362,40 @@ mod tests {
         assert!(
             due_jobs(conn, far_future).unwrap().is_empty(),
             "a job at MAX_ATTEMPTS must not be retried further"
+        );
+    }
+
+    #[test]
+    fn double_enqueue_of_same_kot_and_printer_is_idempotent() {
+        // Regression for the partial-index ON CONFLICT mismatch: contracts
+        // 0.4.5 (0010_print_job_invoice_ref.sql) made idx_print_job_kot_printer
+        // a partial unique index (`WHERE kot_id IS NOT NULL`), and the
+        // enqueue's ON CONFLICT target has to name that same predicate or
+        // SQLite rejects the statement outright rather than silently
+        // ignoring it. This runs against a database migrated by the real
+        // migration runner (open_test_db -> Db::open), not a hand-built
+        // schema, because the bug only reproduces against the true partial
+        // index.
+        let (_dir, db) = open_test_db();
+        let conn = db.connection();
+        seed_kot_and_printer(conn, "kot-1", "printer-1");
+
+        let first =
+            enqueue_job(conn, "job-1", "kot-1", "printer-1", "2026-08-07T10:00:00Z").unwrap();
+        let second =
+            enqueue_job(conn, "job-2", "kot-1", "printer-1", "2026-08-07T10:00:05Z").unwrap();
+
+        assert_eq!(
+            first.id, second.id,
+            "second enqueue must return the same job, not a new one"
+        );
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM print_job", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            count, 1,
+            "double enqueue must not create a duplicate print_job row"
         );
     }
 
