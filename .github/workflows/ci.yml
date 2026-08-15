@@ -46,9 +46,25 @@ jobs:
           go-version: "1.22"
       - name: vet
         run: cd backend && go vet ./...
-      # Schema comes from packages/contracts/postgres/*.sql — each Postgres
-      # test calls postgres.Migrate itself, so no separate migrate step is
-      # needed here. A new contract migration needs no CI wiring.
+      # Schema comes from packages/contracts/postgres/*.sql. Most Postgres
+      # tests call postgres.Migrate themselves, but internal/auth,
+      # internal/menu and internal/tables assume the schema already exists
+      # (they seed fixture rows straight into it) and never call Migrate.
+      # Against an already-migrated database that assumption is invisible;
+      # against this job's empty postgres:16-alpine service container it
+      # races every other package's Migrate call — whichever test process
+      # happens to query "tenant" before any Migrate call has committed
+      # fails with "relation \"tenant\" does not exist", independent of the
+      # concurrent-Migrate race fixed in postgres.Migrate itself (advisory
+      # lock, backend/internal/platform/postgres/postgres.go). Applying the
+      # schema once, up front, in its own step removes that ordering
+      # dependency; postgres.Migrate is idempotent, so every package's own
+      # Migrate call after this is a fast no-op. cmd/devseed is reused
+      # rather than adding a new command: it just wraps postgres.Migrate
+      # plus development-only fixture rows that are harmless alongside the
+      # tests' own fixtures (fresh UUIDs, ON CONFLICT upserts).
+      - name: migrate
+        run: cd backend && go run ./cmd/devseed
       - name: test
         run: cd backend && go test -count=1 ./...
       # Guard the guard: the suite must not be able to report success without
