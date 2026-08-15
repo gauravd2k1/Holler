@@ -105,6 +105,17 @@ pub struct WireMenuItem {
     pub name: String,
     pub base_price_paise: i64,
     pub is_available: bool,
+    /// Mirrors `MenuItem.TaxProfileID` (contracts 0.4.2, `packages/contracts/go/menu.go`).
+    /// The Go wire struct has no `omitempty` on this field, so the key is
+    /// always present (`null` when unset) — deliberately NOT `#[serde(
+    /// default)]`, so a bundle that omits the key outright (rather than
+    /// sending `null`) fails to parse instead of silently caching `None`
+    /// over whatever real value the outlet already had.
+    pub tax_profile_id: Option<String>,
+    /// Mirrors `MenuItem.HSNSAC` (contracts 0.4.5, `packages/contracts/go/menu.go`).
+    /// Same reasoning as `tax_profile_id`: always-present key, no
+    /// `#[serde(default)]`.
+    pub hsn_sac: Option<String>,
     pub config_version: i64,
 }
 
@@ -229,6 +240,8 @@ pub fn apply_bundle(
                     name: i.name.clone(),
                     base_price_paise: i.base_price_paise,
                     is_available: i.is_available,
+                    tax_profile_id: i.tax_profile_id.clone(),
+                    hsn_sac: i.hsn_sac.clone(),
                     config_version: i.config_version,
                 },
             )?;
@@ -434,5 +447,102 @@ mod tests {
         assert_eq!(cached.device_id, "device-1");
         assert_eq!(cached.device_kind, "KDS");
         assert_eq!(cached.credential_hash, "argon2id$device-verifier");
+    }
+
+    /// The point of the whole fix: a menu item shipped on `/sync/config`
+    /// with a real `tax_profile_id` and `hsn_sac` must land in the local
+    /// menu item cache with BOTH values intact, not silently dropped to
+    /// `None`. `edge/database`'s `invoice::assemble::build_invoice` reads
+    /// these at billing time (see `model::MenuItem`'s doc comments), so a
+    /// `None` written here where the cloud sent a real code means the edge
+    /// bills without it.
+    ///
+    /// Falsifiable: hardcode `tax_profile_id: None` (or `hsn_sac: None`) in
+    /// the `model::MenuItem` literal inside `apply_bundle`'s items loop,
+    /// leaving the wire value unused — this test goes red because the
+    /// cached row no longer matches what was sent. Restoring
+    /// `i.tax_profile_id.clone()` / `i.hsn_sac.clone()` turns it green
+    /// again.
+    #[test]
+    fn menu_item_tax_profile_id_and_hsn_sac_survive_the_config_cache() {
+        let mut db = Db::open_in_memory_for_tests().expect("open db");
+        repo::upsert_outlet(
+            db.connection(),
+            &model::Outlet {
+                id: "outlet-1".to_string(),
+                brand_id: "brand-1".to_string(),
+                name: "Test Outlet".to_string(),
+                timezone: "Asia/Kolkata".to_string(),
+                config_version: 1,
+                created_at: "2026-08-15T00:00:00Z".to_string(),
+                updated_at: "2026-08-15T00:00:00Z".to_string(),
+            },
+        )
+        .expect("seed outlet");
+        repo::upsert_menu_category(
+            db.connection(),
+            &model::MenuCategory {
+                id: "cat-1".to_string(),
+                outlet_id: "outlet-1".to_string(),
+                name: "Starters".to_string(),
+                sort_order: 1,
+                config_version: 1,
+            },
+        )
+        .expect("seed category");
+        repo::upsert_tax_profile(
+            db.connection(),
+            &model::TaxProfile {
+                id: "tax-profile-5pct".to_string(),
+                outlet_id: "outlet-1".to_string(),
+                code: "GST5".to_string(),
+                name: "GST 5%".to_string(),
+                pricing_mode: "INCLUSIVE".to_string(),
+                is_default: true,
+                is_active: true,
+                config_version: 1,
+            },
+        )
+        .expect("seed tax profile");
+
+        let raw = r#"{
+            "config_version": 2,
+            "users": [{
+                "id": "u1", "tenant_id": "t1", "outlet_id": "outlet-1",
+                "email": "a@b.com", "full_name": "A",
+                "password_hash": "argon2id$fake", "is_active": true,
+                "permissions": [], "config_version": 2
+            }],
+            "roles": [],
+            "tables": [],
+            "categories": [],
+            "items": [{
+                "id": "item-1", "outlet_id": "outlet-1",
+                "category_id": "cat-1", "name": "Paneer Tikka",
+                "base_price_paise": 25000, "is_available": true,
+                "tax_profile_id": "tax-profile-5pct",
+                "hsn_sac": "9963",
+                "config_version": 2
+            }],
+            "device_credentials": []
+        }"#;
+        let bundle: ConfigBundle = serde_json::from_str(raw).expect("parse bundle");
+
+        let applied = apply_bundle(&mut db, "outlet-1", 0, bundle).expect("apply must succeed");
+        assert!(applied);
+
+        let items =
+            repo::list_menu_items_for_outlet(db.connection(), "outlet-1").expect("list items");
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items[0].tax_profile_id.as_deref(),
+            Some("tax-profile-5pct"),
+            "tax_profile_id sent by the cloud must survive into the cache, not be defaulted to None"
+        );
+        assert_eq!(
+            items[0].hsn_sac.as_deref(),
+            Some("9963"),
+            "hsn_sac sent by the cloud must survive into the cache, not be defaulted to None"
+        );
     }
 }
