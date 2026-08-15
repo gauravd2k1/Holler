@@ -90,16 +90,45 @@ impl PrintJobStatus {
     }
 }
 
+/// `kot_id`/`invoice_id`: exactly one is `Some`, mirroring the CHECK on
+/// `print_job` (`0010_print_job_invoice_ref.sql`) — a job prints a KOT or an
+/// invoice, never both, never neither. Both `Option` rather than an enum so
+/// this struct stays a plain field-for-field mirror of the row (the pattern
+/// every other model in this file already follows); [`PrintJob::kind`] is
+/// the typed view callers should match on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrintJob {
     pub id: String,
-    pub kot_id: String,
+    pub kot_id: Option<String>,
+    pub invoice_id: Option<String>,
     pub printer_id: String,
     pub status: PrintJobStatus,
     pub attempt_count: i64,
     pub last_error: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+/// What a [`PrintJob`] prints, decoded once from its `kot_id`/`invoice_id`
+/// pair so callers never have to re-derive the CHECK's meaning themselves.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrintJobTarget<'a> {
+    Kot(&'a str),
+    Invoice(&'a str),
+}
+
+impl PrintJob {
+    /// Decodes which document this job prints. Errors if the row violates
+    /// the CHECK it should be impossible to violate through this crate's own
+    /// write paths — a defensive, not a expected, error.
+    pub fn target(&self) -> Result<PrintJobTarget<'_>, &'static str> {
+        match (self.kot_id.as_deref(), self.invoice_id.as_deref()) {
+            (Some(kot_id), None) => Ok(PrintJobTarget::Kot(kot_id)),
+            (None, Some(invoice_id)) => Ok(PrintJobTarget::Invoice(invoice_id)),
+            (Some(_), Some(_)) => Err("print_job row has both kot_id and invoice_id set"),
+            (None, None) => Err("print_job row has neither kot_id nor invoice_id set"),
+        }
+    }
 }
 
 /// A failed job joined with the printer name, for the staff-visible failure
