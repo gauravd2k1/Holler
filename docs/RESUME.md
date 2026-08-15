@@ -1,8 +1,17 @@
 # M3 resume state — 2026-08-15
 
-`main` is committed, clean and green at `6575c9f`. Nothing is in flight.
-**Nothing is pushed** — `main` is 31 commits ahead of `origin/main`, so no CI
-run has executed against any of this work.
+`main` is committed, clean and green at `4a1a37b`. Nothing is in flight.
+
+**`origin/main` is very likely RED, and pushing the remaining commits is what
+fixes it.** `origin/main` sits at `6ddb70b` — someone pushed mid-session, and
+that tip is the worst possible cut point: it **includes** the CI strictness
+(`8c64893`: a real Postgres service and a zero-skip assertion) and **excludes**
+every fix that lets the pipeline satisfy it. On that commit the backend job
+races on concurrent migration, `internal/{auth,menu,tables}` fail against an
+empty schema, `edge/sync` does not compile, and all four edge crates fail
+`cargo fmt --check`.
+
+The 11 unpushed commits are precisely the repairs. Push them.
 
 Read with `docs/adr/ADR-016-m3-billing-contracts.md` (0.4.4 + 0.4.5 addenda),
 `docs/adr/ADR-017-device-enrollment-credential.md` (0.4.5 addendum), and **both
@@ -97,9 +106,12 @@ consumers, build them, and list them in the ADR.
 
 ---
 
-## CI was decorative. Five things would have failed on the first push
+## CI was decorative. Five things break it, and four are still unpushed
 
-All invisible because nothing has been pushed since before this session.
+Invisible for months because the backend job had no database and the edge crates
+were never run. `8c64893` made the job honest — and is itself already pushed, at
+`6ddb70b`, **ahead of its own repairs**. Items 2–5 below are fixed only in the
+unpushed commits.
 
 1. **No Postgres service** — the backend job had never once run an integration
    test. Fixed (`8c64893`).
