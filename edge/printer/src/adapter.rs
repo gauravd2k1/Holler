@@ -105,8 +105,9 @@ fn attempt_print(
 ) -> PrinterResult<()> {
     let kot = kot_repo::get_kot_by_id(conn, &job.kot_id)?
         .ok_or(PrinterError::NotFound("kot not found for print attempt"))?;
-    let printer = get_printer(conn, &job.printer_id)?
-        .ok_or(PrinterError::NotFound("printer not found for print attempt"))?;
+    let printer = get_printer(conn, &job.printer_id)?.ok_or(PrinterError::NotFound(
+        "printer not found for print attempt",
+    ))?;
 
     spool::mark_printing(conn, &job.id, now_str)?;
 

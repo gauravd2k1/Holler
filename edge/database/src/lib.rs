@@ -27,10 +27,10 @@ use crate::crypto::EncryptionKey;
 use crate::model::{
     CashMovement, CashShift, CashShiftOutboxMeta, CloseCashShiftRequest, Invoice, InvoiceLine,
     InvoiceLineShare, InvoiceOutboxMeta, IssueInvoiceHeader, IssueInvoiceLinesRequest, Kot,
-    KotStatusHistoryEntry, KotTicketItem, KotTransitionMeta, NewCashShift, NewOrder,
-    NewOrderItem, NewOutboxEntry, NewPayment, NewTableSession, Order, OrderConfirmedMeta,
-    OrderItemAddedMeta, OrderItemModifier, OrderItemQuantitySetMeta, OrderItemRemovedMeta,
-    PaidInOutRequest, Payment, PaymentOutboxMeta, SendToKitchenMeta, Station, TableSession,
+    KotStatusHistoryEntry, KotTicketItem, KotTransitionMeta, NewCashShift, NewOrder, NewOrderItem,
+    NewOutboxEntry, NewPayment, NewTableSession, Order, OrderConfirmedMeta, OrderItemAddedMeta,
+    OrderItemModifier, OrderItemQuantitySetMeta, OrderItemRemovedMeta, PaidInOutRequest, Payment,
+    PaymentOutboxMeta, SendToKitchenMeta, Station, TableSession,
 };
 use std::collections::BTreeMap;
 
@@ -49,7 +49,10 @@ fn patch_display_number_if_order_created(
         return outbox.clone();
     }
     NewOutboxEntry {
-        payload_json: repo::patch_order_created_display_number(&outbox.payload_json, display_number),
+        payload_json: repo::patch_order_created_display_number(
+            &outbox.payload_json,
+            display_number,
+        ),
         ..outbox.clone()
     }
 }
@@ -229,7 +232,10 @@ impl Db {
         for item in items {
             repo::insert_order_item(&tx, item)?;
         }
-        repo::insert_outbox_entry(&tx, &patch_display_number_if_order_created(outbox, &display_number))?;
+        repo::insert_outbox_entry(
+            &tx,
+            &patch_display_number_if_order_created(outbox, &display_number),
+        )?;
         tx.commit()?;
         Ok(())
     }
@@ -282,7 +288,10 @@ impl Db {
                 repo::insert_order_item_modifier(&tx, modifier)?;
             }
         }
-        repo::insert_outbox_entry(&tx, &patch_display_number_if_order_created(outbox, &display_number))?;
+        repo::insert_outbox_entry(
+            &tx,
+            &patch_display_number_if_order_created(outbox, &display_number),
+        )?;
         tx.commit()?;
         Ok(())
     }
@@ -894,7 +903,10 @@ impl Db {
             let item = repo::get_order_item_in_tx(&tx, order_item_id)?
                 .ok_or(DbError::NotFound("order_item"))?;
             let ticket_item = repo::build_kot_ticket_item(&tx, &item)?;
-            by_station.entry(station_code).or_default().push(ticket_item);
+            by_station
+                .entry(station_code)
+                .or_default()
+                .push(ticket_item);
         }
 
         let sequence = repo::next_kot_sequence(&tx, order_id)?;
@@ -1039,7 +1051,11 @@ impl Db {
     /// KOTs for an outlet, optionally narrowed to one station code — the
     /// query a KDS/expo screen or the LAN server needs to answer "what's on
     /// this station's pass right now".
-    pub fn list_kots_for_outlet(&self, outlet_id: &str, station: Option<&str>) -> DbResult<Vec<Kot>> {
+    pub fn list_kots_for_outlet(
+        &self,
+        outlet_id: &str,
+        station: Option<&str>,
+    ) -> DbResult<Vec<Kot>> {
         repo::list_kots_for_outlet(self.connection(), outlet_id, station)
     }
 
@@ -1086,7 +1102,13 @@ impl Db {
         invoice::assemble::validate_conservation(&order_items, &[req.lines.as_slice()])?;
 
         let (new_invoice, line_computations) = invoice::assemble::build_invoice(&tx, header, &req)?;
-        let stored = invoice::assemble::persist_invoice(&tx, new_invoice, &req, &line_computations, outbox_meta)?;
+        let stored = invoice::assemble::persist_invoice(
+            &tx,
+            new_invoice,
+            &req,
+            &line_computations,
+            outbox_meta,
+        )?;
         tx.commit()?;
         Ok(stored)
     }
@@ -1150,10 +1172,16 @@ impl Db {
 
         let mut results = Vec::with_capacity(requests.len());
         for (req, meta) in requests.iter().zip(outbox_metas.iter()) {
-            let (mut new_invoice, line_computations) = invoice::assemble::build_invoice(&tx, header, req)?;
+            let (mut new_invoice, line_computations) =
+                invoice::assemble::build_invoice(&tx, header, req)?;
             new_invoice.split_group_id = Some(split_group_id.clone());
-            let stored =
-                invoice::assemble::persist_invoice(&tx, new_invoice, req, &line_computations, meta)?;
+            let stored = invoice::assemble::persist_invoice(
+                &tx,
+                new_invoice,
+                req,
+                &line_computations,
+                meta,
+            )?;
             results.push(stored);
         }
         tx.commit()?;
@@ -1245,7 +1273,8 @@ impl Db {
         outbox_meta: &CashShiftOutboxMeta,
     ) -> DbResult<(CashShift, Vec<CashMovement>)> {
         let tx = self.connection_mut().transaction()?;
-        let result = payment::cash_shift::open_cash_shift(&tx, new_shift, opening_movement_id, outbox_meta)?;
+        let result =
+            payment::cash_shift::open_cash_shift(&tx, new_shift, opening_movement_id, outbox_meta)?;
         tx.commit()?;
         Ok(result)
     }
@@ -1273,7 +1302,10 @@ impl Db {
     /// the `cash_movement` table's own `CHECK`. Not its own outbox event:
     /// `cash_movement` is a child row that only travels inside the
     /// `CashShiftOpened`/`CashShiftClosed` payload's `movements` array.
-    pub fn record_paid_in_out_with_outbox(&mut self, req: PaidInOutRequest) -> DbResult<CashMovement> {
+    pub fn record_paid_in_out_with_outbox(
+        &mut self,
+        req: PaidInOutRequest,
+    ) -> DbResult<CashMovement> {
         let tx = self.connection_mut().transaction()?;
         let movement = payment::cash_shift::record_paid_in_out(&tx, req)?;
         tx.commit()?;
@@ -1299,7 +1331,10 @@ impl Db {
         repo::find_open_cash_shift(self.connection(), device_id, cashier_user_id)
     }
 
-    pub fn list_cash_movements_for_shift(&self, cash_shift_id: &str) -> DbResult<Vec<CashMovement>> {
+    pub fn list_cash_movements_for_shift(
+        &self,
+        cash_shift_id: &str,
+    ) -> DbResult<Vec<CashMovement>> {
         repo::list_cash_movements_for_shift(self.connection(), cash_shift_id)
     }
 }
@@ -1570,7 +1605,12 @@ mod tests {
     /// through the seeded menu item (see [`seed_menu`]) resolves to this
     /// profile via the `is_default` fallback, so a test does not need to
     /// pin `menu_item.tax_profile_id` itself. Returns the tax profile's id.
-    fn seed_billing_config(db: &Db, outlet_id: &str, series_code: &str, reset_policy: &str) -> String {
+    fn seed_billing_config(
+        db: &Db,
+        outlet_id: &str,
+        series_code: &str,
+        reset_policy: &str,
+    ) -> String {
         let profile_id = format!("{outlet_id}-profile-gst5");
         let compliance_version_id = format!("{outlet_id}-cv-1");
 
@@ -1659,7 +1699,12 @@ mod tests {
         profile_id
     }
 
-    fn sample_invoice_header(outlet_id: &str, order_id: &str, series_code: &str, user_id: &str) -> IssueInvoiceHeader {
+    fn sample_invoice_header(
+        outlet_id: &str,
+        order_id: &str,
+        series_code: &str,
+        user_id: &str,
+    ) -> IssueInvoiceHeader {
         IssueInvoiceHeader {
             outlet_id: outlet_id.to_string(),
             order_id: order_id.to_string(),
@@ -2045,7 +2090,12 @@ mod tests {
         let (_, menu_item_id, _) = seed_menu(&db, "outlet-1");
 
         let order = sample_order("order-qty-confirmed", "outlet-1", "device-1");
-        let item = sample_order_item("item-qty-confirmed", "order-qty-confirmed", &menu_item_id, 20000);
+        let item = sample_order_item(
+            "item-qty-confirmed",
+            "order-qty-confirmed",
+            &menu_item_id,
+            20000,
+        );
         db.create_order_with_outbox(&order, &[item], &sample_outbox("order-qty-confirmed"))
             .expect("create draft order");
         db.connection()
@@ -2086,7 +2136,12 @@ mod tests {
         route_item_to_stations(&db, &menu_item_id, &["station-ticketed".to_string()]);
 
         let order = sample_order("order-qty-ticketed", "outlet-1", "device-1");
-        let item = sample_order_item("item-qty-ticketed", "order-qty-ticketed", &menu_item_id, 20000);
+        let item = sample_order_item(
+            "item-qty-ticketed",
+            "order-qty-ticketed",
+            &menu_item_id,
+            20000,
+        );
         db.create_order_with_outbox(&order, &[item], &sample_outbox("order-qty-ticketed"))
             .expect("create draft order");
         confirm_for_kitchen(&mut db, "order-qty-ticketed");
@@ -2149,8 +2204,12 @@ mod tests {
         route_item_to_stations(&db, &menu_item_id, &["station-mixed".to_string()]);
 
         let order = sample_order("order-qty-mixed", "outlet-1", "device-1");
-        let ticketed_item =
-            sample_order_item("item-qty-mixed-ticketed", "order-qty-mixed", &menu_item_id, 10000);
+        let ticketed_item = sample_order_item(
+            "item-qty-mixed-ticketed",
+            "order-qty-mixed",
+            &menu_item_id,
+            10000,
+        );
         db.create_order_with_outbox(&order, &[ticketed_item], &sample_outbox("order-qty-mixed"))
             .expect("create draft order");
         confirm_for_kitchen(&mut db, "order-qty-mixed");
@@ -2162,8 +2221,12 @@ mod tests {
 
         // #132-A: a second line added after the first send is not yet
         // ticketed.
-        let new_item =
-            sample_order_item("item-qty-mixed-new", "order-qty-mixed", &menu_item_id, 15000);
+        let new_item = sample_order_item(
+            "item-qty-mixed-new",
+            "order-qty-mixed",
+            &menu_item_id,
+            15000,
+        );
         db.add_order_item_with_outbox(&new_item, &[], &item_added_meta("item-qty-mixed-new"))
             .expect("post-send addition (#132-A)");
 
@@ -2236,7 +2299,12 @@ mod tests {
         let (_, menu_item_id, _) = seed_menu(&db, "outlet-1");
 
         let order = sample_order("order-qty-invalid", "outlet-1", "device-1");
-        let item = sample_order_item("item-qty-invalid", "order-qty-invalid", &menu_item_id, 20000);
+        let item = sample_order_item(
+            "item-qty-invalid",
+            "order-qty-invalid",
+            &menu_item_id,
+            20000,
+        );
         db.create_order_with_outbox(&order, &[item], &sample_outbox("order-qty-invalid"))
             .expect("create draft order");
 
@@ -2268,7 +2336,12 @@ mod tests {
         let (_, menu_item_id, _) = seed_menu(&db, "outlet-1");
 
         let order = sample_order("order-qty-identity", "outlet-1", "device-1");
-        let item = sample_order_item("item-qty-identity", "order-qty-identity", &menu_item_id, 5000);
+        let item = sample_order_item(
+            "item-qty-identity",
+            "order-qty-identity",
+            &menu_item_id,
+            5000,
+        );
         db.create_order_with_outbox(&order, &[item], &sample_outbox("order-qty-identity"))
             .expect("create draft order");
         let created_at_before = repo::get_order_item(db.connection(), "item-qty-identity")
@@ -2308,7 +2381,12 @@ mod tests {
         let order = sample_order("order-qty-pending", "outlet-1", "device-1");
         db.create_order_with_outbox(&order, &[], &sample_outbox("order-qty-pending"))
             .expect("create empty draft order");
-        let item = sample_order_item("item-qty-pending", "order-qty-pending", &menu_item_id, 10000);
+        let item = sample_order_item(
+            "item-qty-pending",
+            "order-qty-pending",
+            &menu_item_id,
+            10000,
+        );
         db.add_order_item_with_outbox(&item, &[], &item_added_meta("item-qty-pending"))
             .expect("add line");
 
@@ -2389,9 +2467,7 @@ mod tests {
         let all = repo::list_unpublished_outbox(db.connection(), 100).unwrap();
         let qty_changed_rows: Vec<_> = all
             .iter()
-            .filter(|e| {
-                e.aggregate_id == "order-qty-evt" && e.event_type == "ItemQuantityChanged"
-            })
+            .filter(|e| e.aggregate_id == "order-qty-evt" && e.event_type == "ItemQuantityChanged")
             .collect();
         assert_eq!(
             qty_changed_rows.len(),
@@ -3068,8 +3144,9 @@ mod tests {
         assert_eq!(
             pending
                 .iter()
-                .filter(|e| e.aggregate_id == "order-shape-payload"
-                    && e.event_type == "OrderCreated")
+                .filter(
+                    |e| e.aggregate_id == "order-shape-payload" && e.event_type == "OrderCreated"
+                )
                 .count(),
             1
         );
@@ -3331,8 +3408,8 @@ mod tests {
         let invoice_id = "invoice-crash-1".to_string();
 
         {
-            let mut db = Db::open(&sealed, &plaintext, EncryptionKey::new(key_bytes))
-                .expect("first open");
+            let mut db =
+                Db::open(&sealed, &plaintext, EncryptionKey::new(key_bytes)).expect("first open");
             seed_outlet_and_device(&db, "outlet-1", "device-1");
             seed_app_user(&db, "outlet-1", "user-1");
             let (_, item_id, _) = seed_menu(&db, "outlet-1");
@@ -3398,7 +3475,11 @@ mod tests {
         assert_eq!(invoice.grand_total_paise, 21_000);
 
         let lines = db2.list_invoice_lines(&invoice_id).expect("read lines");
-        assert_eq!(lines.len(), 1, "the invoice's single line must survive recovery too");
+        assert_eq!(
+            lines.len(),
+            1,
+            "the invoice's single line must survive recovery too"
+        );
         assert_eq!(lines[0].order_item_id, "order-item-1");
         assert_eq!(lines[0].quantity, 1);
         assert_eq!(lines[0].total_paise, 21_000);
@@ -4040,10 +4121,7 @@ mod tests {
         route_item_to_stations(
             &db,
             &menu_item_id,
-            &[
-                "station-main".to_string(),
-                "station-tandoor".to_string(),
-            ],
+            &["station-main".to_string(), "station-tandoor".to_string()],
         );
 
         let order = sample_order("order-thali", "outlet-1", "device-1");
@@ -4382,12 +4460,8 @@ mod tests {
         // works — what matters here is that the addition both persists and
         // produces the right KOT-generation delta behaviour below.
         let item_2 = sample_order_item("item-132-2", "order-132", &menu_item_id, 5000);
-        db.add_order_item_with_outbox(
-            &item_2,
-            &[],
-            &item_added_meta("item-132-2"),
-        )
-        .expect("post-confirmation addition must succeed (#132-A)");
+        db.add_order_item_with_outbox(&item_2, &[], &item_added_meta("item-132-2"))
+            .expect("post-confirmation addition must succeed (#132-A)");
 
         let second_round = db
             .send_order_to_kitchen_with_outbox(
@@ -4419,10 +4493,7 @@ mod tests {
             "order-132",
             &send_meta("device-1", "2026-08-09T10:10:00Z"),
         );
-        assert!(matches!(
-            third,
-            Err(DbError::NothingToSendToKitchen { .. })
-        ));
+        assert!(matches!(third, Err(DbError::NothingToSendToKitchen { .. })));
     }
 
     fn kot_transition_meta(
@@ -4515,11 +4586,13 @@ mod tests {
         assert_eq!(order_after.status, "READY");
 
         let pending = repo::list_unpublished_outbox(db.connection(), 100).unwrap();
-        assert!(pending
-            .iter()
-            .filter(|e| e.event_type == "KOTStatusChanged")
-            .count()
-            >= 3);
+        assert!(
+            pending
+                .iter()
+                .filter(|e| e.event_type == "KOTStatusChanged")
+                .count()
+                >= 3
+        );
         assert!(
             pending
                 .iter()
@@ -4568,9 +4641,7 @@ mod tests {
 
         let pending = repo::list_unpublished_outbox(db.connection(), 100).unwrap();
         assert!(pending.iter().all(|e| e.id != "o-bad"));
-        assert!(pending
-            .iter()
-            .all(|e| e.event_type != "KOTStatusChanged"));
+        assert!(pending.iter().all(|e| e.event_type != "KOTStatusChanged"));
 
         // SERVED and CANCELLED are terminal — no further transition legal.
         db.transition_kot_status_with_outbox(

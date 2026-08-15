@@ -185,8 +185,8 @@ pub(crate) fn record_payment(
     let movement_request = cash_movement_for(&new_payment, cash_movement_id);
 
     repo::insert_payment(tx, &new_payment)?;
-    let stored = repo::get_payment_in_tx(tx, &new_payment.id)?
-        .expect("just inserted this exact row above");
+    let stored =
+        repo::get_payment_in_tx(tx, &new_payment.id)?.expect("just inserted this exact row above");
 
     let stored_movement = if let Some(mut m) = movement_request {
         m.payment_id = Some(stored.id.clone());
@@ -209,26 +209,29 @@ pub(crate) fn record_payment(
         None => invoice_id.map(str::to_string),
         Some(_) => reversal_allocation_invoice_id,
     };
-    let stored_allocations: Vec<PaymentAllocation> = if let Some(target_invoice_id) = allocation_target {
-        let allocation = NewPaymentAllocation {
-            id: allocation_id.to_string(),
-            payment_id: stored.id.clone(),
-            invoice_id: target_invoice_id.clone(),
-            amount_paise: stored.amount_paise,
+    let stored_allocations: Vec<PaymentAllocation> =
+        if let Some(target_invoice_id) = allocation_target {
+            let allocation = NewPaymentAllocation {
+                id: allocation_id.to_string(),
+                payment_id: stored.id.clone(),
+                invoice_id: target_invoice_id.clone(),
+                amount_paise: stored.amount_paise,
+            };
+            repo::insert_payment_allocation(tx, &allocation)?;
+            vec![PaymentAllocation {
+                id: allocation.id,
+                payment_id: allocation.payment_id,
+                invoice_id: allocation.invoice_id,
+                amount_paise: allocation.amount_paise,
+            }]
+        } else {
+            Vec::new()
         };
-        repo::insert_payment_allocation(tx, &allocation)?;
-        vec![PaymentAllocation {
-            id: allocation.id,
-            payment_id: allocation.payment_id,
-            invoice_id: allocation.invoice_id,
-            amount_paise: allocation.amount_paise,
-        }]
-    } else {
-        Vec::new()
-    };
 
     match &stored.reverses_payment_id {
-        None => repo::insert_payment_received_outbox(tx, &stored, &stored_allocations, outbox_meta)?,
+        None => {
+            repo::insert_payment_received_outbox(tx, &stored, &stored_allocations, outbox_meta)?
+        }
         Some(original_id) => repo::insert_payment_refunded_outbox(
             tx,
             &stored,
@@ -363,25 +366,53 @@ mod tests {
     fn a_forward_payment_with_zero_amount_is_rejected() {
         let mut db = open_db();
         let tx = db.connection_mut().transaction().expect("tx");
-        let err = record_payment(&tx, base_payment("p-1", 0), "m-1", "a-1", None, &meta("o-1"))
-            .expect_err("zero-amount forward payment must be rejected");
-        assert!(matches!(err, DbError::ForwardPaymentAmountNotPositive { amount_paise: 0 }));
+        let err = record_payment(
+            &tx,
+            base_payment("p-1", 0),
+            "m-1",
+            "a-1",
+            None,
+            &meta("o-1"),
+        )
+        .expect_err("zero-amount forward payment must be rejected");
+        assert!(matches!(
+            err,
+            DbError::ForwardPaymentAmountNotPositive { amount_paise: 0 }
+        ));
     }
 
     #[test]
     fn a_forward_payment_with_negative_amount_is_rejected() {
         let mut db = open_db();
         let tx = db.connection_mut().transaction().expect("tx");
-        let err = record_payment(&tx, base_payment("p-1", -500), "m-1", "a-1", None, &meta("o-1"))
-            .expect_err("negative forward payment must be rejected");
-        assert!(matches!(err, DbError::ForwardPaymentAmountNotPositive { amount_paise: -500 }));
+        let err = record_payment(
+            &tx,
+            base_payment("p-1", -500),
+            "m-1",
+            "a-1",
+            None,
+            &meta("o-1"),
+        )
+        .expect_err("negative forward payment must be rejected");
+        assert!(matches!(
+            err,
+            DbError::ForwardPaymentAmountNotPositive { amount_paise: -500 }
+        ));
     }
 
     #[test]
     fn a_reversal_with_positive_amount_is_rejected() {
         let mut db = open_db();
         let tx = db.connection_mut().transaction().expect("tx");
-        record_payment(&tx, base_payment("p-1", 1000), "m-1", "a-1", None, &meta("o-1")).expect("forward");
+        record_payment(
+            &tx,
+            base_payment("p-1", 1000),
+            "m-1",
+            "a-1",
+            None,
+            &meta("o-1"),
+        )
+        .expect("forward");
 
         let mut reversal = base_payment("p-2", 500);
         reversal.reverses_payment_id = Some("p-1".to_string());
@@ -405,7 +436,15 @@ mod tests {
     fn a_full_reversal_then_settles_to_zero_and_a_second_reversal_is_rejected() {
         let mut db = open_db();
         let tx = db.connection_mut().transaction().expect("tx");
-        record_payment(&tx, base_payment("p-1", 1000), "m-1", "a-1", None, &meta("o-1")).expect("forward");
+        record_payment(
+            &tx,
+            base_payment("p-1", 1000),
+            "m-1",
+            "a-1",
+            None,
+            &meta("o-1"),
+        )
+        .expect("forward");
 
         let mut reversal = base_payment("p-2", -1000);
         reversal.reverses_payment_id = Some("p-1".to_string());
@@ -422,7 +461,15 @@ mod tests {
     fn a_reversal_larger_than_what_remains_is_rejected() {
         let mut db = open_db();
         let tx = db.connection_mut().transaction().expect("tx");
-        record_payment(&tx, base_payment("p-1", 1000), "m-1", "a-1", None, &meta("o-1")).expect("forward");
+        record_payment(
+            &tx,
+            base_payment("p-1", 1000),
+            "m-1",
+            "a-1",
+            None,
+            &meta("o-1"),
+        )
+        .expect("forward");
 
         let mut over = base_payment("p-2", -1001);
         over.reverses_payment_id = Some("p-1".to_string());
@@ -435,7 +482,15 @@ mod tests {
     fn a_partial_then_a_matching_second_reversal_settles_exactly_to_zero() {
         let mut db = open_db();
         let tx = db.connection_mut().transaction().expect("tx");
-        record_payment(&tx, base_payment("p-1", 1000), "m-1", "a-1", None, &meta("o-1")).expect("forward");
+        record_payment(
+            &tx,
+            base_payment("p-1", 1000),
+            "m-1",
+            "a-1",
+            None,
+            &meta("o-1"),
+        )
+        .expect("forward");
 
         let mut r1 = base_payment("p-2", -400);
         r1.reverses_payment_id = Some("p-1".to_string());
@@ -443,7 +498,8 @@ mod tests {
 
         let mut r2 = base_payment("p-3", -600);
         r2.reverses_payment_id = Some("p-1".to_string());
-        record_payment(&tx, r2, "m-3", "a-1", None, &meta("o-3")).expect("partial reversal 2 settles to zero");
+        record_payment(&tx, r2, "m-3", "a-1", None, &meta("o-3"))
+            .expect("partial reversal 2 settles to zero");
 
         let mut r3 = base_payment("p-4", -1);
         r3.reverses_payment_id = Some("p-1".to_string());
@@ -677,7 +733,10 @@ mod tests {
             &meta("o-4"),
         )
         .expect_err("a tender against a just-settled invoice must be rejected");
-        assert!(matches!(err, DbError::ForwardPaymentExceedsRemainingDue { .. }));
+        assert!(matches!(
+            err,
+            DbError::ForwardPaymentExceedsRemainingDue { .. }
+        ));
     }
 
     /// A reversal restores headroom: after a full refund of the original
@@ -708,7 +767,10 @@ mod tests {
             &meta("o-2"),
         )
         .expect_err("a second full tender before any refund must be rejected");
-        assert!(matches!(blocked, DbError::ForwardPaymentExceedsRemainingDue { .. }));
+        assert!(matches!(
+            blocked,
+            DbError::ForwardPaymentExceedsRemainingDue { .. }
+        ));
 
         let mut refund = base_payment("p-3", -1000);
         refund.reverses_payment_id = Some("p-1".to_string());

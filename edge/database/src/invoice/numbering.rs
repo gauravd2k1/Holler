@@ -57,9 +57,9 @@ fn split_business_date(business_date: &str) -> DbResult<(i32, u32, u32)> {
     let year: i32 = business_date[0..4]
         .parse()
         .map_err(|_| DbError::InvalidInput(format!("business_date {business_date:?}: bad year")))?;
-    let month: u32 = business_date[5..7]
-        .parse()
-        .map_err(|_| DbError::InvalidInput(format!("business_date {business_date:?}: bad month")))?;
+    let month: u32 = business_date[5..7].parse().map_err(|_| {
+        DbError::InvalidInput(format!("business_date {business_date:?}: bad month"))
+    })?;
     let day: u32 = business_date[8..10]
         .parse()
         .map_err(|_| DbError::InvalidInput(format!("business_date {business_date:?}: bad day")))?;
@@ -107,7 +107,11 @@ pub(crate) fn compute_period_key(reset_policy: &str, business_date: &str) -> DbR
 /// `business_date` and `outlet_code`. `{FY}` renders the Indian fiscal
 /// year's two-digit END year (`fiscal_year_end % 100`, zero-padded) —
 /// ADR-016's own example, `'FY26/PNQ/'`.
-pub(crate) fn render_prefix(template: &str, business_date: &str, outlet_code: &str) -> DbResult<String> {
+pub(crate) fn render_prefix(
+    template: &str,
+    business_date: &str,
+    outlet_code: &str,
+) -> DbResult<String> {
     let (year, month, day) = split_business_date(business_date)?;
     let fy_end = fiscal_year_end(business_date)?;
     let fy2 = format!("{:02}", fy_end.rem_euclid(100));
@@ -193,8 +197,14 @@ mod tests {
         assert_eq!(compute_period_key("NEVER", "2026-08-12").unwrap(), "ALL");
         assert_eq!(compute_period_key("FY", "2026-08-12").unwrap(), "FY2027");
         assert_eq!(compute_period_key("FY", "2026-02-12").unwrap(), "FY2026");
-        assert_eq!(compute_period_key("MONTH", "2026-08-12").unwrap(), "2026-08");
-        assert_eq!(compute_period_key("DAY", "2026-08-12").unwrap(), "2026-08-12");
+        assert_eq!(
+            compute_period_key("MONTH", "2026-08-12").unwrap(),
+            "2026-08"
+        );
+        assert_eq!(
+            compute_period_key("DAY", "2026-08-12").unwrap(),
+            "2026-08-12"
+        );
     }
 
     #[test]
@@ -226,8 +236,10 @@ mod tests {
         let mut db = db;
         let tx = db.connection_mut().transaction().expect("tx");
         let s = series("FY", 6);
-        let n1 = mint_invoice_number(&tx, &s, &outlet, "2026-08-12", "2026-08-12T10:00:00Z").expect("mint 1");
-        let n2 = mint_invoice_number(&tx, &s, &outlet, "2026-08-12", "2026-08-12T10:05:00Z").expect("mint 2");
+        let n1 = mint_invoice_number(&tx, &s, &outlet, "2026-08-12", "2026-08-12T10:00:00Z")
+            .expect("mint 1");
+        let n2 = mint_invoice_number(&tx, &s, &outlet, "2026-08-12", "2026-08-12T10:05:00Z")
+            .expect("mint 2");
         tx.commit().expect("commit");
 
         assert_eq!(n1, "FY27/PUN/000001");

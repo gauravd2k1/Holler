@@ -69,12 +69,12 @@ fn day_reset_policy_starts_a_fresh_sequence_at_the_boundary() {
 
     let mut db = Db::open_in_memory_for_tests().expect("open db");
     support::seed(&db, "SALES", "NEVER"); // base fixtures
-    // Its own series with a DATE-INCLUSIVE prefix: a DAY reset that leaves a
-    // static prefix unchanged would (correctly) render the SAME
-    // invoice_number on two different days once both buckets reach the same
-    // counter value — that is a config-template mismatch, not a numbering
-    // bug, so this test's series is built the way ADR-016 §2 intends a DAY
-    // series to look.
+                                          // Its own series with a DATE-INCLUSIVE prefix: a DAY reset that leaves a
+                                          // static prefix unchanged would (correctly) render the SAME
+                                          // invoice_number on two different days once both buckets reach the same
+                                          // counter value — that is a config-template mismatch, not a numbering
+                                          // bug, so this test's series is built the way ADR-016 §2 intends a DAY
+                                          // series to look.
     repo::upsert_invoice_series(
         db.connection(),
         &InvoiceSeries {
@@ -174,13 +174,28 @@ fn fy_reset_policy_resets_and_renders_the_fy_token_across_the_1_april_boundary()
     };
 
     // Late in FY26 (Apr 2025 - Mar 2026): two bills.
-    let fy26_a = issue(&mut db, "fy26-order-1", "2026-03-30", "2026-03-30T10:00:00Z");
-    let fy26_b = issue(&mut db, "fy26-order-2", "2026-03-31", "2026-03-31T23:00:00Z");
+    let fy26_a = issue(
+        &mut db,
+        "fy26-order-1",
+        "2026-03-30",
+        "2026-03-30T10:00:00Z",
+    );
+    let fy26_b = issue(
+        &mut db,
+        "fy26-order-2",
+        "2026-03-31",
+        "2026-03-31T23:00:00Z",
+    );
     assert_eq!(fy26_a.invoice_number, "FY26/PUN/0001");
     assert_eq!(fy26_b.invoice_number, "FY26/PUN/0002");
 
     // Crossing 1 April into FY27: both the token AND the counter reset.
-    let fy27_a = issue(&mut db, "fy27-order-1", "2026-04-01", "2026-04-01T00:00:01Z");
+    let fy27_a = issue(
+        &mut db,
+        "fy27-order-1",
+        "2026-04-01",
+        "2026-04-01T00:00:01Z",
+    );
     assert_eq!(
         fy27_a.invoice_number, "FY27/PUN/0001",
         "1 April must both change the {{FY}} token to FY27 and restart the counter at 1"
@@ -189,6 +204,11 @@ fn fy_reset_policy_resets_and_renders_the_fy_token_across_the_1_april_boundary()
     // FY26's bucket, revisited later, continues where it left off — proving
     // the reset is keyed by fiscal-year bucket, not merely by "most recent
     // business_date seen".
-    let fy26_c = issue(&mut db, "fy26-order-3", "2026-03-15", "2026-03-15T10:00:00Z");
+    let fy26_c = issue(
+        &mut db,
+        "fy26-order-3",
+        "2026-03-15",
+        "2026-03-15T10:00:00Z",
+    );
     assert_eq!(fy26_c.invoice_number, "FY26/PUN/0003");
 }

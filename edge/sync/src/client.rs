@@ -131,7 +131,12 @@ mod tests {
             let seen = req
                 .headers()
                 .iter()
-                .find(|h| h.field.as_str().as_str().eq_ignore_ascii_case("Authorization"))
+                .find(|h| {
+                    h.field
+                        .as_str()
+                        .as_str()
+                        .eq_ignore_ascii_case("Authorization")
+                })
                 .map(|h| h.value.as_str().to_string());
             assert_eq!(
                 seen.as_deref(),
@@ -141,8 +146,11 @@ mod tests {
             let _ = req.respond(tiny_http::Response::from_string("{\"ok\":true}"));
         });
 
-        let client = HttpClient::new(format!("http://{addr}")).with_bearer_token("cred-1.super-secret");
-        let _: Value = client.get_json("/sync/config?outlet_id=o1&since_version=0").expect("get ok");
+        let client =
+            HttpClient::new(format!("http://{addr}")).with_bearer_token("cred-1.super-secret");
+        let _: Value = client
+            .get_json("/sync/config?outlet_id=o1&since_version=0")
+            .expect("get ok");
         handle.join().unwrap();
     }
 
@@ -156,14 +164,22 @@ mod tests {
             let seen = req
                 .headers()
                 .iter()
-                .find(|h| h.field.as_str().as_str().eq_ignore_ascii_case("Authorization"))
+                .find(|h| {
+                    h.field
+                        .as_str()
+                        .as_str()
+                        .eq_ignore_ascii_case("Authorization")
+                })
                 .map(|h| h.value.as_str().to_string());
             assert_eq!(seen.as_deref(), Some("Bearer cred-1.super-secret"));
             let _ = req.respond(tiny_http::Response::from_string("{}").with_status_code(201));
         });
 
-        let client = HttpClient::new(format!("http://{addr}")).with_bearer_token("cred-1.super-secret");
-        let _ = client.post_json("/orders", &serde_json::json!({})).expect("post ok");
+        let client =
+            HttpClient::new(format!("http://{addr}")).with_bearer_token("cred-1.super-secret");
+        let _ = client
+            .post_json("/orders", &serde_json::json!({}))
+            .expect("post ok");
         handle.join().unwrap();
     }
 }

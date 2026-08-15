@@ -76,8 +76,13 @@ const CONFIG_VERSION: i64 = 1;
 fn main() -> ExitCode {
     match run() {
         Ok(path) => {
-            println!("devseed: sealed edge database written to {}", path.display());
-            println!("devseed: login as {CASHIER_EMAIL} with the password from backend/cmd/devseed");
+            println!(
+                "devseed: sealed edge database written to {}",
+                path.display()
+            );
+            println!(
+                "devseed: login as {CASHIER_EMAIL} with the password from backend/cmd/devseed"
+            );
             ExitCode::SUCCESS
         }
         Err(e) => {
@@ -104,7 +109,8 @@ fn run() -> Result<PathBuf, String> {
     let sealed_path = data_dir.join("edge.db.enc");
     let plaintext_path = data_dir.join("edge.db");
 
-    let db = Db::open(&sealed_path, &plaintext_path, key).map_err(|e| format!("opening db: {e}"))?;
+    let db =
+        Db::open(&sealed_path, &plaintext_path, key).map_err(|e| format!("opening db: {e}"))?;
 
     seed(&db, &password_hash).map_err(|e| format!("seeding: {e}"))?;
 
@@ -122,7 +128,8 @@ fn run() -> Result<PathBuf, String> {
             .map_err(|e| format!("reopening for verification: {e}"))?;
         let result =
             repo::verify_offline_login(db.connection(), OUTLET_ID, CASHIER_EMAIL, &password);
-        db.close().map_err(|e| format!("resealing after verification: {e}"))?;
+        db.close()
+            .map_err(|e| format!("resealing after verification: {e}"))?;
 
         let user = result.map_err(|e| format!("offline login verification FAILED: {e}"))?;
         println!(
@@ -306,9 +313,8 @@ fn require_env(key: &'static str) -> Result<String, String> {
 /// where the identifier is `com.holler.pos` from tauri.conf.json. Override
 /// with HOLLER_EDGE_DATA_DIR if your Tauri version resolves it differently.
 fn default_app_data_dir() -> Result<PathBuf, String> {
-    let appdata = env::var("APPDATA").map_err(|_| {
-        "APPDATA is not set; pass HOLLER_EDGE_DATA_DIR explicitly".to_string()
-    })?;
+    let appdata = env::var("APPDATA")
+        .map_err(|_| "APPDATA is not set; pass HOLLER_EDGE_DATA_DIR explicitly".to_string())?;
     Ok(PathBuf::from(appdata).join("com.holler.pos"))
 }
 

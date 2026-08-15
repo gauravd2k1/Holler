@@ -286,7 +286,12 @@ impl SyncWorker {
                         // invalid or does not resolve to config.outlet_id —
                         // ADR-017 hole 1, closed: a mis-enrolled node is
                         // stopped before it sends anything, not after.
-                        self.record_attempt_stop(db, &row.id, true, StopReason::Rejected { status })?;
+                        self.record_attempt_stop(
+                            db,
+                            &row.id,
+                            true,
+                            StopReason::Rejected { status },
+                        )?;
                         report.stopped = Some(StopReason::Rejected { status });
                         return Ok(report);
                     }

@@ -36,12 +36,13 @@ impl PrinterTransport for NetworkTransport {
                 message: format!("invalid address: {e}"),
             })?;
 
-        let mut stream =
-            TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT).map_err(|e| PrinterError::Transport {
+        let mut stream = TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT).map_err(|e| {
+            PrinterError::Transport {
                 printer_id: String::new(),
                 address: self.address.clone(),
                 message: e.to_string(),
-            })?;
+            }
+        })?;
         stream
             .set_write_timeout(Some(WRITE_TIMEOUT))
             .map_err(|e| PrinterError::Transport {

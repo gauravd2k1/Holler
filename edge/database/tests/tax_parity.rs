@@ -107,26 +107,94 @@ fn edge_engine_reproduces_go_engine_fixtures_exactly() {
 
         for (lc, expected) in lcs.iter().zip(expected_lcs.iter()) {
             let oid = &lc.order_item_id;
-            assert_eq!(lc.gross_paise, i64_field(expected, "gross_paise"), "case {name} line {oid}: gross_paise");
-            assert_eq!(lc.discount_paise, i64_field(expected, "discount_paise"), "case {name} line {oid}: discount_paise");
-            assert_eq!(lc.taxable_value_paise, i64_field(expected, "taxable_value_paise"), "case {name} line {oid}: taxable_value_paise");
-            assert_eq!(lc.cgst_paise, i64_field(expected, "cgst_paise"), "case {name} line {oid}: cgst_paise");
-            assert_eq!(lc.sgst_paise, i64_field(expected, "sgst_paise"), "case {name} line {oid}: sgst_paise");
-            assert_eq!(lc.igst_paise, i64_field(expected, "igst_paise"), "case {name} line {oid}: igst_paise");
-            assert_eq!(lc.cess_paise, i64_field(expected, "cess_paise"), "case {name} line {oid}: cess_paise");
-            assert_eq!(lc.total_paise, i64_field(expected, "total_paise"), "case {name} line {oid}: total_paise");
+            assert_eq!(
+                lc.gross_paise,
+                i64_field(expected, "gross_paise"),
+                "case {name} line {oid}: gross_paise"
+            );
+            assert_eq!(
+                lc.discount_paise,
+                i64_field(expected, "discount_paise"),
+                "case {name} line {oid}: discount_paise"
+            );
+            assert_eq!(
+                lc.taxable_value_paise,
+                i64_field(expected, "taxable_value_paise"),
+                "case {name} line {oid}: taxable_value_paise"
+            );
+            assert_eq!(
+                lc.cgst_paise,
+                i64_field(expected, "cgst_paise"),
+                "case {name} line {oid}: cgst_paise"
+            );
+            assert_eq!(
+                lc.sgst_paise,
+                i64_field(expected, "sgst_paise"),
+                "case {name} line {oid}: sgst_paise"
+            );
+            assert_eq!(
+                lc.igst_paise,
+                i64_field(expected, "igst_paise"),
+                "case {name} line {oid}: igst_paise"
+            );
+            assert_eq!(
+                lc.cess_paise,
+                i64_field(expected, "cess_paise"),
+                "case {name} line {oid}: cess_paise"
+            );
+            assert_eq!(
+                lc.total_paise,
+                i64_field(expected, "total_paise"),
+                "case {name} line {oid}: total_paise"
+            );
         }
 
         let expected_totals = &case["totals"];
-        assert_eq!(totals.subtotal_paise, i64_field(expected_totals, "subtotal_paise"), "case {name}: subtotal_paise");
-        assert_eq!(totals.discount_paise, i64_field(expected_totals, "discount_paise"), "case {name}: discount_paise");
-        assert_eq!(totals.taxable_value_paise, i64_field(expected_totals, "taxable_value_paise"), "case {name}: taxable_value_paise");
-        assert_eq!(totals.cgst_paise, i64_field(expected_totals, "cgst_paise"), "case {name}: cgst_paise");
-        assert_eq!(totals.sgst_paise, i64_field(expected_totals, "sgst_paise"), "case {name}: sgst_paise");
-        assert_eq!(totals.igst_paise, i64_field(expected_totals, "igst_paise"), "case {name}: igst_paise");
-        assert_eq!(totals.cess_paise, i64_field(expected_totals, "cess_paise"), "case {name}: cess_paise");
-        assert_eq!(totals.round_off_paise, i64_field(expected_totals, "round_off_paise"), "case {name}: round_off_paise");
-        assert_eq!(totals.grand_total_paise, i64_field(expected_totals, "grand_total_paise"), "case {name}: grand_total_paise");
+        assert_eq!(
+            totals.subtotal_paise,
+            i64_field(expected_totals, "subtotal_paise"),
+            "case {name}: subtotal_paise"
+        );
+        assert_eq!(
+            totals.discount_paise,
+            i64_field(expected_totals, "discount_paise"),
+            "case {name}: discount_paise"
+        );
+        assert_eq!(
+            totals.taxable_value_paise,
+            i64_field(expected_totals, "taxable_value_paise"),
+            "case {name}: taxable_value_paise"
+        );
+        assert_eq!(
+            totals.cgst_paise,
+            i64_field(expected_totals, "cgst_paise"),
+            "case {name}: cgst_paise"
+        );
+        assert_eq!(
+            totals.sgst_paise,
+            i64_field(expected_totals, "sgst_paise"),
+            "case {name}: sgst_paise"
+        );
+        assert_eq!(
+            totals.igst_paise,
+            i64_field(expected_totals, "igst_paise"),
+            "case {name}: igst_paise"
+        );
+        assert_eq!(
+            totals.cess_paise,
+            i64_field(expected_totals, "cess_paise"),
+            "case {name}: cess_paise"
+        );
+        assert_eq!(
+            totals.round_off_paise,
+            i64_field(expected_totals, "round_off_paise"),
+            "case {name}: round_off_paise"
+        );
+        assert_eq!(
+            totals.grand_total_paise,
+            i64_field(expected_totals, "grand_total_paise"),
+            "case {name}: grand_total_paise"
+        );
 
         // Independent reconciliation check (not sourced from the fixture):
         // line-level components must sum to the invoice-level components —
@@ -135,10 +203,22 @@ fn edge_engine_reproduces_go_engine_fixtures_exactly() {
         let sum_sgst: i64 = lcs.iter().map(|l| l.sgst_paise).sum();
         let sum_igst: i64 = lcs.iter().map(|l| l.igst_paise).sum();
         let sum_cess: i64 = lcs.iter().map(|l| l.cess_paise).sum();
-        assert_eq!(sum_cgst, totals.cgst_paise, "case {name}: Σ(line.cgst_paise) != invoice.cgst_paise");
-        assert_eq!(sum_sgst, totals.sgst_paise, "case {name}: Σ(line.sgst_paise) != invoice.sgst_paise");
-        assert_eq!(sum_igst, totals.igst_paise, "case {name}: Σ(line.igst_paise) != invoice.igst_paise");
-        assert_eq!(sum_cess, totals.cess_paise, "case {name}: Σ(line.cess_paise) != invoice.cess_paise");
+        assert_eq!(
+            sum_cgst, totals.cgst_paise,
+            "case {name}: Σ(line.cgst_paise) != invoice.cgst_paise"
+        );
+        assert_eq!(
+            sum_sgst, totals.sgst_paise,
+            "case {name}: Σ(line.sgst_paise) != invoice.sgst_paise"
+        );
+        assert_eq!(
+            sum_igst, totals.igst_paise,
+            "case {name}: Σ(line.igst_paise) != invoice.igst_paise"
+        );
+        assert_eq!(
+            sum_cess, totals.cess_paise,
+            "case {name}: Σ(line.cess_paise) != invoice.cess_paise"
+        );
 
         // ADR-016 §3 bound: |round_off| <= 50 paise.
         assert!(

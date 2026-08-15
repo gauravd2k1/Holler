@@ -437,7 +437,8 @@ fn mis_enrolled_outlet_id_is_rejected_before_any_envelope_is_sent() {
         // catches it — the pump must never get that far.
         if let Ok(req) = server.recv() {
             seen_paths_clone.lock().unwrap().push(req.url().to_string());
-            let _ = req.respond(Response::from_string("{\"code\":\"not_found\"}").with_status_code(404));
+            let _ = req
+                .respond(Response::from_string("{\"code\":\"not_found\"}").with_status_code(404));
         }
     });
 
@@ -451,10 +452,15 @@ fn mis_enrolled_outlet_id_is_rejected_before_any_envelope_is_sent() {
     let mut config = worker_config(base_url);
     config.device_token = "cred-for-a-different-outlet.secret".to_string();
     let worker = SyncWorker::new(config);
-    let report = worker.pump_outbox(&mut db, 10).expect("pump must not panic on rejection");
+    let report = worker
+        .pump_outbox(&mut db, 10)
+        .expect("pump must not panic on rejection");
     handle.join().unwrap();
 
-    assert!(report.published.is_empty(), "no envelope may be sent once verification is rejected");
+    assert!(
+        report.published.is_empty(),
+        "no envelope may be sent once verification is rejected"
+    );
     assert_eq!(report.stopped, Some(StopReason::Rejected { status: 404 }));
     assert_eq!(*seen_paths.lock().unwrap(), vec![VERIFY_PATH]);
 

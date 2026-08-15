@@ -464,6 +464,7 @@ dependencies = [
  "aes-gcm",
  "argon2",
  "base64",
+ "chrono",
  "rand 0.8.7",
  "rusqlite",
  "serde_json",

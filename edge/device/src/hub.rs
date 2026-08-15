@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
 use std::sync::Mutex;
 
-use crate::contract::{Kot, KdsLanMessage};
+use crate::contract::{KdsLanMessage, Kot};
 
 /// How many outstanding messages a subscriber may lag by before this hub
 /// starts dropping messages for it rather than blocking the publisher.

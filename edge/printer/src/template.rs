@@ -180,7 +180,8 @@ struct FiscalProfileSnapshot {
     address_line2: Option<String>,
     city: String,
     state_code: String,
-    #[allow(dead_code)] // parsed for completeness of the snapshot shape; state_name is printed instead
+    #[allow(dead_code)]
+    // parsed for completeness of the snapshot shape; state_name is printed instead
     state_name: Option<String>,
     pincode: String,
     gstin: String,
@@ -346,7 +347,10 @@ pub fn render_invoice(
         &mut b,
         width,
         "Place of Supply",
-        &format!("{} ({})", profile.state_code, invoice.place_of_supply_state_code),
+        &format!(
+            "{} ({})",
+            profile.state_code, invoice.place_of_supply_state_code
+        ),
     );
     if let Some(name) = invoice
         .customer_name
@@ -372,7 +376,12 @@ pub fn render_invoice(
             b.line(&wrapped);
         }
         b.bold(false);
-        if let Some(hsn) = line.hsn_sac.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(hsn) = line
+            .hsn_sac
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             b.line(&format!("  HSN/SAC {hsn}"));
         }
         b.line(&format!(
@@ -383,7 +392,12 @@ pub fn render_invoice(
     }
     b.rule(width);
 
-    kv_line(&mut b, width, "Taxable Value", &money(invoice.taxable_value_paise));
+    kv_line(
+        &mut b,
+        width,
+        "Taxable Value",
+        &money(invoice.taxable_value_paise),
+    );
     if invoice.discount_paise != 0 {
         kv_line(&mut b, width, "Discount", &money(invoice.discount_paise));
     }
@@ -403,7 +417,12 @@ pub fn render_invoice(
         kv_line(&mut b, width, "Round Off", &money(invoice.round_off_paise));
     }
     b.bold(true);
-    kv_line(&mut b, width, "Grand Total", &money(invoice.grand_total_paise));
+    kv_line(
+        &mut b,
+        width,
+        "Grand Total",
+        &money(invoice.grand_total_paise),
+    );
     b.bold(false);
 
     if let Some(payment) = ctx.payment_summary {
@@ -458,14 +477,8 @@ mod tests {
     #[test]
     fn renders_58mm_and_80mm_without_error() {
         for width in [58, 80] {
-            let bytes = render_kot(
-                &items_json(),
-                "MAIN_KITCHEN",
-                &ctx(),
-                "10:15:31",
-                width,
-            )
-            .expect("renders");
+            let bytes = render_kot(&items_json(), "MAIN_KITCHEN", &ctx(), "10:15:31", width)
+                .expect("renders");
             assert!(!bytes.is_empty());
             // ESC @ must be the first two bytes: every ticket resets state.
             assert_eq!(&bytes[0..2], &[0x1B, 0x40]);
@@ -626,7 +639,10 @@ mod tests {
 
     #[test]
     fn require_order_display_number_accepts_present_value() {
-        assert_eq!(require_order_display_number(Some("#A184")).unwrap(), "#A184");
+        assert_eq!(
+            require_order_display_number(Some("#A184")).unwrap(),
+            "#A184"
+        );
     }
 
     #[test]
@@ -638,11 +654,19 @@ mod tests {
 
     #[test]
     fn invoice_renders_short_display_number_and_no_uuid() {
-        let bytes = render_invoice(&invoice_fixture(), &invoice_lines_fixture(), &invoice_ctx(), 80)
-            .expect("renders");
+        let bytes = render_invoice(
+            &invoice_fixture(),
+            &invoice_lines_fixture(),
+            &invoice_ctx(),
+            80,
+        )
+        .expect("renders");
         let text = String::from_utf8_lossy(&bytes);
 
-        assert!(text.contains("#A184"), "missing short display number: {text}");
+        assert!(
+            text.contains("#A184"),
+            "missing short display number: {text}"
+        );
         assert!(!text.contains(INVOICE_UUID), "leaked invoice.id UUID");
         assert!(!text.contains(ORDER_UUID), "leaked order.id UUID");
         assert!(!text.contains(LINE_ITEM_UUID), "leaked order_item_id UUID");
@@ -657,13 +681,21 @@ mod tests {
         // against a `None`, the shape a pre-minting order produces.
         let order_display_number: Option<&str> = None;
         let err = require_order_display_number(order_display_number);
-        assert!(err.is_err(), "must refuse to substitute order.id for a missing display_number");
+        assert!(
+            err.is_err(),
+            "must refuse to substitute order.id for a missing display_number"
+        );
     }
 
     #[test]
     fn invoice_carries_required_gst_fields() {
-        let bytes = render_invoice(&invoice_fixture(), &invoice_lines_fixture(), &invoice_ctx(), 80)
-            .expect("renders");
+        let bytes = render_invoice(
+            &invoice_fixture(),
+            &invoice_lines_fixture(),
+            &invoice_ctx(),
+            80,
+        )
+        .expect("renders");
         let text = String::from_utf8_lossy(&bytes);
 
         // Supplier identity.
@@ -708,7 +740,10 @@ mod tests {
         let text = String::from_utf8_lossy(&bytes);
         // The rendered grand total is exactly the sum the invoice stored,
         // not an independently recomputed figure.
-        assert!(text.contains(&format!("Grand Total: {}", money(invoice.grand_total_paise))));
+        assert!(text.contains(&format!(
+            "Grand Total: {}",
+            money(invoice.grand_total_paise)
+        )));
     }
 
     #[test]
@@ -718,15 +753,22 @@ mod tests {
         let ctx = invoice_ctx();
         let first = render_invoice(&invoice, &lines, &ctx, 80).unwrap();
         let second = render_invoice(&invoice, &lines, &ctx, 80).unwrap();
-        assert_eq!(first, second, "reprint of the same invoice must be byte-identical (§31)");
+        assert_eq!(
+            first, second,
+            "reprint of the same invoice must be byte-identical (§31)"
+        );
     }
 
     #[test]
     fn invoice_renders_both_paper_widths_and_is_well_formed_escpos() {
         for width in [58, 80] {
-            let bytes =
-                render_invoice(&invoice_fixture(), &invoice_lines_fixture(), &invoice_ctx(), width)
-                    .expect("renders");
+            let bytes = render_invoice(
+                &invoice_fixture(),
+                &invoice_lines_fixture(),
+                &invoice_ctx(),
+                width,
+            )
+            .expect("renders");
             assert!(!bytes.is_empty());
             assert_eq!(&bytes[0..2], &[0x1B, 0x40]);
             assert_eq!(&bytes[bytes.len() - 3..], &[0x1D, 0x56, 0x01]);
@@ -735,7 +777,12 @@ mod tests {
 
     #[test]
     fn invoice_rejects_unsupported_paper_width() {
-        let err = render_invoice(&invoice_fixture(), &invoice_lines_fixture(), &invoice_ctx(), 112);
+        let err = render_invoice(
+            &invoice_fixture(),
+            &invoice_lines_fixture(),
+            &invoice_ctx(),
+            112,
+        );
         assert!(err.is_err());
     }
 

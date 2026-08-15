@@ -375,8 +375,8 @@ mod tests {
             crate::error::SyncError::EmptyUserCache { config_version: 2 }
         ));
 
-        let tables = repo::list_restaurant_tables(db.connection(), "outlet-1")
-            .expect("list tables");
+        let tables =
+            repo::list_restaurant_tables(db.connection(), "outlet-1").expect("list tables");
         assert!(
             tables.is_empty(),
             "no part of a rejected bundle may apply, including the table carried alongside the empty users array"

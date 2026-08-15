@@ -596,7 +596,10 @@ mod order_display_number_wrap_tests {
             at_old_wrap, at_index_1,
             "index {old_wrap_point} must not collide with index 1 (the old #Z999 -> #A1 defect)"
         );
-        assert_eq!(at_old_wrap, "#AA1", "block 26 must render as the two-letter block AA, never a repeat of A");
+        assert_eq!(
+            at_old_wrap, "#AA1",
+            "block 26 must render as the two-letter block AA, never a repeat of A"
+        );
     }
 
     /// Drives a full run from 1 well past several old wrap boundaries
@@ -608,7 +611,10 @@ mod order_display_number_wrap_tests {
         let mut seen = std::collections::HashSet::new();
         for i in 1..=(78 * 999 + 100) {
             let s = format_order_display_number(i);
-            assert!(seen.insert(s), "duplicate display number produced at index {i}");
+            assert!(
+                seen.insert(s),
+                "duplicate display number produced at index {i}"
+            );
         }
     }
 
@@ -621,7 +627,10 @@ mod order_display_number_wrap_tests {
         let mut seen = std::collections::HashSet::new();
         for block in 0..3000 {
             let letters = block_letters(block);
-            assert!(seen.insert(letters), "block_letters({block}) collided with an earlier block");
+            assert!(
+                seen.insert(letters),
+                "block_letters({block}) collided with an earlier block"
+            );
         }
     }
 
@@ -785,7 +794,10 @@ pub(crate) fn insert_order(tx: &Transaction, o: &NewOrder) -> DbResult<String> {
 /// parse-or-leave-unchanged shape `correct_pending_item_added_quantity`
 /// already uses: a malformed payload is a caller bug elsewhere, not
 /// something this patch step should mask by erroring the whole create.
-pub(crate) fn patch_order_created_display_number(payload_json: &str, display_number: &str) -> String {
+pub(crate) fn patch_order_created_display_number(
+    payload_json: &str,
+    display_number: &str,
+) -> String {
     let Ok(mut value) = serde_json::from_str::<serde_json::Value>(payload_json) else {
         return payload_json.to_string();
     };
@@ -1168,7 +1180,10 @@ pub fn list_order_item_modifiers_for_order(
     let mut by_item: std::collections::HashMap<String, Vec<OrderItemModifier>> =
         std::collections::HashMap::new();
     for row in rows {
-        by_item.entry(row.order_item_id.clone()).or_default().push(row);
+        by_item
+            .entry(row.order_item_id.clone())
+            .or_default()
+            .push(row);
     }
     Ok(by_item)
 }
@@ -2291,10 +2306,7 @@ pub(crate) fn require_sendable_order(tx: &Transaction, order_id: &str) -> DbResu
 
 /// `menu_item.name` + the order line's quantity/notes + its modifier option
 /// names, matching `KotTicketItemSchema` (`packages/contracts/src/types/kot.ts`).
-pub(crate) fn build_kot_ticket_item(
-    tx: &Transaction,
-    item: &OrderItem,
-) -> DbResult<KotTicketItem> {
+pub(crate) fn build_kot_ticket_item(tx: &Transaction, item: &OrderItem) -> DbResult<KotTicketItem> {
     let name: String = tx.query_row(
         "SELECT name FROM menu_item WHERE id = ?1",
         params![item.menu_item_id],
@@ -2857,7 +2869,6 @@ mod device_credential_cache_tests {
     use super::*;
     use crate::Db;
 
-
     fn seed_outlet(conn: &Connection) {
         upsert_outlet(
             conn,
@@ -2950,12 +2961,16 @@ mod device_credential_cache_tests {
 
         let mut stale = sample(3);
         stale.credential_hash = "argon2id$should-not-apply".to_string();
-        replace_device_credential_cache(db.connection(), &stale).expect("stale write must not error");
+        replace_device_credential_cache(db.connection(), &stale)
+            .expect("stale write must not error");
 
         let got = get_device_credential_cache_by_id(db.connection(), "cred-1")
             .expect("lookup")
             .expect("row must exist");
-        assert_eq!(got.config_version, 5, "newer row must survive a stale replay");
+        assert_eq!(
+            got.config_version, 5,
+            "newer row must survive a stale replay"
+        );
         assert_eq!(got.credential_hash, "argon2id$fake-verifier");
     }
 }
@@ -2994,7 +3009,8 @@ fn row_to_compliance_version(row: &rusqlite::Row) -> rusqlite::Result<Compliance
     })
 }
 
-const COMPLIANCE_VERSION_COLUMNS: &str = "id, outlet_id, label, effective_from, notes, config_version";
+const COMPLIANCE_VERSION_COLUMNS: &str =
+    "id, outlet_id, label, effective_from, notes, config_version";
 
 pub fn list_compliance_versions_for_outlet(
     conn: &Connection,
@@ -3048,7 +3064,10 @@ fn row_to_tax_profile(row: &rusqlite::Row) -> rusqlite::Result<TaxProfile> {
 const TAX_PROFILE_COLUMNS: &str =
     "id, outlet_id, code, name, pricing_mode, is_default, is_active, config_version";
 
-pub fn list_tax_profiles_for_outlet(conn: &Connection, outlet_id: &str) -> DbResult<Vec<TaxProfile>> {
+pub fn list_tax_profiles_for_outlet(
+    conn: &Connection,
+    outlet_id: &str,
+) -> DbResult<Vec<TaxProfile>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {TAX_PROFILE_COLUMNS} FROM tax_profile WHERE outlet_id = ?1 ORDER BY code"
     ))?;
@@ -3105,7 +3124,10 @@ const TAX_RULE_COLUMNS: &str =
 /// of its own (it hangs off `tax_profile_id`, the `menu_item_variant`
 /// precedent) — callers already have the profile id from
 /// `tax::resolve_tax_profile`.
-pub fn list_tax_rules_for_profile(conn: &Connection, tax_profile_id: &str) -> DbResult<Vec<TaxRule>> {
+pub fn list_tax_rules_for_profile(
+    conn: &Connection,
+    tax_profile_id: &str,
+) -> DbResult<Vec<TaxRule>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {TAX_RULE_COLUMNS} FROM tax_rule WHERE tax_profile_id = ?1 ORDER BY effective_from"
     ))?;
@@ -3230,7 +3252,10 @@ fn row_to_invoice_series(row: &rusqlite::Row) -> rusqlite::Result<InvoiceSeries>
 const INVOICE_SERIES_COLUMNS: &str =
     "id, outlet_id, code, prefix_template, reset_policy, padding_width, is_active, config_version";
 
-pub fn list_invoice_series_for_outlet(conn: &Connection, outlet_id: &str) -> DbResult<Vec<InvoiceSeries>> {
+pub fn list_invoice_series_for_outlet(
+    conn: &Connection,
+    outlet_id: &str,
+) -> DbResult<Vec<InvoiceSeries>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {INVOICE_SERIES_COLUMNS} FROM invoice_series WHERE outlet_id = ?1 ORDER BY code"
     ))?;
@@ -3610,7 +3635,10 @@ pub fn list_invoice_lines(conn: &Connection, invoice_id: &str) -> DbResult<Vec<I
 /// Transaction-scoped twin of [`list_invoice_lines`], for
 /// [`crate::invoice::assemble`] reading back what it just wrote (inside the
 /// SAME transaction) to build the `InvoiceCreated` outbox payload.
-pub(crate) fn list_invoice_lines_in_tx(tx: &Transaction, invoice_id: &str) -> DbResult<Vec<InvoiceLine>> {
+pub(crate) fn list_invoice_lines_in_tx(
+    tx: &Transaction,
+    invoice_id: &str,
+) -> DbResult<Vec<InvoiceLine>> {
     let mut stmt = tx.prepare(&format!(
         "SELECT {INVOICE_LINE_COLUMNS} FROM invoice_line WHERE invoice_id = ?1 ORDER BY line_no"
     ))?;
@@ -3635,10 +3663,18 @@ fn build_invoice_created_payload(
     event_id: &str,
     occurred_at: &str,
 ) -> DbResult<String> {
-    let tax_snapshot: serde_json::Value = serde_json::from_str(&inv.tax_snapshot_json)
-        .map_err(|e| crate::error::DbError::InvalidInput(format!("stored tax_snapshot_json is not valid JSON: {e}")))?;
+    let tax_snapshot: serde_json::Value =
+        serde_json::from_str(&inv.tax_snapshot_json).map_err(|e| {
+            crate::error::DbError::InvalidInput(format!(
+                "stored tax_snapshot_json is not valid JSON: {e}"
+            ))
+        })?;
     let fiscal_profile: serde_json::Value = serde_json::from_str(&inv.fiscal_profile_json)
-        .map_err(|e| crate::error::DbError::InvalidInput(format!("stored fiscal_profile_json is not valid JSON: {e}")))?;
+        .map_err(|e| {
+            crate::error::DbError::InvalidInput(format!(
+                "stored fiscal_profile_json is not valid JSON: {e}"
+            ))
+        })?;
 
     let lines_json: Vec<serde_json::Value> = lines
         .iter()
@@ -3858,7 +3894,10 @@ pub(crate) fn list_reversals_for_payment_in_tx(
 /// Writes one `payment_allocation` row — how one tender settles against one
 /// invoice (T9 retry: the double-settlement guard needs this table actually
 /// written, not merely present in the schema). Only writer of this table.
-pub(crate) fn insert_payment_allocation(tx: &Transaction, a: &NewPaymentAllocation) -> DbResult<()> {
+pub(crate) fn insert_payment_allocation(
+    tx: &Transaction,
+    a: &NewPaymentAllocation,
+) -> DbResult<()> {
     tx.execute(
         "INSERT INTO payment_allocation (id, payment_id, invoice_id, amount_paise)
          VALUES (?1, ?2, ?3, ?4)",
@@ -4398,7 +4437,10 @@ mod m3_billing_config_tests {
 
         let got = list_tax_profiles_for_outlet(db.connection(), "outlet-1").expect("list");
         assert_eq!(got.len(), 1);
-        assert_eq!(got[0].config_version, 5, "newer row must survive a stale replay");
+        assert_eq!(
+            got[0].config_version, 5,
+            "newer row must survive a stale replay"
+        );
         assert_eq!(got[0].name, "Newer Name");
     }
 
@@ -4523,7 +4565,8 @@ mod m3_billing_config_tests {
                 .len(),
             1
         );
-        let discounts = list_discount_definitions_for_outlet(db.connection(), "outlet-1").expect("list");
+        let discounts =
+            list_discount_definitions_for_outlet(db.connection(), "outlet-1").expect("list");
         assert_eq!(discounts.len(), 1);
         assert_eq!(discounts[0].value_bps, Some(2000));
     }
@@ -4562,7 +4605,10 @@ mod m3_billing_config_tests {
 
         let got = list_compliance_versions_for_outlet(db.connection(), "outlet-1").expect("list");
         assert_eq!(got.len(), 1);
-        assert_eq!(got[0].config_version, 5, "newer row must survive a stale replay");
+        assert_eq!(
+            got[0].config_version, 5,
+            "newer row must survive a stale replay"
+        );
         assert_eq!(got[0].label, "Newer Label");
     }
 
@@ -4596,8 +4642,14 @@ mod m3_billing_config_tests {
 
         let got = list_tax_rules_for_profile(db.connection(), "profile-1").expect("list");
         assert_eq!(got.len(), 1);
-        assert_eq!(got[0].config_version, 5, "newer row must survive a stale replay");
-        assert_eq!(got[0].rate_bps, 900, "a stale replay must not regress the rate");
+        assert_eq!(
+            got[0].config_version, 5,
+            "newer row must survive a stale replay"
+        );
+        assert_eq!(
+            got[0].rate_bps, 900,
+            "a stale replay must not regress the rate"
+        );
     }
 
     fn sample_fiscal_profile(config_version: i64) -> OutletFiscalProfile {
@@ -4633,9 +4685,13 @@ mod m3_billing_config_tests {
         stale.gstin = "27STALEGSTIN001Z5".to_string();
         upsert_outlet_fiscal_profile(db.connection(), &stale).expect("stale write must not error");
 
-        let got = list_outlet_fiscal_profiles_for_outlet(db.connection(), "outlet-1").expect("list");
+        let got =
+            list_outlet_fiscal_profiles_for_outlet(db.connection(), "outlet-1").expect("list");
         assert_eq!(got.len(), 1);
-        assert_eq!(got[0].config_version, 5, "newer row must survive a stale replay");
+        assert_eq!(
+            got[0].config_version, 5,
+            "newer row must survive a stale replay"
+        );
         assert_eq!(got[0].gstin, "27NEWGSTIN0001Z5");
     }
 
@@ -4667,7 +4723,10 @@ mod m3_billing_config_tests {
 
         let got = list_invoice_series_for_outlet(db.connection(), "outlet-1").expect("list");
         assert_eq!(got.len(), 1);
-        assert_eq!(got[0].config_version, 5, "newer row must survive a stale replay");
+        assert_eq!(
+            got[0].config_version, 5,
+            "newer row must survive a stale replay"
+        );
         assert!(
             !got[0].is_active,
             "a stale replay must not resurrect a series retired at a newer config_version"
@@ -4709,7 +4768,10 @@ mod m3_billing_config_tests {
 
         let got = list_discount_definitions_for_outlet(db.connection(), "outlet-1").expect("list");
         assert_eq!(got.len(), 1);
-        assert_eq!(got[0].config_version, 5, "newer row must survive a stale replay");
+        assert_eq!(
+            got[0].config_version, 5,
+            "newer row must survive a stale replay"
+        );
         assert_eq!(
             got[0].value_bps,
             Some(1000),

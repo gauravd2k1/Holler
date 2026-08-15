@@ -10,7 +10,7 @@ use rusqlite::Transaction;
 
 use crate::error::{DbError, DbResult};
 use crate::model::{
-    Invoice, InvoiceLineShare, IssueInvoiceHeader, IssueInvoiceLinesRequest, InvoiceOutboxMeta,
+    Invoice, InvoiceLineShare, InvoiceOutboxMeta, IssueInvoiceHeader, IssueInvoiceLinesRequest,
     MissingHsnSacItem, NewInvoice, NewInvoiceLine, OrderItem, OutletFiscalProfile,
 };
 use crate::repo;
@@ -185,9 +185,10 @@ pub(crate) fn build_invoice(
     let mut missing_hsn: Vec<MissingHsnSacItem> = Vec::new();
 
     for share in &req.lines {
-        let order_item = repo::get_order_item_in_tx(tx, &share.order_item_id)?.ok_or_else(|| {
-            DbError::InvalidInput(format!("order_item {} not found", share.order_item_id))
-        })?;
+        let order_item =
+            repo::get_order_item_in_tx(tx, &share.order_item_id)?.ok_or_else(|| {
+                DbError::InvalidInput(format!("order_item {} not found", share.order_item_id))
+            })?;
         if order_item.order_id != header.order_id {
             return Err(DbError::InvalidInput(format!(
                 "order_item {} does not belong to order {}",
@@ -195,12 +196,14 @@ pub(crate) fn build_invoice(
             )));
         }
 
-        let menu_item = menu_item_by_id.get(order_item.menu_item_id.as_str()).ok_or_else(|| {
-            DbError::InvalidInput(format!(
-                "menu_item {} not found for order_item {}",
-                order_item.menu_item_id, order_item.id
-            ))
-        })?;
+        let menu_item = menu_item_by_id
+            .get(order_item.menu_item_id.as_str())
+            .ok_or_else(|| {
+                DbError::InvalidInput(format!(
+                    "menu_item {} not found for order_item {}",
+                    order_item.menu_item_id, order_item.id
+                ))
+            })?;
 
         let mut description = menu_item.name.clone();
         if let Some(variant_id) = &order_item.variant_id {
@@ -269,8 +272,16 @@ pub(crate) fn build_invoice(
     // The reproducibility snapshot (§31): every distinct profile actually
     // used on THIS invoice's lines, resolved rules included, as they stood
     // at issue time.
-    let all_rules: Vec<crate::model::TaxRule> = rules_by_profile.values().flatten().cloned().collect();
-    let snapshots = tax::build_tax_snapshots(&versions, &profiles, &all_rules, &header.outlet_id, &tax_lines, at)?;
+    let all_rules: Vec<crate::model::TaxRule> =
+        rules_by_profile.values().flatten().cloned().collect();
+    let snapshots = tax::build_tax_snapshots(
+        &versions,
+        &profiles,
+        &all_rules,
+        &header.outlet_id,
+        &tax_lines,
+        at,
+    )?;
     let tax_snapshot_json = tax::render_tax_snapshots(&snapshots).to_string();
 
     let fiscal_profile = resolve_fiscal_profile(&fiscal_profiles, &header.outlet_id, at)?;
@@ -364,8 +375,8 @@ pub(crate) fn persist_invoice(
         repo::insert_invoice_line(tx, &new_line)?;
     }
 
-    let stored_invoice = repo::get_invoice(tx, &new_invoice.id)?
-        .expect("just inserted this exact row above");
+    let stored_invoice =
+        repo::get_invoice(tx, &new_invoice.id)?.expect("just inserted this exact row above");
     let stored_lines = repo::list_invoice_lines_in_tx(tx, &new_invoice.id)?;
 
     repo::insert_invoice_created_outbox(tx, &stored_invoice, &stored_lines, outbox_meta)?;

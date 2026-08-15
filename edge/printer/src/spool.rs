@@ -137,15 +137,12 @@ pub fn due_jobs(conn: &Connection, now: DateTime<Utc>) -> PrinterResult<Vec<Prin
                 if job.attempt_count >= MAX_ATTEMPTS {
                     false
                 } else {
-                    let updated: DateTime<Utc> = job
-                        .updated_at
-                        .parse()
-                        .map_err(|_| {
-                            crate::error::PrinterError::InvalidInput(format!(
-                                "malformed print_job.updated_at: {}",
-                                job.updated_at
-                            ))
-                        })?;
+                    let updated: DateTime<Utc> = job.updated_at.parse().map_err(|_| {
+                        crate::error::PrinterError::InvalidInput(format!(
+                            "malformed print_job.updated_at: {}",
+                            job.updated_at
+                        ))
+                    })?;
                     now >= updated + backoff_for_attempt(job.attempt_count)
                 }
             }
@@ -257,8 +254,14 @@ mod tests {
     fn enqueue_creates_a_queued_job() {
         let (_dir, db) = open_test_db();
         seed_kot_and_printer(db.connection(), "kot-1", "printer-1");
-        let job = enqueue_job(db.connection(), "job-1", "kot-1", "printer-1", "2026-08-07T10:00:00Z")
-            .expect("enqueue");
+        let job = enqueue_job(
+            db.connection(),
+            "job-1",
+            "kot-1",
+            "printer-1",
+            "2026-08-07T10:00:00Z",
+        )
+        .expect("enqueue");
         assert_eq!(job.status, PrintJobStatus::Queued);
         assert_eq!(job.attempt_count, 0);
     }
@@ -279,13 +282,17 @@ mod tests {
         // A retry path (or a duplicate send-to-kitchen action) tries to
         // enqueue the same pair again with a *different* id, simulating a
         // caller that did not know a job already existed.
-        let again = enqueue_job(conn, "job-2", "kot-1", "printer-1", "2026-08-07T10:05:00Z").unwrap();
+        let again =
+            enqueue_job(conn, "job-2", "kot-1", "printer-1", "2026-08-07T10:05:00Z").unwrap();
 
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM print_job", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 1, "a late enqueue must not create a second row");
-        assert_eq!(again.id, "job-1", "must return the original job, not spawn job-2");
+        assert_eq!(
+            again.id, "job-1",
+            "must return the original job, not spawn job-2"
+        );
         assert_eq!(again.status, PrintJobStatus::Printed);
 
         // And a late printer ack for the *original* job after it is already
@@ -293,7 +300,10 @@ mod tests {
         mark_printed(conn, &job.id, "2026-08-07T10:06:00Z").unwrap();
         let after_late_ack = get_by_id(conn, &job.id).unwrap().unwrap();
         assert_eq!(after_late_ack.status, PrintJobStatus::Printed);
-        assert_eq!(after_late_ack.attempt_count, 1, "late ack must not re-bump attempt_count");
+        assert_eq!(
+            after_late_ack.attempt_count, 1,
+            "late ack must not re-bump attempt_count"
+        );
     }
 
     #[test]
@@ -339,7 +349,13 @@ mod tests {
         let job = enqueue_job(conn, "job-1", "kot-1", "printer-1", "2026-08-07T10:00:00Z").unwrap();
 
         for i in 0..MAX_ATTEMPTS {
-            mark_failed(conn, &job.id, "still down", &format!("2026-08-07T10:0{i}:00Z")).unwrap();
+            mark_failed(
+                conn,
+                &job.id,
+                "still down",
+                &format!("2026-08-07T10:0{i}:00Z"),
+            )
+            .unwrap();
         }
 
         let far_future: DateTime<Utc> = "2026-08-08T10:00:00Z".parse().unwrap();

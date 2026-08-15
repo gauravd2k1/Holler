@@ -115,12 +115,13 @@ impl Kot {
                 kot_id: row.id.clone(),
                 status: row.status.clone(),
             })?;
-        let items: Vec<KotTicketItem> = serde_json::from_str(&row.items_json).map_err(|source| {
-            KotConvertError::MalformedItems {
-                kot_id: row.id.clone(),
-                source,
-            }
-        })?;
+        let items: Vec<KotTicketItem> =
+            serde_json::from_str(&row.items_json).map_err(|source| {
+                KotConvertError::MalformedItems {
+                    kot_id: row.id.clone(),
+                    source,
+                }
+            })?;
         Ok(Kot {
             id: row.id.clone(),
             order_id: row.order_id.clone(),

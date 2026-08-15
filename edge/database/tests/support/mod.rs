@@ -183,7 +183,12 @@ pub fn seed(db: &Db, series_code: &str, reset_policy: &str) {
 /// Creates an order with `quantities.len()` order items, each of the seeded
 /// menu item, quantity from `quantities`, at `unit_price_paise` per unit.
 /// Returns `(order_id, Vec<order_item_id>)`.
-pub fn create_order(db: &mut Db, order_id: &str, unit_price_paise: i64, quantities: &[i64]) -> Vec<String> {
+pub fn create_order(
+    db: &mut Db,
+    order_id: &str,
+    unit_price_paise: i64,
+    quantities: &[i64],
+) -> Vec<String> {
     let order = NewOrder {
         id: order_id.to_string(),
         outlet_id: OUTLET_ID.to_string(),
@@ -244,7 +249,12 @@ pub fn create_order(db: &mut Db, order_id: &str, unit_price_paise: i64, quantiti
 // rather than in each binary, matching the pattern already needed for a
 // module shared across independent integration test crates.
 #[allow(dead_code)]
-pub fn header(order_id: &str, series_code: &str, business_date: &str, invoice_date: &str) -> IssueInvoiceHeader {
+pub fn header(
+    order_id: &str,
+    series_code: &str,
+    business_date: &str,
+    invoice_date: &str,
+) -> IssueInvoiceHeader {
     IssueInvoiceHeader {
         outlet_id: OUTLET_ID.to_string(),
         order_id: order_id.to_string(),

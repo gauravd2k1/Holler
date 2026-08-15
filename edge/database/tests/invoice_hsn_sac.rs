@@ -59,14 +59,29 @@ fn issuance_is_rejected_when_the_resolved_hsn_sac_is_null_and_names_the_item() {
     };
 
     let err = db
-        .issue_invoice_with_outbox(&header, "invoice-missing-hsn".to_string(), vec![share], &meta)
+        .issue_invoice_with_outbox(
+            &header,
+            "invoice-missing-hsn".to_string(),
+            vec![share],
+            &meta,
+        )
         .expect_err("issuance must be rejected when the resolved hsn_sac is NULL");
 
     match &err {
-        DbError::MissingHsnSac { order_id: oid, items } => {
+        DbError::MissingHsnSac {
+            order_id: oid,
+            items,
+        } => {
             assert_eq!(oid, order_id);
-            assert_eq!(items.len(), 1, "exactly the one offending item must be named");
-            assert_eq!(items[0].name, "Thali", "the error must name the offending item");
+            assert_eq!(
+                items.len(),
+                1,
+                "exactly the one offending item must be named"
+            );
+            assert_eq!(
+                items[0].name, "Thali",
+                "the error must name the offending item"
+            );
         }
         other => panic!("expected DbError::MissingHsnSac, got: {other:?}"),
     }
@@ -80,7 +95,9 @@ fn issuance_is_rejected_when_the_resolved_hsn_sac_is_null_and_names_the_item() {
     // attempt — the same all-or-nothing shape as every other pre-write
     // validation in this crate.
     assert!(
-        db.get_invoice("invoice-missing-hsn").expect("read").is_none(),
+        db.get_invoice("invoice-missing-hsn")
+            .expect("read")
+            .is_none(),
         "a rejected issuance must leave no invoice row behind"
     );
 
@@ -114,7 +131,12 @@ fn issuance_is_rejected_when_the_resolved_hsn_sac_is_null_and_names_the_item() {
         occurred_at: "2026-08-12T10:01:00Z".to_string(),
     };
     let issued = db
-        .issue_invoice_with_outbox(&header2, "invoice-restored".to_string(), vec![share2], &meta2)
+        .issue_invoice_with_outbox(
+            &header2,
+            "invoice-restored".to_string(),
+            vec![share2],
+            &meta2,
+        )
         .expect("issuance must succeed once hsn_sac is restored");
 
     let lines = db.list_invoice_lines(&issued.id).expect("read lines");

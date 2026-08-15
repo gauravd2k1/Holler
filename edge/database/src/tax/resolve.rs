@@ -319,8 +319,8 @@ mod tests {
             version("v2", "outlet-1", "2026-04-01T00:00:00Z"),
         ];
 
-        let at_boundary = resolve_compliance_version(&versions, "outlet-1", change)
-            .expect("resolve at boundary");
+        let at_boundary =
+            resolve_compliance_version(&versions, "outlet-1", change).expect("resolve at boundary");
         assert_eq!(
             at_boundary.id, "v2",
             "at == effective_from must resolve to the NEW version (inclusive boundary)"
@@ -349,7 +349,10 @@ mod tests {
             parse_utc("2025-06-01T00:00:00Z").unwrap(),
         )
         .expect("resolve");
-        assert_eq!(got.id, "v1", "a past instant must return the ruleset live then");
+        assert_eq!(
+            got.id, "v1",
+            "a past instant must return the ruleset live then"
+        );
 
         let err = resolve_compliance_version(
             &versions,
@@ -371,8 +374,22 @@ mod tests {
     fn rates_effective_from_and_effective_to_boundaries() {
         let change = parse_utc("2026-01-01T00:00:00Z").unwrap();
         let rules = vec![
-            rule("profile-1", "version-1", "CGST", 250, "2025-01-01T00:00:00Z", Some("2026-01-01T00:00:00Z")),
-            rule("profile-1", "version-1", "CGST", 900, "2026-01-01T00:00:00Z", None),
+            rule(
+                "profile-1",
+                "version-1",
+                "CGST",
+                250,
+                "2025-01-01T00:00:00Z",
+                Some("2026-01-01T00:00:00Z"),
+            ),
+            rule(
+                "profile-1",
+                "version-1",
+                "CGST",
+                900,
+                "2026-01-01T00:00:00Z",
+                None,
+            ),
         ];
 
         let at_boundary = resolve_rates(&rules, "profile-1", "version-1", change).expect("resolve");
@@ -395,7 +412,12 @@ mod tests {
     #[test]
     fn rates_unknown_profile_version_pair_errors() {
         let rules = vec![rule(
-            "profile-1", "version-1", "CGST", 250, "2025-01-01T00:00:00Z", None,
+            "profile-1",
+            "version-1",
+            "CGST",
+            250,
+            "2025-01-01T00:00:00Z",
+            None,
         )];
         let err = resolve_rates(
             &rules,
@@ -410,7 +432,12 @@ mod tests {
     #[test]
     fn rates_component_with_no_rule_is_absent_not_zero_entry() {
         let rules = vec![rule(
-            "profile-1", "version-1", "IGST", 1200, "2025-01-01T00:00:00Z", None,
+            "profile-1",
+            "version-1",
+            "IGST",
+            1200,
+            "2025-01-01T00:00:00Z",
+            None,
         )];
         let got = resolve_rates(
             &rules,
@@ -419,7 +446,11 @@ mod tests {
             parse_utc("2026-01-01T00:00:00Z").unwrap(),
         )
         .expect("resolve");
-        assert_eq!(got.len(), 1, "only IGST has a rule; CGST/SGST/CESS must be absent entirely");
+        assert_eq!(
+            got.len(),
+            1,
+            "only IGST has a rule; CGST/SGST/CESS must be absent entirely"
+        );
         assert_eq!(got[0].component, TaxComponent::Igst);
     }
 

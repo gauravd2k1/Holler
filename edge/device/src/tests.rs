@@ -43,7 +43,10 @@ impl FakeVerifier {
 
 impl DeviceTokenVerifier for FakeVerifier {
     fn verify(&self, token: &str, outlet_id: &str) -> DeviceResult<()> {
-        if self.valid.contains(&(outlet_id.to_string(), token.to_string())) {
+        if self
+            .valid
+            .contains(&(outlet_id.to_string(), token.to_string()))
+        {
             Ok(())
         } else {
             Err(DeviceError::Unauthorized(
@@ -244,14 +247,20 @@ fn connect_ws_with_token(
 /// keeps their original intent (snapshot/broadcast/reconnect/illegal
 /// transition) unentangled with the authentication tests added alongside
 /// ADR-017 hole 3, below.
-fn connect_ws(addr: std::net::SocketAddr, outlet_id: &str, device_id: &str) -> WebSocket<TcpStream> {
+fn connect_ws(
+    addr: std::net::SocketAddr,
+    outlet_id: &str,
+    device_id: &str,
+) -> WebSocket<TcpStream> {
     connect_ws_with_token(addr, outlet_id, device_id, Some(VALID_TOKEN))
 }
 
 fn read_message(socket: &mut WebSocket<TcpStream>) -> KdsLanMessage {
     loop {
         match socket.read().expect("ws read") {
-            Message::Text(text) => return serde_json::from_str(&text).expect("valid KdsLanMessage"),
+            Message::Text(text) => {
+                return serde_json::from_str(&text).expect("valid KdsLanMessage")
+            }
             _ => continue,
         }
     }
@@ -269,9 +278,16 @@ fn read_message_skip_heartbeats(socket: &mut WebSocket<TcpStream>) -> KdsLanMess
     }
 }
 
-fn start_test_server(db: Db) -> (server::LanServerHandle, std::net::SocketAddr, Arc<Mutex<Db>>) {
+fn start_test_server(
+    db: Db,
+) -> (
+    server::LanServerHandle,
+    std::net::SocketAddr,
+    Arc<Mutex<Db>>,
+) {
     let db = Arc::new(Mutex::new(db));
-    let verifier: Arc<dyn DeviceTokenVerifier> = Arc::new(FakeVerifier::allowing(OUTLET_ID, VALID_TOKEN));
+    let verifier: Arc<dyn DeviceTokenVerifier> =
+        Arc::new(FakeVerifier::allowing(OUTLET_ID, VALID_TOKEN));
     let handle = server::start(
         "127.0.0.1:0".parse().unwrap(),
         db.clone(),
@@ -292,7 +308,9 @@ fn snapshot_on_connect_and_reconnect() {
     let mut client1 = connect_ws(addr, OUTLET_ID, "kds-kitchen-1");
     let msg = read_message(&mut client1);
     match msg {
-        KdsLanMessage::Snapshot { kots, outlet_id, .. } => {
+        KdsLanMessage::Snapshot {
+            kots, outlet_id, ..
+        } => {
             assert_eq!(outlet_id, OUTLET_ID);
             assert_eq!(kots.len(), 1);
             assert_eq!(kots[0].id, kot_id);
@@ -375,8 +393,8 @@ fn dead_client_does_not_block_other_subscribers() {
 
     let mut dead = connect_ws(addr, OUTLET_ID, "kds-dead-1");
     let _ = read_message(&mut dead); // snapshot
-    // Simulate a wedged/dead client: stop reading, then sever the TCP
-    // connection abruptly (no close handshake) rather than politely closing.
+                                     // Simulate a wedged/dead client: stop reading, then sever the TCP
+                                     // connection abruptly (no close handshake) rather than politely closing.
     let raw = dead.get_ref().try_clone().expect("clone stream");
     raw.shutdown(std::net::Shutdown::Both).ok();
     drop(dead);
@@ -392,7 +410,9 @@ fn dead_client_does_not_block_other_subscribers() {
     };
     let start = Instant::now();
     alive
-        .send(Message::Text(serde_json::to_string(&command).unwrap().into()))
+        .send(Message::Text(
+            serde_json::to_string(&command).unwrap().into(),
+        ))
         .expect("send command");
     let update = read_message_skip_heartbeats(&mut alive);
     let elapsed = start.elapsed();
@@ -426,7 +446,9 @@ fn illegal_transition_from_kds_is_rejected_and_state_unchanged() {
         requested_at: "2026-08-07T10:03:00Z".to_string(),
     };
     client
-        .send(Message::Text(serde_json::to_string(&command).unwrap().into()))
+        .send(Message::Text(
+            serde_json::to_string(&command).unwrap().into(),
+        ))
         .expect("send illegal command");
 
     // No broadcast follows a rejected transition. Prove it by making a
@@ -436,7 +458,10 @@ fn illegal_transition_from_kds_is_rejected_and_state_unchanged() {
     {
         let guard = db_handle.lock().unwrap();
         let kots = guard.list_kots_for_order("order-1").unwrap();
-        assert_eq!(kots[0].status, "NEW", "illegal transition must not mutate state");
+        assert_eq!(
+            kots[0].status, "NEW",
+            "illegal transition must not mutate state"
+        );
     }
 
     let legal_command = KdsLanCommand::SetKotStatus {
@@ -498,7 +523,12 @@ fn connection_with_token_valid_for_a_different_outlet_is_rejected() {
 
     // VALID_TOKEN is only allowlisted for OUTLET_ID by start_test_server's
     // FakeVerifier — presenting it for a different outlet_id must fail.
-    let mut client = connect_ws_with_token(addr, "some-other-outlet", "kds-kitchen-1", Some(VALID_TOKEN));
+    let mut client = connect_ws_with_token(
+        addr,
+        "some-other-outlet",
+        "kds-kitchen-1",
+        Some(VALID_TOKEN),
+    );
     match client.read() {
         Ok(Message::Text(text)) => panic!("expected rejection, got a message instead: {text}"),
         Ok(Message::Close(_)) | Err(_) => {}
@@ -526,7 +556,9 @@ fn connection_whose_first_frame_is_not_an_auth_message_is_rejected() {
         requested_at: "2026-08-07T10:03:00Z".to_string(),
     };
     client
-        .send(Message::Text(serde_json::to_string(&command).unwrap().into()))
+        .send(Message::Text(
+            serde_json::to_string(&command).unwrap().into(),
+        ))
         .expect("send non-auth first frame");
 
     match client.read() {
@@ -537,8 +569,15 @@ fn connection_whose_first_frame_is_not_an_auth_message_is_rejected() {
 
     // And the transition it smuggled in a command shape must never have
     // applied — the server closed before ever reaching command handling.
-    let kots = db_handle.lock().unwrap().list_kots_for_order("order-1").unwrap();
-    assert_eq!(kots[0].status, "NEW", "a rejected connection's payload must never be applied");
+    let kots = db_handle
+        .lock()
+        .unwrap()
+        .list_kots_for_order("order-1")
+        .unwrap();
+    assert_eq!(
+        kots[0].status, "NEW",
+        "a rejected connection's payload must never be applied"
+    );
 
     handle.shutdown();
 }
@@ -662,11 +701,17 @@ fn kds_authenticates_from_local_cache_with_no_cloud_reachable() {
     .expect("server starts");
     let addr = handle.local_addr();
 
-    let mut client =
-        connect_ws_with_token(addr, OUTLET_ID, "kds-kitchen-1", Some("cred-kds-1.correct-secret"));
+    let mut client = connect_ws_with_token(
+        addr,
+        OUTLET_ID,
+        "kds-kitchen-1",
+        Some("cred-kds-1.correct-secret"),
+    );
     let msg = read_message(&mut client);
     match msg {
-        KdsLanMessage::Snapshot { kots, outlet_id, .. } => {
+        KdsLanMessage::Snapshot {
+            kots, outlet_id, ..
+        } => {
             assert_eq!(outlet_id, OUTLET_ID);
             assert_eq!(kots.len(), 1);
             assert_eq!(kots[0].id, kot_id);
@@ -710,10 +755,16 @@ fn revoked_cached_credential_is_rejected_even_though_present_locally() {
     .expect("server starts");
     let addr = handle.local_addr();
 
-    let mut client =
-        connect_ws_with_token(addr, OUTLET_ID, "kds-kitchen-1", Some("cred-kds-2.correct-secret"));
+    let mut client = connect_ws_with_token(
+        addr,
+        OUTLET_ID,
+        "kds-kitchen-1",
+        Some("cred-kds-2.correct-secret"),
+    );
     match client.read() {
-        Ok(Message::Text(text)) => panic!("expected rejection of a revoked credential, got: {text}"),
+        Ok(Message::Text(text)) => {
+            panic!("expected rejection of a revoked credential, got: {text}")
+        }
         Ok(Message::Close(_)) | Err(_) => {}
         Ok(other) => panic!("expected rejection, got {other:?}"),
     }
@@ -760,7 +811,9 @@ fn cached_credential_of_the_wrong_device_kind_is_rejected() {
         Some("cred-printer-1.correct-secret"),
     );
     match client.read() {
-        Ok(Message::Text(text)) => panic!("expected rejection of a wrong-kind credential, got: {text}"),
+        Ok(Message::Text(text)) => {
+            panic!("expected rejection of a wrong-kind credential, got: {text}")
+        }
         Ok(Message::Close(_)) | Err(_) => {}
         Ok(other) => panic!("expected rejection, got {other:?}"),
     }
@@ -800,7 +853,9 @@ fn uncached_credential_with_no_fallback_is_rejected() {
         Some("cred-unknown.some-secret"),
     );
     match client.read() {
-        Ok(Message::Text(text)) => panic!("expected rejection of an uncached credential, got: {text}"),
+        Ok(Message::Text(text)) => {
+            panic!("expected rejection of an uncached credential, got: {text}")
+        }
         Ok(Message::Close(_)) | Err(_) => {}
         Ok(other) => panic!("expected rejection, got {other:?}"),
     }

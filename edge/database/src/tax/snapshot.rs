@@ -233,7 +233,11 @@ mod tests {
         assert!(snapshots.contains_key("p-cess"));
 
         assert_eq!(snapshots["p-liquor"].tax_profile_code, "GST_18_LIQUOR");
-        let liquor_rates: Vec<_> = snapshots["p-liquor"].rates.iter().map(|r| r.rate_bps).collect();
+        let liquor_rates: Vec<_> = snapshots["p-liquor"]
+            .rates
+            .iter()
+            .map(|r| r.rate_bps)
+            .collect();
         assert_eq!(liquor_rates, vec![900, 900]);
 
         let cess_components: Vec<_> = snapshots["p-cess"]

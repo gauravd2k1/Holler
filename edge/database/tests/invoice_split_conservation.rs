@@ -113,7 +113,11 @@ fn run_property_case(seed: u32, n_items: i64, n_splits: i64) {
 
     let issued = db
         .issue_split_invoices_with_outbox(&header, format!("{order_id}-split-group"), parts, &metas)
-        .unwrap_or_else(|e| panic!("seed {seed} (n_items={n_items}, n_splits={n_splits}): split issuance failed: {e}"));
+        .unwrap_or_else(|e| {
+            panic!(
+                "seed {seed} (n_items={n_items}, n_splits={n_splits}): split issuance failed: {e}"
+            )
+        });
 
     assert_eq!(issued.len() as i64, n_splits);
 
@@ -122,13 +126,21 @@ fn run_property_case(seed: u32, n_items: i64, n_splits: i64) {
     let mut billed_by_item: HashMap<String, i64> = HashMap::new();
     let mut group_round_off_abs_sum: i64 = 0;
     for inv in &issued {
-        assert_eq!(inv.split_group_id.as_deref(), Some(format!("{order_id}-split-group").as_str()));
-        assert!(inv.round_off_paise >= -50 && inv.round_off_paise <= 50, "each part's own round_off must stay within the invoice CHECK bound");
+        assert_eq!(
+            inv.split_group_id.as_deref(),
+            Some(format!("{order_id}-split-group").as_str())
+        );
+        assert!(
+            inv.round_off_paise >= -50 && inv.round_off_paise <= 50,
+            "each part's own round_off must stay within the invoice CHECK bound"
+        );
         group_round_off_abs_sum += inv.round_off_paise.abs();
 
         let lines = db.list_invoice_lines(&inv.id).expect("read invoice lines");
         for line in lines {
-            *billed_by_item.entry(line.order_item_id.clone()).or_insert(0) += line.quantity;
+            *billed_by_item
+                .entry(line.order_item_id.clone())
+                .or_insert(0) += line.quantity;
         }
     }
 
@@ -171,7 +183,16 @@ fn run_property_case(seed: u32, n_items: i64, n_splits: i64) {
 fn split_conservation_holds_across_many_generated_orders() {
     // A spread of item counts / split counts, each run with several seeds —
     // "over generated orders", reproducibly.
-    let cases: &[(i64, i64)] = &[(1, 2), (2, 2), (3, 2), (3, 3), (4, 3), (5, 4), (2, 5), (6, 2)];
+    let cases: &[(i64, i64)] = &[
+        (1, 2),
+        (2, 2),
+        (3, 2),
+        (3, 3),
+        (4, 3),
+        (5, 4),
+        (2, 5),
+        (6, 2),
+    ];
     for &(n_items, n_splits) in cases {
         for seed in 0..5u32 {
             run_property_case(seed * 97 + 1, n_items, n_splits);
@@ -208,10 +229,15 @@ fn under_billed_split_is_rejected_atomically() {
     let err = db
         .issue_split_invoices_with_outbox(&header, "under-group".to_string(), parts, &metas)
         .expect_err("an under-billed split must be rejected");
-    assert!(format!("{err}").contains("conservation"), "expected a conservation error, got {err}");
+    assert!(
+        format!("{err}").contains("conservation"),
+        "expected a conservation error, got {err}"
+    );
 
     assert!(
-        db.list_invoices_for_order(order_id).expect("list").is_empty(),
+        db.list_invoices_for_order(order_id)
+            .expect("list")
+            .is_empty(),
         "a rejected split must leave NO invoice behind, not even a partially-issued one"
     );
 }
@@ -247,14 +273,23 @@ fn over_billed_split_is_rejected_atomically() {
         ),
     ];
     let metas = vec![
-        InvoiceOutboxMeta { outbox_id: "outbox-over-1".to_string(), occurred_at: "2026-08-12T10:00:00Z".to_string() },
-        InvoiceOutboxMeta { outbox_id: "outbox-over-2".to_string(), occurred_at: "2026-08-12T10:00:00Z".to_string() },
+        InvoiceOutboxMeta {
+            outbox_id: "outbox-over-1".to_string(),
+            occurred_at: "2026-08-12T10:00:00Z".to_string(),
+        },
+        InvoiceOutboxMeta {
+            outbox_id: "outbox-over-2".to_string(),
+            occurred_at: "2026-08-12T10:00:00Z".to_string(),
+        },
     ];
 
     let err = db
         .issue_split_invoices_with_outbox(&header, "over-group".to_string(), parts, &metas)
         .expect_err("an over-billed split must be rejected");
-    assert!(format!("{err}").contains("conservation"), "expected a conservation error, got {err}");
+    assert!(
+        format!("{err}").contains("conservation"),
+        "expected a conservation error, got {err}"
+    );
 
     assert!(
         db.list_invoices_for_order(order_id).expect("list").is_empty(),
@@ -299,13 +334,23 @@ fn a_correct_three_way_split_is_independently_payable_and_numbered() {
 
     let mut numbers: Vec<String> = issued.iter().map(|i| i.invoice_number.clone()).collect();
     numbers.sort();
-    assert_eq!(numbers, vec!["INV-000001", "INV-000002", "INV-000003"], "each part is independently numbered");
+    assert_eq!(
+        numbers,
+        vec!["INV-000001", "INV-000002", "INV-000003"],
+        "each part is independently numbered"
+    );
 
     for (i, inv) in issued.iter().enumerate() {
         assert_eq!(inv.split_index, i as i64 + 1);
         assert_eq!(inv.split_count, 3);
     }
 
-    let by_group = db.list_invoices_for_split_group("3way-group").expect("list by split group");
-    assert_eq!(by_group.len(), 3, "every part must be reachable by its split_group_id — the reprint/reconciliation read path");
+    let by_group = db
+        .list_invoices_for_split_group("3way-group")
+        .expect("list by split group");
+    assert_eq!(
+        by_group.len(),
+        3,
+        "every part must be reachable by its split_group_id — the reprint/reconciliation read path"
+    );
 }

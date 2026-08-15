@@ -27,7 +27,7 @@ use holler_edge_database::model::KotTransitionMeta;
 use holler_edge_database::Db;
 
 use crate::auth::DeviceTokenVerifier;
-use crate::contract::{Kot as WireKot, KdsLanCommand, KdsLanMessage, KotStatus};
+use crate::contract::{KdsLanCommand, KdsLanMessage, Kot as WireKot, KotStatus};
 use crate::error::DeviceError;
 use crate::hub::Hub;
 
@@ -109,7 +109,9 @@ impl Callback for HandshakeCallback {
         let query = request.uri().query().unwrap_or("");
         let params = parse_query(query);
         let result = match (params.get("outlet_id"), params.get("device_id")) {
-            (Some(outlet_id), Some(device_id)) if !outlet_id.is_empty() && !device_id.is_empty() => {
+            (Some(outlet_id), Some(device_id))
+                if !outlet_id.is_empty() && !device_id.is_empty() =>
+            {
                 Ok(ConnRequest {
                     outlet_id: outlet_id.clone(),
                     device_id: device_id.clone(),
@@ -125,7 +127,9 @@ impl Callback for HandshakeCallback {
         if is_err {
             let resp = tungstenite::http::Response::builder()
                 .status(400)
-                .body(Some("outlet_id and device_id query parameters are required".to_string()))
+                .body(Some(
+                    "outlet_id and device_id query parameters are required".to_string(),
+                ))
                 .expect("static 400 response is well-formed");
             return Err(resp);
         }
@@ -290,7 +294,11 @@ fn handle_connection(
     // Snapshot on connect (and this whole function re-runs on reconnect, so
     // "on reconnect" falls out of "on connect" — a screen unplugged for an
     // hour gets a fresh snapshot, never a replayed backlog).
-    let snapshot = build_snapshot(&db, &conn_request.outlet_id, conn_request.station.as_deref())?;
+    let snapshot = build_snapshot(
+        &db,
+        &conn_request.outlet_id,
+        conn_request.station.as_deref(),
+    )?;
     if writer_socket
         .send(Message::Text(serde_json::to_string(&snapshot)?.into()))
         .is_err()
@@ -335,7 +343,11 @@ fn handle_connection(
         match socket.read() {
             Ok(Message::Text(text)) => {
                 if let Err(err) = handle_command(&text, &outlet_id, &device_id, &db, &hub) {
-                    log::warn!("kds lan: rejected command from conn={}: {}", writer_conn_id, err);
+                    log::warn!(
+                        "kds lan: rejected command from conn={}: {}",
+                        writer_conn_id,
+                        err
+                    );
                 }
             }
             Ok(Message::Close(_)) => break,
@@ -395,7 +407,9 @@ fn authenticate_first_frame(
         match socket.read() {
             Ok(Message::Text(text)) => {
                 let frame: AuthFrame = serde_json::from_str(&text).map_err(|e| {
-                    DeviceError::Unauthorized(format!("first frame was not a valid auth message: {e}"))
+                    DeviceError::Unauthorized(format!(
+                        "first frame was not a valid auth message: {e}"
+                    ))
                 })?;
                 let AuthFrame::Auth { device_token } = frame;
                 return verifier.verify(&device_token, &conn_request.outlet_id);
@@ -414,7 +428,11 @@ fn authenticate_first_frame(
             {
                 continue;
             }
-            Err(e) => return Err(DeviceError::Unauthorized(format!("transport error before auth: {e}"))),
+            Err(e) => {
+                return Err(DeviceError::Unauthorized(format!(
+                    "transport error before auth: {e}"
+                )))
+            }
         }
     }
 }

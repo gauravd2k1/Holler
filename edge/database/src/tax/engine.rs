@@ -43,7 +43,9 @@ use super::domain::{
     component_value, rate_for, set_component_value, sum_rate_bps, Line, LineComputation,
     PricingMode, COMPONENT_ORDER,
 };
-use super::rounding::{largest_remainder_split, round_component_paise, round_to_nearest_rupee, BPS_DENOMINATOR};
+use super::rounding::{
+    largest_remainder_split, round_component_paise, round_to_nearest_rupee, BPS_DENOMINATOR,
+};
 use super::InvoiceTotals;
 
 pub fn compute_invoice(lines: &[Line]) -> DbResult<(Vec<LineComputation>, InvoiceTotals)> {
@@ -63,8 +65,8 @@ pub fn compute_invoice(lines: &[Line]) -> DbResult<(Vec<LineComputation>, Invoic
     let mut exclusive_weights: Vec<[i64; 4]> = Vec::new();
 
     for (i, line) in lines.iter().enumerate() {
-        let mut lc = compute_line_base(line)
-            .map_err(|e| DbError::InvalidInput(format!("line {i}: {e}")))?;
+        let mut lc =
+            compute_line_base(line).map_err(|e| DbError::InvalidInput(format!("line {i}: {e}")))?;
 
         subtotal += lc.gross_paise;
         discount += lc.discount_paise;
@@ -109,7 +111,8 @@ pub fn compute_invoice(lines: &[Line]) -> DbResult<(Vec<LineComputation>, Invoic
     }
     for &line_idx in &exclusive_idx {
         let lc = &mut computed[line_idx];
-        lc.total_paise = lc.taxable_value_paise + lc.cgst_paise + lc.sgst_paise + lc.igst_paise + lc.cess_paise;
+        lc.total_paise =
+            lc.taxable_value_paise + lc.cgst_paise + lc.sgst_paise + lc.igst_paise + lc.cess_paise;
     }
 
     let cgst = inclusive_sum[0] + exclusive_rounded[0];
@@ -162,7 +165,9 @@ fn compute_line_base(line: &Line) -> DbResult<LineComputation> {
     }
     for r in &line.rates {
         if r.rate_bps < 0 {
-            return Err(DbError::InvalidInput("rate_bps must not be negative".into()));
+            return Err(DbError::InvalidInput(
+                "rate_bps must not be negative".into(),
+            ));
         }
     }
 
@@ -223,13 +228,17 @@ fn finish_inclusive_line(lc: &mut LineComputation, line: &Line) {
     let net = lc.gross_paise - lc.discount_paise;
     let line_tax_total = net - lc.taxable_value_paise;
 
-    let weights: Vec<i64> = COMPONENT_ORDER.iter().map(|c| rate_for(&line.rates, *c)).collect();
+    let weights: Vec<i64> = COMPONENT_ORDER
+        .iter()
+        .map(|c| rate_for(&line.rates, *c))
+        .collect();
     let shares = largest_remainder_split(line_tax_total, &weights);
     lc.cgst_paise = shares[0];
     lc.sgst_paise = shares[1];
     lc.igst_paise = shares[2];
     lc.cess_paise = shares[3];
-    lc.total_paise = lc.taxable_value_paise + lc.cgst_paise + lc.sgst_paise + lc.igst_paise + lc.cess_paise;
+    lc.total_paise =
+        lc.taxable_value_paise + lc.cgst_paise + lc.sgst_paise + lc.igst_paise + lc.cess_paise;
 }
 
 #[cfg(test)]
@@ -239,8 +248,14 @@ mod tests {
 
     fn gst_restaurant_5() -> Vec<ResolvedRate> {
         vec![
-            ResolvedRate { component: TaxComponent::Cgst, rate_bps: 250 },
-            ResolvedRate { component: TaxComponent::Sgst, rate_bps: 250 },
+            ResolvedRate {
+                component: TaxComponent::Cgst,
+                rate_bps: 250,
+            },
+            ResolvedRate {
+                component: TaxComponent::Sgst,
+                rate_bps: 250,
+            },
         ]
     }
 
@@ -248,23 +263,49 @@ mod tests {
     fn exclusive_pricing_worked_example() {
         let lines = vec![
             Line {
-                order_item_id: "item-1".into(), description: "Butter Chicken".into(), hsn_sac: None,
-                quantity: 2, unit_price_paise: 32000, discount_per_unit_paise: 0,
-                tax_profile_id: "gst5".into(), pricing_mode: PricingMode::Exclusive, rates: gst_restaurant_5(),
+                order_item_id: "item-1".into(),
+                description: "Butter Chicken".into(),
+                hsn_sac: None,
+                quantity: 2,
+                unit_price_paise: 32000,
+                discount_per_unit_paise: 0,
+                tax_profile_id: "gst5".into(),
+                pricing_mode: PricingMode::Exclusive,
+                rates: gst_restaurant_5(),
             },
             Line {
-                order_item_id: "item-2".into(), description: "Coke".into(), hsn_sac: None,
-                quantity: 1, unit_price_paise: 6000, discount_per_unit_paise: 0,
-                tax_profile_id: "gst5".into(), pricing_mode: PricingMode::Exclusive, rates: gst_restaurant_5(),
+                order_item_id: "item-2".into(),
+                description: "Coke".into(),
+                hsn_sac: None,
+                quantity: 1,
+                unit_price_paise: 6000,
+                discount_per_unit_paise: 0,
+                tax_profile_id: "gst5".into(),
+                pricing_mode: PricingMode::Exclusive,
+                rates: gst_restaurant_5(),
             },
             Line {
-                order_item_id: "item-3".into(), description: "Sweetened Beverage".into(), hsn_sac: None,
-                quantity: 1, unit_price_paise: 5000, discount_per_unit_paise: 0,
-                tax_profile_id: "gst12cess".into(), pricing_mode: PricingMode::Exclusive,
+                order_item_id: "item-3".into(),
+                description: "Sweetened Beverage".into(),
+                hsn_sac: None,
+                quantity: 1,
+                unit_price_paise: 5000,
+                discount_per_unit_paise: 0,
+                tax_profile_id: "gst12cess".into(),
+                pricing_mode: PricingMode::Exclusive,
                 rates: vec![
-                    ResolvedRate { component: TaxComponent::Cgst, rate_bps: 600 },
-                    ResolvedRate { component: TaxComponent::Sgst, rate_bps: 600 },
-                    ResolvedRate { component: TaxComponent::Cess, rate_bps: 280 },
+                    ResolvedRate {
+                        component: TaxComponent::Cgst,
+                        rate_bps: 600,
+                    },
+                    ResolvedRate {
+                        component: TaxComponent::Sgst,
+                        rate_bps: 600,
+                    },
+                    ResolvedRate {
+                        component: TaxComponent::Cess,
+                        rate_bps: 280,
+                    },
                 ],
             },
         ];
@@ -277,7 +318,11 @@ mod tests {
         assert_eq!(totals.cgst_paise, 2050);
         assert_eq!(totals.sgst_paise, 2050);
         assert_eq!(totals.cess_paise, 140);
-        let pre_round = totals.taxable_value_paise + totals.cgst_paise + totals.sgst_paise + totals.igst_paise + totals.cess_paise;
+        let pre_round = totals.taxable_value_paise
+            + totals.cgst_paise
+            + totals.sgst_paise
+            + totals.igst_paise
+            + totals.cess_paise;
         assert_eq!(pre_round, 79240);
         assert_eq!(totals.grand_total_paise, 79200);
         assert_eq!(totals.round_off_paise, -40);
@@ -287,21 +332,37 @@ mod tests {
     fn inclusive_pricing_reconstructs_gross_exactly() {
         let lines = vec![
             Line {
-                order_item_id: "item-1".into(), description: "Thali".into(), hsn_sac: None,
-                quantity: 1, unit_price_paise: 10500, discount_per_unit_paise: 0,
-                tax_profile_id: "gst5".into(), pricing_mode: PricingMode::Inclusive, rates: gst_restaurant_5(),
+                order_item_id: "item-1".into(),
+                description: "Thali".into(),
+                hsn_sac: None,
+                quantity: 1,
+                unit_price_paise: 10500,
+                discount_per_unit_paise: 0,
+                tax_profile_id: "gst5".into(),
+                pricing_mode: PricingMode::Inclusive,
+                rates: gst_restaurant_5(),
             },
             Line {
-                order_item_id: "item-2".into(), description: "Lassi".into(), hsn_sac: None,
-                quantity: 3, unit_price_paise: 9900, discount_per_unit_paise: 0,
-                tax_profile_id: "gst5".into(), pricing_mode: PricingMode::Inclusive, rates: gst_restaurant_5(),
+                order_item_id: "item-2".into(),
+                description: "Lassi".into(),
+                hsn_sac: None,
+                quantity: 3,
+                unit_price_paise: 9900,
+                discount_per_unit_paise: 0,
+                tax_profile_id: "gst5".into(),
+                pricing_mode: PricingMode::Inclusive,
+                rates: gst_restaurant_5(),
             },
         ];
 
         let (lcs, _) = compute_invoice(&lines).expect("compute");
         for lc in &lcs {
             let gross = lc.gross_paise - lc.discount_paise;
-            let reconstructed = lc.taxable_value_paise + lc.cgst_paise + lc.sgst_paise + lc.igst_paise + lc.cess_paise;
+            let reconstructed = lc.taxable_value_paise
+                + lc.cgst_paise
+                + lc.sgst_paise
+                + lc.igst_paise
+                + lc.cess_paise;
             assert_eq!(reconstructed, gross);
             assert_eq!(lc.total_paise, gross);
         }
@@ -311,9 +372,39 @@ mod tests {
     #[test]
     fn rejects_invalid_lines() {
         let bad = vec![
-            Line { order_item_id: "x".into(), description: String::new(), hsn_sac: None, quantity: 0, unit_price_paise: 100, discount_per_unit_paise: 0, tax_profile_id: String::new(), pricing_mode: PricingMode::Exclusive, rates: vec![] },
-            Line { order_item_id: "x".into(), description: String::new(), hsn_sac: None, quantity: 1, unit_price_paise: -1, discount_per_unit_paise: 0, tax_profile_id: String::new(), pricing_mode: PricingMode::Exclusive, rates: vec![] },
-            Line { order_item_id: "x".into(), description: String::new(), hsn_sac: None, quantity: 1, unit_price_paise: 100, discount_per_unit_paise: 200, tax_profile_id: String::new(), pricing_mode: PricingMode::Exclusive, rates: vec![] },
+            Line {
+                order_item_id: "x".into(),
+                description: String::new(),
+                hsn_sac: None,
+                quantity: 0,
+                unit_price_paise: 100,
+                discount_per_unit_paise: 0,
+                tax_profile_id: String::new(),
+                pricing_mode: PricingMode::Exclusive,
+                rates: vec![],
+            },
+            Line {
+                order_item_id: "x".into(),
+                description: String::new(),
+                hsn_sac: None,
+                quantity: 1,
+                unit_price_paise: -1,
+                discount_per_unit_paise: 0,
+                tax_profile_id: String::new(),
+                pricing_mode: PricingMode::Exclusive,
+                rates: vec![],
+            },
+            Line {
+                order_item_id: "x".into(),
+                description: String::new(),
+                hsn_sac: None,
+                quantity: 1,
+                unit_price_paise: 100,
+                discount_per_unit_paise: 200,
+                tax_profile_id: String::new(),
+                pricing_mode: PricingMode::Exclusive,
+                rates: vec![],
+            },
         ];
         for line in bad {
             assert!(compute_invoice(&[line]).is_err());

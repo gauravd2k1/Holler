@@ -25,9 +25,11 @@ pub(crate) fn open_cash_shift(
     opening_movement_id: &str,
     outbox_meta: &CashShiftOutboxMeta,
 ) -> DbResult<(CashShift, Vec<CashMovement>)> {
-    if let Some(existing_id) =
-        repo::count_open_cash_shifts_for_device_cashier(tx, &new_shift.device_id, &new_shift.cashier_user_id)?
-    {
+    if let Some(existing_id) = repo::count_open_cash_shifts_for_device_cashier(
+        tx,
+        &new_shift.device_id,
+        &new_shift.cashier_user_id,
+    )? {
         return Err(DbError::CashShiftAlreadyOpen {
             device_id: new_shift.device_id.clone(),
             cashier_user_id: new_shift.cashier_user_id.clone(),
@@ -36,8 +38,8 @@ pub(crate) fn open_cash_shift(
     }
 
     repo::insert_cash_shift(tx, &new_shift)?;
-    let stored = repo::get_cash_shift_in_tx(tx, &new_shift.id)?
-        .expect("just inserted this exact row above");
+    let stored =
+        repo::get_cash_shift_in_tx(tx, &new_shift.id)?.expect("just inserted this exact row above");
 
     let opening_movement = NewCashMovement {
         id: opening_movement_id.to_string(),
@@ -144,7 +146,10 @@ pub(crate) fn close_cash_shift(
 /// travels only inside the `CashShiftClosed`/`CashShiftOpened` payload's
 /// `movements` array, the same "child row, not an aggregate" shape
 /// `payment_allocation` and `invoice_line` already use.
-pub(crate) fn record_paid_in_out(tx: &Transaction, req: PaidInOutRequest) -> DbResult<CashMovement> {
+pub(crate) fn record_paid_in_out(
+    tx: &Transaction,
+    req: PaidInOutRequest,
+) -> DbResult<CashMovement> {
     if req.kind != "PAID_IN" && req.kind != "PAID_OUT" {
         return Err(DbError::InvalidInput(format!(
             "record_paid_in_out only accepts PAID_IN or PAID_OUT, got {}",
@@ -286,7 +291,8 @@ mod tests {
     fn opening_a_second_shift_for_the_same_cashier_device_is_rejected() {
         let mut db = open_db();
         let tx = db.connection_mut().transaction().expect("tx");
-        open_cash_shift(&tx, new_shift("shift-1"), "mv-1", &open_meta("out-1")).expect("first open");
+        open_cash_shift(&tx, new_shift("shift-1"), "mv-1", &open_meta("out-1"))
+            .expect("first open");
 
         let err = open_cash_shift(&tx, new_shift("shift-2"), "mv-2", &open_meta("out-2"))
             .expect_err("a second open shift for the same cashier/device must be rejected");
@@ -421,7 +427,10 @@ mod tests {
             },
         )
         .expect_err("blank reason must be rejected");
-        assert!(matches!(blank_err, DbError::CashMovementReasonRequired { .. }));
+        assert!(matches!(
+            blank_err,
+            DbError::CashMovementReasonRequired { .. }
+        ));
 
         let movement = record_paid_in_out(
             &tx,

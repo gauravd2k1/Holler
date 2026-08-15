@@ -78,7 +78,8 @@ fn run() -> Result<(), String> {
         "kds-lan-server: opening edge database at {}",
         sealed_path.display()
     );
-    let db = Db::open(&sealed_path, &plaintext_path, key).map_err(|e| format!("opening db: {e}"))?;
+    let db =
+        Db::open(&sealed_path, &plaintext_path, key).map_err(|e| format!("opening db: {e}"))?;
     let db = Arc::new(Mutex::new(db));
 
     // ADR-017 amendment (0.4.3): every KDS connection must present a
@@ -92,12 +93,9 @@ fn run() -> Result<(), String> {
     let cloud_base_url = require_env("HOLLER_CLOUD_BASE_URL")?;
     let cloud_fallback: Arc<dyn holler_edge_device::DeviceTokenVerifier> =
         Arc::new(CloudConfigOracleVerifier::new(cloud_base_url));
-    let verifier: Arc<dyn holler_edge_device::DeviceTokenVerifier> =
-        Arc::new(CachedCredentialVerifier::new(
-            db.clone(),
-            "KDS",
-            Some(cloud_fallback),
-        ));
+    let verifier: Arc<dyn holler_edge_device::DeviceTokenVerifier> = Arc::new(
+        CachedCredentialVerifier::new(db.clone(), "KDS", Some(cloud_fallback)),
+    );
 
     let handle = server::start(
         bind_addr,

@@ -27,7 +27,9 @@ mod resolve;
 mod rounding;
 mod snapshot;
 
-pub use domain::{Line, LineComputation, ResolvedRate, TaxComponent, PricingMode, InvoiceTotals, COMPONENT_ORDER};
+pub use domain::{
+    InvoiceTotals, Line, LineComputation, PricingMode, ResolvedRate, TaxComponent, COMPONENT_ORDER,
+};
 pub use engine::compute_invoice;
 pub use resolve::{parse_utc, resolve_compliance_version, resolve_rates, resolve_tax_profile};
 pub use snapshot::{build_tax_snapshot, build_tax_snapshots, render_tax_snapshots, TaxSnapshot};
