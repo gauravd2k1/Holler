@@ -330,15 +330,34 @@ export async function listStations(): Promise<Station[]> {
   }
 }
 
-/** A failed `print_job` joined with the printer name and the KOT's station —
- * the staff-visible failure view (docs/spec/hardware-printing.md: "Print
- * failures must be visible to staff"). `PrintJobSchema` has no wire mirror
- * for the two extra display fields (`print_job` never crosses a sync
- * boundary, ADR-014 §3), so this extends it locally rather than inventing a
- * second, looser schema. */
-const FailedPrintJobSchema = PrintJobSchema.extend({
+/** A failed `print_job` joined with the printer name and, depending on
+ * `target`, the KOT's station or the invoice's number — the staff-visible
+ * failure view (docs/spec/hardware-printing.md: "Print failures must be
+ * visible to staff"). A cook needs the station; a cashier needs the invoice
+ * number, and a bill that silently exhausted its print retries is the same
+ * failure one layer up from a dropped KOT (§64).
+ *
+ * `print_job` never crosses a sync boundary (ADR-014 §3), so it has no wire
+ * mirror in `packages/contracts` to extend — and `PrintJobSchema.kot_id` is
+ * a required uuid, which can no longer describe an invoice-linked row, so
+ * this is a standalone local schema rather than `PrintJobSchema.extend(...)`.
+ * `target` is what callers should branch on — never infer the kind from
+ * which of `kot_id`/`invoice_id` happens to be present. */
+const FailedPrintJobSchema = z.object({
+  id: z.string().uuid(),
+  target: z.enum(["KOT", "INVOICE"]),
+  kot_id: z.string().uuid().nullable(),
+  kot_station: z.string().nullable(),
+  invoice_id: z.string().uuid().nullable(),
+  invoice_number: z.string().nullable(),
+  printer_id: z.string().uuid(),
+  status: PrintJobSchema.shape.status,
+  attempt_count: z.number().int().nonnegative(),
+  last_error: z.string().nullable(),
+  created_at: z.string().datetime(),
+  updated_at: z.string().datetime(),
   printer_name: z.string(),
-  kot_station: z.string(),
+  schema_version: z.literal(1),
 });
 export type FailedPrintJob = z.infer<typeof FailedPrintJobSchema>;
 

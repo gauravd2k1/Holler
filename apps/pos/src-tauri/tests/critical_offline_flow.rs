@@ -1234,12 +1234,22 @@ fn a_print_failure_is_visible_to_staff_after_send_to_kitchen() {
     .expect("create order");
     holler_pos_lib::commands::orders::confirm_order_impl(&state, &order.holler_order_id)
         .expect("confirm order");
-    send_order_to_kitchen_impl(&state, &order.holler_order_id).expect("send to kitchen");
+    let kots =
+        send_order_to_kitchen_impl(&state, &order.holler_order_id).expect("send to kitchen");
+    let kot_id = kots[0].id.clone();
 
     let failed = list_failed_print_jobs_impl(&state).expect("list failed print jobs");
     assert_eq!(failed.len(), 1);
+    assert_eq!(failed[0].target, holler_pos_lib::dto::FailedPrintJobTarget::Kot);
     assert_eq!(failed[0].printer_name, "Kitchen Printer");
-    assert_eq!(failed[0].kot_station, "MAIN_KITCHEN");
+    assert_eq!(
+        failed[0].kot_id.as_deref(),
+        Some(kot_id.as_str()),
+        "a failed KOT job must carry which ticket failed, not an absent id"
+    );
+    assert_eq!(failed[0].kot_station.as_deref(), Some("MAIN_KITCHEN"));
+    assert!(failed[0].invoice_id.is_none());
+    assert!(failed[0].invoice_number.is_none());
     assert!(failed[0].last_error.is_some());
 }
 

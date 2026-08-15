@@ -10,7 +10,9 @@ use holler_pos_lib::commands::billing::{
     close_cash_shift_impl, find_open_cash_shift_impl, issue_invoice_impl, open_cash_shift_impl,
     record_payment_impl, LineDiscountInput,
 };
+use holler_pos_lib::commands::kitchen::{list_failed_print_jobs_impl, retry_failed_print_jobs_impl};
 use holler_pos_lib::commands::orders::{create_order_impl, NewOrderItemRequest};
+use holler_pos_lib::dto::FailedPrintJobTarget;
 use holler_pos_lib::state::AppState;
 
 const OUTLET_ID: &str = "outlet-1";
@@ -728,4 +730,83 @@ fn find_open_cash_shift_recovers_after_a_simulated_restart_and_can_then_be_close
             .is_none(),
         "a closed shift is no longer found as open"
     );
+}
+
+// ----------------------------------------- §64 failed-invoice visibility --
+// docs/spec/hardware-printing.md: "Print failures must be visible to
+// staff." A failed KOT print job has always surfaced through
+// `list_failed_print_jobs_impl`; this closes the same gap for a failed
+// *invoice* print job (the defect `edge/printer::list_failed_jobs`'s
+// `LEFT JOIN` fix addressed, and this crate's DTO layer had flattened back
+// out via `.unwrap_or_default()`). `commands::kitchen::
+// invoice_print_ctx_unwired` guarantees any invoice print attempt through
+// this crate's own sweep fails (apps/pos does not enqueue invoice print
+// jobs yet) — so enqueuing one directly via
+// `holler_edge_printer::adapter::queue_invoice_for_print` and sweeping is
+// the only way to produce a failed invoice job here, and it is exactly the
+// case a cashier needs to see.
+#[test]
+fn a_failed_invoice_print_job_reaches_the_failed_jobs_view_with_its_invoice_number() {
+    let state = app_state();
+    let order = create_order_impl(
+        &state,
+        "DINE_IN".to_string(),
+        None,
+        vec![NewOrderItemRequest {
+            menu_item_id: "item-1".to_string(),
+            variant_id: None,
+            quantity: 1,
+            unit_price_paise: 20_000,
+            notes: None,
+            modifiers: vec![],
+        }],
+    )
+    .expect("create order");
+    let invoice = issue_invoice_impl(&state, &order.holler_order_id, USER_ID, &[]).expect("issue invoice");
+
+    {
+        let db = state.db.lock().expect("lock");
+        holler_edge_database::repo::upsert_printer(
+            db.connection(),
+            &holler_edge_database::model::Printer {
+                id: "printer-bill".to_string(),
+                outlet_id: OUTLET_ID.to_string(),
+                name: "Bill Printer".to_string(),
+                connection_kind: "ESCPOS_NETWORK".to_string(),
+                // Deliberately unreachable, same trick
+                // `critical_offline_flow.rs` uses: connect fails instantly,
+                // no real socket opens.
+                address: "127.0.0.1:1".to_string(),
+                paper_width_mm: 80,
+                is_active: true,
+                config_version: 1,
+            },
+        )
+        .expect("seed bill printer");
+
+        holler_edge_printer::adapter::queue_invoice_for_print(
+            db.connection(),
+            &invoice.id,
+            "printer-bill",
+            "2026-08-16T10:00:00Z",
+            || "print-job-invoice-1".to_string(),
+        )
+        .expect("queue invoice for print");
+    }
+
+    // `invoice_print_ctx_unwired` makes this attempt fail loudly rather
+    // than silently, per `commands::kitchen`'s own doc comment.
+    let failed = retry_failed_print_jobs_impl(&state).expect("retry sweep");
+    assert_eq!(failed.len(), 1);
+    assert_eq!(failed[0].target, FailedPrintJobTarget::Invoice);
+    assert_eq!(failed[0].invoice_number.as_deref(), Some(invoice.invoice_number.as_str()));
+    assert_eq!(failed[0].invoice_id.as_deref(), Some(invoice.id.as_str()));
+    assert!(failed[0].kot_id.is_none());
+    assert!(failed[0].kot_station.is_none());
+    assert!(failed[0].last_error.is_some());
+
+    // list_failed_print_jobs_impl (the read the POS actually polls) agrees.
+    let listed = list_failed_print_jobs_impl(&state).expect("list failed print jobs");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].target, FailedPrintJobTarget::Invoice);
 }

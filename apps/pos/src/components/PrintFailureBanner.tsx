@@ -37,7 +37,16 @@ export function PrintFailureBanner() {
       <ul className="print-failure-list">
         {failed.map((job) => (
           <li key={job.id}>
-            {job.kot_station} · {job.printer_name} · {job.attempt_count} attempt
+            {job.target === "KOT" ? (
+              <span className="print-failure-target print-failure-target-kot">
+                KOT · station {job.kot_station ?? "unknown"}
+              </span>
+            ) : (
+              <span className="print-failure-target print-failure-target-invoice">
+                BILL · invoice {job.invoice_number ?? "unknown"}
+              </span>
+            )}{" "}
+            · {job.printer_name} · {job.attempt_count} attempt
             {job.attempt_count === 1 ? "" : "s"} · {job.last_error ?? "unknown error"}
           </li>
         ))}

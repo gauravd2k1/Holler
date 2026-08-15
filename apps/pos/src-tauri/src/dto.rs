@@ -560,17 +560,42 @@ impl From<db::Station> for Station {
     }
 }
 
-/// A failed `print_job`, joined with the printer name and the KOT's station
-/// so the POS's staff-visible failure view (docs/spec/hardware-printing.md
-/// "Print failures must be visible to staff") does not need a second round
-/// trip per row. `print_job` itself has no wire shape in
+/// What a failed `print_job` prints — mirrors
+/// `holler_edge_printer::model::PrintJobTarget`, which is where this is
+/// actually decided (`FailedPrintJobView::target`). This DTO exists only so
+/// the frontend gets an explicit discriminant on the wire instead of having
+/// to infer the kind from which of `kot_id`/`invoice_id` is present.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum FailedPrintJobTarget {
+    Kot,
+    Invoice,
+}
+
+/// A failed `print_job`, joined with the printer name and, depending on
+/// `target`, the KOT's station or the invoice's number, so the POS's
+/// staff-visible failure view (docs/spec/hardware-printing.md "Print
+/// failures must be visible to staff") does not need a second round trip
+/// per row and does not lose either kind of job (§64: a bill that silently
+/// exhausted its print retries is the same defect one layer up from a
+/// dropped KOT). `print_job` itself has no wire shape in
 /// `packages/contracts` beyond `PrintJobSchema` — this view type layers the
-/// two extra display fields on top, which the frontend validates against
-/// `PrintJobSchema.extend(...)`.
+/// extra display fields on top; the frontend validates it against its own
+/// local schema rather than `PrintJobSchema.extend(...)`, because
+/// `PrintJobSchema.kot_id` is a required uuid and can no longer describe an
+/// invoice-linked row.
+///
+/// Exactly one of `kot_id`/`kot_station` or `invoice_id`/`invoice_number` is
+/// `Some`, mirroring `FailedPrintJobView` — `target` is the field a caller
+/// should branch on, never field-nullness.
 #[derive(Debug, Clone, Serialize)]
 pub struct FailedPrintJob {
     pub id: String,
-    pub kot_id: String,
+    pub target: FailedPrintJobTarget,
+    pub kot_id: Option<String>,
+    pub kot_station: Option<String>,
+    pub invoice_id: Option<String>,
+    pub invoice_number: Option<String>,
     pub printer_id: String,
     pub status: String,
     pub attempt_count: i64,
@@ -578,7 +603,6 @@ pub struct FailedPrintJob {
     pub created_at: String,
     pub updated_at: String,
     pub printer_name: String,
-    pub kot_station: String,
     pub schema_version: u8,
 }
 
@@ -921,20 +945,31 @@ impl CashShift {
 }
 
 impl From<holler_edge_printer::model::FailedPrintJobView> for FailedPrintJob {
-    /// `job.kot_id` became `Option<String>` when `print_job` gained a
-    /// nullable `kot_id`/`invoice_id` pair (ADR-016 0.4.5) — this DTO's own
-    /// `kot_id: String` field predates that and mirrors this crate's own
-    /// (KOT-only) `list_failed_print_jobs`/`retry_failed_print_jobs`
-    /// surface, which never enqueues an invoice-linked job (see
-    /// `commands::kitchen::invoice_print_ctx_unwired`). `.unwrap_or_default()`
-    /// is therefore never actually empty for a row this crate produces
-    /// today; widening this DTO to `Option<String>` (and giving the failure
-    /// view an invoice-aware label) is invoice-printing work, out of this
-    /// track's scope.
+    /// Discriminates via `FailedPrintJobView::target` (which itself
+    /// delegates to `PrintJob::target`, decoded from the same CHECK the row
+    /// obeys) rather than by testing which of `kot_id`/`invoice_id` is
+    /// `Some` — one place decides "what kind of job is this", not a second
+    /// one re-derived here. `target()` only errors if the row violates its
+    /// own CHECK, which this crate's own write paths make impossible; that
+    /// is a defensive `expect`, not a case this DTO needs to model as
+    /// fallible to its caller.
     fn from(v: holler_edge_printer::model::FailedPrintJobView) -> Self {
+        let target = v
+            .target()
+            .expect("print_job row violates its own kot_id/invoice_id CHECK");
+        let target = match target {
+            holler_edge_printer::model::PrintJobTarget::Kot(_) => FailedPrintJobTarget::Kot,
+            holler_edge_printer::model::PrintJobTarget::Invoice(_) => {
+                FailedPrintJobTarget::Invoice
+            }
+        };
         Self {
             id: v.job.id,
-            kot_id: v.job.kot_id.unwrap_or_default(),
+            target,
+            kot_id: v.job.kot_id,
+            kot_station: v.kot_station,
+            invoice_id: v.job.invoice_id,
+            invoice_number: v.invoice_number,
             printer_id: v.job.printer_id,
             status: v.job.status.as_db_str().to_string(),
             attempt_count: v.job.attempt_count,
@@ -942,9 +977,6 @@ impl From<holler_edge_printer::model::FailedPrintJobView> for FailedPrintJob {
             created_at: v.job.created_at,
             updated_at: v.job.updated_at,
             printer_name: v.printer_name,
-            // Same stopgap as `kot_id` above — `None` for an invoice-linked
-            // job, which this crate never produces today.
-            kot_station: v.kot_station.unwrap_or_default(),
             schema_version: 1,
         }
     }

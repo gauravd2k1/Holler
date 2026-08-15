@@ -410,9 +410,13 @@ describe("listStations", () => {
 });
 
 describe("listFailedPrintJobs / retryFailedPrintJobs", () => {
-  const VALID_FAILED_JOB = {
+  const VALID_FAILED_KOT_JOB = {
     id: "00000000-0000-7000-8000-00000000000d",
+    target: "KOT",
     kot_id: VALID_KOT.id,
+    kot_station: "MAIN_KITCHEN",
+    invoice_id: null,
+    invoice_number: null,
     printer_id: "00000000-0000-7000-8000-00000000000e",
     status: "FAILED",
     attempt_count: 2,
@@ -420,16 +424,50 @@ describe("listFailedPrintJobs / retryFailedPrintJobs", () => {
     created_at: "2026-08-10T10:00:00.000Z",
     updated_at: "2026-08-10T10:00:05.000Z",
     printer_name: "Kitchen Printer",
-    kot_station: "MAIN_KITCHEN",
     schema_version: 1,
   };
 
-  it("listFailedPrintJobs parses the extended PrintJobSchema view", async () => {
-    invokeMock.mockResolvedValue([VALID_FAILED_JOB]);
+  const VALID_FAILED_INVOICE_JOB = {
+    id: "00000000-0000-7000-8000-00000000000f",
+    target: "INVOICE",
+    kot_id: null,
+    kot_station: null,
+    invoice_id: "00000000-0000-7000-8000-000000000010",
+    invoice_number: "FY26/PNQ/001423",
+    printer_id: "00000000-0000-7000-8000-00000000000e",
+    status: "FAILED",
+    attempt_count: 3,
+    last_error: "connect refused",
+    created_at: "2026-08-10T10:01:00.000Z",
+    updated_at: "2026-08-10T10:01:05.000Z",
+    printer_name: "Bill Printer",
+    schema_version: 1,
+  };
+
+  it("listFailedPrintJobs parses a failed KOT job with its target and station", async () => {
+    invokeMock.mockResolvedValue([VALID_FAILED_KOT_JOB]);
     const failed = await listFailedPrintJobs();
     expect(failed).toHaveLength(1);
+    expect(failed[0]?.target).toBe("KOT");
+    expect(failed[0]?.kot_station).toBe("MAIN_KITCHEN");
+    expect(failed[0]?.invoice_number).toBeNull();
     expect(failed[0]?.printer_name).toBe("Kitchen Printer");
     expect(failed[0]?.last_error).toBe("connect refused");
+  });
+
+  it("listFailedPrintJobs parses a failed invoice job with its target and invoice number", async () => {
+    invokeMock.mockResolvedValue([VALID_FAILED_INVOICE_JOB]);
+    const failed = await listFailedPrintJobs();
+    expect(failed).toHaveLength(1);
+    expect(failed[0]?.target).toBe("INVOICE");
+    expect(failed[0]?.invoice_number).toBe("FY26/PNQ/001423");
+    expect(failed[0]?.kot_station).toBeNull();
+  });
+
+  it("listFailedPrintJobs returns both kinds distinctly in one call", async () => {
+    invokeMock.mockResolvedValue([VALID_FAILED_KOT_JOB, VALID_FAILED_INVOICE_JOB]);
+    const failed = await listFailedPrintJobs();
+    expect(failed.map((j) => j.target)).toEqual(["KOT", "INVOICE"]);
   });
 
   it("retryFailedPrintJobs invokes retry_failed_print_jobs and returns the still-failing set", async () => {
