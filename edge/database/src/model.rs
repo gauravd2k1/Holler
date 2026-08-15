@@ -75,6 +75,14 @@ pub struct MenuItem {
     /// to an active profile at the item's outlet is a config error, never a
     /// silent fallback (see that function's doc comment).
     pub tax_profile_id: Option<String>,
+    /// HSN (goods) / SAC (services) code — contracts 0.4.5,
+    /// `packages/contracts/sqlite/0011_menu_item_hsn_sac.sql`. Cloud-owned
+    /// config, nullable by design (no invented fallback — a wrong code is
+    /// worse than a missing one). `invoice::assemble::build_invoice` reads
+    /// this at issue time and snapshots it onto `invoice_line.hsn_sac`; it
+    /// rejects issuance outright (`DbError::MissingHsnSac`) rather than
+    /// billing a line with none.
+    pub hsn_sac: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -358,6 +366,17 @@ pub struct KotTicketItem {
 /// staff must be told whether intervention is necessary).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnroutedKitchenItem {
+    pub order_item_id: String,
+    pub name: String,
+}
+
+/// One order line whose resolved `menu_item.hsn_sac` was NULL or blank at
+/// invoice-assembly time — carried on [`crate::DbError::MissingHsnSac`], the
+/// `UnroutedKitchenItem` precedent applied to ADR-016 0.4.5 §3's billing
+/// completeness rule: name the item, not just the fact that something is
+/// missing (§64).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MissingHsnSacItem {
     pub order_item_id: String,
     pub name: String,
 }

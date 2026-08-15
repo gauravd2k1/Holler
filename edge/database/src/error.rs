@@ -1,11 +1,23 @@
 use thiserror::Error;
 
-use crate::model::UnroutedKitchenItem;
+use crate::model::{MissingHsnSacItem, UnroutedKitchenItem};
 
 /// Renders the item list for [`DbError::UnroutedKitchenItems`]'s `Display`
 /// impl. A free function rather than inline in the `#[error(...)]` string
 /// because the message needs a joined name list, not just one field.
 fn format_unrouted_items(items: &[UnroutedKitchenItem]) -> String {
+    items
+        .iter()
+        .map(|i| i.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Renders the item list for [`DbError::MissingHsnSac`]'s `Display` impl —
+/// the same joined-name shape as [`format_unrouted_items`], for the same
+/// reason: the message needs every offending item named, not just the
+/// first, so a manager can fix the whole catalogue gap in one pass.
+fn format_missing_hsn_sac_items(items: &[MissingHsnSacItem]) -> String {
     items
         .iter()
         .map(|i| i.name.as_str())
@@ -268,6 +280,24 @@ pub enum DbError {
         invoice_id: String,
         requested_paise: i64,
         remaining_paise: i64,
+    },
+
+    /// ADR-016 0.4.5 §3: a GST tax invoice must carry the HSN (goods) or
+    /// SAC (services) code on every line. `menu_item.hsn_sac` is nullable
+    /// by design (a wrong code is worse than a missing one — no invented
+    /// fallback exists), so the completeness rule lives here, at issue
+    /// time, checked BEFORE any invoice/invoice_line row is written. Names
+    /// every offending item so a manager can fix the catalogue in one pass
+    /// (§64) rather than discovering them one rejected issuance at a time.
+    #[error(
+        "order {order_id} has {} menu item(s) with no HSN/SAC code configured: {}; \
+         set menu_item.hsn_sac for each before this order can be billed",
+        items.len(),
+        format_missing_hsn_sac_items(items)
+    )]
+    MissingHsnSac {
+        order_id: String,
+        items: Vec<MissingHsnSacItem>,
     },
 }
 

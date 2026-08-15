@@ -1510,6 +1510,7 @@ mod tests {
                 is_available: true,
                 config_version: 1,
                 tax_profile_id: None,
+                hsn_sac: Some("9963".to_string()),
             },
         )
         .expect("seed menu item");
@@ -3606,6 +3607,7 @@ mod tests {
                 is_available: true,
                 config_version: 1,
                 tax_profile_id: None,
+                hsn_sac: Some("9963".to_string()),
             },
         )
         .expect("seed menu item");
@@ -3770,6 +3772,7 @@ mod tests {
                 is_available: true,
                 config_version: 1,
                 tax_profile_id: None,
+                hsn_sac: Some("9963".to_string()),
             },
         )
         .expect("seed menu item");
@@ -4113,6 +4116,7 @@ mod tests {
                 is_available: true,
                 config_version: 1,
                 tax_profile_id: None,
+                hsn_sac: Some("9963".to_string()),
             },
         )
         .expect("seed unrouted menu item");
@@ -4196,6 +4200,7 @@ mod tests {
                 is_available: true,
                 config_version: 1,
                 tax_profile_id: None,
+                hsn_sac: Some("9963".to_string()),
             },
         )
         .expect("seed unrouted-only menu item");
@@ -4669,6 +4674,7 @@ mod tests {
                 is_available: true,
                 config_version: 1,
                 tax_profile_id: None,
+                hsn_sac: Some("9963".to_string()),
             },
         )
         .expect("seed second menu item");

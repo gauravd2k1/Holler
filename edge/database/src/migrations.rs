@@ -54,6 +54,25 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0008_edge_device_credential_cache.sql",
         include_str!("../../../packages/contracts/sqlite/0008_edge_device_credential_cache.sql"),
     ),
+    // 0009-0011 (ADR-016 0.4.5) were present on disk but, like 0005 before
+    // them (see the regression test below), had never been added to this
+    // list, so none of the three had ever actually applied to an edge
+    // database: `payment` had no append-only triggers, `print_job` could
+    // not reference an invoice, and `menu_item.hsn_sac` did not exist —
+    // which is what let `assemble.rs:226` hard-code `hsn_sac: None` with
+    // nowhere real to read a value from in the first place.
+    (
+        "0009_payment_append_only_triggers.sql",
+        include_str!("../../../packages/contracts/sqlite/0009_payment_append_only_triggers.sql"),
+    ),
+    (
+        "0010_print_job_invoice_ref.sql",
+        include_str!("../../../packages/contracts/sqlite/0010_print_job_invoice_ref.sql"),
+    ),
+    (
+        "0011_menu_item_hsn_sac.sql",
+        include_str!("../../../packages/contracts/sqlite/0011_menu_item_hsn_sac.sql"),
+    ),
 ];
 
 /// Applies any migrations not yet reflected in `PRAGMA user_version`. Safe
@@ -193,6 +212,31 @@ mod tests {
         }
     }
 
+    /// Regression test for the same bug class as
+    /// `all_milestone_2_kitchen_tables_exist_after_migration`, this time for
+    /// 0009-0011 (ADR-016 0.4.5): all three existed on disk but were absent
+    /// from `MIGRATIONS`, so `menu_item.hsn_sac` never actually existed on
+    /// an edge database — silently defeating the HSN/SAC resolution this
+    /// track adds to `invoice::assemble::build_invoice`, whatever the Rust
+    /// code claimed to do with it.
+    #[test]
+    fn menu_item_has_hsn_sac_column_after_migration() {
+        let conn = Connection::open_in_memory().expect("open");
+        configure_connection(&conn).expect("pragmas");
+        apply_all(&conn).expect("apply");
+
+        let mut stmt = conn.prepare("PRAGMA table_info(menu_item)").unwrap();
+        let columns: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(
+            columns.iter().any(|c| c == "hsn_sac"),
+            "expected column hsn_sac on menu_item after 0011"
+        );
+    }
+
     /// Regression test for the exact bug this migration's registration
     /// fixes: `0005_m2_kitchen_stations_printers.sql` existed on disk but was
     /// never in `MIGRATIONS`, so it never applied.
@@ -233,8 +277,10 @@ mod tests {
 
         assert_eq!(
             MIGRATIONS.len(),
-            8,
-            "expected exactly 8 registered migrations after contracts 0.4.3"
+            11,
+            "expected exactly 11 registered migrations after contracts 0.4.5 \
+             (0009 payment append-only triggers, 0010 print_job invoice ref, \
+             0011 menu_item.hsn_sac)"
         );
     }
 

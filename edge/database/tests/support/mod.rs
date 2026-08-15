@@ -86,6 +86,11 @@ pub fn seed(db: &Db, series_code: &str, reset_policy: &str) {
             is_available: true,
             config_version: 1,
             tax_profile_id: None, // falls back to the outlet default seeded below
+            // SAC 9963 (restaurant service) — ADR-016 0.4.5 §3: an invoice
+            // cannot issue with a line whose HSN/SAC is NULL, so this
+            // fixture must carry one for `seed()`'s callers to reach a
+            // successful issuance at all.
+            hsn_sac: Some("9963".to_string()),
         },
     )
     .expect("seed menu item");

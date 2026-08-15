@@ -250,6 +250,11 @@ fn seed(db: &Db, password_hash: &str) -> Result<(), holler_edge_database::DbErro
                 is_available: true,
                 config_version: CONFIG_VERSION,
                 tax_profile_id: None,
+                // SAC 9963: restaurant/catering services — both items here
+                // are prepared food/beverage, not packaged goods (ADR-016
+                // 0.4.5 §3). Without this an invoice can never issue against
+                // the dev-seeded catalogue.
+                hsn_sac: Some("9963".to_string()),
             },
         )?;
         repo::replace_menu_item_stations(conn, id, &[STATION_ID.to_string()], CONFIG_VERSION)?;

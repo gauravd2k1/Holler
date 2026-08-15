@@ -39,6 +39,7 @@ interface InvoiceLineLike {
   igst_paise: number;
   cess_paise: number;
   total_paise: number;
+  hsn_sac: string | null;
 }
 
 interface InvoiceLike {
@@ -74,6 +75,15 @@ function checkTaxReconciliation(
     const lineTotal = line.taxable_value_paise + line.cgst_paise + line.sgst_paise + line.igst_paise + line.cess_paise;
     if (lineTotal !== line.total_paise) {
       mark(inv, "9_tax_reconciliation", false, `${where}: line total_paise=${line.total_paise} but taxable+tax components sum to ${lineTotal}`);
+    }
+    // ADR-016 0.4.5 §3 / the HSN/SAC track: a GST tax invoice is not a
+    // compliant document if any line prints with no HSN (goods) or SAC
+    // (services) code. `edge/database` rejects issuance outright when the
+    // resolved code is NULL or blank, so if a line ever reaches this
+    // orchestrator with one missing, the rejection did not fire —
+    // seed-side and issuance-side are checked by the same invariant.
+    if (line.hsn_sac === null || line.hsn_sac === undefined || line.hsn_sac.trim() === "") {
+      mark(inv, "9_tax_reconciliation", false, `${where}: invoice line has a NULL or blank hsn_sac`);
     }
   }
   const sumTaxable = invoice.lines.reduce((a, l) => a + l.taxable_value_paise, 0);

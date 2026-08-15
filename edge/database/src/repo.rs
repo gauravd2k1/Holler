@@ -287,12 +287,13 @@ pub fn upsert_menu_category(conn: &Connection, c: &MenuCategory) -> DbResult<()>
 
 pub fn upsert_menu_item(conn: &Connection, m: &MenuItem) -> DbResult<()> {
     conn.execute(
-        "INSERT INTO menu_item (id, outlet_id, category_id, name, base_price_paise, is_available, config_version, tax_profile_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "INSERT INTO menu_item (id, outlet_id, category_id, name, base_price_paise, is_available, config_version, tax_profile_id, hsn_sac)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
          ON CONFLICT(id) DO UPDATE SET
             outlet_id = excluded.outlet_id, category_id = excluded.category_id, name = excluded.name,
             base_price_paise = excluded.base_price_paise, is_available = excluded.is_available,
-            config_version = excluded.config_version, tax_profile_id = excluded.tax_profile_id
+            config_version = excluded.config_version, tax_profile_id = excluded.tax_profile_id,
+            hsn_sac = excluded.hsn_sac
          WHERE excluded.config_version >= menu_item.config_version",
         params![
             m.id,
@@ -303,6 +304,7 @@ pub fn upsert_menu_item(conn: &Connection, m: &MenuItem) -> DbResult<()> {
             bool_to_i64(m.is_available),
             m.config_version,
             m.tax_profile_id,
+            m.hsn_sac,
         ],
     )?;
     Ok(())
@@ -379,7 +381,7 @@ pub fn list_menu_categories_for_outlet(
 
 pub fn list_menu_items_for_outlet(conn: &Connection, outlet_id: &str) -> DbResult<Vec<MenuItem>> {
     let mut stmt = conn.prepare(
-        "SELECT id, outlet_id, category_id, name, base_price_paise, is_available, config_version, tax_profile_id
+        "SELECT id, outlet_id, category_id, name, base_price_paise, is_available, config_version, tax_profile_id, hsn_sac
          FROM menu_item WHERE outlet_id = ?1 ORDER BY name",
     )?;
     let rows = stmt
@@ -393,6 +395,7 @@ pub fn list_menu_items_for_outlet(conn: &Connection, outlet_id: &str) -> DbResul
                 is_available: i64_to_bool(row.get(5)?),
                 config_version: row.get(6)?,
                 tax_profile_id: row.get(7)?,
+                hsn_sac: row.get(8)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;

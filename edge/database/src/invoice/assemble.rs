@@ -11,7 +11,7 @@ use rusqlite::Transaction;
 use crate::error::{DbError, DbResult};
 use crate::model::{
     Invoice, InvoiceLineShare, IssueInvoiceHeader, IssueInvoiceLinesRequest, InvoiceOutboxMeta,
-    NewInvoice, NewInvoiceLine, OrderItem, OutletFiscalProfile,
+    MissingHsnSacItem, NewInvoice, NewInvoiceLine, OrderItem, OutletFiscalProfile,
 };
 use crate::repo;
 use crate::tax;
@@ -177,6 +177,12 @@ pub(crate) fn build_invoice(
 
     let mut tax_lines: Vec<tax::Line> = Vec::with_capacity(req.lines.len());
     let mut rules_by_profile: HashMap<String, Vec<crate::model::TaxRule>> = HashMap::new();
+    // ADR-016 0.4.5 §3 / the accompanying track: an invoice must not issue
+    // with a line whose resolved HSN/SAC is NULL or blank. Collected across
+    // the whole loop (not returned on the first miss) so one rejection names
+    // every offending item, not just the first — a manager fixing the
+    // catalogue should not have to retry issuance once per missing code.
+    let mut missing_hsn: Vec<MissingHsnSacItem> = Vec::new();
 
     for share in &req.lines {
         let order_item = repo::get_order_item_in_tx(tx, &share.order_item_id)?.ok_or_else(|| {
@@ -203,6 +209,24 @@ pub(crate) fn build_invoice(
             }
         }
 
+        // §31: `invoice_line.hsn_sac` is a SNAPSHOT, resolved here and never
+        // re-read from live config afterwards — exactly how `description`
+        // (above) already behaves, so a later catalogue correction cannot
+        // rewrite an issued invoice. Blank is treated the same as NULL: a
+        // whitespace-only code is not a code.
+        let resolved_hsn_sac = menu_item
+            .hsn_sac
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        if resolved_hsn_sac.is_none() {
+            missing_hsn.push(MissingHsnSacItem {
+                order_item_id: order_item.id.clone(),
+                name: description.clone(),
+            });
+        }
+
         let tax_profile = tax::resolve_tax_profile(
             &profiles,
             &header.outlet_id,
@@ -223,13 +247,20 @@ pub(crate) fn build_invoice(
         tax_lines.push(tax::Line {
             order_item_id: order_item.id.clone(),
             description,
-            hsn_sac: None,
+            hsn_sac: resolved_hsn_sac,
             quantity: share.quantity,
             unit_price_paise: order_item.unit_price_paise,
             discount_per_unit_paise: share.discount_per_unit_paise,
             tax_profile_id: tax_profile.id.clone(),
             pricing_mode,
             rates,
+        });
+    }
+
+    if !missing_hsn.is_empty() {
+        return Err(DbError::MissingHsnSac {
+            order_id: header.order_id.clone(),
+            items: missing_hsn,
         });
     }
 

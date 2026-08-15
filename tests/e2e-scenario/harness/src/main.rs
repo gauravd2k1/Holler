@@ -367,6 +367,10 @@ fn build_template(root: &Path) -> PathBuf {
             is_available: true,
             config_version: 1,
             tax_profile_id: None,
+            // SAC 9963 (restaurant/catering service) — ADR-016 0.4.5 §3: an
+            // invoice cannot issue with a line whose HSN/SAC is NULL, and
+            // this item's scenarios reach billing.
+            hsn_sac: Some("9963".to_string()),
         },
     )
     .expect("seed multi-station item");
@@ -389,6 +393,11 @@ fn build_template(root: &Path) -> PathBuf {
             is_available: true,
             config_version: 1,
             tax_profile_id: None,
+            // SAC 9997 (other services, not elsewhere classified) — a
+            // deliberately different code from the food items above, so
+            // the harness's HSN/SAC assertion is exercised against varied
+            // data rather than one placeholder everywhere.
+            hsn_sac: Some("9997".to_string()),
         },
     )
     .expect("seed no-station item");
