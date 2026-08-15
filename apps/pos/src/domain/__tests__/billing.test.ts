@@ -15,15 +15,20 @@ import {
   canOfferBilling,
   canOfferReversal,
   discountRequiresReason,
+  everySplitPartHasALine,
   isDiscountOfferable,
   isFullySettled,
   isVarianceReasonRequired,
+  paymentsForInvoice,
   pendingTenderTotalPaise,
   previewLineDiscountPerUnitPaise,
   projectedVariancePaise,
   remainingAfterPendingPaise,
+  splitPartToRequest,
   stagedDiscountsAreComplete,
+  totalQuantityAssignedPreview,
   totalSettledPaise,
+  type SplitPartDraft,
 } from "../billing";
 
 const invoice = invoiceFixture as Invoice; // grand_total_paise: 105000
@@ -336,6 +341,52 @@ describe("billingErrorMessage — discount codes (ADR-016 §28)", () => {
       message: "discount_per_unit_paise must not exceed unit_price_paise",
     };
     expect(billingErrorMessage(err)).toBe(err.message);
+  });
+});
+
+describe("paymentsForInvoice", () => {
+  it("keeps only payments allocated against the named invoice", () => {
+    const p1 = payment({
+      id: "p1",
+      allocations: [{ id: "a1", payment_id: "p1", invoice_id: "inv-1", amount_paise: 21000, schema_version: 1 }],
+    });
+    const p2 = payment({
+      id: "p2",
+      allocations: [{ id: "a2", payment_id: "p2", invoice_id: "inv-2", amount_paise: 21000, schema_version: 1 }],
+    });
+    expect(paymentsForInvoice([p1, p2], "inv-1")).toEqual([p1]);
+    expect(paymentsForInvoice([p1, p2], "inv-2")).toEqual([p2]);
+  });
+
+  it("excludes a payment with no allocation matching the invoice at all", () => {
+    const p1 = payment({ id: "p1", allocations: [] });
+    expect(paymentsForInvoice([p1], "inv-1")).toEqual([]);
+  });
+});
+
+describe("split bill drafting", () => {
+  it("drops non-positive quantities when building the wire request", () => {
+    const draft: SplitPartDraft = { quantities: { "item-1": 1, "item-2": 0, "item-3": -1 } };
+    expect(splitPartToRequest(draft)).toEqual({ lines: [{ orderItemId: "item-1", quantity: 1 }] });
+  });
+
+  it("previews the total quantity assigned to one line across every part", () => {
+    const parts: SplitPartDraft[] = [
+      { quantities: { "item-1": 1 } },
+      { quantities: { "item-1": 1 } },
+    ];
+    expect(totalQuantityAssignedPreview("item-1", parts)).toBe(2);
+    expect(totalQuantityAssignedPreview("item-2", parts)).toBe(0);
+  });
+
+  it("requires every part to carry at least one positive-quantity line", () => {
+    expect(everySplitPartHasALine([])).toBe(false);
+    expect(
+      everySplitPartHasALine([{ quantities: { "item-1": 1 } }, { quantities: {} }]),
+    ).toBe(false);
+    expect(
+      everySplitPartHasALine([{ quantities: { "item-1": 1 } }, { quantities: { "item-2": 1 } }]),
+    ).toBe(true);
   });
 });
 

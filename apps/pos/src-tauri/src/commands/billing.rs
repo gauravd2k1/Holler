@@ -10,11 +10,17 @@
 //! same "one crate, one transaction, one outbox row" discipline every other
 //! command module in this crate follows.
 //!
-//! Milestone 3 EXCLUDES split bills from this surface (docs/m3-planning.md):
-//! `issue_invoice` always bills every line on the order at full quantity
-//! (`split_count == 1`), the unsplit case `Db::issue_invoice_with_outbox`
-//! itself documents. `Db::issue_split_invoices_with_outbox` exists in the
-//! edge crate but has no command here.
+//! `issue_split_invoices` closes the split-bill gap Milestone 3 left open
+//! (docs/m3-planning.md, ADR-016 §4): a split bill is N invoices sharing one
+//! `split_group_id`, each independently numbered and independently payable,
+//! issued together through `Db::issue_split_invoices_with_outbox` in one
+//! shared transaction — either every part is issued or none is. This module
+//! constructs no conservation check of its own (the edge is the sole
+//! authority per §66/ADR-016 §4); it only shapes the caller's requested
+//! parts into `InvoiceLineShare`s and lets the edge accept or reject the
+//! whole group atomically, surfacing its `DbError::InvalidInput` message
+//! (already legible — names the offending order_item and the mismatch)
+//! verbatim through `AppError` (§64).
 //!
 //! No dedicated billing permission exists in `packages/contracts`'
 //! `PermissionSchema` (ADR-016 0.4.4 addendum records the same gap for the
@@ -300,6 +306,227 @@ pub fn list_invoices_for_order_impl(state: &AppState, order_id: &str) -> AppResu
     Ok(out)
 }
 
+// ------------------------------------------------------------------ split --
+
+/// One line share within one split part, as chosen by the cashier on the
+/// split screen: "this part bills `quantity` of `order_item_id`". Discounts
+/// are supplied once for the whole issuance (`discounts` on
+/// [`issue_split_invoices_impl`]/[`issue_split_invoices`]), not per part —
+/// `discount_per_unit_paise` is a property of the line item, not of which
+/// part happens to carry it, so a discounted item prices the same wherever
+/// its quantity lands.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct SplitLineInput {
+    pub order_item_id: String,
+    pub quantity: i64,
+}
+
+/// One invoice's worth of the split — becomes one row in
+/// `Db::issue_split_invoices_with_outbox`'s `parts`. An empty part (no
+/// lines) is rejected here rather than handed to the edge, because it would
+/// otherwise issue a real, numbered, zero-line invoice — burning a number
+/// for nothing rather than failing the whole group.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct SplitPartInput {
+    pub lines: Vec<SplitLineInput>,
+}
+
+/// Turns one [`SplitPartInput`] into the [`InvoiceLineShare`]s
+/// `issue_split_invoices_with_outbox` needs, resolving each named
+/// `order_item_id` against the order's real items (never trusting a
+/// frontend-supplied price/quantity) and reusing the SAME
+/// `discounts_by_item` map `issue_invoice_impl` already resolves — a
+/// discounted line prices identically whether billed whole or split across
+/// parts, because the per-unit discount travels with the item, not the
+/// part.
+fn build_split_part_lines(
+    items: &[holler_edge_database::model::OrderItem],
+    part: &SplitPartInput,
+    discounts_by_item: &HashMap<String, i64>,
+) -> AppResult<Vec<InvoiceLineShare>> {
+    if part.lines.is_empty() {
+        return Err(AppError {
+            code: "EMPTY_SPLIT_PART",
+            message: "a split part must bill at least one line".into(),
+        });
+    }
+    part.lines
+        .iter()
+        .map(|line| {
+            let item = items
+                .iter()
+                .find(|i| i.id == line.order_item_id)
+                .ok_or_else(|| AppError {
+                    code: "ORDER_ITEM_NOT_FOUND",
+                    message: format!(
+                        "order item {} is not on this order — cannot include it in a split",
+                        line.order_item_id
+                    ),
+                })?;
+            Ok(InvoiceLineShare {
+                id: new_id(),
+                order_item_id: item.id.clone(),
+                quantity: line.quantity,
+                discount_per_unit_paise: discounts_by_item
+                    .get(&item.id)
+                    .copied()
+                    .unwrap_or(0),
+            })
+        })
+        .collect()
+}
+
+/// Issues N invoices over `order_id` sharing one `split_group_id` (ADR-016
+/// §4). `parts` is one entry per invoice to issue, in the order they should
+/// be numbered; `discounts` resolves exactly as it does for
+/// [`issue_invoice_impl`], once, across the whole order — not per part.
+///
+/// Performs NO conservation arithmetic itself: `parts` is shaped into
+/// `InvoiceLineShare`s and handed whole to
+/// `Db::issue_split_invoices_with_outbox`, which is the sole authority on
+/// whether the shares reconstruct the order's lines exactly (§66). A
+/// rejection there — over-billed, under-billed, or referencing a foreign
+/// order_item — fails the WHOLE call before anything is written: no part is
+/// issued, no invoice number is consumed by any part (the edge validates
+/// before it ever calls into `numbering`), matching the same all-or-nothing
+/// shape `send_to_kitchen` already uses for a mixed order.
+pub fn issue_split_invoices_impl(
+    state: &AppState,
+    order_id: &str,
+    created_by_user_id: &str,
+    parts: &[SplitPartInput],
+    discounts: &[LineDiscountInput],
+) -> AppResult<Vec<Invoice>> {
+    if parts.is_empty() {
+        return Err(AppError {
+            code: "EMPTY_SPLIT",
+            message: "a split needs at least one part".into(),
+        });
+    }
+
+    let now = now_iso();
+    let mut db = lock_db(state)?;
+
+    let order = db.get_order(order_id)?.ok_or_else(|| AppError {
+        code: "NOT_FOUND",
+        message: format!("order {order_id} not found"),
+    })?;
+    let items = holler_edge_database::repo::list_order_items(db.connection(), order_id)?;
+    if items.is_empty() {
+        return Err(AppError {
+            code: "NOTHING_TO_BILL",
+            message: "this order has no lines to bill".into(),
+        });
+    }
+
+    let discounts_by_item = if discounts.is_empty() {
+        HashMap::new()
+    } else {
+        let definitions = holler_edge_database::repo::list_discount_definitions_for_outlet(
+            db.connection(),
+            &state.outlet_id,
+        )?;
+        let permissions = caller_permissions(&db, created_by_user_id)?;
+        resolve_line_discounts(&items, &definitions, &permissions, &now, discounts)?
+    };
+
+    let fiscal_profiles = holler_edge_database::repo::list_outlet_fiscal_profiles_for_outlet(
+        db.connection(),
+        &state.outlet_id,
+    )?;
+    let fiscal_profile = resolve_fiscal_profile(&fiscal_profiles, &now).ok_or_else(|| AppError {
+        code: "NO_FISCAL_PROFILE_CONFIGURED",
+        message: format!(
+            "no outlet_fiscal_profile is effective for outlet {} yet — billing cannot resolve a \
+             GSTIN or address to print",
+            state.outlet_id
+        ),
+    })?;
+
+    let series = holler_edge_database::repo::list_invoice_series_for_outlet(
+        db.connection(),
+        &state.outlet_id,
+    )?
+    .into_iter()
+    .find(|s| s.is_active && s.code == "SALES")
+    .ok_or_else(|| AppError {
+        code: "NO_ACTIVE_INVOICE_SERIES",
+        message: format!(
+            "no active 'SALES' invoice_series is configured for outlet {}",
+            state.outlet_id
+        ),
+    })?;
+
+    let header = IssueInvoiceHeader {
+        outlet_id: state.outlet_id.clone(),
+        order_id: order.id.clone(),
+        series_code: series.code,
+        invoice_date: now.clone(),
+        business_date: business_date_from(&now),
+        customer_name: None,
+        customer_phone: None,
+        customer_gstin: None,
+        place_of_supply_state_code: fiscal_profile.state_code,
+        channel: "POS".to_string(),
+        tax_liability_party: "RESTAURANT".to_string(),
+        eco_operator_name: None,
+        eco_operator_gstin: None,
+        supply_classification: None,
+        created_by_user_id: created_by_user_id.to_string(),
+    };
+
+    let mut built_parts = Vec::with_capacity(parts.len());
+    for part in parts {
+        let lines = build_split_part_lines(&items, part, &discounts_by_item)?;
+        built_parts.push((new_id(), lines));
+    }
+    let outbox_metas: Vec<InvoiceOutboxMeta> = parts
+        .iter()
+        .map(|_| InvoiceOutboxMeta {
+            outbox_id: new_id(),
+            occurred_at: now.clone(),
+        })
+        .collect();
+
+    let split_group_id = new_id();
+    let stored = db.issue_split_invoices_with_outbox(
+        &header,
+        split_group_id,
+        built_parts,
+        &outbox_metas,
+    )?;
+
+    let mut out = Vec::with_capacity(stored.len());
+    for invoice in stored {
+        let lines = db.list_invoice_lines(&invoice.id)?;
+        out.push(Invoice::from_db(invoice, lines).map_err(|e| AppError {
+            code: "SERIALIZATION_ERROR",
+            message: e.to_string(),
+        })?);
+    }
+    Ok(out)
+}
+
+/// Every invoice sharing one `split_group_id` (ADR-016 §4) — what lets the
+/// POS tell a cashier which parts of a split remain unpaid without the
+/// caller having to remember every part's id.
+pub fn list_invoices_for_split_group_impl(
+    state: &AppState,
+    split_group_id: &str,
+) -> AppResult<Vec<Invoice>> {
+    let db = lock_db(state)?;
+    let invoices = db.list_invoices_for_split_group(split_group_id)?;
+    let mut out = Vec::with_capacity(invoices.len());
+    for invoice in invoices {
+        let lines = db.list_invoice_lines(&invoice.id)?;
+        out.push(Invoice::from_db(invoice, lines).map_err(|e| AppError {
+            code: "SERIALIZATION_ERROR",
+            message: e.to_string(),
+        })?);
+    }
+    Ok(out)
+}
+
 // ---------------------------------------------------------------- payment --
 
 /// One tender against `order_id`. `method != "CASH"` forces
@@ -509,6 +736,31 @@ pub fn list_invoices_for_order(
 #[tauri::command]
 pub fn list_discount_definitions(state: State<'_, AppState>) -> AppResult<Vec<DiscountDefinition>> {
     list_discount_definitions_impl(&state)
+}
+
+#[tauri::command]
+pub fn issue_split_invoices(
+    state: State<'_, AppState>,
+    order_id: String,
+    created_by_user_id: String,
+    parts: Vec<SplitPartInput>,
+    discounts: Option<Vec<LineDiscountInput>>,
+) -> AppResult<Vec<Invoice>> {
+    issue_split_invoices_impl(
+        &state,
+        &order_id,
+        &created_by_user_id,
+        &parts,
+        &discounts.unwrap_or_default(),
+    )
+}
+
+#[tauri::command]
+pub fn list_invoices_for_split_group(
+    state: State<'_, AppState>,
+    split_group_id: String,
+) -> AppResult<Vec<Invoice>> {
+    list_invoices_for_split_group_impl(&state, &split_group_id)
 }
 
 #[tauri::command]

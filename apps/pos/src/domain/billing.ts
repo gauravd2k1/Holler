@@ -64,6 +64,74 @@ export function isFullySettled(invoice: Invoice, payments: readonly Payment[]): 
   return amountDuePaise(invoice, payments) <= 0;
 }
 
+// -------------------------------------------------------------- split bills --
+// ADR-016 §4: a split bill is N invoices sharing one `split_group_id`, each
+// independently numbered and independently payable — never a split entity.
+// `Db::issue_split_invoices_with_outbox` is the SOLE authority on whether a
+// split reconstructs the order's lines exactly (§66); everything below is a
+// UI-only preview/builder, never the gate (task requirement).
+
+/** Every payment allocated against ONE invoice — a single tender can, in
+ * general, settle more than one invoice (`PaymentAllocationSchema`'s own
+ * comment), so filtering by `allocations` rather than assuming a 1:1 payment-
+ * to-invoice relationship is what makes "which parts remain unpaid" correct
+ * once a split exists. `usePaymentsForOrderQuery` already returns every
+ * payment for the whole order (across every split part); this narrows it to
+ * the ones relevant to `invoiceId` before `amountDuePaise` is applied. */
+export function paymentsForInvoice(
+  payments: readonly Payment[],
+  invoiceId: string,
+): readonly Payment[] {
+  return payments.filter((p) => p.allocations.some((a) => a.invoice_id === invoiceId));
+}
+
+/** One invoice-to-be, as staged in the split-bill builder before
+ * `issueSplitInvoices` is called — order_item_id -> quantity this part
+ * bills. UI state only; an entry of `0` or an absent key both mean "this
+ * part bills none of this line" and are equivalent (`splitPartToRequest`
+ * drops non-positive entries so the wire shape never carries a zero-quantity
+ * share the edge would reject anyway). */
+export interface SplitPartDraft {
+  quantities: Record<string, number>;
+}
+
+/** Turns one staged [`SplitPartDraft`] into the wire shape
+ * `issueSplitInvoices` needs. Never called the authority: the edge alone
+ * decides whether the resulting parts reconstruct the order (§66). */
+export function splitPartToRequest(draft: SplitPartDraft): {
+  lines: { orderItemId: string; quantity: number }[];
+} {
+  return {
+    lines: Object.entries(draft.quantities)
+      .filter(([, quantity]) => quantity > 0)
+      .map(([orderItemId, quantity]) => ({ orderItemId, quantity })),
+  };
+}
+
+/** How much of `orderItemId`'s quantity has been assigned across every
+ * staged part so far — a PREVIEW only, shown next to the order line's own
+ * quantity so a cashier can see at a glance whether a split looks right
+ * before submitting. The edge's own §66 conservation check is what actually
+ * accepts or rejects the split; this number is never used to block
+ * submission, only to inform it. */
+export function totalQuantityAssignedPreview(
+  orderItemId: string,
+  parts: readonly SplitPartDraft[],
+): number {
+  return parts.reduce((sum, p) => sum + (p.quantities[orderItemId] ?? 0), 0);
+}
+
+/** `true` once every part carries at least one positive-quantity line —
+ * catches the empty-part shape the edge rejects as `EMPTY_SPLIT_PART` before
+ * a doomed submission is attempted, without attempting the §66 conservation
+ * check itself (never the gate on THAT). */
+export function everySplitPartHasALine(parts: readonly SplitPartDraft[]): boolean {
+  return (
+    parts.length > 0 &&
+    parts.every((p) => Object.values(p.quantities).some((q) => q > 0))
+  );
+}
+
 // ------------------------------------------------------------- permissions --
 // No dedicated billing permission exists in `packages/contracts`'
 // `PermissionSchema` (ADR-016 0.4.4 addendum records the same gap for the
@@ -251,9 +319,19 @@ export function billingErrorMessage(err: unknown): string {
     case "DISCOUNT_MISCONFIGURED":
       return `${err.message} — ask a manager to fix this discount's configuration.`;
     case "INVALID_INPUT":
-      // The edge tax engine's own validity guard on a resolved discount
-      // (non-negative, not exceeding the line's unit price) — its message
-      // already names which rule was violated.
+      // Covers two distinct guards that both surface as `INVALID_INPUT`:
+      // the edge tax engine's own validity check on a resolved discount
+      // (non-negative, not exceeding the line's unit price), and
+      // `Db::issue_split_invoices_with_outbox`'s §66 conservation check on a
+      // split that does not reconstruct the order's lines exactly
+      // (over/under-billed). Both messages already name the specific
+      // order_item and mismatch — shown verbatim per §64.
+      return err.message;
+    case "EMPTY_SPLIT":
+      return "Add at least one part before issuing a split bill.";
+    case "EMPTY_SPLIT_PART":
+      return "Every part of a split bill must bill at least one item.";
+    case "ORDER_ITEM_NOT_FOUND":
       return err.message;
     default:
       return "Could not complete the billing action. Please try again.";

@@ -7,8 +7,9 @@
 use holler_edge_database::{model, repo, Db};
 
 use holler_pos_lib::commands::billing::{
-    close_cash_shift_impl, find_open_cash_shift_impl, issue_invoice_impl, open_cash_shift_impl,
-    record_payment_impl, LineDiscountInput,
+    close_cash_shift_impl, find_open_cash_shift_impl, issue_invoice_impl,
+    issue_split_invoices_impl, list_invoices_for_order_impl, list_invoices_for_split_group_impl,
+    open_cash_shift_impl, record_payment_impl, LineDiscountInput, SplitLineInput, SplitPartInput,
 };
 use holler_pos_lib::commands::kitchen::{list_failed_print_jobs_impl, retry_failed_print_jobs_impl};
 use holler_pos_lib::commands::orders::{create_order_impl, NewOrderItemRequest};
@@ -809,4 +810,349 @@ fn a_failed_invoice_print_job_reaches_the_failed_jobs_view_with_its_invoice_numb
     let listed = list_failed_print_jobs_impl(&state).expect("list failed print jobs");
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].target, FailedPrintJobTarget::Invoice);
+}
+
+// -------------------------------------------------------------- split bills --
+// The gap this track closes: `issue_split_invoices_impl` reaching
+// `Db::issue_split_invoices_with_outbox` through the Tauri command surface
+// (ADR-016 §4, §66).
+
+/// Sum of `last_value` across every `invoice_sequence` row — the same probe
+/// `edge/database/tests/invoice_hsn_sac.rs`'s gapless-numbering assertion
+/// uses, reused here at the POS command layer to prove a rejected split
+/// through THIS surface burns no number either.
+fn invoice_sequence_total(state: &AppState) -> i64 {
+    let db = state.db.lock().expect("lock");
+    db.connection()
+        .query_row(
+            "SELECT COALESCE(SUM(last_value), 0) FROM invoice_sequence",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read invoice_sequence")
+}
+
+/// A correct 2-way split: one order line of quantity 2, split into two
+/// parts of quantity 1 each. Two independently numbered invoices are
+/// issued together, `Σ(split invoice lines) = order lines` exactly (ADR-016
+/// §4), and each part is independently payable — settling part 1 in full
+/// leaves part 2's remaining due untouched.
+#[test]
+fn a_correct_two_way_split_issues_two_independently_numbered_independently_payable_invoices() {
+    let state = app_state();
+    let order = create_order_impl(
+        &state,
+        "DINE_IN".to_string(),
+        None,
+        vec![NewOrderItemRequest {
+            menu_item_id: "item-1".to_string(),
+            variant_id: None,
+            quantity: 2,
+            unit_price_paise: 20_000,
+            notes: None,
+            modifiers: vec![],
+        }],
+    )
+    .expect("create order");
+    let order_item_id = order.items[0].id.clone();
+
+    let parts = vec![
+        SplitPartInput {
+            lines: vec![SplitLineInput {
+                order_item_id: order_item_id.clone(),
+                quantity: 1,
+            }],
+        },
+        SplitPartInput {
+            lines: vec![SplitLineInput {
+                order_item_id: order_item_id.clone(),
+                quantity: 1,
+            }],
+        },
+    ];
+
+    let invoices = issue_split_invoices_impl(&state, &order.holler_order_id, USER_ID, &parts, &[])
+        .expect("issue a correct 2-way split");
+    assert_eq!(invoices.len(), 2);
+
+    // Independently numbered.
+    assert_ne!(invoices[0].id, invoices[1].id);
+    assert_ne!(
+        invoices[0].invoice_number, invoices[1].invoice_number,
+        "each split part must carry its own invoice number"
+    );
+    assert_eq!(invoices[0].split_index, 1);
+    assert_eq!(invoices[1].split_index, 2);
+    assert_eq!(invoices[0].split_count, 2);
+    assert_eq!(invoices[1].split_count, 2);
+    assert_eq!(invoices[0].split_group_id, invoices[1].split_group_id);
+    assert!(invoices[0].split_group_id.is_some());
+
+    // Each part bills quantity 1 of the Rs.200 item: Rs.200 + 5% GST = Rs.210.
+    assert_eq!(invoices[0].grand_total_paise, 21_000);
+    assert_eq!(invoices[1].grand_total_paise, 21_000);
+
+    // Σ(split invoice lines) = order lines exactly: quantities sum back to
+    // the order's own quantity, and paise sum back to what an unsplit bill
+    // of the same order would total.
+    let total_quantity: i64 = invoices
+        .iter()
+        .flat_map(|inv| inv.lines.iter())
+        .map(|l| l.quantity)
+        .sum();
+    assert_eq!(total_quantity, 2);
+    let total_grand: i64 = invoices.iter().map(|inv| inv.grand_total_paise).sum();
+    assert_eq!(total_grand, 42_000, "matches the unsplit-order grand total exactly");
+
+    // Listable by split group, and both parts are visible as unpaid.
+    let group_id = invoices[0].split_group_id.clone().unwrap();
+    let listed = list_invoices_for_split_group_impl(&state, &group_id).expect("list split group");
+    assert_eq!(listed.len(), 2);
+
+    // Independently payable: settle part 1 in full.
+    let pay1 = record_payment_impl(
+        &state,
+        &order.holler_order_id,
+        "CASH",
+        21_000,
+        Some(21_000),
+        Some(0),
+        None,
+        None,
+        None,
+        Some(invoices[0].id.clone()),
+        USER_ID,
+    )
+    .expect("settle part 1");
+    assert_eq!(pay1.amount_paise, 21_000);
+
+    // Part 2's remaining due is untouched by part 1's settlement: a tender
+    // exceeding part 2's OWN remaining due (21_000) is rejected naming that
+    // amount, not zero.
+    let over = record_payment_impl(
+        &state,
+        &order.holler_order_id,
+        "CASH",
+        21_001,
+        Some(21_001),
+        Some(0),
+        None,
+        None,
+        None,
+        Some(invoices[1].id.clone()),
+        USER_ID,
+    )
+    .expect_err("part 2 must still have its own full remaining due, unaffected by part 1");
+    assert_eq!(over.code, "FORWARD_PAYMENT_EXCEEDS_REMAINING_DUE");
+
+    // ...but tendering exactly part 2's remaining due succeeds.
+    let pay2 = record_payment_impl(
+        &state,
+        &order.holler_order_id,
+        "CASH",
+        21_000,
+        Some(21_000),
+        Some(0),
+        None,
+        None,
+        None,
+        Some(invoices[1].id.clone()),
+        USER_ID,
+    )
+    .expect("settle part 2 independently of part 1");
+    assert_eq!(pay2.amount_paise, 21_000);
+}
+
+/// An over-billed split (both parts claim the same unit, doubling the
+/// order's quantity) is rejected atomically, with no invoice row left for
+/// either part and no invoice number consumed — falsified against
+/// `invoice_sequence_total` before/after, the same probe the edge crate's
+/// own HSN/SAC split test uses.
+#[test]
+fn an_over_billed_split_is_rejected_atomically_and_burns_no_invoice_number() {
+    let state = app_state();
+    let order = create_order_impl(
+        &state,
+        "DINE_IN".to_string(),
+        None,
+        vec![NewOrderItemRequest {
+            menu_item_id: "item-1".to_string(),
+            variant_id: None,
+            quantity: 1,
+            unit_price_paise: 20_000,
+            notes: None,
+            modifiers: vec![],
+        }],
+    )
+    .expect("create order");
+    let order_item_id = order.items[0].id.clone();
+    let before = invoice_sequence_total(&state);
+
+    // Two parts, each claiming the SAME quantity-1 line against an order
+    // line whose real quantity is 1 — over-billed by one unit.
+    let parts = vec![
+        SplitPartInput {
+            lines: vec![SplitLineInput {
+                order_item_id: order_item_id.clone(),
+                quantity: 1,
+            }],
+        },
+        SplitPartInput {
+            lines: vec![SplitLineInput {
+                order_item_id: order_item_id.clone(),
+                quantity: 1,
+            }],
+        },
+    ];
+
+    let err = issue_split_invoices_impl(&state, &order.holler_order_id, USER_ID, &parts, &[])
+        .expect_err("an over-billed split must be rejected");
+    assert_eq!(err.code, "INVALID_INPUT");
+    assert!(err.message.contains(&order_item_id));
+
+    assert!(
+        list_invoices_for_order_impl(&state, &order.holler_order_id)
+            .expect("list")
+            .is_empty(),
+        "a rejected over-billed split must leave no invoice row for the order"
+    );
+    assert_eq!(
+        invoice_sequence_total(&state),
+        before,
+        "a rejected over-billed split must not consume any invoice number"
+    );
+}
+
+/// An under-billed split (one part covers only half the order's quantity)
+/// is rejected the same way — atomically, no row, no number consumed.
+#[test]
+fn an_under_billed_split_is_rejected_atomically_and_burns_no_invoice_number() {
+    let state = app_state();
+    let order = create_order_impl(
+        &state,
+        "DINE_IN".to_string(),
+        None,
+        vec![NewOrderItemRequest {
+            menu_item_id: "item-1".to_string(),
+            variant_id: None,
+            quantity: 2,
+            unit_price_paise: 20_000,
+            notes: None,
+            modifiers: vec![],
+        }],
+    )
+    .expect("create order");
+    let order_item_id = order.items[0].id.clone();
+    let before = invoice_sequence_total(&state);
+
+    // Only ONE part, billing quantity 1 of an order line whose real
+    // quantity is 2 — under-billed by one unit, nothing bills the rest.
+    let parts = vec![SplitPartInput {
+        lines: vec![SplitLineInput {
+            order_item_id: order_item_id.clone(),
+            quantity: 1,
+        }],
+    }];
+
+    let err = issue_split_invoices_impl(&state, &order.holler_order_id, USER_ID, &parts, &[])
+        .expect_err("an under-billed split must be rejected");
+    assert_eq!(err.code, "INVALID_INPUT");
+    assert!(err.message.contains(&order_item_id));
+
+    assert!(
+        list_invoices_for_order_impl(&state, &order.holler_order_id)
+            .expect("list")
+            .is_empty(),
+        "a rejected under-billed split must leave no invoice row for the order"
+    );
+    assert_eq!(
+        invoice_sequence_total(&state),
+        before,
+        "a rejected under-billed split must not consume any invoice number"
+    );
+}
+
+/// A split part carrying a discounted line still prices correctly: the
+/// SAME 10%-off worked example as
+/// `a_line_discount_reduces_the_taxable_value_and_gst_is_computed_on_the_net`,
+/// but issued as one part of a 2-way split rather than as a whole-order
+/// bill — proving `build_split_part_lines` reuses `discounts_by_item`
+/// rather than silently dropping it for the split path.
+#[test]
+fn a_split_part_with_a_discounted_line_prices_correctly() {
+    let state = app_state();
+    {
+        let db = state.db.lock().expect("lock");
+        seed_discount_definition(
+            &db,
+            "disc-staff10",
+            "STAFF10",
+            "LINE",
+            "PERCENT",
+            Some(1000), // 10.00%
+            None,
+            None,
+            None,
+            false,
+        );
+    }
+
+    let order = create_order_impl(
+        &state,
+        "DINE_IN".to_string(),
+        None,
+        vec![NewOrderItemRequest {
+            menu_item_id: "item-1".to_string(),
+            variant_id: None,
+            quantity: 2,
+            unit_price_paise: 20_000,
+            notes: None,
+            modifiers: vec![],
+        }],
+    )
+    .expect("create order");
+    let order_item_id = order.items[0].id.clone();
+
+    let parts = vec![
+        SplitPartInput {
+            lines: vec![SplitLineInput {
+                order_item_id: order_item_id.clone(),
+                quantity: 1,
+            }],
+        },
+        SplitPartInput {
+            lines: vec![SplitLineInput {
+                order_item_id: order_item_id.clone(),
+                quantity: 1,
+            }],
+        },
+    ];
+    let discounts = vec![LineDiscountInput {
+        order_item_id: order_item_id.clone(),
+        discount_definition_id: "disc-staff10".to_string(),
+        reason: None,
+    }];
+
+    let invoices =
+        issue_split_invoices_impl(&state, &order.holler_order_id, USER_ID, &parts, &discounts)
+            .expect("issue a split with a discounted line");
+    assert_eq!(invoices.len(), 2);
+
+    // Per unit: 10% of Rs.200.00 = Rs.20.00 (2000 paise) discount, applied
+    // to EACH part's single unit (same figures as the whole-order worked
+    // example, halved because each part carries quantity 1 not 2).
+    for invoice in &invoices {
+        let line = &invoice.lines[0];
+        assert_eq!(line.quantity, 1);
+        assert_eq!(line.gross_paise, 20_000);
+        assert_eq!(line.discount_paise, 2_000, "the 10% discount applies per part too");
+        assert_eq!(line.taxable_value_paise, 18_000);
+        assert_eq!(line.cgst_paise, 450);
+        assert_eq!(line.sgst_paise, 450);
+        assert_eq!(invoice.grand_total_paise, 18_000 + 450 + 450);
+    }
+
+    // Conservation still holds with the discount applied.
+    let total_grand: i64 = invoices.iter().map(|inv| inv.grand_total_paise).sum();
+    assert_eq!(total_grand, 2 * (18_000 + 450 + 450));
 }

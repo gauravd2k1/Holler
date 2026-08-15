@@ -25,6 +25,8 @@ const {
   listFailedPrintJobs,
   retryFailedPrintJobs,
   recordPayment,
+  issueSplitInvoices,
+  listInvoicesForSplitGroup,
   findOpenCashShift,
   isTauriCommandError,
 } = await import("../tauri");
@@ -545,6 +547,104 @@ describe("recordPayment", () => {
         createdByUserId: VALID_PAYMENT.created_by_user_id,
       }),
     ).rejects.toSatisfy((err: unknown) => isTauriCommandError(err));
+  });
+});
+
+describe("issueSplitInvoices / listInvoicesForSplitGroup", () => {
+  const VALID_INVOICE_PART_1 = {
+    id: "018e5a2e-9001-7c3d-9f4e-1234567890ab",
+    outlet_id: "018e5a2e-1a09-7c3d-9f4e-1234567890ab",
+    order_id: "018e5a2e-2b10-7c3d-9f4e-1234567890ab",
+    split_group_id: "018e5a2e-9500-7c3d-9f4e-1234567890ab",
+    split_index: 1,
+    split_count: 2,
+    series_id: "018e5a2e-9101-7c3d-9f4e-1234567890ab",
+    invoice_number: "FY26/PNQ/001423",
+    invoice_date: "2026-08-12T14:30:00Z",
+    business_date: "2026-08-12",
+    status: "ISSUED",
+    cancelled_reason: null,
+    cancelled_at: null,
+    customer_name: null,
+    customer_phone: null,
+    customer_gstin: null,
+    place_of_supply_state_code: "27",
+    lines: [],
+    subtotal_paise: 20000,
+    discount_paise: 0,
+    taxable_value_paise: 20000,
+    cgst_paise: 500,
+    sgst_paise: 500,
+    igst_paise: 0,
+    cess_paise: 0,
+    round_off_paise: 0,
+    grand_total_paise: 21000,
+    compliance_version_id: "018e5a2e-9401-7c3d-9f4e-1234567890ab",
+    tax_snapshot: {},
+    fiscal_profile: {},
+    channel: "POS",
+    tax_liability_party: "RESTAURANT",
+    eco_operator_name: null,
+    eco_operator_gstin: null,
+    supply_classification: null,
+    created_by_user_id: "018e5a2e-3d12-7c3d-9f4e-1234567890ab",
+    created_at: "2026-08-12T14:30:00Z",
+    updated_at: "2026-08-12T14:30:00Z",
+    version: 1,
+    schema_version: 1,
+  };
+  const VALID_INVOICE_PART_2 = { ...VALID_INVOICE_PART_1, split_index: 2 };
+
+  // The wire shape actually carries per-part order_item_id/quantity through
+  // to `issue_split_invoices` — not merely that the response parses. This is
+  // what lets a mismatched split reach the edge's own §66 conservation
+  // check at all.
+  it("passes parts' order_item_id/quantity through to the issue_split_invoices command", async () => {
+    invokeMock.mockResolvedValue([VALID_INVOICE_PART_1, VALID_INVOICE_PART_2]);
+    const result = await issueSplitInvoices(
+      VALID_INVOICE_PART_1.order_id,
+      VALID_INVOICE_PART_1.created_by_user_id,
+      [
+        { lines: [{ orderItemId: "item-1", quantity: 1 }] },
+        { lines: [{ orderItemId: "item-1", quantity: 1 }] },
+      ],
+    );
+    expect(invokeMock).toHaveBeenCalledWith(
+      "issue_split_invoices",
+      expect.objectContaining({
+        parts: [
+          { lines: [{ order_item_id: "item-1", quantity: 1 }] },
+          { lines: [{ order_item_id: "item-1", quantity: 1 }] },
+        ],
+      }),
+    );
+    expect(result).toHaveLength(2);
+    expect(result[0]?.split_index).toBe(1);
+    expect(result[1]?.split_index).toBe(2);
+  });
+
+  it("throws a normalized TauriCommandError when the edge rejects an over/under-billed split", async () => {
+    invokeMock.mockRejectedValue({
+      code: "INVALID_INPUT",
+      message:
+        "split conservation violated for order_item item-1: order line has quantity 1 but the supplied shares total 2",
+    });
+    await expect(
+      issueSplitInvoices(VALID_INVOICE_PART_1.order_id, VALID_INVOICE_PART_1.created_by_user_id, [
+        { lines: [{ orderItemId: "item-1", quantity: 1 }] },
+        { lines: [{ orderItemId: "item-1", quantity: 1 }] },
+      ]),
+    ).rejects.toSatisfy((err: unknown) => isTauriCommandError(err));
+  });
+
+  it("lists every invoice sharing a split_group_id", async () => {
+    invokeMock.mockResolvedValue([VALID_INVOICE_PART_1, VALID_INVOICE_PART_2]);
+    const result = await listInvoicesForSplitGroup(VALID_INVOICE_PART_1.split_group_id);
+    expect(invokeMock).toHaveBeenCalledWith(
+      "list_invoices_for_split_group",
+      expect.objectContaining({ splitGroupId: VALID_INVOICE_PART_1.split_group_id }),
+    );
+    expect(result).toHaveLength(2);
   });
 });
 

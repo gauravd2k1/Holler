@@ -19,20 +19,26 @@ import {
   canOfferBilling,
   canOfferReversal,
   discountRequiresReason,
+  everySplitPartHasALine,
   isDiscountOfferable,
   isFullySettled,
   isVarianceReasonRequired,
+  paymentsForInvoice,
   pendingTenderTotalPaise,
   previewLineDiscountPerUnitPaise,
   projectedVariancePaise,
   remainingAfterPendingPaise,
+  splitPartToRequest,
   stagedDiscountsAreComplete,
+  totalQuantityAssignedPreview,
   type PendingTenderEntry,
+  type SplitPartDraft,
   type StagedLineDiscount,
 } from "../domain/billing";
 import {
   closeCashShift,
   issueInvoice,
+  issueSplitInvoices,
   openCashShift,
   recordPayment,
   type LineDiscountRequest,
@@ -81,12 +87,34 @@ export function BillingScreen() {
 
   // Discounts staged before the bill is issued — LINE scope only (BILL scope
   // is not implemented in this build, ADR-016 §28). Keyed by order_item_id:
-  // one discount per line at most.
+  // one discount per line at most. Applies once across the whole order,
+  // whether it is billed whole or split — a discount is a property of the
+  // line, not of which split part happens to carry it (ADR-016 §4).
   const [stagedDiscounts, setStagedDiscounts] = useState<Record<string, StagedLineDiscount>>({});
 
-  const [pendingTenders, setPendingTenders] = useState<PendingTender[]>([]);
-  const [tenderError, setTenderError] = useState<string | null>(null);
-  const [submittingTender, setSubmittingTender] = useState(false);
+  // Split-bill builder (ADR-016 §4): OFF (a plain "Issue Bill") unless the
+  // cashier opts in. `splitParts` is UI state only — the edge alone decides
+  // whether it reconstructs the order's lines exactly (§66); this never
+  // gates submission, only previews it (task requirement).
+  const [splitMode, setSplitMode] = useState(false);
+  const [splitParts, setSplitParts] = useState<SplitPartDraft[]>([
+    { quantities: {} },
+    { quantities: {} },
+  ]);
+  const [splitError, setSplitError] = useState<string | null>(null);
+  const [splitting, setSplitting] = useState(false);
+
+  // Pending (entered but not yet submitted) tenders, keyed by invoice id —
+  // a split group has more than one invoice open for payment at once, and
+  // each is independently payable (ADR-016 §4): settling one must never
+  // touch another's remaining due.
+  const [pendingTendersByInvoice, setPendingTendersByInvoice] = useState<
+    Record<string, PendingTender[]>
+  >({});
+  const [tenderErrorByInvoice, setTenderErrorByInvoice] = useState<Record<string, string | null>>(
+    {},
+  );
+  const [submittingTenderInvoiceId, setSubmittingTenderInvoiceId] = useState<string | null>(null);
 
   const [openingCashRupees, setOpeningCashRupees] = useState("");
   const [shiftError, setShiftError] = useState<string | null>(null);
@@ -112,7 +140,7 @@ export function BillingScreen() {
   }, [principal, recoverOpenShift]);
 
   const invoices = invoicesQuery.data ?? [];
-  const invoice = invoices[0] ?? null;
+  const hasInvoices = invoices.length > 0;
   const payments = paymentsQuery.data ?? [];
   const canBill = canOfferBilling(principal);
   const canVoid = canOfferReversal(principal);
@@ -177,33 +205,97 @@ export function BillingScreen() {
     }
   }
 
-  function addPendingTender() {
-    setPendingTenders((prev) => [
+  // -------------------------------------------------------- split builder --
+  // ADR-016 §4: a split bill is N invoices sharing one `split_group_id`.
+  // `splitParts` is a plain builder — add/remove a part, assign a quantity
+  // of each order line to each part. The edge alone decides whether the
+  // result reconstructs the order exactly (§66); this screen never gates
+  // submission on the local preview totals, only shows them.
+
+  function addSplitPart() {
+    setSplitParts((prev) => [...prev, { quantities: {} }]);
+  }
+
+  function removeSplitPart(index: number) {
+    setSplitParts((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  function setSplitQuantity(partIndex: number, orderItemId: string, quantity: number) {
+    setSplitParts((prev) =>
+      prev.map((p, i) =>
+        i === partIndex ? { quantities: { ...p.quantities, [orderItemId]: quantity } } : p,
+      ),
+    );
+  }
+
+  async function handleIssueSplitInvoices() {
+    if (!orderId || !principal) return;
+    setSplitting(true);
+    setSplitError(null);
+    try {
+      const discounts: LineDiscountRequest[] = stagedList.map((s) => ({
+        orderItemId: s.orderItemId,
+        discountDefinitionId: s.discountDefinitionId,
+        reason: s.reason.trim() === "" ? null : s.reason.trim(),
+      }));
+      await issueSplitInvoices(
+        orderId,
+        principal.user_id,
+        splitParts.map(splitPartToRequest),
+        discounts,
+      );
+      setStagedDiscounts({});
+      setSplitParts([{ quantities: {} }, { quantities: {} }]);
+      setSplitMode(false);
+      await queryClient.invalidateQueries({ queryKey: queryKeys.invoices(orderId) });
+    } catch (err) {
+      // §64: a rejected split (over- or under-billed) must say what is
+      // wrong — the edge's own §66 conservation message already names the
+      // offending order_item and the mismatch (`billingErrorMessage`'s
+      // `INVALID_INPUT` case), shown verbatim here.
+      setSplitError(billingErrorMessage(err));
+    } finally {
+      setSplitting(false);
+    }
+  }
+
+  function addPendingTender(invoiceId: string) {
+    setPendingTendersByInvoice((prev) => ({
       ...prev,
-      { method: "CASH", amountPaise: 0, tenderedRupees: "" },
-    ]);
+      [invoiceId]: [...(prev[invoiceId] ?? []), { method: "CASH", amountPaise: 0, tenderedRupees: "" }],
+    }));
   }
 
-  function updatePendingTender(index: number, patch: Partial<PendingTender>) {
-    setPendingTenders((prev) => prev.map((t, i) => (i === index ? { ...t, ...patch } : t)));
+  function updatePendingTender(invoiceId: string, index: number, patch: Partial<PendingTender>) {
+    setPendingTendersByInvoice((prev) => ({
+      ...prev,
+      [invoiceId]: (prev[invoiceId] ?? []).map((t, i) => (i === index ? { ...t, ...patch } : t)),
+    }));
   }
 
-  function removePendingTender(index: number) {
-    setPendingTenders((prev) => prev.filter((_, i) => i !== index));
+  function removePendingTender(invoiceId: string, index: number) {
+    setPendingTendersByInvoice((prev) => ({
+      ...prev,
+      [invoiceId]: (prev[invoiceId] ?? []).filter((_, i) => i !== index),
+    }));
   }
 
-  async function handleSubmitTenders() {
-    if (!orderId || !principal || !invoice) return;
-    setTenderError(null);
-    for (const t of pendingTenders) {
+  async function handleSubmitTenders(invoiceId: string) {
+    if (!orderId || !principal) return;
+    const tenders = pendingTendersByInvoice[invoiceId] ?? [];
+    setTenderErrorByInvoice((prev) => ({ ...prev, [invoiceId]: null }));
+    for (const t of tenders) {
       if (t.amountPaise <= 0) {
-        setTenderError("Every tender line needs an amount greater than zero.");
+        setTenderErrorByInvoice((prev) => ({
+          ...prev,
+          [invoiceId]: "Every tender line needs an amount greater than zero.",
+        }));
         return;
       }
     }
-    setSubmittingTender(true);
+    setSubmittingTenderInvoiceId(invoiceId);
     try {
-      for (const t of pendingTenders) {
+      for (const t of tenders) {
         const isCash = t.method === "CASH";
         const tenderedPaise = isCash ? (parseRupeesToPaise(t.tenderedRupees) ?? t.amountPaise) : null;
         const changePaise = isCash ? Math.max(0, tenderedPaise! - t.amountPaise) : null;
@@ -216,28 +308,28 @@ export function BillingScreen() {
           reference: null,
           cashShiftId: isCash ? openShiftId : null,
           reversesPaymentId: null,
-          // T9 retry, Defect 1: naming the invoice is what lets the edge
-          // reject a tender that would exceed its remaining due, rather
-          // than trusting a disabled button alone.
-          invoiceId: invoice.id,
+          // T9 retry, Defect 1, and ADR-016 §4: naming the invoice is what
+          // lets the edge reject a tender that would exceed THIS part's own
+          // remaining due, without touching any other part of a split.
+          invoiceId,
           createdByUserId: principal.user_id,
         });
       }
-      setPendingTenders([]);
+      setPendingTendersByInvoice((prev) => ({ ...prev, [invoiceId]: [] }));
       await queryClient.invalidateQueries({ queryKey: queryKeys.payments(orderId) });
       if (openShiftId) {
         await queryClient.invalidateQueries({ queryKey: queryKeys.cashShift(openShiftId) });
       }
     } catch (err) {
-      setTenderError(billingErrorMessage(err));
+      setTenderErrorByInvoice((prev) => ({ ...prev, [invoiceId]: billingErrorMessage(err) }));
     } finally {
-      setSubmittingTender(false);
+      setSubmittingTenderInvoiceId(null);
     }
   }
 
-  async function handleVoid(paymentId: string, amountPaise: number) {
+  async function handleVoid(invoiceId: string, paymentId: string, amountPaise: number) {
     if (!orderId || !principal) return;
-    setTenderError(null);
+    setTenderErrorByInvoice((prev) => ({ ...prev, [invoiceId]: null }));
     try {
       await recordPayment({
         orderId,
@@ -255,7 +347,7 @@ export function BillingScreen() {
       });
       await queryClient.invalidateQueries({ queryKey: queryKeys.payments(orderId) });
     } catch (err) {
-      setTenderError(billingErrorMessage(err));
+      setTenderErrorByInvoice((prev) => ({ ...prev, [invoiceId]: billingErrorMessage(err) }));
     }
   }
 
@@ -305,14 +397,6 @@ export function BillingScreen() {
     }
   }
 
-  const due = invoice ? amountDuePaise(invoice, payments) : 0;
-  const enteredTotal = pendingTenderTotalPaise(pendingTenders);
-  const remaining = invoice ? remainingAfterPendingPaise(invoice, payments, pendingTenders) : 0;
-  // T9 retry, Defect 1: the UI stops OFFERING an over-settling tender once
-  // the invoice is fully settled — the edge (`validate_forward`) is what
-  // actually enforces this; this only keeps a cashier from being invited to
-  // attempt something that would just be rejected.
-  const billFullySettled = invoice ? isFullySettled(invoice, payments) : false;
   const projectedVariance =
     shiftQuery.data && actualCashRupees.trim() !== ""
       ? projectedVariancePaise(shiftQuery.data, parseRupeesToPaise(actualCashRupees) ?? 0)
@@ -381,11 +465,12 @@ export function BillingScreen() {
         )}
       </section>
 
-      {!invoice && !invoicesQuery.isLoading && orderItems.length > 0 && (
+      {!hasInvoices && !invoicesQuery.isLoading && orderItems.length > 0 && (
         <section className="discount-panel">
           <h2>Discounts</h2>
           {/* LINE scope only — a discount naming BILL scope is not offered
-              here at all (§28, this track's disclosed limitation). */}
+              here at all (§28, this track's disclosed limitation). Applies
+              once across the whole order, whether billed whole or split. */}
           {offerableDiscounts.length === 0 && <p>No discount is currently configured for this outlet.</p>}
           {offerableDiscounts.length > 0 &&
             orderItems.map((item) => {
@@ -433,14 +518,101 @@ export function BillingScreen() {
       <section className="invoice-panel">
         <h2>Bill</h2>
         {invoicesQuery.isLoading && <p>Loading bill…</p>}
-        {!invoice && !invoicesQuery.isLoading && (
-          <button
-            type="button"
-            disabled={!canBill || issuing || !discountsReady}
-            onClick={() => void handleIssueInvoice()}
-          >
-            {issuing ? "Issuing…" : "Issue Bill"}
-          </button>
+        {!hasInvoices && !invoicesQuery.isLoading && (
+          <div>
+            {!splitMode && (
+              <div>
+                <button
+                  type="button"
+                  disabled={!canBill || issuing || !discountsReady}
+                  onClick={() => void handleIssueInvoice()}
+                >
+                  {issuing ? "Issuing…" : "Issue Bill"}
+                </button>
+                <button
+                  type="button"
+                  disabled={!canBill || orderItems.length === 0}
+                  onClick={() => setSplitMode(true)}
+                >
+                  Split Bill
+                </button>
+              </div>
+            )}
+            {splitMode && (
+              <div className="split-bill-builder">
+                <h3>Split Bill — {splitParts.length} parts</h3>
+                {/* ADR-016 §4/§66: the edge is the sole authority on whether
+                    this reconstructs the order's lines exactly — the totals
+                    below are a PREVIEW only, never the gate on submission. */}
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Item</th>
+                      <th>Order Qty</th>
+                      {splitParts.map((_, i) => (
+                        <th key={i}>
+                          Part {i + 1}{" "}
+                          {splitParts.length > 1 && (
+                            <button type="button" onClick={() => removeSplitPart(i)}>
+                              Remove
+                            </button>
+                          )}
+                        </th>
+                      ))}
+                      <th>Assigned</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {orderItems.map((item) => {
+                      const assigned = totalQuantityAssignedPreview(item.id, splitParts);
+                      return (
+                        <tr key={item.id}>
+                          <td>{menuItemName(item.menu_item_id)}</td>
+                          <td>{item.quantity}</td>
+                          {splitParts.map((part, i) => (
+                            <td key={i}>
+                              <input
+                                type="number"
+                                min={0}
+                                inputMode="numeric"
+                                value={part.quantities[item.id] ?? 0}
+                                onChange={(e) =>
+                                  setSplitQuantity(i, item.id, Number(e.target.value) || 0)
+                                }
+                              />
+                            </td>
+                          ))}
+                          <td className={assigned === item.quantity ? undefined : "split-mismatch"}>
+                            {assigned} / {item.quantity}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+                <button type="button" onClick={addSplitPart}>
+                  + Add Part
+                </button>
+                <button
+                  type="button"
+                  disabled={
+                    !canBill || splitting || !everySplitPartHasALine(splitParts) || !discountsReady
+                  }
+                  onClick={() => void handleIssueSplitInvoices()}
+                >
+                  {splitting ? "Issuing…" : `Issue ${splitParts.length}-Way Split`}
+                </button>
+                <button type="button" onClick={() => setSplitMode(false)}>
+                  Cancel Split
+                </button>
+                {splitError && (
+                  <p className="billing-error" role="alert">
+                    {splitError}
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
         )}
         {!discountsReady && (
           <p>Every discount that requires a reason needs one entered before the bill can be issued.</p>
@@ -450,136 +622,167 @@ export function BillingScreen() {
             {issueError}
           </p>
         )}
-        {invoice && (
-          <div>
-            <p>
-              Invoice {invoice.invoice_number} — {invoice.status}
-            </p>
-            <table>
-              <thead>
-                <tr>
-                  <th>Item</th>
-                  <th>Qty</th>
-                  <th>Discount</th>
-                  <th>Taxable</th>
-                  <th>CGST</th>
-                  <th>SGST</th>
-                  <th>IGST</th>
-                  <th>Total</th>
-                </tr>
-              </thead>
-              <tbody>
-                {invoice.lines.map((line) => (
-                  <tr key={line.id}>
-                    <td>{line.description}</td>
-                    <td>{line.quantity}</td>
-                    <td>{formatPaiseAsRupees(line.discount_paise)}</td>
-                    <td>{formatPaiseAsRupees(line.taxable_value_paise)}</td>
-                    <td>{formatPaiseAsRupees(line.cgst_paise)}</td>
-                    <td>{formatPaiseAsRupees(line.sgst_paise)}</td>
-                    <td>{formatPaiseAsRupees(line.igst_paise)}</td>
-                    <td>{formatPaiseAsRupees(line.total_paise)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            <p>Subtotal: {formatPaiseAsRupees(invoice.subtotal_paise)}</p>
-            <p>Discount: {formatPaiseAsRupees(invoice.discount_paise)}</p>
-            <p>Round off: {formatPaiseAsRupees(invoice.round_off_paise)}</p>
-            <p className="grand-total">Grand Total: {formatPaiseAsRupees(invoice.grand_total_paise)}</p>
-            <p className="amount-due">Amount Due: {formatPaiseAsRupees(due)}</p>
-          </div>
-        )}
       </section>
 
-      {invoice && (
-        <section className="payments-panel">
-          <h2>Payments</h2>
-          <table>
-            <thead>
-              <tr>
-                <th>Method</th>
-                <th>Amount</th>
-                <th>Status</th>
-                <th>Reversal of</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {payments.map((p) => (
-                <tr key={p.id}>
-                  <td>{p.method}</td>
-                  <td>{formatPaiseAsRupees(p.amount_paise)}</td>
-                  <td>{p.status}</td>
-                  <td>{p.reverses_payment_id ?? "—"}</td>
-                  <td>
-                    {/* No "edit payment" affordance exists anywhere in this
-                        screen — a correction is always a new reversal row
-                        (task requirement, docs/spec/payments.md). */}
-                    {canVoid && p.reverses_payment_id === null && p.status === "CAPTURED" && (
-                      <button type="button" onClick={() => void handleVoid(p.id, p.amount_paise)}>
-                        Void / Refund
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      {hasInvoices &&
+        invoices.map((inv) => {
+          const invoicePayments = paymentsForInvoice(payments, inv.id);
+          const due = amountDuePaise(inv, invoicePayments);
+          const pendingTenders = pendingTendersByInvoice[inv.id] ?? [];
+          const enteredTotal = pendingTenderTotalPaise(pendingTenders);
+          const remaining = remainingAfterPendingPaise(inv, invoicePayments, pendingTenders);
+          // T9 retry, Defect 1: the UI stops OFFERING an over-settling
+          // tender once THIS part is fully settled — settling one part of a
+          // split never touches another's own remaining due (ADR-016 §4).
+          const billFullySettled = isFullySettled(inv, invoicePayments);
+          const tenderError = tenderErrorByInvoice[inv.id] ?? null;
+          const submittingTender = submittingTenderInvoiceId === inv.id;
 
-          <h3>Take Payment</h3>
-          {pendingTenders.map((t, i) => (
-            <div key={i} className="pending-tender-row">
-              <select
-                value={t.method}
-                onChange={(e) => updatePendingTender(i, { method: e.target.value as PaymentMethod })}
+          return (
+            <section key={inv.id} className="invoice-detail-panel">
+              <h2>
+                Invoice {inv.invoice_number} — {inv.status}
+                {inv.split_group_id !== null &&
+                  ` — split part ${inv.split_index} of ${inv.split_count}`}
+              </h2>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Item</th>
+                    <th>Qty</th>
+                    <th>Discount</th>
+                    <th>Taxable</th>
+                    <th>CGST</th>
+                    <th>SGST</th>
+                    <th>IGST</th>
+                    <th>Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {inv.lines.map((line) => (
+                    <tr key={line.id}>
+                      <td>{line.description}</td>
+                      <td>{line.quantity}</td>
+                      <td>{formatPaiseAsRupees(line.discount_paise)}</td>
+                      <td>{formatPaiseAsRupees(line.taxable_value_paise)}</td>
+                      <td>{formatPaiseAsRupees(line.cgst_paise)}</td>
+                      <td>{formatPaiseAsRupees(line.sgst_paise)}</td>
+                      <td>{formatPaiseAsRupees(line.igst_paise)}</td>
+                      <td>{formatPaiseAsRupees(line.total_paise)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <p>Subtotal: {formatPaiseAsRupees(inv.subtotal_paise)}</p>
+              <p>Discount: {formatPaiseAsRupees(inv.discount_paise)}</p>
+              <p>Round off: {formatPaiseAsRupees(inv.round_off_paise)}</p>
+              <p className="grand-total">Grand Total: {formatPaiseAsRupees(inv.grand_total_paise)}</p>
+              <p className="amount-due">
+                Amount Due: {formatPaiseAsRupees(due)}
+                {billFullySettled && " — settled"}
+              </p>
+
+              <h3>Payments</h3>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Method</th>
+                    <th>Amount</th>
+                    <th>Status</th>
+                    <th>Reversal of</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {invoicePayments.map((p) => (
+                    <tr key={p.id}>
+                      <td>{p.method}</td>
+                      <td>{formatPaiseAsRupees(p.amount_paise)}</td>
+                      <td>{p.status}</td>
+                      <td>{p.reverses_payment_id ?? "—"}</td>
+                      <td>
+                        {/* No "edit payment" affordance exists anywhere in
+                            this screen — a correction is always a new
+                            reversal row (task requirement,
+                            docs/spec/payments.md). */}
+                        {canVoid && p.reverses_payment_id === null && p.status === "CAPTURED" && (
+                          <button
+                            type="button"
+                            onClick={() => void handleVoid(inv.id, p.id, p.amount_paise)}
+                          >
+                            Void / Refund
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+
+              <h4>Take Payment</h4>
+              {pendingTenders.map((t, i) => (
+                <div key={i} className="pending-tender-row">
+                  <select
+                    value={t.method}
+                    onChange={(e) =>
+                      updatePendingTender(inv.id, i, { method: e.target.value as PaymentMethod })
+                    }
+                  >
+                    {PAYMENT_METHODS.map((m) => (
+                      <option key={m} value={m}>
+                        {m}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    placeholder="Amount ₹"
+                    inputMode="decimal"
+                    onChange={(e) =>
+                      updatePendingTender(inv.id, i, {
+                        amountPaise: parseRupeesToPaise(e.target.value) ?? 0,
+                      })
+                    }
+                  />
+                  {t.method === "CASH" && (
+                    <input
+                      placeholder="Tendered ₹ (optional)"
+                      inputMode="decimal"
+                      value={t.tenderedRupees}
+                      onChange={(e) =>
+                        updatePendingTender(inv.id, i, { tenderedRupees: e.target.value })
+                      }
+                    />
+                  )}
+                  <button type="button" onClick={() => removePendingTender(inv.id, i)}>
+                    Remove
+                  </button>
+                </div>
+              ))}
+              <button
+                type="button"
+                disabled={!canBill || billFullySettled}
+                onClick={() => addPendingTender(inv.id)}
               >
-                {PAYMENT_METHODS.map((m) => (
-                  <option key={m} value={m}>
-                    {m}
-                  </option>
-                ))}
-              </select>
-              <input
-                placeholder="Amount ₹"
-                inputMode="decimal"
-                onChange={(e) =>
-                  updatePendingTender(i, { amountPaise: parseRupeesToPaise(e.target.value) ?? 0 })
-                }
-              />
-              {t.method === "CASH" && (
-                <input
-                  placeholder="Tendered ₹ (optional)"
-                  inputMode="decimal"
-                  value={t.tenderedRupees}
-                  onChange={(e) => updatePendingTender(i, { tenderedRupees: e.target.value })}
-                />
-              )}
-              <button type="button" onClick={() => removePendingTender(i)}>
-                Remove
+                + Add Tender
               </button>
-            </div>
-          ))}
-          <button type="button" disabled={!canBill || billFullySettled} onClick={addPendingTender}>
-            + Add Tender
-          </button>
-          {billFullySettled && <p>This bill is fully settled — no further tender is needed.</p>}
-          <p>Entered so far: {formatPaiseAsRupees(enteredTotal)}</p>
-          <p>Remaining after entered tenders: {formatPaiseAsRupees(remaining)}</p>
-          {tenderError && (
-            <p className="billing-error" role="alert">
-              {tenderError}
-            </p>
-          )}
-          <button
-            type="button"
-            disabled={!canBill || billFullySettled || pendingTenders.length === 0 || submittingTender}
-            onClick={() => void handleSubmitTenders()}
-          >
-            {submittingTender ? "Recording…" : "Record Payment(s)"}
-          </button>
-        </section>
-      )}
+              {billFullySettled && <p>This bill is fully settled — no further tender is needed.</p>}
+              <p>Entered so far: {formatPaiseAsRupees(enteredTotal)}</p>
+              <p>Remaining after entered tenders: {formatPaiseAsRupees(remaining)}</p>
+              {tenderError && (
+                <p className="billing-error" role="alert">
+                  {tenderError}
+                </p>
+              )}
+              <button
+                type="button"
+                disabled={!canBill || billFullySettled || pendingTenders.length === 0 || submittingTender}
+                onClick={() => void handleSubmitTenders(inv.id)}
+              >
+                {submittingTender ? "Recording…" : "Record Payment(s)"}
+              </button>
+            </section>
+          );
+        })}
     </main>
   );
 }

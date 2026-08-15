@@ -401,8 +401,8 @@ export interface LineDiscountRequest {
 }
 
 /** Issues a GST invoice over every line currently on `orderId`, unsplit
- * (`split_count == 1` — split bills are out of this milestone's POS surface,
- * apps/pos/src-tauri/src/commands/billing.rs). `discounts` is optional and
+ * (`split_count == 1` — see `issueSplitInvoices` for N ways).
+ * `discounts` is optional and
  * defaults to none applied — omitting it bills every line at full price,
  * unchanged from before this discount surface existed. Rejects with
  * `NOTHING_TO_BILL`, `NO_FISCAL_PROFILE_CONFIGURED`, `NO_ACTIVE_INVOICE_SERIES`,
@@ -434,6 +434,74 @@ export async function issueInvoice(
 export async function listInvoicesForOrder(orderId: string): Promise<Invoice[]> {
   try {
     const raw = await invoke<unknown[]>("list_invoices_for_order", { orderId });
+    return raw.map((i) => InvoiceSchema.parse(i));
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
+
+/** One invoice-to-be within a split — "this part bills `quantity` of
+ * `orderItemId`". Mirrors
+ * `apps/pos/src-tauri/src/commands/billing.rs` `SplitLineInput`. */
+export interface SplitLineRequest {
+  orderItemId: string;
+  quantity: number;
+}
+
+/** One part of a split — becomes one independently-numbered invoice.
+ * Mirrors `SplitPartInput`. */
+export interface SplitPartRequest {
+  lines: readonly SplitLineRequest[];
+}
+
+/** Issues N invoices over every line on `orderId`, sharing one
+ * `split_group_id` (ADR-016 §4) — `parts` names, for each invoice-to-be,
+ * which order lines and quantities it bills. `discounts` resolves exactly
+ * as it does for `issueInvoice`, once across the whole order, not per part.
+ *
+ * The edge (`Db::issue_split_invoices_with_outbox`) is the SOLE authority on
+ * whether `parts` reconstructs the order's lines exactly (§66) — this
+ * function performs no conservation check of its own and never will; a
+ * mismatched split is rejected as a whole with `INVALID_INPUT`, naming the
+ * offending order_item and the quantity mismatch, and consumes NO invoice
+ * number for any part (all issued together in one transaction, or none).
+ * Also rejects with the same `NOTHING_TO_BILL`/`NO_FISCAL_PROFILE_CONFIGURED`/
+ * `NO_ACTIVE_INVOICE_SERIES`/discount codes `issueInvoice` does, plus
+ * `EMPTY_SPLIT` (no parts supplied) and `EMPTY_SPLIT_PART` (a part with no
+ * lines) — see `billingErrorMessage`. */
+export async function issueSplitInvoices(
+  orderId: string,
+  createdByUserId: string,
+  parts: readonly SplitPartRequest[],
+  discounts: readonly LineDiscountRequest[] = [],
+): Promise<Invoice[]> {
+  try {
+    const raw = await invoke<unknown[]>("issue_split_invoices", {
+      orderId,
+      createdByUserId,
+      parts: parts.map((p) => ({
+        lines: p.lines.map((l) => ({
+          order_item_id: l.orderItemId,
+          quantity: l.quantity,
+        })),
+      })),
+      discounts: discounts.map((d) => ({
+        order_item_id: d.orderItemId,
+        discount_definition_id: d.discountDefinitionId,
+        reason: d.reason,
+      })),
+    });
+    return raw.map((i) => InvoiceSchema.parse(i));
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
+
+/** Every invoice sharing one `split_group_id` (ADR-016 §4) — lets the POS
+ * tell a cashier which parts of a split remain unpaid. */
+export async function listInvoicesForSplitGroup(splitGroupId: string): Promise<Invoice[]> {
+  try {
+    const raw = await invoke<unknown[]>("list_invoices_for_split_group", { splitGroupId });
     return raw.map((i) => InvoiceSchema.parse(i));
   } catch (err) {
     throw toCommandError(err);
