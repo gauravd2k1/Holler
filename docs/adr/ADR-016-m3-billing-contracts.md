@@ -194,3 +194,45 @@ Not a claim that it should work — what was run. All eleven SQLite migrations a
 - The four-layer rounding enforcement means a builder cannot "temporarily" store a bill that does not add up. This is deliberate friction.
 - `display_number` is a known-open item with a test pinning it, not a silent gap.
 - The e2e money invariant can finally see modifier price deltas and real quantities once Track B lands — until then, any tax engine is being validated against a data shape the product will not have.
+
+## Addendum — 0.4.7: `printer_role`, and a recommendation reversed by counting first (2026-08-16)
+
+T10 built the GST invoice renderer; its gate found it had **zero callers**. 0.4.5 gave `print_job` an `invoice_id` so an invoice could become a print job, and the enqueue path landed at `3e217ee`. But `queue_invoice_for_print` must be told *which* printer, and nothing in the frozen contract answered that: `printer` (0005) carries `name`, `connection_kind`, `address`, `paper_width_mm`, `is_active`, and nothing else. KOTs route `station` → `station_printer`; a bill has no station, so a bill had no route.
+
+The enqueue builder was told not to invent a convention and did not — it takes `printer_id` as a caller-supplied argument and validates it. This addendum supplies the missing config so a caller can answer the question without matching on a name string, which CLAUDE.md's "no magic values" rule forbids and which breaks the first time someone renames a printer.
+
+### The recommendation this reverses
+
+The orchestrator recommended a `role` column on `printer` three times, on the reasoning that routing belongs on the printer and mirrors `station_printer`. **Counting the blast radius first — the rule adopted in the 2026-08-15 retro entry — reversed it.**
+
+`printer` is constructed by struct literal in at least eight places across `edge/database` (`model.rs`, `repo.rs`), `edge/printer` (`model.rs`, `adapter.rs`, `routing.rs`) and `apps/pos/src-tauri` tests, plus the TS and Go mirrors and the fixture. Adding a field breaks every one of them at once — precisely the cascade 0.4.5 caused, where one nullable column broke five consumers and its migration was inert.
+
+A join table adds a row shape instead of widening an existing one, so **nothing that compiles today stops compiling**. The consumer sweep confirmed it: all four edge crates, `apps/pos/src-tauri` and the backend build unchanged against this migration.
+
+It is also the better model. One physical printer at a small outlet prints both tickets and bills; a single-valued column forces a `BOTH` member whose meaning must be special-cased at every read. Two rows say the same thing, and it matches how routing already works.
+
+**This reversal is the rule paying for itself on its first application.** The earlier recommendation was not wrong on taste — it was made without counting, which is exactly the failure mode the rule exists to prevent.
+
+### Shape
+
+`printer_role(printer_id, role, config_version)`, PK `(printer_id, role)`, `role IN ('KITCHEN','BILL')`. CONFIG, cloud→edge, a child row in the config bundle like `station_printer` — not an `AggregateType`, no sync direction of its own.
+
+`KITCHEN` does not replace `station_printer` routing; it classifies the device. A printer with **no** row here has no role and is a candidate for neither path — absence must never be read as "sure, print bills to it". An outlet with no BILL printer must fail loudly at issue time naming the problem, the way a missing HSN/SAC code does (0.4.5).
+
+### Self-review against the rubric
+
+| Check | Finding |
+|---|---|
+| App-generated UUIDv7, no DB-side defaults | N/A — no new identifiers; the PK is the natural `(printer_id, role)` pair. |
+| No nullable columns in primary keys | Clean — both PK columns `NOT NULL`. |
+| Single authority per §50.1 | Clean. Cloud-owned config, cloud→edge, child row in the config bundle. No sync direction of its own, exactly like `station_printer`. |
+| No credential material in audit/logs/wire | N/A — carries none. |
+| Tenant-scoped uniqueness | Clean. Uniqueness is `(printer_id, role)`; `printer_id` is already outlet-scoped by its own FK, so this is never global. |
+| **Blast radius** (added by the 2026-08-15 retro) | **Zero existing struct widened.** Consumers enumerated before writing: `edge/database`, `edge/printer`, `edge/sync`, `edge/device`, `apps/pos/src-tauri`, `backend`, harness. All built after. |
+| Additive + version bump + ADR | Additive, new table only. 0.4.6 → 0.4.7, this addendum. |
+
+### Verification performed before commit
+
+Not a claim — what was run. All twelve SQLite migrations applied in order into a fresh database and all twelve Postgres migrations into a dropped-and-recreated schema. Constraints falsified: an invalid role (`'LABEL'`) rejected by the CHECK, a duplicate `(printer_id, role)` rejected by the PK, and one printer holding both `KITCHEN` and `BILL` accepted. TS and Go drift tests pass with the new `printer_role.json` fixture (39 → 40 TS).
+
+**And the runner, not the file** — the lesson of 0.4.5. `edge/database`'s registration guard, added at `92f3511`, **failed immediately** on the unregistered `0012`, naming the 0009–0011 bug in its message. Registering it turned the crate green at 176. That guard did exactly the job it was written for, on its first real test.

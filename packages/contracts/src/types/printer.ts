@@ -54,6 +54,36 @@ export const StationPrinterSchema = z.object({
 });
 export type StationPrinter = z.infer<typeof StationPrinterSchema>;
 
+// Added at 0.4.7. What a printer is eligible to print.
+//
+// KOTs route station -> station_printer. A bill has no station, so before this
+// nothing in the contract could answer "which printer prints the bill" —
+// leaving the invoice enqueue path (0.4.5's print_job.invoice_id) with no way
+// to choose a target that was not a name-string match.
+//
+// A join table rather than a `role` column on Printer: `printer` is built by
+// struct literal in eight-plus places across three Rust crates plus these
+// mirrors, so widening it breaks all of them at once — the cascade contracts
+// 0.4.5 caused (docs/retro.md, 2026-08-15). It also models a shared printer
+// honestly: a small outlet's single device holds both rows, with no BOTH enum
+// member for every reader to special-case.
+//
+// KITCHEN does not replace station_printer routing; it classifies the device.
+export const PrinterRoleKindSchema = z.enum(["KITCHEN", "BILL"]);
+export type PrinterRoleKind = z.infer<typeof PrinterRoleKindSchema>;
+
+// A printer with NO row here has no role and is a candidate for neither path.
+// Absence is never read as permission — an outlet with no BILL printer must
+// fail loudly at issue time naming the problem, the way a missing HSN/SAC code
+// does (0.4.5), rather than silently printing nowhere.
+export const PrinterRoleSchema = z.object({
+  printer_id: z.string().uuid(),
+  role: PrinterRoleKindSchema,
+  config_version: z.number().int(),
+  schema_version: z.literal(1),
+});
+export type PrinterRole = z.infer<typeof PrinterRoleSchema>;
+
 export const PrintJobStatusSchema = z.enum([
   "QUEUED",
   "PRINTING",

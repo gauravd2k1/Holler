@@ -71,6 +71,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0011_menu_item_hsn_sac.sql",
         include_str!("../../../packages/contracts/sqlite/0011_menu_item_hsn_sac.sql"),
     ),
+    (
+        "0012_printer_role.sql",
+        include_str!("../../../packages/contracts/sqlite/0012_printer_role.sql"),
+    ),
 ];
 
 /// Applies any migrations not yet reflected in `PRAGMA user_version`. Safe

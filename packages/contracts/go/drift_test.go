@@ -135,6 +135,15 @@ func TestStationPrinterFixtureRoundTrip(t *testing.T) {
 	roundTrip(t, "station_printer.json", &routing)
 }
 
+// 0.4.7. The fixture uses BILL deliberately: KITCHEN would round-trip even if
+// the enum were mis-mirrored as a plain string, because station_printer
+// already proves the join-row shape. BILL is the member that only exists
+// because an invoice needs a print target.
+func TestPrinterRoleFixtureRoundTrip(t *testing.T) {
+	var role PrinterRole
+	roundTrip(t, "printer_role.json", &role)
+}
+
 // Edge-local: SQLite only, no Postgres mirror, no wire route. Round-tripped
 // anyway so the Go and TypeScript shapes cannot drift apart.
 func TestPrintJobFixtureRoundTrip(t *testing.T) {

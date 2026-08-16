@@ -17,7 +17,12 @@ import {
 import { RestaurantTableSchema, TableSessionSchema } from "./table";
 import { MenuItemSchema, MenuItemModifierSchema } from "./menu";
 import { StationSchema, MenuItemStationSchema } from "./station";
-import { PrinterSchema, StationPrinterSchema, PrintJobSchema } from "./printer";
+import {
+  PrinterSchema,
+  StationPrinterSchema,
+  PrinterRoleSchema,
+  PrintJobSchema,
+} from "./printer";
 import { OUTBOX_EVENT_TYPES } from "./events";
 import { TaxProfileSchema } from "./tax";
 import { InvoiceSchema } from "./invoice";
@@ -119,6 +124,16 @@ describe("contract drift", () => {
   it("station_printer.json round-trips through StationPrinterSchema", () => {
     const raw = loadFixture("station_printer.json");
     const parsed = StationPrinterSchema.parse(raw);
+    expect(JSON.parse(JSON.stringify(parsed))).toEqual(raw);
+  });
+
+  // 0.4.7. BILL deliberately, not KITCHEN: KITCHEN would round-trip even if the
+  // enum were mis-mirrored as a plain string, since station_printer already
+  // pins the join-row shape. BILL is the member that exists only because an
+  // invoice needs a print target.
+  it("printer_role.json round-trips through PrinterRoleSchema", () => {
+    const raw = loadFixture("printer_role.json");
+    const parsed = PrinterRoleSchema.parse(raw);
     expect(JSON.parse(JSON.stringify(parsed))).toEqual(raw);
   });
 

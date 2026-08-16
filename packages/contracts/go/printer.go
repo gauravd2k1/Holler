@@ -46,6 +46,34 @@ type StationPrinter struct {
 	SchemaVersion int    `json:"schema_version"`
 }
 
+// PrinterRoleKind is what a printer is eligible to print (0.4.7).
+//
+// KOTs route station -> station_printer; a bill has no station, so nothing in
+// the contract could answer "which printer prints the bill" until this landed.
+// KITCHEN does not replace station_printer routing — it classifies the device.
+type PrinterRoleKind string
+
+const (
+	PrinterRoleKitchen PrinterRoleKind = "KITCHEN"
+	PrinterRoleBill    PrinterRoleKind = "BILL"
+)
+
+// PrinterRole is a join row, not a column on Printer, deliberately: `printer`
+// is built by struct literal in eight-plus places across three Rust crates
+// plus these mirrors, so widening it breaks all of them at once — the cascade
+// contracts 0.4.5 caused (docs/retro.md, 2026-08-15). Two rows also model a
+// shared printer honestly, with no BOTH member for every reader to
+// special-case.
+//
+// A printer with no row here has no role. Absence is never permission: an
+// outlet with no BILL printer fails loudly at issue time.
+type PrinterRole struct {
+	PrinterID     string          `json:"printer_id"`
+	Role          PrinterRoleKind `json:"role"`
+	ConfigVersion int             `json:"config_version"`
+	SchemaVersion int             `json:"schema_version"`
+}
+
 type PrintJobStatus string
 
 const (
