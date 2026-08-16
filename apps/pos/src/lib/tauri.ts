@@ -467,8 +467,10 @@ export interface SplitPartRequest {
  * number for any part (all issued together in one transaction, or none).
  * Also rejects with the same `NOTHING_TO_BILL`/`NO_FISCAL_PROFILE_CONFIGURED`/
  * `NO_ACTIVE_INVOICE_SERIES`/discount codes `issueInvoice` does, plus
- * `EMPTY_SPLIT` (no parts supplied) and `EMPTY_SPLIT_PART` (a part with no
- * lines) — see `billingErrorMessage`. */
+ * `SPLIT_REQUIRES_AT_LEAST_TWO_PARTS` (fewer than two parts supplied — a
+ * one-part "split" is just a normal bill and must go through `issueInvoice`
+ * instead, so `invoice.split_group_id` never means "one invoice") and
+ * `EMPTY_SPLIT_PART` (a part with no lines) — see `billingErrorMessage`. */
 export async function issueSplitInvoices(
   orderId: string,
   createdByUserId: string,

@@ -397,10 +397,10 @@ pub fn issue_split_invoices_impl(
     parts: &[SplitPartInput],
     discounts: &[LineDiscountInput],
 ) -> AppResult<Vec<Invoice>> {
-    if parts.is_empty() {
+    if parts.len() < 2 {
         return Err(AppError {
-            code: "EMPTY_SPLIT",
-            message: "a split needs at least one part".into(),
+            code: "SPLIT_REQUIRES_AT_LEAST_TWO_PARTS",
+            message: "a split bill needs at least two parts — issue a normal bill instead".into(),
         });
     }
 

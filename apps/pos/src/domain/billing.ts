@@ -327,8 +327,8 @@ export function billingErrorMessage(err: unknown): string {
       // (over/under-billed). Both messages already name the specific
       // order_item and mismatch — shown verbatim per §64.
       return err.message;
-    case "EMPTY_SPLIT":
-      return "Add at least one part before issuing a split bill.";
+    case "SPLIT_REQUIRES_AT_LEAST_TWO_PARTS":
+      return "A split bill needs at least two parts — issue a normal bill instead.";
     case "EMPTY_SPLIT_PART":
       return "Every part of a split bill must bill at least one item.";
     case "ORDER_ITEM_NOT_FOUND":

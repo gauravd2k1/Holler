@@ -552,7 +552,7 @@ export function BillingScreen() {
                       {splitParts.map((_, i) => (
                         <th key={i}>
                           Part {i + 1}{" "}
-                          {splitParts.length > 1 && (
+                          {splitParts.length > 2 && (
                             <button type="button" onClick={() => removeSplitPart(i)}>
                               Remove
                             </button>
@@ -596,7 +596,11 @@ export function BillingScreen() {
                 <button
                   type="button"
                   disabled={
-                    !canBill || splitting || !everySplitPartHasALine(splitParts) || !discountsReady
+                    !canBill ||
+                    splitting ||
+                    splitParts.length < 2 ||
+                    !everySplitPartHasALine(splitParts) ||
+                    !discountsReady
                   }
                   onClick={() => void handleIssueSplitInvoices()}
                 >

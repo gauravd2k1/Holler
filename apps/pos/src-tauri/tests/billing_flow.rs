@@ -832,6 +832,68 @@ fn invoice_sequence_total(state: &AppState) -> i64 {
         .expect("read invoice_sequence")
 }
 
+/// A one-part "split" is rejected before it ever reaches the edge — a bill
+/// that is not actually divided must go through `issue_invoice_impl`
+/// instead, so `invoice.split_group_id` never means "one invoice" (ADR-016
+/// §4: a split bill is N invoices, and N == 1 is not a split). Falsified by
+/// temporarily removing the `parts.len() < 2` guard in
+/// `issue_split_invoices_impl`: with the guard removed this call succeeds
+/// and issues an invoice with `split_group_id.is_some()` and
+/// `split_count == 1`, which is exactly the silent divergence this test
+/// pins shut.
+#[test]
+fn a_one_part_split_is_rejected_before_it_ever_reaches_the_edge() {
+    let state = app_state();
+    let order = create_order_impl(
+        &state,
+        "DINE_IN".to_string(),
+        None,
+        vec![NewOrderItemRequest {
+            menu_item_id: "item-1".to_string(),
+            variant_id: None,
+            quantity: 1,
+            unit_price_paise: 20_000,
+            notes: None,
+            modifiers: vec![],
+        }],
+    )
+    .expect("create order");
+    let order_item_id = order.items[0].id.clone();
+    let before = invoice_sequence_total(&state);
+
+    let parts = vec![SplitPartInput {
+        lines: vec![SplitLineInput {
+            order_item_id: order_item_id.clone(),
+            quantity: 1,
+        }],
+    }];
+
+    let err = issue_split_invoices_impl(&state, &order.holler_order_id, USER_ID, &parts, &[])
+        .expect_err("a one-part split must be rejected before touching the edge");
+    assert_eq!(err.code, "SPLIT_REQUIRES_AT_LEAST_TWO_PARTS");
+
+    assert!(
+        list_invoices_for_order_impl(&state, &order.holler_order_id)
+            .expect("list")
+            .is_empty(),
+        "a rejected one-part split must leave no invoice row for the order"
+    );
+    assert_eq!(
+        invoice_sequence_total(&state),
+        before,
+        "a rejected one-part split must not consume any invoice number"
+    );
+
+    // The exact same order bills cleanly through the ordinary path, with
+    // `split_group_id = None` — confirming the two paths converge on one
+    // shape rather than diverging silently.
+    let invoice =
+        issue_invoice_impl(&state, &order.holler_order_id, USER_ID, &[]).expect("issue invoice");
+    assert_eq!(invoice.split_group_id, None);
+    assert_eq!(invoice.split_index, 1);
+    assert_eq!(invoice.split_count, 1);
+}
+
 /// A correct 2-way split: one order line of quantity 2, split into two
 /// parts of quantity 1 each. Two independently numbered invoices are
 /// issued together, `Σ(split invoice lines) = order lines` exactly (ADR-016
@@ -1023,8 +1085,11 @@ fn an_over_billed_split_is_rejected_atomically_and_burns_no_invoice_number() {
     );
 }
 
-/// An under-billed split (one part covers only half the order's quantity)
-/// is rejected the same way — atomically, no row, no number consumed.
+/// An under-billed split (two parts together cover only two of the order's
+/// three units) is rejected the same way — atomically, no row, no number
+/// consumed. Uses two parts (not one) so this pins the §66 conservation
+/// rejection specifically, distinct from the `SPLIT_REQUIRES_AT_LEAST_TWO_PARTS`
+/// guard covered by `a_one_part_split_is_rejected_before_it_ever_reaches_the_edge`.
 #[test]
 fn an_under_billed_split_is_rejected_atomically_and_burns_no_invoice_number() {
     let state = app_state();
@@ -1035,7 +1100,7 @@ fn an_under_billed_split_is_rejected_atomically_and_burns_no_invoice_number() {
         vec![NewOrderItemRequest {
             menu_item_id: "item-1".to_string(),
             variant_id: None,
-            quantity: 2,
+            quantity: 3,
             unit_price_paise: 20_000,
             notes: None,
             modifiers: vec![],
@@ -1045,14 +1110,22 @@ fn an_under_billed_split_is_rejected_atomically_and_burns_no_invoice_number() {
     let order_item_id = order.items[0].id.clone();
     let before = invoice_sequence_total(&state);
 
-    // Only ONE part, billing quantity 1 of an order line whose real
-    // quantity is 2 — under-billed by one unit, nothing bills the rest.
-    let parts = vec![SplitPartInput {
-        lines: vec![SplitLineInput {
-            order_item_id: order_item_id.clone(),
-            quantity: 1,
-        }],
-    }];
+    // Two parts, billing quantity 1 each of an order line whose real
+    // quantity is 3 — under-billed by one unit, nothing bills the rest.
+    let parts = vec![
+        SplitPartInput {
+            lines: vec![SplitLineInput {
+                order_item_id: order_item_id.clone(),
+                quantity: 1,
+            }],
+        },
+        SplitPartInput {
+            lines: vec![SplitLineInput {
+                order_item_id: order_item_id.clone(),
+                quantity: 1,
+            }],
+        },
+    ];
 
     let err = issue_split_invoices_impl(&state, &order.holler_order_id, USER_ID, &parts, &[])
         .expect_err("an under-billed split must be rejected");
