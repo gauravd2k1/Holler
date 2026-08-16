@@ -38,7 +38,7 @@ use holler_edge_database::{model, repo, Db};
 use holler_edge_device::{server, CachedCredentialVerifier, DeviceTokenVerifier};
 use holler_pos_lib::commands::billing::{
     issue_invoice_impl, list_invoices_for_order_impl, list_payments_for_order_impl,
-    record_payment_impl,
+    record_payment_impl, LineDiscountInput,
 };
 use holler_pos_lib::commands::kitchen::{
     list_kots_for_order_impl, send_order_to_kitchen_impl, transition_kot_status_impl,
@@ -198,6 +198,15 @@ enum Request {
     IssueInvoice {
         order_id: String,
         created_by_user_id: String,
+        /// Per-line discounts the cashier chose, in `issue_invoice`'s own
+        /// wire shape (`holler_pos_lib::commands::billing::LineDiscountInput`
+        /// deserialized directly — never a parallel copy of it, so a field
+        /// added there is a compile error here rather than a silently
+        /// ignored JSON key). `#[serde(default)]`: an older orchestrator
+        /// that sends no `discounts` key still bills the whole order
+        /// undiscounted, exactly as before the field existed.
+        #[serde(default)]
+        discounts: Vec<LineDiscountInput>,
     },
     ListInvoicesForOrder {
         order_id: String,
@@ -791,9 +800,10 @@ fn dispatch(h: &mut Harness, req: Request) -> Value {
         Request::IssueInvoice {
             order_id,
             created_by_user_id,
+            discounts,
         } => {
             let sc = h.scenario.as_ref().expect("scenario active");
-            match issue_invoice_impl(&sc.state, &order_id, &created_by_user_id) {
+            match issue_invoice_impl(&sc.state, &order_id, &created_by_user_id, &discounts) {
                 Ok(invoice) => json!({ "ok": true, "invoice": invoice }),
                 Err(e) => json!({ "ok": false, "error": app_error_to_json(&e) }),
             }
