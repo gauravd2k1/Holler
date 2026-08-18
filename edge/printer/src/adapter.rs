@@ -80,22 +80,16 @@ pub struct InvoiceOrderContext {
 /// second "print bill" tap, or a retried enqueue after a crash, returns the
 /// existing job rather than spooling a duplicate copy of the bill.
 ///
-/// **Printer resolution is a contract gap, not a decision made here.** The
-/// KOT path resolves a printer from a ticket by `kot.station` ->
-/// `station_printer` (`routing::resolve_station_printers`); a bill has no
-/// station. The frozen `printer` table (`0005_m2_kitchen_stations_printers.sql`)
-/// carries only `name`, `connection_kind`, `address`, `paper_width_mm`,
-/// `is_active` — nothing that marks a printer as "the receipt/bill printer"
-/// for an outlet, and no default-printer concept on `outlet`, either. Coding
-/// a convention here (e.g. matching `printer.name` against a hard-coded
-/// string like "Receipt" or "Bill") would be exactly the magic-value
-/// violation CLAUDE.md forbids, so this function does not attempt to guess:
-/// **the caller supplies `printer_id`** (the operator's own choice, or a
-/// future config value once the contract has a field for it), and this
-/// function only validates it names a real, active printer in the same
-/// outlet as the invoice before enqueuing. The orchestrator should decide
-/// whether `printer` gains a `role` column (e.g. `KITCHEN`/`BILLING`) or
-/// `outlet` gains a `default_bill_printer_id`; either is additive.
+/// **The caller supplies `printer_id`**, and this function only validates it
+/// names a real, active printer in the same outlet as the invoice. That was
+/// once the only option — the frozen `printer` table carried nothing marking
+/// a device as the bill printer, and guessing by name would have been the
+/// magic-value violation CLAUDE.md forbids. Contracts 0.4.7 answered it with
+/// `printer_role`, so a caller that wants the outlet's configured bill
+/// printers should use [`queue_invoice_for_bill_printers`] instead of
+/// resolving one itself. This function remains for the case that is genuinely
+/// a choice rather than a route: an operator reprinting one bill to one
+/// named device.
 pub fn queue_invoice_for_print(
     conn: &Connection,
     invoice_id: &str,
@@ -125,6 +119,57 @@ pub fn queue_invoice_for_print(
     }
 
     spool::enqueue_invoice_job(conn, &id_gen(), &invoice.id, &printer.id, now)
+}
+
+/// Enqueues one `print_job` per printer this outlet has configured with the
+/// `BILL` role (`printer_role`, contracts 0.4.7) — the invoice counterpart of
+/// [`queue_kot_for_print`], and the function a "print this bill" action
+/// should call.
+///
+/// Errors with [`PrinterError::NoPrinterRouted`] when the outlet has no
+/// active BILL printer, rather than returning an empty vec. That is 0012's
+/// own rule: a printer with no role row is a candidate for nothing, and an
+/// outlet that has not configured a bill printer must fail loudly and by
+/// name at issue time — the same discipline a missing HSN/SAC code gets —
+/// instead of the bill vanishing into an empty spool.
+///
+/// Idempotent per `(invoice_id, printer_id)` through
+/// [`spool::enqueue_invoice_job`], so a second "print bill" tap or a retried
+/// enqueue after a crash returns the existing jobs rather than spooling a
+/// duplicate copy of the bill.
+pub fn queue_invoice_for_bill_printers(
+    conn: &Connection,
+    outlet_id: &str,
+    invoice_id: &str,
+    now: &str,
+    id_gen: impl Fn() -> String,
+) -> PrinterResult<Vec<PrintJob>> {
+    let invoice = db_repo::get_invoice(conn, invoice_id)
+        .map_err(PrinterError::Db)?
+        .ok_or(PrinterError::NotFound(
+            "invoice not found for print queueing",
+        ))?;
+    if invoice.outlet_id != outlet_id {
+        return Err(PrinterError::InvalidInput(format!(
+            "invoice {invoice_id} belongs to outlet {}, not {outlet_id}",
+            invoice.outlet_id
+        )));
+    }
+
+    let printers = routing::resolve_bill_printers(conn, outlet_id)?;
+    if printers.is_empty() {
+        return Err(PrinterError::NoPrinterRouted {
+            station_code: format!(
+                "outlet {outlet_id} has no active printer with the BILL role configured \
+                 (printer_role); a bill cannot be printed until one is"
+            ),
+        });
+    }
+
+    printers
+        .iter()
+        .map(|printer| spool::enqueue_invoice_job(conn, &id_gen(), &invoice.id, &printer.id, now))
+        .collect()
 }
 
 /// Runs one sweep: renders and sends every due job, updating its status.
@@ -451,6 +496,131 @@ mod tests {
         assert!(
             err.is_err(),
             "must refuse to route a bill to a printer in a different outlet"
+        );
+    }
+
+    /// 0012's central rule: a printer with no `printer_role` row is a
+    /// candidate for nothing. An outlet that has not configured a BILL
+    /// printer must fail loudly and by name rather than return an empty job
+    /// list that a caller would read as "queued fine".
+    #[test]
+    fn bill_printers_resolution_fails_loudly_when_no_bill_role_is_configured() {
+        let (dir, db) = open_test_db();
+        let conn = db.connection();
+        let receipt_path = dir.path().join("receipt.bin");
+        let receipt_path_str = receipt_path.to_str().unwrap().replace('\\', "\\\\");
+        // Seeds a printer, but deliberately no printer_role row for it.
+        seed_invoice(conn, "invoice-1", "printer-1", &receipt_path_str);
+
+        let err = queue_invoice_for_bill_printers(
+            conn,
+            "outlet-1",
+            "invoice-1",
+            "2026-08-07T10:05:00Z",
+            || "job-1".to_string(),
+        )
+        .expect_err("a printer with no role must not be treated as the bill printer");
+        assert!(
+            matches!(err, PrinterError::NoPrinterRouted { .. }),
+            "expected NoPrinterRouted, got {err:?}"
+        );
+    }
+
+    /// A KITCHEN-role printer is not a bill printer. This is the assertion
+    /// that would fail if resolution ever widened to "any active printer at
+    /// the outlet" — the silent-wrong-device shape the role table exists to
+    /// prevent.
+    #[test]
+    fn bill_printers_resolution_ignores_a_kitchen_only_printer() {
+        let (dir, db) = open_test_db();
+        let conn = db.connection();
+        let receipt_path = dir.path().join("receipt.bin");
+        let receipt_path_str = receipt_path.to_str().unwrap().replace('\\', "\\\\");
+        seed_invoice(conn, "invoice-1", "printer-1", &receipt_path_str);
+        conn.execute_batch(
+            "INSERT INTO printer_role (printer_id, role, config_version)
+             VALUES ('printer-1', 'KITCHEN', 1);",
+        )
+        .expect("give the only printer a KITCHEN role");
+
+        let err = queue_invoice_for_bill_printers(
+            conn,
+            "outlet-1",
+            "invoice-1",
+            "2026-08-07T10:05:00Z",
+            || "job-1".to_string(),
+        )
+        .expect_err("a KITCHEN-role printer must not receive a bill");
+        assert!(matches!(err, PrinterError::NoPrinterRouted { .. }));
+    }
+
+    /// The positive path, end to end through the same real transport the
+    /// `queue_invoice_for_print` test uses: with a BILL role configured, the
+    /// bill is enqueued to that printer, rendered and dispatched. Also pins
+    /// idempotency — a second "print bill" tap returns the same job rather
+    /// than spooling a duplicate copy of the customer's bill.
+    #[test]
+    fn bill_role_printer_receives_the_invoice_and_a_second_tap_is_idempotent() {
+        let (dir, db) = open_test_db();
+        let conn = db.connection();
+        let receipt_path = dir.path().join("receipt.bin");
+        std::fs::write(&receipt_path, b"").expect("create fake device path");
+        let receipt_path_str = receipt_path.to_str().unwrap().replace('\\', "\\\\");
+        seed_invoice(conn, "invoice-1", "printer-1", &receipt_path_str);
+        conn.execute_batch(
+            "INSERT INTO printer_role (printer_id, role, config_version)
+             VALUES ('printer-1', 'BILL', 1);",
+        )
+        .expect("configure the bill printer");
+
+        let jobs = queue_invoice_for_bill_printers(
+            conn,
+            "outlet-1",
+            "invoice-1",
+            "2026-08-07T10:05:00Z",
+            || "job-1".to_string(),
+        )
+        .expect("enqueue to the BILL printer");
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].invoice_id.as_deref(), Some("invoice-1"));
+        assert_eq!(jobs[0].printer_id, "printer-1");
+
+        let again = queue_invoice_for_bill_printers(
+            conn,
+            "outlet-1",
+            "invoice-1",
+            "2026-08-07T10:06:00Z",
+            || "job-2".to_string(),
+        )
+        .expect("second tap");
+        assert_eq!(
+            again[0].id, jobs[0].id,
+            "a second print-bill tap must return the existing job, never spool a duplicate bill"
+        );
+
+        let now: DateTime<Utc> = "2026-08-07T10:06:01Z".parse().unwrap();
+        let report = sweep_due_jobs(
+            conn,
+            now,
+            |_| panic!("no KOT jobs queued"),
+            |order_id| {
+                assert_eq!(order_id, "order-1");
+                Ok(InvoiceOrderContext {
+                    order_display_number: "A184".to_string(),
+                    table_label: None,
+                    payment_summary: Some("Cash + UPI".to_string()),
+                })
+            },
+        )
+        .expect("sweep");
+        assert_eq!(report.printed, 1, "the bill must actually reach PRINTED");
+
+        let text = String::from_utf8_lossy(&std::fs::read(&receipt_path).expect("receipt written"))
+            .to_string();
+        assert!(text.contains("A184"), "bill must carry the order number");
+        assert!(
+            text.contains("Cash + UPI"),
+            "bill must carry the tender summary the caller resolved: {text}"
         );
     }
 }

@@ -122,23 +122,98 @@ fn build_order_ctx(
     })
 }
 
-/// Compatibility stopgap for `holler_edge_printer::adapter::sweep_due_jobs`'s
-/// second context-builder parameter (`order_ctx_for_invoice`, added for
-/// invoice-linked print jobs per ADR-016 0.4.5's `print_job.invoice_id`).
-/// Nothing in `apps/pos` enqueues an invoice print job yet — no command in
-/// this crate calls `holler_edge_printer::adapter::queue_invoice_for_print`
-/// (or equivalent) — so every job this sweep ever actually attempts here is
-/// still KOT-linked, and this closure is unreachable in practice. It fails
-/// loudly rather than fabricating a context if that ever changes, so a
-/// stray invoice job would surface as a named, legible print failure
-/// (`FAILED` + this message) instead of a silent wrong print. Wiring a real
-/// invoice print path through this crate is out of this track's scope.
-fn invoice_print_ctx_unwired(
-    _invoice_id: &str,
+/// The human-facing context a GST bill template needs and the `invoice` row
+/// does not carry: the order's short display number, its table, and a
+/// summary of how it was tendered.
+///
+/// This replaces the `invoice_print_ctx_unwired` stopgap that stood here
+/// while nothing in `apps/pos` could enqueue an invoice job — with
+/// `printer_role` (contracts 0.4.7) the bill printer is resolvable, so
+/// `print_invoice_impl` below enqueues for real and this closure is now on a
+/// live path rather than an unreachable one.
+///
+/// `payment_summary` is built from the tenders actually recorded against the
+/// order (`list_payments_for_order`), deduplicated and in a stable order, so
+/// a split CASH+UPI bill prints "Cash + UPI". Reversals are excluded: a
+/// refunded tender is not how the bill was paid. No payments recorded yet
+/// leaves it `None`, and `render_invoice` then omits the line rather than
+/// printing a guess (`InvoicePrintContext`'s own doc comment).
+///
+/// Note the argument is the invoice's ORDER id, not its invoice id —
+/// `sweep_due_jobs` resolves the invoice first and passes `invoice.order_id`
+/// to this builder, mirroring the KOT side's `build_order_ctx`.
+fn build_invoice_ctx(
+    db: &Db,
+    order_id: &str,
 ) -> holler_edge_printer::PrinterResult<holler_edge_printer::adapter::InvoiceOrderContext> {
-    Err(holler_edge_printer::PrinterError::NotFound(
-        "invoice printing is not wired in apps/pos yet",
-    ))
+    let kot_ctx = build_order_ctx(db, order_id)?;
+
+    let payments = db
+        .list_payments_for_order(order_id)
+        .map_err(holler_edge_printer::PrinterError::Db)?;
+    let mut methods: Vec<String> = Vec::new();
+    for p in payments.iter().filter(|p| p.reverses_payment_id.is_none()) {
+        let label = match p.method.as_str() {
+            "CASH" => "Cash",
+            "UPI" => "UPI",
+            "CARD" => "Card",
+            other => other,
+        }
+        .to_string();
+        if !methods.contains(&label) {
+            methods.push(label);
+        }
+    }
+    let payment_summary = if methods.is_empty() {
+        None
+    } else {
+        Some(methods.join(" + "))
+    };
+
+    Ok(holler_edge_printer::adapter::InvoiceOrderContext {
+        order_display_number: kot_ctx.order_display_number,
+        table_label: kot_ctx.table_label,
+        payment_summary,
+    })
+}
+
+/// Queues one issued invoice for print at every printer this outlet has
+/// given the `BILL` role, then makes one immediate best-effort attempt — the
+/// same shape `send_order_to_kitchen_impl` uses for tickets, for the same
+/// reason: a cashier learns the bill did not print now, not at the next
+/// sweep.
+///
+/// Unlike the KOT path, a routing failure here IS propagated to the caller.
+/// A ticket that fails to print still reaches the kitchen on a KDS screen,
+/// so hiding that behind a working screen would be wrong but not dangerous;
+/// a bill has no second channel — if it did not print, the customer has no
+/// bill, and `0012_printer_role.sql` is explicit that an outlet with no BILL
+/// printer configured must fail loudly and by name. The print *attempt* is
+/// still best-effort (a dead printer surfaces through
+/// `list_failed_print_jobs` and the job stays queued for retry); only the
+/// enqueue is allowed to fail the command.
+pub fn print_invoice_impl(state: &AppState, invoice_id: &str) -> AppResult<Vec<String>> {
+    let now = now_iso();
+    let db = lock_db(state)?;
+
+    let jobs = holler_edge_printer::adapter::queue_invoice_for_bill_printers(
+        db.connection(),
+        &state.outlet_id,
+        invoice_id,
+        &now,
+        new_id,
+    )?;
+
+    if let Err(e) = holler_edge_printer::adapter::sweep_due_jobs(
+        db.connection(),
+        Utc::now(),
+        |oid| build_order_ctx(&db, oid),
+        |oid| build_invoice_ctx(&db, oid),
+    ) {
+        eprintln!("print sweep after invoice enqueue failed: {e}");
+    }
+
+    Ok(jobs.into_iter().map(|j| j.id).collect())
 }
 
 /// Sends an order to the kitchen: generates the station tickets
@@ -176,7 +251,7 @@ pub fn send_order_to_kitchen_impl(state: &AppState, order_id: &str) -> AppResult
         db.connection(),
         Utc::now(),
         |oid| build_order_ctx(&db, oid),
-        invoice_print_ctx_unwired,
+        |oid| build_invoice_ctx(&db, oid),
     ) {
         eprintln!("print sweep after send-to-kitchen failed: {e}");
     }
@@ -231,7 +306,7 @@ pub fn cancel_kitchen_items_impl(
         db.connection(),
         Utc::now(),
         |oid| build_order_ctx(&db, oid),
-        invoice_print_ctx_unwired,
+        |oid| build_invoice_ctx(&db, oid),
     ) {
         eprintln!("print sweep after kitchen-item cancellation failed: {e}");
     }
@@ -321,7 +396,7 @@ pub fn retry_failed_print_jobs_impl(state: &AppState) -> AppResult<Vec<FailedPri
         db.connection(),
         Utc::now(),
         |oid| build_order_ctx(&db, oid),
-        invoice_print_ctx_unwired,
+        |oid| build_invoice_ctx(&db, oid),
     )?;
     let failed = holler_edge_printer::spool::list_failed_jobs(db.connection())?;
     Ok(failed.into_iter().map(FailedPrintJob::from).collect())
@@ -369,4 +444,14 @@ pub fn list_failed_print_jobs(state: State<'_, AppState>) -> AppResult<Vec<Faile
 #[tauri::command]
 pub fn retry_failed_print_jobs(state: State<'_, AppState>) -> AppResult<Vec<FailedPrintJob>> {
     retry_failed_print_jobs_impl(&state)
+}
+
+/// "Print bill" — returns the ids of the `print_job` rows queued (one per
+/// BILL-role printer). Separate from `issue_invoice` on purpose: issuing a
+/// bill and printing it are distinct cashier actions (a bill may be issued
+/// and shown on screen, then printed once, or reprinted later), and
+/// `issue_invoice` must not fail because a printer is unplugged.
+#[tauri::command]
+pub fn print_invoice(state: State<'_, AppState>, invoice_id: String) -> AppResult<Vec<String>> {
+    print_invoice_impl(&state, &invoice_id)
 }

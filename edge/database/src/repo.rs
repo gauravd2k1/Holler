@@ -2184,6 +2184,49 @@ pub fn replace_station_printers(
     Ok(())
 }
 
+/// Replaces one printer's role set wholesale (PUT semantics, same rationale
+/// as [`replace_station_printers`]) — `printer_role`, contracts 0.4.7.
+/// Passing an empty slice removes every role, which is how a printer is
+/// retired from both paths without deleting the device row.
+pub fn replace_printer_roles(
+    conn: &Connection,
+    printer_id: &str,
+    roles: &[String],
+    config_version: i64,
+) -> DbResult<()> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "DELETE FROM printer_role WHERE printer_id = ?1",
+        params![printer_id],
+    )?;
+    for role in roles {
+        tx.execute(
+            "INSERT INTO printer_role (printer_id, role, config_version)
+             VALUES (?1, ?2, ?3)",
+            params![printer_id, role, config_version],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+pub fn list_printer_roles(conn: &Connection, printer_id: &str) -> DbResult<Vec<PrinterRole>> {
+    let mut stmt = conn.prepare(
+        "SELECT printer_id, role, config_version FROM printer_role
+         WHERE printer_id = ?1 ORDER BY role",
+    )?;
+    let rows = stmt
+        .query_map(params![printer_id], |row| {
+            Ok(PrinterRole {
+                printer_id: row.get(0)?,
+                role: row.get(1)?,
+                config_version: row.get(2)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
 pub fn list_printers_for_station(
     conn: &Connection,
     station_id: &str,

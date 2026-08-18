@@ -344,6 +344,22 @@ pub struct StationPrinter {
     pub config_version: i64,
 }
 
+/// What one printer is eligible to print (`printer_role`, contracts 0.4.7).
+/// CONFIG, cloud→edge, exactly like [`StationPrinter`] — a join table rather
+/// than a column on `printer` so that one physical device can carry both
+/// roles without a `BOTH` enum member every reader has to special-case, and
+/// so adding the concept broke none of the many `Printer` struct literals
+/// already in the tree (that migration's own rationale).
+///
+/// `role` is `KITCHEN` or `BILL`. A printer with NO row here has no role and
+/// is a candidate for neither path — absence is never read as consent.
+#[derive(Debug, Clone)]
+pub struct PrinterRole {
+    pub printer_id: String,
+    pub role: String,
+    pub config_version: i64,
+}
+
 /// One line on a station ticket, matching `KotTicketItemSchema`
 /// (`packages/contracts/src/types/kot.ts`): `{ order_item_id, name,
 /// quantity, modifiers, notes }`. Built by this crate from `order_item` +

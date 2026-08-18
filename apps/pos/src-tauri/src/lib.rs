@@ -55,6 +55,7 @@ pub fn run() {
             commands::kitchen::list_stations,
             commands::kitchen::list_failed_print_jobs,
             commands::kitchen::retry_failed_print_jobs,
+            commands::kitchen::print_invoice,
             commands::billing::issue_invoice,
             commands::billing::issue_split_invoices,
             commands::billing::list_invoices_for_order,
