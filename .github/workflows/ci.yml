@@ -293,6 +293,45 @@ jobs:
   # fix; it gates on the harness itself staying green (no process-level
   # fatal error). The full 200+ scenario randomized run is a manual command
   # (docs/DEV_SETUP.md), not part of CI.
+  # Producer/consumer seam gate (`make check-seams`). The Rust crates in this
+  # repo are deliberately NOT one cargo workspace — edge/*, apps/pos/src-tauri
+  # and each test bridge under tests/ carry their own Cargo.lock (the
+  # e2e harness's own Cargo.toml is explicit that it is "not a workspace
+  # member of any product crate"). The cost of that separation is that
+  # `cargo check` inside the crate you edited proves nothing about the crates
+  # that CALL it: change an `*_impl` signature in apps/pos/src-tauri and
+  # nothing compiles the harness that calls it.
+  #
+  # That has now happened eight times. It was never caught by a test, because
+  # the break is a compile error in a crate no job compiled early: the `pos`
+  # job builds only the TypeScript side, `edge` never touches apps/pos, and
+  # the one job that did compile the harness (e2e-scenario, below) is the
+  # slowest in the file and only reaches `cargo` after two pnpm installs.
+  #
+  # This job exists to make the ninth break fail in about a minute, in a job
+  # whose name says what broke, before any scenario runs. It compiles, and
+  # does not run, every consumer crate that lives outside its producer's
+  # workspace — --all-targets so their test binaries count as consumers too.
+  # Windows for the same reason e2e-scenario is: apps/pos/src-tauri is Tauri
+  # (ADR-013) and a Linux runner cannot honestly stand in for it.
+  rust-seams:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            apps/pos/src-tauri -> target
+            tests/e2e-scenario/harness -> target
+            tests/integration/kds-lan-bridge -> target
+      - name: pos (Tauri crate + its own tests)
+        run: cargo check --all-targets --manifest-path apps/pos/src-tauri/Cargo.toml
+      - name: e2e-scenario harness (calls apps/pos's *_impl surface)
+        run: cargo check --all-targets --manifest-path tests/e2e-scenario/harness/Cargo.toml
+      - name: kds-lan bridge (calls edge/device's server surface)
+        run: cargo check --all-targets --manifest-path tests/integration/kds-lan-bridge/Cargo.toml
+
   e2e-scenario:
     runs-on: windows-latest
     steps:

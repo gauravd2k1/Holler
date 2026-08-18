@@ -22,11 +22,41 @@ use std::io::BufRead;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use argon2::{Algorithm, Argon2, Params, Version};
+use base64::Engine;
+
 use holler_edge_database::{model, repo, Db};
-use holler_edge_device::server;
+use holler_edge_device::{server, CachedCredentialVerifier, DeviceTokenVerifier};
 
 fn uuid7() -> String {
     uuid::Uuid::now_v7().to_string()
+}
+
+/// Plaintext half of the one `device_credential_cache` row this bridge seeds
+/// (ADR-017 amendment: `edge/device` now rejects any LAN connection whose
+/// first frame is not a verifiable `device_token`). Fixed, and scoped to an
+/// in-memory database that exists for the lifetime of one test process.
+const KDS_CREDENTIAL_SECRET: &str = "kds-lan-bridge-secret";
+
+/// Hashes `plaintext` into the PHC encoding
+/// `holler_edge_database::auth::verify_password` parses, so the seeded
+/// credential verifies against a real Argon2id check rather than a stub.
+/// Mirrors `tests/e2e-scenario/harness`'s `hash_device_secret` — the same
+/// need arrived at both bridges from the same contract change.
+fn hash_device_secret(plaintext: &str) -> String {
+    const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD_NO_PAD;
+    let salt: [u8; 16] = *b"kds-lan-brdg-slt";
+    let params = Params::new(19_456, 2, 1, Some(32)).expect("valid argon2 params");
+    let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+    let mut hash = vec![0u8; 32];
+    argon2
+        .hash_password_into(plaintext.as_bytes(), &salt, &mut hash)
+        .expect("argon2 hash");
+    format!(
+        "$argon2id$v=19$m=19456,t=2,p=1${}${}",
+        B64.encode(salt),
+        B64.encode(hash)
+    )
 }
 
 fn main() {
@@ -41,6 +71,8 @@ fn main() {
     let order_item_id = uuid7();
     let outbox_order_id = uuid7();
     let outbox_confirm_id = uuid7();
+    let tenant_id = uuid7();
+    let kds_credential_id = uuid7();
 
     let mut db = Db::open_in_memory_for_tests().expect("open in-memory db");
 
@@ -84,6 +116,25 @@ fn main() {
     )
     .expect("seed kds device");
 
+    // ADR-017 amendment: the LAN server verifies a `device_token` as the
+    // connection's first frame, so the one KDS screen this bridge exists to
+    // let a test drive needs one enrolled credential to present.
+    repo::replace_device_credential_cache(
+        db.connection(),
+        &model::DeviceCredentialCache {
+            credential_id: kds_credential_id.clone(),
+            device_id: kds_device_id.clone(),
+            tenant_id,
+            outlet_id: outlet_id.clone(),
+            credential_hash: hash_device_secret(KDS_CREDENTIAL_SECRET),
+            device_kind: "KDS".to_string(),
+            revoked_at: None,
+            expires_at: None,
+            config_version: 1,
+        },
+    )
+    .expect("seed kds device credential");
+
     repo::upsert_menu_category(
         db.connection(),
         &model::MenuCategory {
@@ -106,6 +157,15 @@ fn main() {
             base_price_paise: 25000,
             is_available: true,
             config_version: 1,
+            // Contracts 0.4.2 added per-item tax profile selection; `None`
+            // falls back to the outlet's default profile, which is the
+            // shape this bridge wants (it never issues an invoice).
+            tax_profile_id: None,
+            // Contracts 0.4.5 §3: an invoice cannot issue with a NULL
+            // HSN/SAC. This bridge only sends to the kitchen, but the field
+            // is required to construct the row — SAC 9963, restaurant
+            // service, the same code the e2e harness's fixtures carry.
+            hsn_sac: Some("9963".to_string()),
         },
     )
     .expect("seed menu item");
@@ -196,10 +256,16 @@ fn main() {
     let kot_id = created[0].id.clone();
 
     let db = Arc::new(Mutex::new(db));
+    // Local-cache verifier, no cloud fallback — this bridge never syncs,
+    // exactly as `apps/pos/src-tauri/src/state.rs::start_lan_server` wires it
+    // for an outlet that is offline.
+    let verifier: Arc<dyn DeviceTokenVerifier> =
+        Arc::new(CachedCredentialVerifier::new(db.clone(), "KDS", None));
     let handle = server::start(
         "127.0.0.1:0".parse().expect("valid loopback addr"),
         db,
         Duration::from_millis(500),
+        verifier,
     )
     .expect("server starts");
     let addr = handle.local_addr();
@@ -208,6 +274,11 @@ fn main() {
         "port": addr.port(),
         "outlet_id": outlet_id,
         "kds_device_id": kds_device_id,
+        // `<credential_id>.<secret>` — the exact string a KDS screen puts in
+        // its first frame (apps/kds/src/lib/lanConfig.ts's AUTHENTICATION
+        // note), so the driving test presents a real token rather than
+        // bypassing the check.
+        "kds_device_token": format!("{kds_credential_id}.{KDS_CREDENTIAL_SECRET}"),
         "kot_id": kot_id,
         "order_id": order_id,
     });

@@ -22,6 +22,7 @@ function configFor(bridge: BridgeHandle, overrides: Partial<LanConfig> = {}): La
     url: bridge.wsUrl,
     outletId: bridge.info.outlet_id,
     deviceId: bridge.info.kds_device_id,
+    deviceToken: bridge.info.kds_device_token,
     station: null,
     heartbeatTimeoutMs: 10_000,
     reconnectDelayMs: 250,

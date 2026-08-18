@@ -16,6 +16,10 @@ export interface BridgeInfo {
   port: number;
   outlet_id: string;
   kds_device_id: string;
+  /** `<credential_id>.<secret>` for the one KDS credential the bridge seeds
+   * — edge/device rejects any connection whose first frame is not a
+   * verifiable device_token (ADR-017 amendment). */
+  kds_device_token: string;
   kot_id: string;
   order_id: string;
 }
