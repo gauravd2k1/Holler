@@ -140,6 +140,44 @@ sidesteps the problem entirely and is a more faithful simulation besides.
     against an order never sum past that order's invoice `grand_total_paise`,
     checked both against what this scenario itself recorded and against the
     persisted `list_payments_for_order` row set independently.
+11. **Discount** — a per-line discount lands at the value the contract's own
+    formula produces (computed in the orchestrator independently, never read
+    back from the product), the line still reconciles
+    (`gross - discount == taxable_value`), per-line discounts sum to the
+    invoice's own `discount_paise`, and both governance gates are **binding,
+    not advisory**: a discount naming a permission the cashier lacks is
+    refused with `DISCOUNT_PERMISSION_DENIED`, one declared `requires_reason`
+    is refused without one with `DISCOUNT_REASON_REQUIRED`, and neither
+    refusal leaves an invoice behind.
+12. **Split conservation** — the parts of a split bill reconstruct the whole
+    exactly (every line's quantity summed across parts equals the order's own,
+    no part billing a foreign item), all parts share one `split_group_id`,
+    each is independently numbered, `split_index` runs 1..N, and the group
+    reads back complete through `list_invoices_for_split_group`.
+13. **Invoice print** — an issued bill becomes a real `print_job`, read back
+    **by id from the spool** rather than trusted from the command's return
+    value, targeting the outlet's `BILL`-role printer specifically (not
+    whichever printer happens to exist), carrying an `invoice_id` and no
+    `kot_id`, and reaching `PRINTED` — the harness's printers are file-backed
+    scratch devices that cannot fail to accept bytes, so a `FAILED` job means
+    the render itself was rejected.
+
+## Required data shapes (the green-on-absent-data guard)
+
+Invariants 9 and 10 passed on 54/54 scenarios for three tracks while every
+invoice carried a zero discount, every bill was a single part, and no bill was
+ever queued to a printer. A passing invariant whose subject never occurred has
+proved nothing, so each scenario now records the shapes it actually
+**observed** — a persisted non-zero discount, a split group read back with
+more than one invoice, a print job fetched by id — and `run.ts`/the CI test
+fail the run when any count is zero (`REQUIRED_SHAPES`, `src/types.ts`).
+
+The run report prints this table **above** the invariant table, because a zero
+here invalidates the table below it.
+
+As of this track's own CI run (seed 424242, 54 scenarios): 24 discounts
+applied non-zero, 54 permission refusals, 54 reason refusals, 21 multi-part
+splits, 54 bills enqueued and 54 printed.
 
 ## Findings (coverage gaps and product defects — not fixed by this track)
 
@@ -153,17 +191,18 @@ track's own verification run:
 - **`cancel_kitchen_items_with_outbox` has no Tauri command.** Unreachable
   from the shipped surface — per the track brief, not faked and not added
   here.
-- **Split-bill invoicing is unreachable from the shipped surface (T11b).**
-  `holler_edge_database::Db::issue_split_invoices_with_outbox` exists but
-  `apps/pos/src-tauri/src/commands/billing.rs` deliberately excludes it from
-  M3's command surface (`docs/m3-planning.md`) — `issue_invoice` always
-  bills the whole order at `split_count == 1`. The "a split bill's parts sum
-  to the whole" money invariant this track was asked to add cannot be
-  exercised end to end for the same reason cancellation and (formerly)
-  modifiers could not.
-- **A per-line discount is unreachable from the shipped surface (T11b).**
-  `billing.rs`'s `build_invoice_lines` hard-codes `discount_per_unit_paise:
-  0` for every invoice line — no command lets a cashier apply one.
+- ~~**Split-bill invoicing is unreachable from the shipped surface (T11b).**~~
+  **CLOSED.** `issue_split_invoices` is now a real command; invariant 12
+  exercises it, and `split_invoice_multi_part` is a required shape.
+- ~~**A per-line discount is unreachable from the shipped surface (T11b).**~~
+  **CLOSED.** `issue_invoice` takes `discounts` (contracts 0.4.6); invariant
+  11 exercises both the apply and the two refusal paths, and
+  `discount_applied_nonzero` is a required shape.
+- ~~**Invoice printing is unreachable from the shipped surface.**~~
+  **CLOSED.** `queue_invoice_for_print` existed but nothing could tell it
+  which printer, so `apps/pos` carried an `invoice_print_ctx_unwired` stub.
+  `printer_role` (contracts 0.4.7) answers it; `print_invoice` resolves the
+  BILL-role printer and invariant 13 exercises it.
 - **PRODUCT DEFECT (harness bit-rot, closed by T11b): the harness itself
   had not compiled since device enrollment (ADR-017) and M3 Track B landed.**
   `edge/device::server::start` gained a required `DeviceTokenVerifier`
@@ -219,7 +258,26 @@ transitions from the now-corrupted `SERVED` state were, correctly, also
 rejected). `git status --porcelain edge/ apps/pos/src-tauri` was empty
 throughout and after — the real crates were never touched.
 
-**T11b repeated this for the two new invariants**, using the same
+**The M3 final track repeated this for invariants 11, 12 and 13**, one at a
+time, against the real crates in the working tree (each probe reverted and
+`git diff` confirmed clean before the next):
+
+- `build_invoice_lines` hard-coding `discount_per_unit_paise: 0` — the exact
+  pre-0.4.6 behaviour. Invariant 11 failed, naming the line and both figures.
+  Invariant 9 stayed green throughout, which is precisely why 11 had to
+  exist: an invoice reconciles internally whatever the discount is.
+- `list_invoices_for_split_group` truncated to one part. Invariant 12 failed
+  on every split scenario.
+- `resolve_bill_printers` matching `KITCHEN` instead of `BILL`. Invariant 13
+  failed on all 8, naming both printer ids, and the shape guard independently
+  caught it (`invoice_print_job_enqueued` fell to 0).
+
+That third probe also falsified the harness's own accounting: the `printed`
+shape was being recorded before the printer-identity check, so it stayed at 8
+while `enqueued` went to 0. Fixed in the same commit — a bill that printed at
+the wrong printer is not evidence the print path works.
+
+**T11b repeated this for the two invariants it added**, using the same
 `HOLLER_E2E_FALSIFY_MANIFEST` scratch-mirror pattern (a `git worktree` at the
 last known-green commit, since a concurrent Track A defect fix left the real
 repo's `edge/database` mid-edit and non-compiling at the time — see "Known
@@ -245,12 +303,16 @@ real crate was left exactly as found.
   logged baseline (per the T11b brief) if the fix is out of scope for the
   track that found it — silently loosening an assertion is never the right
   call.
-- **This run required a clean scratch mirror of the repo**, not the working
-  tree, because a separate track was mid-edit in `edge/database` (a
-  double-settlement fix) and left it non-compiling. `HOLLER_E2E_FALSIFY_
-  MANIFEST` already existed for exactly this "point the bridge at a
-  different checkout" need; T11b's own verification run used a
-  `git worktree` at the last known-green commit rather than stashing the
-  other track's uncommitted work. Once that track lands, re-run the suite
-  against the real working tree before trusting it as the standing CI gate
-  again.
+- ~~**This run required a clean scratch mirror of the repo**, not the working
+  tree, because a separate track was mid-edit in `edge/database`.~~
+  **RESOLVED at the M3 final track**: the full 54-scenario suite, and all
+  three falsification probes, ran against the real working tree. The
+  `HOLLER_E2E_FALSIFY_MANIFEST` override remains available but was not needed.
+- **This harness had stopped compiling twice before anyone noticed**, both
+  times because a producer signature changed and nothing built the consumer
+  until the slowest CI job (T11b's own finding, then again at the M3 final
+  track when `issue_invoice_impl` gained a fourth parameter). The
+  `rust-seams` CI job and `make check-seams` now compile every
+  cross-workspace consumer in about a minute, which is what should catch the
+  next one. Running it for the first time immediately found
+  `tests/integration/kds-lan-bridge` dead for the same reason.
