@@ -195,7 +195,9 @@ track's own verification run:
   **CLOSED.** `issue_split_invoices` is now a real command; invariant 12
   exercises it, and `split_invoice_multi_part` is a required shape.
 - ~~**A per-line discount is unreachable from the shipped surface (T11b).**~~
-  **CLOSED.** `issue_invoice` takes `discounts` (contracts 0.4.6); invariant
+  **CLOSED.** `issue_invoice` takes `discounts` (the `discount_definition`
+  shape is contracts 0.4.0/ADR-016 §1; what was missing was the command
+  surface, not the contract); invariant
   11 exercises both the apply and the two refusal paths, and
   `discount_applied_nonzero` is a required shape.
 - ~~**Invoice printing is unreachable from the shipped surface.**~~
@@ -263,7 +265,8 @@ time, against the real crates in the working tree (each probe reverted and
 `git diff` confirmed clean before the next):
 
 - `build_invoice_lines` hard-coding `discount_per_unit_paise: 0` — the exact
-  pre-0.4.6 behaviour. Invariant 11 failed, naming the line and both figures.
+  behaviour before the discount command surface landed. Invariant 11 failed,
+  naming the line and both figures.
   Invariant 9 stayed green throughout, which is precisely why 11 had to
   exist: an invoice reconciles internally whatever the discount is.
 - `list_invoices_for_split_group` truncated to one part. Invariant 12 failed

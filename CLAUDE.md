@@ -57,7 +57,7 @@ The split that matters: WSL2 hosts the **cloud** dependencies for local developm
 - POS: `pnpm test` / `pnpm tauri dev` inside `apps/pos/`.
 - CI: lint, format, unit, integration, contract-drift check, build, security scan.
 
-## Contracts status: FROZEN at v0.3.0 (Milestone 2 additions applied)
+## Contracts status: FROZEN at v0.4.7 (Milestone 3 billing + device enrollment applied; migrations through 0012)
 `packages/contracts/` holds the source of truth — SQLite schema, PostgreSQL migrations, TS+Zod types, mirrored Go structs, OpenAPI spec, and fixtures with Go+TS round-trip drift tests wired into CI. **Read-only to builder agents** (ADR-008); only the orchestrator/architect session edits it, serialized, with a version bump + ADR note for semantic changes.
 
 v0.2.0 added identity/RBAC/tables for Milestone 1 (ADR-011): `app_user`, `role`, `role_permission`, `user_role`, `restaurant_table`, `table_session`, `audit_event`. Three rules bind every builder:
@@ -72,6 +72,20 @@ v0.3.0 (ADR-014) added the Milestone 2 kitchen shapes. Four rules bind every bui
 - `kot.station` stores the station's **`code`**, never its id, so a ticket survives a rename.
 - `print_job` and `kot_status_history` are **edge-local**: SQLite only, no Postgres mirror, deliberately absent from `AggregateType` (the `refresh_token` precedent, from the other side). Never give either a sync direction.
 - `POST /kots/{kotId}/status` is the **only** writer of `kot.status`, and it only replays. No cloud handler transitions a ticket.
+
+v0.4.0 (ADR-016, ADR-017) added the Milestone 3 billing shapes — `invoice`, `invoice_line`, `invoice_series`, `invoice_sequence`, `tax_profile`, `tax_rule`, `compliance_version`, `outlet_fiscal_profile`, `discount_definition`, `payment`, `payment_allocation`, `cash_shift`, `cash_movement` — plus the `device_credential` enrollment shape. This is the first milestone that puts money on the wire, so five rules bind every builder:
+- `invoice`, `payment`, `cash_shift` are **edge-authoritative** (edge→cloud): the outlet bills and takes money with the uplink down and the cloud only replays. `tax_profile`, `compliance_version`, `invoice_series` and `discount_definition` are **config, cloud→edge** — tax rules, numbering format and discount policy are management decisions. Same split ADR-011 and ADR-014 already drew.
+- **Numbering splits definition from counter.** `invoice_series` is cloud config; `invoice_sequence` is **edge-local** — SQLite only, no Postgres mirror, no `AggregateType`, no sync direction, ever. Mirroring the counter would make the cloud a second writer of invoice numbers, which §33 forbids. The issued number travels on the invoice; the counter that produced it never leaves the outlet.
+- **Money is integer paise end to end, and the edge computes it.** Tax is computed per line at full precision, summed per component, rounded half-up to paise **once**, then the grand total to the rupee with the delta in `round_off_paise`. Never recompute tax in TypeScript or the Tauri layer — those layers format what the edge returns (`edge/database/src/tax/`).
+- `invoice_line`, `tax_rule`, `payment_allocation`, `cash_movement` and `outlet_fiscal_profile` are **child rows, not aggregates** — they travel inside their parent's payload or config bundle, the `menu_item_variant`/`station_printer` precedent. Do not give any of them a sync direction.
+- `device_credential` is **cloud-only**: no SQLite mirror, deliberately not an `AggregateType` (the `refresh_token` precedent). The plaintext token is returned **once** at enrollment. `device_token_hash` joins `password_hash`/`pin_hash`/`token_hash` on the audit redact list.
+
+v0.4.1–v0.4.7 are additive amendments to that baseline, each with its own version bump and ADR note:
+- **0.4.1** `ItemQuantityChanged`; `POST /devices/enroll` frozen. **0.4.2** `menu_item.tax_profile_id` (null falls back to the outlet default). **0.4.3** `device_credential_cache` — the edge-cached half of ADR-017 — and ingest gated by device. **0.4.4** the compliance config write routes documented in OpenAPI.
+- **0.4.5** per-row `config_version` on `device_credential`, so `GET /sync/config`'s `since_version` filter reaches it like every other config table; append-only triggers on `payment` (a tender is corrected by an appended reversal, never a mutation); `print_job.invoice_id`, so a bill can become a print job; and `menu_item.hsn_sac` — **an invoice cannot issue with a NULL or blank HSN/SAC on any line**, enforced at the edge, because a GST invoice without it is not a compliant document.
+- **0.4.6** closed three-field `MenuItem` drift in the OpenAPI spec. **0.4.7** `printer_role` — a join table, not a column on `printer`, so one device can be both KITCHEN and BILL without a `BOTH` member every reader special-cases. **A printer with no role row is a candidate for neither path**: absence is never read as "sure, print bills to it", and an outlet with no BILL printer must fail loudly at issue time.
+
+Two cross-cutting rules the 0.4.x line established the hard way: contract-shaped changes cascade across crates that do not share a cargo workspace (see `docs/retro.md` 2026-08-15), so run `make check-seams` after changing any `pub` signature in `edge/` or `apps/pos/src-tauri`; and a migration that exists on disk but is absent from `edge/database/src/migrations.rs`'s `MIGRATIONS` list **never applies** — 0009–0011 sat dead for exactly that reason, and 0005 before them.
 
 ## Current milestone: MILESTONE 2 — Kitchen
 Scope: KOT, station routing, printer abstraction, KDS, LAN realtime delivery, order status — all built against the frozen `packages/contracts/` shapes.
