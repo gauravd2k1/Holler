@@ -431,6 +431,30 @@ export async function issueInvoice(
   }
 }
 
+/** Queues an issued bill for print at every printer this outlet has given
+ * the `BILL` role (`printer_role`, contracts 0.4.7), and makes one immediate
+ * attempt. Returns the queued `print_job` ids.
+ *
+ * Separate from `issueInvoice` on purpose: issuing a bill and printing it
+ * are distinct cashier actions (a bill may be issued and shown on screen,
+ * then printed once, then reprinted), and issuing must never fail because a
+ * printer is unplugged. Idempotent per (invoice, printer) — a second tap
+ * returns the existing job rather than spooling a duplicate bill.
+ *
+ * Rejects with `NO_PRINTER_ROUTED` when the outlet has configured no active
+ * BILL printer: unlike a KOT — which still reaches the kitchen on a KDS
+ * screen when its print fails — a bill has no second channel, so this one
+ * surfaces rather than being logged and swallowed. A print that fails AFTER
+ * queueing (a dead printer) does not reject here; it appears in
+ * `listFailedPrintJobs` and stays retryable. */
+export async function printInvoice(invoiceId: string): Promise<string[]> {
+  try {
+    return await invoke<string[]>("print_invoice", { invoiceId });
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
+
 export async function listInvoicesForOrder(orderId: string): Promise<Invoice[]> {
   try {
     const raw = await invoke<unknown[]>("list_invoices_for_order", { orderId });

@@ -102,6 +102,9 @@ Write-Host "outlet : $($loaded['HOLLER_OUTLET_ID'])"
 Write-Host "device : $($loaded['HOLLER_DEVICE_ID'])"
 Write-Host "env    : $EnvFile"
 Write-Host "KDS LAN server will bind $lanAddr on this machine (unauthenticated -- see docs/DEV_SETUP.md)"
+if ($loaded.ContainsKey('HOLLER_PRINTER_FILE_SINK_DIR') -and $loaded['HOLLER_PRINTER_FILE_SINK_DIR'] -ne "") {
+    Write-Host "printer: FILE SINK ACTIVE -- prints go to $($loaded['HOLLER_PRINTER_FILE_SINK_DIR']), not to any device." -ForegroundColor Yellow
+}
 Write-Host ""
 
 Push-Location $PSScriptRoot

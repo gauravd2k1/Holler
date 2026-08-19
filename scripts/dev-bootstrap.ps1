@@ -38,7 +38,27 @@ param(
     [int]$LanPort = 9310,
 
     # Skip "docker compose up" if the containers are already running.
-    [switch]$SkipInfra
+    [switch]$SkipInfra,
+
+    # Seed the billing config a bill needs before one can be issued: tax
+    # profile + rules, outlet fiscal profile (GSTIN), an active SALES series,
+    # three discount definitions, and two printers with printer_role rows.
+    # OFF by default because tests/e2e-scenario seeds its own and would end
+    # up with two active SALES series (see devseed.rs's own note).
+    #
+    # Without this, the POS reaches "Issue Bill" and fails with
+    # NO_FISCAL_PROFILE_CONFIGURED -- which is correct behaviour, just not a
+    # runnable acceptance path.
+    [switch]$WithBilling,
+
+    # Write every print to this directory as a file instead of sending it to
+    # a device (HOLLER_PRINTER_FILE_SINK_DIR). This is how a machine with no
+    # thermal printer attached can still verify the real ESC/POS byte stream:
+    # same renderer, same spool, same transport boundary -- only the final
+    # write lands somewhere you can open. See
+    # edge/printer/src/transport/file_sink.rs for what that does and does not
+    # establish (it establishes nothing about real device I/O).
+    [string]$PrinterFileSinkDir = ""
 )
 
 # Best-effort LAN IPv4 address for this machine, used to build
@@ -128,6 +148,7 @@ try {
     # Setting the plaintext password makes the seeder re-open the sealed file
     # and prove the offline-login path works before we claim success.
     $env:HOLLER_SEED_PASSWORD = $values["HOLLER_SEED_PASSWORD"]
+    if ($WithBilling) { $env:HOLLER_SEED_BILLING = "1" }
 
     cargo run --quiet --bin devseed
     if ($LASTEXITCODE -ne 0) { throw "edge devseed failed" }
@@ -135,6 +156,7 @@ try {
     Pop-Location
     Remove-Item Env:\HOLLER_SEED_PASSWORD -ErrorAction SilentlyContinue
     Remove-Item Env:\HOLLER_SEED_PASSWORD_HASH -ErrorAction SilentlyContinue
+    Remove-Item Env:\HOLLER_SEED_BILLING -ErrorAction SilentlyContinue
 }
 
 # --- 4. env files for the launchers ------------------------------------------
@@ -149,9 +171,24 @@ $envLines = @(
     "HOLLER_DB_KEY_HEX=$DbKeyHex",
     "HOLLER_LAN_BIND_ADDR=0.0.0.0:$LanPort"
 )
+# run-dev.ps1 exports every KEY=VALUE it finds here into the POS process, so
+# naming the sink in this file is all it takes to route prints to disk.
+if ($PrinterFileSinkDir -ne "") {
+    $resolvedSink = [System.IO.Path]::GetFullPath($PrinterFileSinkDir)
+    New-Item -ItemType Directory -Force -Path $resolvedSink | Out-Null
+    $envLines += "HOLLER_PRINTER_FILE_SINK_DIR=$resolvedSink"
+}
 # ASCII so Windows PowerShell 5.1 reads it back without a BOM surprise.
 $envLines | Out-File -FilePath $envFile -Encoding ascii
 Write-Host "`n[4/4] wrote $envFile" -ForegroundColor Cyan
+if ($WithBilling) {
+    Write-Host "billing config seeded: bills can be issued, discounted and split on this machine." -ForegroundColor Cyan
+}
+if ($PrinterFileSinkDir -ne "") {
+    Write-Host "printer FILE SINK: every print will be written to $resolvedSink" -ForegroundColor Yellow
+    Write-Host "  .escpos = the real byte stream sent to the transport; .txt = the same bill with escapes stripped, for reading." -ForegroundColor Yellow
+    Write-Host "  This proves the render and the spool. It proves NOTHING about a real 58/80mm printer." -ForegroundColor Yellow
+}
 
 # apps/kds/.env.dev (T12). Vite does NOT load this by itself -- it is read
 # only with `--mode dev`, which every documented KDS launch command below

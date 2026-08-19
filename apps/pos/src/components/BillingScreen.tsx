@@ -39,6 +39,7 @@ import {
   closeCashShift,
   issueInvoice,
   issueSplitInvoices,
+  printInvoice,
   openCashShift,
   recordPayment,
   type LineDiscountRequest,
@@ -103,6 +104,12 @@ export function BillingScreen() {
   ]);
   const [splitError, setSplitError] = useState<string | null>(null);
   const [splitting, setSplitting] = useState(false);
+
+  // Print state is per-invoice, not per-screen: a split group shows several
+  // invoices at once and each has its own Print Bill button, so a shared
+  // flag would disable them all and attribute one bill's error to another.
+  const [printingInvoiceId, setPrintingInvoiceId] = useState<string | null>(null);
+  const [printResultByInvoice, setPrintResultByInvoice] = useState<Record<string, string>>({});
 
   // Pending (entered but not yet submitted) tenders, keyed by invoice id —
   // a split group has more than one invoice open for payment at once, and
@@ -202,6 +209,34 @@ export function BillingScreen() {
       setIssueError(billingErrorMessage(err));
     } finally {
       setIssuing(false);
+    }
+  }
+
+  /** "Print Bill" — queues this invoice at the outlet's BILL-role printer(s)
+   * and reports what happened inline, next to the button that caused it.
+   *
+   * Deliberately NOT automatic on issue: a bill is printed when the cashier
+   * asks for it, and `issueInvoice` must not fail because a printer is
+   * unplugged. A failure here is shown rather than thrown away — an outlet
+   * with no BILL printer configured says so (`NO_PRINTER_ROUTED`), which is
+   * the one print failure a cashier can actually act on, and a print that
+   * fails after queueing still surfaces in the failed-print banner. */
+  async function printBill(invoiceId: string) {
+    setPrintingInvoiceId(invoiceId);
+    setPrintResultByInvoice((prev) => ({ ...prev, [invoiceId]: "" }));
+    try {
+      const jobIds = await printInvoice(invoiceId);
+      setPrintResultByInvoice((prev) => ({
+        ...prev,
+        [invoiceId]:
+          jobIds.length === 1
+            ? "Queued 1 print job."
+            : `Queued ${jobIds.length} print jobs.`,
+      }));
+    } catch (err) {
+      setPrintResultByInvoice((prev) => ({ ...prev, [invoiceId]: billingErrorMessage(err) }));
+    } finally {
+      setPrintingInvoiceId(null);
     }
   }
 
@@ -684,6 +719,19 @@ export function BillingScreen() {
               <p className="amount-due">
                 Amount Due: {formatPaiseAsRupees(due)}
                 {billFullySettled && " — settled"}
+              </p>
+
+              <p className="print-bill">
+                <button
+                  type="button"
+                  onClick={() => void printBill(inv.id)}
+                  disabled={printingInvoiceId === inv.id}
+                >
+                  {printingInvoiceId === inv.id ? "Printing…" : "Print Bill"}
+                </button>
+                {printResultByInvoice[inv.id] && (
+                  <span className="print-result">{printResultByInvoice[inv.id]}</span>
+                )}
               </p>
 
               <h3>Payments</h3>

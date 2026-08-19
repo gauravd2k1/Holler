@@ -21,8 +21,9 @@ use std::process::ExitCode;
 
 use holler_edge_database::crypto::EncryptionKey;
 use holler_edge_database::model::{
-    AppUser, Device, MenuCategory, MenuItem, MenuItemModifier, MenuItemVariant, Outlet,
-    RestaurantTable, Station,
+    AppUser, ComplianceVersion, Device, DiscountDefinition, InvoiceSeries, MenuCategory, MenuItem,
+    MenuItemModifier, MenuItemVariant, Outlet, OutletFiscalProfile, Printer, RestaurantTable,
+    Station, TaxProfile, TaxRule,
 };
 use holler_edge_database::{repo, Db};
 
@@ -55,6 +56,38 @@ const TABLE_2_ID: &str = "0191a000-0000-7000-8000-000000000021";
 // screen) had nothing to route through until this was added.
 const STATION_ID: &str = "0191a000-0000-7000-8000-000000000030";
 const STATION_CODE: &str = "MAIN_KITCHEN";
+
+// ---- Billing / acceptance fixtures (opt-in, HOLLER_SEED_BILLING=1) ----
+//
+// OPT-IN ON PURPOSE. `tests/e2e-scenario/harness` invokes this binary and
+// then seeds its OWN billing config (its own fiscal profile, its own active
+// SALES series). If these rows were unconditional, that outlet would carry
+// two active SALES series and two effective fiscal profiles, and
+// `issue_invoice_impl` picks a series with `.find()` — so which one an
+// invoice numbered against would depend on row order. That is exactly the
+// kind of silent nondeterminism the harness exists to catch, so the default
+// stays off and the harness keeps seeding its own.
+//
+// Set HOLLER_SEED_BILLING=1 for a manual acceptance run of the POS, which
+// otherwise fails at "Issue Bill" with NO_FISCAL_PROFILE_CONFIGURED — devseed
+// has never seeded any of this.
+const COMPLIANCE_VERSION_ID: &str = "0191a000-0000-7000-8000-000000000040";
+const TAX_PROFILE_ID: &str = "0191a000-0000-7000-8000-000000000041";
+const FISCAL_PROFILE_ID: &str = "0191a000-0000-7000-8000-000000000042";
+const INVOICE_SERIES_ID: &str = "0191a000-0000-7000-8000-000000000043";
+const DISCOUNT_PCT_ID: &str = "0191a000-0000-7000-8000-000000000044";
+const DISCOUNT_SPOILAGE_ID: &str = "0191a000-0000-7000-8000-000000000045";
+const DISCOUNT_MANAGER_ID: &str = "0191a000-0000-7000-8000-000000000046";
+const PRINTER_BILL_ID: &str = "0191a000-0000-7000-8000-000000000047";
+const PRINTER_KITCHEN_ID: &str = "0191a000-0000-7000-8000-000000000048";
+
+/// Where the seeded printers point when no file sink is configured. A
+/// deliberately non-existent device path: with `HOLLER_PRINTER_FILE_SINK_DIR`
+/// set (the acceptance path) the transport never opens it, and without the
+/// sink a print fails loudly as a FAILED `print_job` naming this address —
+/// which is the honest outcome on a machine with no printer attached, and is
+/// visible in the POS's own failed-print banner.
+const UNATTACHED_DEVICE_PATH: &str = r"\\.\COM_HOLLER_NO_PRINTER_ATTACHED";
 
 const CASHIER_EMAIL: &str = "cashier@holler.test";
 
@@ -298,10 +331,215 @@ fn seed(db: &Db, password_hash: &str) -> Result<(), holler_edge_database::DbErro
         )?;
     }
 
+    if env::var("HOLLER_SEED_BILLING").is_ok_and(|v| v == "1") {
+        seed_billing(conn)?;
+    }
+
     // Without a sync_state row the outbox has no cursor to advance against
     // once the sync worker is eventually wired up.
     repo::init_sync_state(conn, OUTLET_ID)?;
 
+    Ok(())
+}
+
+/// The config a bill needs before one can be issued: a compliance version, a
+/// GST 5% default tax profile (CGST 2.5% + SGST 2.5%), the outlet's fiscal
+/// identity as printed on the invoice, an active SALES numbering series,
+/// three discount definitions, and two printers with roles.
+///
+/// Opt-in — see the const block above for why the e2e harness must not get
+/// these rows.
+fn seed_billing(
+    conn: &rusqlite::Connection,
+) -> Result<(), holler_edge_database::DbError> {
+    repo::upsert_compliance_version(
+        conn,
+        &ComplianceVersion {
+            id: COMPLIANCE_VERSION_ID.to_string(),
+            outlet_id: OUTLET_ID.to_string(),
+            label: "GST dev".to_string(),
+            effective_from: "2020-01-01T00:00:00Z".to_string(),
+            notes: None,
+            config_version: CONFIG_VERSION,
+        },
+    )?;
+
+    // is_default = true and every seeded menu_item leaves tax_profile_id
+    // NULL, so all of them resolve here through the tax engine's fallback.
+    repo::upsert_tax_profile(
+        conn,
+        &TaxProfile {
+            id: TAX_PROFILE_ID.to_string(),
+            outlet_id: OUTLET_ID.to_string(),
+            code: "GST_5".to_string(),
+            name: "GST 5%".to_string(),
+            pricing_mode: "EXCLUSIVE".to_string(),
+            is_default: true,
+            is_active: true,
+            config_version: CONFIG_VERSION,
+        },
+    )?;
+    for (component, rate_bps) in [("CGST", 250i64), ("SGST", 250i64)] {
+        repo::upsert_tax_rule(
+            conn,
+            &TaxRule {
+                id: format!("{TAX_PROFILE_ID}-{component}"),
+                tax_profile_id: TAX_PROFILE_ID.to_string(),
+                compliance_version_id: COMPLIANCE_VERSION_ID.to_string(),
+                component: component.to_string(),
+                rate_bps,
+                effective_from: "2020-01-01T00:00:00Z".to_string(),
+                effective_to: None,
+                config_version: CONFIG_VERSION,
+            },
+        )?;
+    }
+
+    // Fictional GSTIN/FSSAI: valid in FORMAT so the renderer and any
+    // validation exercise real shapes, but registered to nobody. Never put a
+    // real business's registration in a dev fixture.
+    repo::upsert_outlet_fiscal_profile(
+        conn,
+        &OutletFiscalProfile {
+            id: FISCAL_PROFILE_ID.to_string(),
+            outlet_id: OUTLET_ID.to_string(),
+            legal_name: "Holler Dev Kitchens Pvt Ltd".to_string(),
+            trade_name: "Pune Test Outlet".to_string(),
+            address_line1: "123 MG Road".to_string(),
+            address_line2: Some("Camp".to_string()),
+            city: "Pune".to_string(),
+            state_code: "27".to_string(),
+            state_name: "Maharashtra".to_string(),
+            pincode: "411001".to_string(),
+            gstin: "27AAAAA0000A1Z5".to_string(),
+            fssai_number: Some("11522998000123".to_string()),
+            invoice_footer_text: Some("Thank you — dev fixture, not a real bill".to_string()),
+            effective_from: "2020-01-01T00:00:00Z".to_string(),
+            config_version: CONFIG_VERSION,
+        },
+    )?;
+
+    repo::upsert_invoice_series(
+        conn,
+        &InvoiceSeries {
+            id: INVOICE_SERIES_ID.to_string(),
+            outlet_id: OUTLET_ID.to_string(),
+            code: "SALES".to_string(),
+            prefix_template: "DEV/".to_string(),
+            reset_policy: "NEVER".to_string(),
+            padding_width: 6,
+            is_active: true,
+            config_version: CONFIG_VERSION,
+        },
+    )?;
+
+    // Three definitions covering the apply path and both governance gates,
+    // so a manual run can see a refusal as well as an application. The
+    // seeded cashier holds order.create/order.modify/table.manage, so the
+    // manager discount below is refusable BY CONSTRUCTION.
+    repo::upsert_discount_definition(
+        conn,
+        &DiscountDefinition {
+            id: DISCOUNT_PCT_ID.to_string(),
+            outlet_id: OUTLET_ID.to_string(),
+            code: "STAFF_10".to_string(),
+            name: "Staff 10%".to_string(),
+            scope: "LINE".to_string(),
+            method: "PERCENT".to_string(),
+            value_bps: Some(1000),
+            value_paise: None,
+            max_discount_paise: None,
+            required_permission: None,
+            requires_reason: false,
+            is_active: true,
+            effective_from: "2020-01-01T00:00:00Z".to_string(),
+            effective_to: None,
+            config_version: CONFIG_VERSION,
+        },
+    )?;
+    repo::upsert_discount_definition(
+        conn,
+        &DiscountDefinition {
+            id: DISCOUNT_SPOILAGE_ID.to_string(),
+            outlet_id: OUTLET_ID.to_string(),
+            code: "SPOILAGE".to_string(),
+            name: "Spoilage write-off (Rs 5)".to_string(),
+            scope: "LINE".to_string(),
+            method: "AMOUNT".to_string(),
+            value_bps: None,
+            value_paise: Some(500),
+            max_discount_paise: None,
+            required_permission: None,
+            requires_reason: true,
+            is_active: true,
+            effective_from: "2020-01-01T00:00:00Z".to_string(),
+            effective_to: None,
+            config_version: CONFIG_VERSION,
+        },
+    )?;
+    repo::upsert_discount_definition(
+        conn,
+        &DiscountDefinition {
+            id: DISCOUNT_MANAGER_ID.to_string(),
+            outlet_id: OUTLET_ID.to_string(),
+            code: "MANAGER_50".to_string(),
+            name: "Manager 50% (needs order.void)".to_string(),
+            scope: "LINE".to_string(),
+            method: "PERCENT".to_string(),
+            value_bps: Some(5000),
+            value_paise: None,
+            max_discount_paise: None,
+            required_permission: Some("order.void".to_string()),
+            requires_reason: false,
+            is_active: true,
+            effective_from: "2020-01-01T00:00:00Z".to_string(),
+            effective_to: None,
+            config_version: CONFIG_VERSION,
+        },
+    )?;
+
+    // ESCPOS_USB pointed at a device that does not exist on a dev machine —
+    // see UNATTACHED_DEVICE_PATH. With HOLLER_PRINTER_FILE_SINK_DIR set, the
+    // transport is replaced before this address is ever opened.
+    for (id, name) in [
+        (PRINTER_BILL_ID, "Dev Bill Printer"),
+        (PRINTER_KITCHEN_ID, "Dev Kitchen Printer"),
+    ] {
+        repo::upsert_printer(
+            conn,
+            &Printer {
+                id: id.to_string(),
+                outlet_id: OUTLET_ID.to_string(),
+                name: name.to_string(),
+                connection_kind: "ESCPOS_USB".to_string(),
+                address: UNATTACHED_DEVICE_PATH.to_string(),
+                paper_width_mm: 80,
+                is_active: true,
+                config_version: CONFIG_VERSION,
+            },
+        )?;
+    }
+    // printer_role (contracts 0.4.7): a printer with no role row is a
+    // candidate for neither path, so these two rows are what make
+    // `print_invoice` resolve at all.
+    repo::replace_printer_roles(conn, PRINTER_BILL_ID, &["BILL".to_string()], CONFIG_VERSION)?;
+    repo::replace_printer_roles(
+        conn,
+        PRINTER_KITCHEN_ID,
+        &["KITCHEN".to_string()],
+        CONFIG_VERSION,
+    )?;
+    repo::replace_station_printers(
+        conn,
+        STATION_ID,
+        &[PRINTER_KITCHEN_ID.to_string()],
+        CONFIG_VERSION,
+    )?;
+
+    println!("devseed: billing config seeded (HOLLER_SEED_BILLING=1)");
+    println!("devseed:   tax GST 5% (CGST 2.5 + SGST 2.5), series DEV/, GSTIN 27AAAAA0000A1Z5");
+    println!("devseed:   discounts STAFF_10 (applies), SPOILAGE (needs a reason), MANAGER_50 (needs order.void — the cashier lacks it)");
+    println!("devseed:   printers: Dev Bill Printer [BILL], Dev Kitchen Printer [KITCHEN]");
     Ok(())
 }
 

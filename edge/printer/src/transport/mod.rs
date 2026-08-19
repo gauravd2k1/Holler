@@ -5,9 +5,11 @@
 //! *transport* is a contract change (`printer.connection_kind`), which is
 //! why exactly the three frozen kinds are implemented here.
 
+mod file_sink;
 mod network;
 mod path;
 
+pub use file_sink::{FileSinkTransport, FILE_SINK_DIR_ENV};
 pub use network::NetworkTransport;
 pub use path::PathTransport;
 
@@ -33,7 +35,30 @@ pub trait PrinterTransport {
 /// duplicate. The `connection_kind` distinction stays meaningful at the
 /// config layer (what a restaurant owner picks when adding a printer); it
 /// collapses only here, at the actual wire.
+/// Development/acceptance override, checked before `connection_kind`: when
+/// [`FILE_SINK_DIR_ENV`] names a directory, every print is written there as a
+/// file instead of being sent to a device (see `file_sink.rs` for why this is
+/// an environment setting rather than a fourth `connection_kind`, and for
+/// what a file-backed run does and does not establish).
+///
+/// Unset — every production install — this returns `None` and
+/// `build_transport` behaves exactly as it did before the sink existed.
+fn file_sink_override(printer: &Printer) -> Option<Box<dyn PrinterTransport>> {
+    let dir = std::env::var(FILE_SINK_DIR_ENV).ok()?;
+    if dir.trim().is_empty() {
+        return None;
+    }
+    Some(Box::new(FileSinkTransport::new(
+        std::path::PathBuf::from(dir),
+        printer.id.clone(),
+        printer.name.clone(),
+    )))
+}
+
 pub fn build_transport(printer: &Printer) -> Box<dyn PrinterTransport> {
+    if let Some(sink) = file_sink_override(printer) {
+        return sink;
+    }
     match printer.connection_kind {
         ConnectionKind::Network => Box::new(NetworkTransport::new(printer.address.clone())),
         ConnectionKind::Usb | ConnectionKind::Bluetooth => {
