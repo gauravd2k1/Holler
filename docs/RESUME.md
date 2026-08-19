@@ -41,8 +41,32 @@ below was produced by running the named command on this machine on 2026-08-20.
 | `packages/contracts` TS / Go | **40** / ok | `npx vitest run`, `go test ./...` |
 | **e2e harness** | **54 scenarios, 13/13 invariants, 0 fatals** | `cd tests/e2e-scenario/orchestrator && pnpm test` (~85s) |
 
-**`backend` was NOT re-run this session** (needs `docker compose up -d postgres`
-and `HOLLER_TEST_DATABASE_URL`). Last known: 287, 0 skips, at `6575c9f`.
+**`backend` was NOT re-run this session** — the one gap in the table above.
+Last known: 287, 0 skips, at `6575c9f`. Treat that number as stale, not as
+evidence: nothing in this session touched Go, but nothing re-verified it either.
+
+Running it is cheap and should be the first thing a fresh session does:
+
+```powershell
+docker compose up -d postgres redis nats     # if not already up
+$env:HOLLER_TEST_DATABASE_URL="postgres://holler:holler_dev@localhost:5432/holler?sslmode=disable"
+cd backend; go test -count=1 ./...
+```
+
+**Scale, measured on 2026-08-20:** `go test -list ".*" ./...` reports **253
+top-level test functions across 18 packages**, and compiled in 3s against a warm
+build cache. The 287 figure above counts subtests (`t.Run`) as well, so the two
+numbers are not in conflict — expect the run to report more than 253.
+
+**Duration is an estimate, not a measurement** (nobody has timed this suite):
+likely **under two minutes** warm. The ~29 Postgres-backed integration tests
+dominate, packages run in parallel, and the containers were healthy at session
+close. A cold checkout adds Go compile time on top. If it runs much longer than
+that, suspect a container that is up but not healthy rather than slow tests.
+
+`-count=1` is not optional: without it Go serves cached results and the run
+proves nothing. Do not set `HOLLER_SKIP_PG_TESTS` — that restores exactly the
+silent green the zero-skip CI assertion exists to prevent.
 
 ### The §66 financial suite is falsifiable, not just green
 
