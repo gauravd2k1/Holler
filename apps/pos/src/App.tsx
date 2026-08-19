@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider } from "@tanstack/react-router";
 import { router } from "./routes/router";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -14,10 +15,16 @@ const queryClient = new QueryClient({
   },
 });
 
+// The boundary wraps the provider, not the other way round: a throw inside
+// QueryClientProvider's own subtree (which is everything) must still be
+// caught, and the boundary itself must not depend on any context that the
+// crash may have taken down with it.
 export function App() {
   return (
-    <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
-    </QueryClientProvider>
+    <ErrorBoundary>
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>
+    </ErrorBoundary>
   );
 }

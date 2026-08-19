@@ -276,3 +276,43 @@ button {
   padding: 0.4rem;
   text-align: left;
 }
+
+/* -------------------------------------------------------- crash screen -- */
+/* Shown by components/ErrorBoundary.tsx when a render throws. Loud on
+   purpose: this replaces a blank white window whose only explanation lived
+   in a devtools console nobody had open. */
+.crash-screen {
+  max-width: 44rem;
+  margin: 3rem auto;
+  padding: 1.5rem;
+  border: 2px solid #f66;
+  border-radius: 6px;
+  background: #611;
+}
+.crash-screen h1 {
+  margin: 0 0 0.75rem;
+  font-size: 1.35rem;
+}
+.crash-message {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.9rem;
+  padding: 0.6rem 0.75rem;
+  margin: 0 0 0.75rem;
+  background: #300;
+  border-radius: 4px;
+  overflow-wrap: anywhere;
+}
+.crash-guidance {
+  margin: 0 0 1rem;
+}
+.crash-detail {
+  margin-top: 1rem;
+}
+.crash-detail pre {
+  max-height: 18rem;
+  overflow: auto;
+  font-size: 0.78rem;
+  background: #300;
+  padding: 0.6rem 0.75rem;
+  border-radius: 4px;
+}

@@ -4,6 +4,7 @@ import { LoginScreen } from "../components/LoginScreen";
 import { PosScreen } from "../components/PosScreen";
 import { OrderListScreen } from "../components/OrderListScreen";
 import { BillingScreen } from "../components/BillingScreen";
+import { CrashScreen } from "../components/CrashScreen";
 
 const rootRoute = createRootRoute({
   component: () => <Outlet />,
@@ -46,7 +47,17 @@ const billingRoute = createRoute({
 
 const routeTree = rootRoute.addChildren([loginRoute, posRoute, ordersRoute, billingRoute]);
 
-export const router = createRouter({ routeTree });
+// TanStack Router catches a throw inside a route component in its own
+// CatchBoundary, BEFORE any React error boundary of ours can see it, and its
+// stock error component renders "Something went wrong!" with no message and
+// nothing copyable. Every screen in this app is a route component, so
+// without this override that stock text is what a cashier would actually get
+// — the outer ErrorBoundary would never fire. Verified by throwing in
+// LoginScreen and observing which component rendered.
+export const router = createRouter({
+  routeTree,
+  defaultErrorComponent: ({ error }) => <CrashScreen error={error} />,
+});
 
 declare module "@tanstack/react-router" {
   interface Register {

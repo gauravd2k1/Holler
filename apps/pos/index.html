@@ -6,6 +6,86 @@
   </head>
   <body>
     <div id="root"></div>
+    <!--
+      Bootstrap failure guard. This runs BEFORE the app module, and is the
+      only thing that can report the failure class that actually took the POS
+      down on 2026-08-20: a stale Vite dep prebundle meant `main.tsx`'s import
+      graph threw at module evaluation, so React never ran and no error
+      boundary — ours or the router's — could possibly have fired. The window
+      was blank and the reason existed only in a devtools console.
+
+      Deliberately inline, dependency-free and in plain ES5: it has to work
+      when the module graph is exactly what is broken, so it cannot import
+      anything or rely on the bundle it is reporting on.
+
+      It only paints when #root is still empty, so a normal render is never
+      touched, and a late runtime error in a working app does not replace the
+      screen a cashier is using.
+    -->
+    <script>
+      (function () {
+        var reported = false;
+        var pending = null;
+
+        // Never paints synchronously. An error thrown during React's first
+        // render arrives here while #root is still empty, but React may be
+        // about to recover and draw its own crash screen — reporting at that
+        // instant produced TWO stacked panels (observed, not theorised).
+        // Recording the message and checking again shortly afterwards tells
+        // the two cases apart: a genuine bootstrap failure leaves #root
+        // empty forever, a recovered render does not.
+        function note(what) {
+          if (pending === null) pending = what;
+          setTimeout(flush, 1200);
+        }
+
+        function flush() {
+          if (reported) return;
+          var root = document.getElementById("root");
+          if (!root || root.innerHTML.trim() !== "") return; // something rendered; leave it alone
+          reported = true;
+          var what = pending || "The app loaded but never rendered. No error was reported.";
+          var pre = document.createElement("pre");
+          pre.style.cssText = "white-space:pre-wrap;word-break:break-word;font-size:12px;margin:0";
+          pre.textContent = what;
+          var box = document.createElement("main");
+          box.setAttribute("role", "alert");
+          box.style.cssText =
+            "max-width:44rem;margin:3rem auto;padding:1.5rem;border:2px solid #f66;" +
+            "border-radius:6px;background:#611;color:#fff;font-family:ui-monospace,Consolas,monospace";
+          var h = document.createElement("h1");
+          h.style.cssText = "font-size:1.25rem;margin:0 0 .75rem";
+          h.textContent = "The POS could not start";
+          var p = document.createElement("p");
+          p.style.cssText = "font-family:system-ui,sans-serif;margin:0 0 1rem";
+          p.textContent =
+            "The app failed to load before it could draw anything. This is usually a build or " +
+            "install problem rather than anything you did. Send the text below to whoever " +
+            "maintains this till.";
+          box.appendChild(h);
+          box.appendChild(p);
+          box.appendChild(pre);
+          root.appendChild(box);
+        }
+
+        window.addEventListener("error", function (e) {
+          note(
+            "" + (e.message || "script error") +
+            (e.filename ? "\n  at " + e.filename + ":" + e.lineno + ":" + e.colno : "")
+          );
+        });
+        window.addEventListener("unhandledrejection", function (e) {
+          var r = e.reason;
+          note("Unhandled promise rejection:\n" + ((r && (r.stack || r.message)) || String(r)));
+        });
+        // Nothing rendered a second after load and no error fired: still a
+        // dead screen from the cashier's side, so say so rather than leave
+        // it white.
+        window.addEventListener("load", function () {
+          setTimeout(flush, 1000);
+        });
+      })();
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
