@@ -5,6 +5,28 @@ import { PosScreen } from "../components/PosScreen";
 import { OrderListScreen } from "../components/OrderListScreen";
 import { BillingScreen } from "../components/BillingScreen";
 import { CrashScreen } from "../components/CrashScreen";
+import { ErrorBoundary } from "../components/ErrorBoundary";
+
+/** Wraps a screen so OUR boundary sees the throw before the router's
+ * CatchBoundary does.
+ *
+ * Why bother, when `defaultErrorComponent` below already renders the same
+ * CrashScreen: the router's error component receives the error but NOT a
+ * component stack. Its props type accepts `info?.componentStack`, and
+ * TypeScript compiles it happily, but at runtime nothing arrives — verified
+ * by throwing in LoginScreen and reading what actually rendered. Only
+ * React's own `componentDidCatch` supplies the stack, so the only way to get
+ * "which component died" onto the screen is a real boundary inside the
+ * route. */
+function withBoundary(Screen: () => JSX.Element) {
+  return function BoundedScreen() {
+    return (
+      <ErrorBoundary>
+        <Screen />
+      </ErrorBoundary>
+    );
+  };
+}
 
 const rootRoute = createRootRoute({
   component: () => <Outlet />,
@@ -13,7 +35,7 @@ const rootRoute = createRootRoute({
 const loginRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/login",
-  component: LoginScreen,
+  component: withBoundary(LoginScreen),
 });
 
 /** A trained cashier's screen must not be reachable without an offline
@@ -28,21 +50,21 @@ const posRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
   beforeLoad: requireAuth,
-  component: PosScreen,
+  component: withBoundary(PosScreen),
 });
 
 const ordersRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/orders",
   beforeLoad: requireAuth,
-  component: OrderListScreen,
+  component: withBoundary(OrderListScreen),
 });
 
 const billingRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/orders/$orderId/billing",
   beforeLoad: requireAuth,
-  component: BillingScreen,
+  component: withBoundary(BillingScreen),
 });
 
 const routeTree = rootRoute.addChildren([loginRoute, posRoute, ordersRoute, billingRoute]);
@@ -56,7 +78,9 @@ const routeTree = rootRoute.addChildren([loginRoute, posRoute, ordersRoute, bill
 // LoginScreen and observing which component rendered.
 export const router = createRouter({
   routeTree,
-  defaultErrorComponent: ({ error }) => <CrashScreen error={error} />,
+  defaultErrorComponent: ({ error, info }) => (
+    <CrashScreen error={error} componentStack={info?.componentStack ?? null} />
+  ),
 });
 
 declare module "@tanstack/react-router" {
