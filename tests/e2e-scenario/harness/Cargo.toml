@@ -23,6 +23,10 @@ path = "src/main.rs"
 holler_pos_lib = { path = "../../../apps/pos/src-tauri", package = "holler-pos" }
 holler-edge-database = { path = "../../../edge/database" }
 holler-edge-device = { path = "../../../edge/device" }
+# Reads back the `print_job` rows an invoice print enqueues (GetPrintJobs),
+# through the same crate apps/pos uses — never raw SQL against print_job,
+# which edge/printer's module doc reserves to itself.
+holler-edge-printer = { path = "../../../edge/printer" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v7"] }

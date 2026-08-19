@@ -51,6 +51,24 @@ export interface TemplateInfo {
     multi_station: { id: string; unit_price_paise: number };
     no_station: { id: string; unit_price_paise: number };
   };
+  /** The outlet's seeded discount catalogue. `applies` is what the CASHIER
+   * this harness bills as can actually use — the permission-gated one is
+   * seeded precisely so a refusal can be asserted, not skipped. */
+  discounts: {
+    percent: DiscountFixture & { value_bps: number };
+    permission_gated: DiscountFixture & { value_bps: number; required_permission: string };
+    reason_gated: DiscountFixture & { value_paise: number };
+  };
+  printers: { bill: string; kitchen: string };
+}
+
+export interface DiscountFixture {
+  id: string;
+  code: string;
+  method: "PERCENT" | "AMOUNT";
+  requires_reason: boolean;
+  requires_permission: boolean;
+  applies: boolean;
 }
 
 export interface ScenarioInfo extends TemplateInfo {

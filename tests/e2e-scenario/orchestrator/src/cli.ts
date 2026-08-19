@@ -14,6 +14,13 @@ async function main() {
   console.log(`e2e-scenario-harness: running ${count} randomized scenarios (+ named regressions), base seed ${seed}`);
   const summary = await runSuite(seed, count);
   console.log(`Done. ${summary.results.length} scenarios, ${summary.fatalCount} fatal errors. Report: ${summary.reportPath}`);
+  console.log("Shapes produced:", summary.shapeCounts);
+  if (summary.missingShapes.length > 0) {
+    // Same guard the CI test applies: a run that never produced a shape has
+    // not tested the invariant covering it, however green that invariant is.
+    console.error(`MISSING SHAPES (invariants covering these are green on absent data): ${summary.missingShapes.join(", ")}`);
+    process.exitCode = 1;
+  }
   if (summary.fatalCount > 0) process.exitCode = 1;
 }
 

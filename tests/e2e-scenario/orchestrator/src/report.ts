@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { ALL_INVARIANTS } from "./types";
+import { ALL_INVARIANTS, REQUIRED_SHAPES } from "./types";
 import type { ScenarioResult } from "./types";
 
 function percentile(sorted: number[], p: number): number | null {
@@ -36,6 +36,22 @@ export function writeReport(
       }
     }
     lines.push(`| ${inv} | ${checked} | ${passed} | ${failed} | ${results.length - checked} |`);
+  }
+  lines.push("");
+
+  // Shapes come FIRST, above the invariant table, because they qualify it:
+  // an invariant row reading 54/54 passed means nothing if the shape it
+  // covers never occurred. A zero in this table invalidates the table above
+  // it, and the CI job fails on one.
+  lines.push("## Data shapes actually produced (green-on-absent-data guard)");
+  lines.push("");
+  lines.push("| Shape | Occurrences | Scenarios |");
+  lines.push("|---|---|---|");
+  for (const shape of REQUIRED_SHAPES) {
+    const total = results.reduce((a, r) => a + (r.shapes[shape] ?? 0), 0);
+    const scenarios = results.filter((r) => (r.shapes[shape] ?? 0) > 0).length;
+    const flag = total === 0 ? " **ZERO — invariant is green on absent data**" : "";
+    lines.push(`| ${shape} | ${total}${flag} | ${scenarios} |`);
   }
   lines.push("");
 

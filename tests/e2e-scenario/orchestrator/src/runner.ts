@@ -4,7 +4,7 @@
 import { Rng } from "./rng";
 import { HarnessBridge, type ScenarioInfo } from "./bridge";
 import { KdsDriver } from "./kdsDriver";
-import type { ActionLogEntry, InvariantId, InvariantOutcome, ScenarioResult } from "./types";
+import type { ActionLogEntry, InvariantId, InvariantOutcome, ScenarioResult, ShapeId } from "./types";
 import { ALL_INVARIANTS } from "./types";
 
 interface ItemFixture {
@@ -33,6 +33,10 @@ function isIntegerPaise(n: unknown, signed = false): boolean {
 }
 
 interface InvoiceLineLike {
+  order_item_id: string;
+  quantity: number;
+  unit_price_paise: number;
+  discount_paise: number;
   taxable_value_paise: number;
   cgst_paise: number;
   sgst_paise: number;
@@ -44,6 +48,12 @@ interface InvoiceLineLike {
 
 interface InvoiceLike {
   id: string;
+  order_id: string;
+  split_group_id: string | null;
+  split_index: number;
+  split_count: number;
+  subtotal_paise: number;
+  discount_paise: number;
   taxable_value_paise: number;
   cgst_paise: number;
   sgst_paise: number;
@@ -153,7 +163,18 @@ export async function runScenario(
     invariants: freshInvariants(),
     findings: [],
     latencySamples: [],
+    shapes: {},
     crashed: false,
+  };
+
+  /** Records that this scenario genuinely produced `shape`. Called only from
+   * an OBSERVED result — a persisted invoice line whose discount is non-zero,
+   * a split group read back with more than one invoice, a print job fetched
+   * by id — never from having sent the request. That distinction is the
+   * whole point: the previous invariants passed 54/54 while producing none
+   * of these shapes. */
+  const recordShape = (shape: ShapeId) => {
+    result.shapes[shape] = (result.shapes[shape] ?? 0) + 1;
   };
 
   let seq = 0;
@@ -171,21 +192,11 @@ export async function runScenario(
     "'#132-C' cancellation of items already sent to the kitchen is unreachable from the shipped surface. " +
     "Not faked and not added here per track rules; recorded as a finding only.",
   );
-  result.findings.push(
-    "COVERAGE GAP: split-bill invoicing is unreachable from the shipped surface. " +
-    "holler_edge_database::Db::issue_split_invoices_with_outbox exists but " +
-    "apps/pos/src-tauri/src/commands/billing.rs deliberately excludes it from M3's command surface " +
-    "(docs/m3-planning.md) — issue_invoice always bills the whole order at split_count == 1. The " +
-    "'a split bill's parts sum to the whole' money invariant this track was asked to add therefore " +
-    "cannot be exercised end to end; not faked and not added here per track rules.",
-  );
-  result.findings.push(
-    "COVERAGE GAP: a per-line discount is unreachable from the shipped surface. " +
-    "apps/pos/src-tauri/src/commands/billing.rs's build_invoice_lines hard-codes " +
-    "discount_per_unit_paise: 0 for every invoice line — no command surface lets a cashier apply one. " +
-    "The 'discounts' money invariant this track was asked to add therefore cannot be exercised end to " +
-    "end; not faked and not added here per track rules.",
-  );
+  // The split-bill and per-line-discount coverage gaps recorded here for
+  // three tracks are CLOSED: both are now real command surfaces
+  // (issue_split_invoices, issue_invoice's `discounts`), exercised below and
+  // asserted by invariants 11 and 12. Invoice printing likewise, via
+  // printer_role (contracts 0.4.7) and invariant 13.
 
   let orderId: string | null = null;
   let phase: "none" | "draft" | "confirmed" | "sent" = "none";
@@ -697,19 +708,80 @@ export async function runScenario(
    * amount_paise, `reverses_payment_id` set) to exercise the reversal half
    * of invariant 10. */
   async function billOrder(orderIdForInvoice: string): Promise<void> {
+    // ---- discount governance probes (invariant 11) ----
+    // Run BEFORE the real issuance, because each is expected to be REFUSED
+    // and a refusal must leave no invoice behind. The order still has all
+    // its lines afterwards, so the issuance below is unaffected.
+    const lineIds = [...expectedItems.keys()];
+    const targetLineId = rng.pick(lineIds);
+    const targetLine = expectedItems.get(targetLineId) as ExpectedItem;
+    await probeDiscountRefusals(orderIdForInvoice, targetLineId);
+
+    // Roughly half the billable scenarios apply a genuine discount, so both
+    // the discounted and undiscounted issuance paths get exercised across a
+    // run rather than one of them silently never running.
+    const applyDiscount = rng.bool(0.5);
+    const discounts = applyDiscount
+      ? [{
+          order_item_id: targetLineId,
+          discount_definition_id: info.discounts.percent.id,
+          reason: null,
+        }]
+      : [];
+    // What the contract says this discount must come to, computed here
+    // independently of the product: 10% of the line's unit price, half-up,
+    // in integer paise (domain/discount.rs's own formula). If the POS and
+    // this disagree, invariant 11 fails — it is not a restatement of
+    // whatever the product returned.
+    const expectedPerUnitDiscount = applyDiscount
+      ? Math.floor((targetLine.unitPricePaise * info.discounts.percent.value_bps + 5000) / 10000)
+      : 0;
+
+    // ---- split-bill path (invariant 12) ----
+    // Taken when the order has at least two lines to divide, so a real
+    // split_count > 1 occurs rather than always billing whole.
+    if (lineIds.length >= 2 && rng.bool(0.5)) {
+      await billAsSplit(orderIdForInvoice, discounts, targetLineId, expectedPerUnitDiscount);
+      return;
+    }
+
     const invoiceResp = await bridge.request<{ ok: boolean; invoice?: InvoiceLike & { grand_total_paise: number }; error?: any }>({
       op: "issue_invoice",
       order_id: orderIdForInvoice,
       created_by_user_id: info.cashier_user_id,
+      discounts,
     });
-    log({ action: "issue_invoice", ok: invoiceResp.ok, error: invoiceResp.error });
+    log({ action: "issue_invoice", request: { discounted: applyDiscount }, ok: invoiceResp.ok, error: invoiceResp.error });
     if (!invoiceResp.ok || !invoiceResp.invoice) {
       mark(result.invariants, "9_tax_reconciliation", false, `issue_invoice rejected on a CONFIRMED-or-later order with lines: ${JSON.stringify(invoiceResp.error)}`);
       return;
     }
     const invoice = invoiceResp.invoice;
     checkTaxReconciliation(result.invariants, invoice, "issue_invoice");
+    if (invoice.split_count !== 1 || invoice.split_group_id !== null) {
+      mark(result.invariants, "12_split_conservation", false,
+        `a whole-order bill must be split_count=1 with no split_group_id, got count=${invoice.split_count} group=${invoice.split_group_id}`);
+    }
+    checkDiscountApplied(invoice, targetLineId, expectedPerUnitDiscount, "issue_invoice");
+    await printInvoice(invoice.id);
+    await settleInvoice(orderIdForInvoice, invoice);
+  }
 
+  /** Records a payment sequence against one issued invoice and checks
+   * invariant 10 (extracted from `billOrder` so a SPLIT part can be settled
+   * by the same code — a split part is independently payable per ADR-016 §4,
+   * and settling one through a different path would prove nothing about the
+   * one that ships).
+   *
+   * Most runs take a genuine two-tender split (§35 shape: CASH + UPI
+   * covering the exact grand total, mirroring billing_flow.rs's own proven
+   * split-tender case) so "settled payments never exceed the invoice total"
+   * is exercised against >1 payment row. A minority additionally record a
+   * reversal to exercise the reversal half. */
+  async function settleInvoice(
+    orderIdForInvoice: string,
+    invoice: InvoiceLike & { grand_total_paise: number },
+  ): Promise<void> {
     const total = invoice.grand_total_paise;
     const payments: { amount_paise: number; reverses?: boolean }[] = [];
     if (rng.bool(0.7) && total > 1) {
@@ -818,6 +890,304 @@ export async function runScenario(
       if (persistedSum > total) {
         mark(result.invariants, "10_payment_settlement", false, `persisted payment rows sum to ${persistedSum} paise, exceeding invoice total ${total}`);
       }
+    }
+  }
+
+  /** Invariant 11's negative half: a discount the cashier may not apply must
+   * be REFUSED, with the specific code, and must leave no invoice behind.
+   * `requires_reason`/`required_permission` are documented as binding rather
+   * than advisory (domain/discount.rs) — this is what makes that claim
+   * falsifiable. Both probes target a real line on a real order, so a
+   * product that ignored either gate would issue a real, wrongly-discounted
+   * bill and be caught here. */
+  async function probeDiscountRefusals(orderIdForInvoice: string, lineId: string): Promise<void> {
+    const permResp = await bridge.request<{ ok: boolean; invoice?: InvoiceLike; error?: any }>({
+      op: "issue_invoice",
+      order_id: orderIdForInvoice,
+      created_by_user_id: info.cashier_user_id,
+      discounts: [{
+        order_item_id: lineId,
+        discount_definition_id: info.discounts.permission_gated.id,
+        reason: null,
+      }],
+    });
+    log({ action: "issue_invoice(permission-gated discount)", ok: permResp.ok, error: permResp.error });
+    if (permResp.ok) {
+      mark(result.invariants, "11_discount", false,
+        `a discount requiring '${info.discounts.permission_gated.required_permission}' was applied by a cashier who does not hold it — permission gate is advisory, not binding`);
+    } else if (permResp.error?.code !== "DISCOUNT_PERMISSION_DENIED") {
+      mark(result.invariants, "11_discount", false,
+        `permission-gated discount was refused, but with ${permResp.error?.code} rather than DISCOUNT_PERMISSION_DENIED`);
+    } else {
+      recordShape("discount_refused_without_permission");
+      mark(result.invariants, "11_discount", true);
+    }
+
+    const reasonResp = await bridge.request<{ ok: boolean; invoice?: InvoiceLike; error?: any }>({
+      op: "issue_invoice",
+      order_id: orderIdForInvoice,
+      created_by_user_id: info.cashier_user_id,
+      discounts: [{
+        order_item_id: lineId,
+        discount_definition_id: info.discounts.reason_gated.id,
+        reason: null,
+      }],
+    });
+    log({ action: "issue_invoice(reason-gated discount, no reason)", ok: reasonResp.ok, error: reasonResp.error });
+    if (reasonResp.ok) {
+      mark(result.invariants, "11_discount", false,
+        "a discount declared requires_reason was applied with no reason given — reason gate is advisory, not binding");
+    } else if (reasonResp.error?.code !== "DISCOUNT_REASON_REQUIRED") {
+      mark(result.invariants, "11_discount", false,
+        `reason-gated discount was refused, but with ${reasonResp.error?.code} rather than DISCOUNT_REASON_REQUIRED`);
+    } else {
+      recordShape("discount_refused_without_reason");
+      mark(result.invariants, "11_discount", true);
+    }
+
+    // A refused issuance must have written nothing. If either probe above
+    // left an invoice on the order, the rejection was not atomic — a bill
+    // number would have been burned for a bill that was never issued.
+    const after = await bridge.request<{ ok: boolean; invoices?: InvoiceLike[] }>({
+      op: "list_invoices_for_order", order_id: orderIdForInvoice,
+    });
+    if (after.ok && (after.invoices?.length ?? 0) > 0) {
+      mark(result.invariants, "11_discount", false,
+        `a refused discounted issuance left ${after.invoices?.length} invoice(s) on the order — the rejection was not atomic`);
+    }
+  }
+
+  /** Invariant 11's positive half, checked against the PERSISTED invoice
+   * line: the discount actually landed, at the value the contract's own
+   * formula says, and the line's arithmetic still reconciles with it
+   * (`gross - discount == taxable_value`). A zero here when a discount was
+   * requested is the exact "green on absent data" failure this exists to
+   * catch. */
+  function checkDiscountApplied(
+    invoice: InvoiceLike,
+    lineId: string,
+    expectedPerUnit: number,
+    where: string,
+  ): void {
+    for (const line of invoice.lines) {
+      const expectedLineDiscount = line.order_item_id === lineId
+        ? expectedPerUnit * line.quantity
+        : 0;
+      if (line.discount_paise !== expectedLineDiscount) {
+        mark(result.invariants, "11_discount", false,
+          `${where}: line ${line.order_item_id} has discount_paise=${line.discount_paise}, expected ${expectedLineDiscount} (${expectedPerUnit}/unit x ${line.quantity})`);
+        continue;
+      }
+      if (line.gross_paise - line.discount_paise !== line.taxable_value_paise) {
+        mark(result.invariants, "11_discount", false,
+          `${where}: line gross_paise=${line.gross_paise} - discount_paise=${line.discount_paise} != taxable_value_paise=${line.taxable_value_paise}`);
+        continue;
+      }
+      if (expectedLineDiscount > 0) recordShape("discount_applied_nonzero");
+      mark(result.invariants, "11_discount", true);
+    }
+    const sumLineDiscounts = invoice.lines.reduce((a, l) => a + l.discount_paise, 0);
+    if (sumLineDiscounts !== invoice.discount_paise) {
+      mark(result.invariants, "11_discount", false,
+        `${where}: Sline discount_paise=${sumLineDiscounts} but invoice.discount_paise=${invoice.discount_paise}`);
+    }
+  }
+
+  /** Invariant 12: bills the order as N independently-numbered invoices
+   * sharing one split_group_id (ADR-016 §4), and checks the property that
+   * makes a split correct — the parts reconstruct the whole. Every line
+   * quantity across all parts must sum back to the order's own quantity,
+   * exactly, and each part must carry a distinct invoice number.
+   *
+   * Splits by line rather than evenly: part 1 takes the first line, part 2
+   * the rest. That is the shape a real "separate bills" tap produces, and it
+   * keeps conservation checkable without this test re-deriving the edge's
+   * own arithmetic (which is the sole authority per §66). */
+  async function billAsSplit(
+    orderIdForInvoice: string,
+    discounts: unknown[],
+    discountedLineId: string,
+    expectedPerUnitDiscount: number,
+  ): Promise<void> {
+    const items = [...expectedItems.values()];
+    const parts = [
+      { lines: [{ order_item_id: items[0].orderItemId, quantity: items[0].quantity }] },
+      { lines: items.slice(1).map((i) => ({ order_item_id: i.orderItemId, quantity: i.quantity })) },
+    ];
+
+    const resp = await bridge.request<{ ok: boolean; invoices?: (InvoiceLike & { grand_total_paise: number })[]; error?: any }>({
+      op: "issue_split_invoices",
+      order_id: orderIdForInvoice,
+      created_by_user_id: info.cashier_user_id,
+      parts,
+      discounts,
+    });
+    log({ action: "issue_split_invoices", request: { partCount: parts.length }, ok: resp.ok, error: resp.error });
+    if (!resp.ok || !resp.invoices) {
+      mark(result.invariants, "12_split_conservation", false,
+        `a split into ${parts.length} parts that exactly covers the order's lines was rejected: ${JSON.stringify(resp.error)}`);
+      return;
+    }
+
+    const invoices = resp.invoices;
+    if (invoices.length !== parts.length) {
+      mark(result.invariants, "12_split_conservation", false,
+        `requested ${parts.length} parts, got ${invoices.length} invoices`);
+      return;
+    }
+    if (invoices.some((i) => i.split_count !== parts.length)) {
+      mark(result.invariants, "12_split_conservation", false,
+        `every part must carry split_count=${parts.length}, got ${invoices.map((i) => i.split_count).join(",")}`);
+    }
+    const groupIds = new Set(invoices.map((i) => i.split_group_id));
+    if (groupIds.size !== 1 || invoices.some((i) => i.split_group_id === null)) {
+      mark(result.invariants, "12_split_conservation", false,
+        `every part of one split must share one non-null split_group_id, got ${[...groupIds].join(",")}`);
+    }
+    const numbers = new Set(invoices.map((i) => i.invoice_number));
+    if (numbers.size !== invoices.length) {
+      mark(result.invariants, "12_split_conservation", false,
+        `split parts must be independently numbered; ${invoices.length} parts carry ${numbers.size} distinct invoice numbers`);
+    }
+    const indices = [...invoices.map((i) => i.split_index)].sort((a, b) => a - b);
+    if (indices.some((v, idx) => v !== idx + 1)) {
+      mark(result.invariants, "12_split_conservation", false,
+        `split_index must run 1..N over the parts, got ${indices.join(",")}`);
+    }
+
+    // Conservation: the parts reconstruct the order's lines exactly.
+    const billedQtyByItem = new Map<string, number>();
+    for (const inv of invoices) {
+      for (const line of inv.lines) {
+        billedQtyByItem.set(line.order_item_id, (billedQtyByItem.get(line.order_item_id) ?? 0) + line.quantity);
+      }
+    }
+    let conserved = true;
+    for (const item of expectedItems.values()) {
+      const billed = billedQtyByItem.get(item.orderItemId) ?? 0;
+      if (billed !== item.quantity) {
+        conserved = false;
+        mark(result.invariants, "12_split_conservation", false,
+          `order item ${item.orderItemId} has quantity ${item.quantity} but the split billed ${billed} across its parts`);
+      }
+    }
+    for (const [id] of billedQtyByItem) {
+      if (!expectedItems.has(id)) {
+        conserved = false;
+        mark(result.invariants, "12_split_conservation", false, `a split part billed unknown order item ${id}`);
+      }
+    }
+    if (conserved && invoices.length > 1) {
+      recordShape("split_invoice_multi_part");
+      mark(result.invariants, "12_split_conservation", true);
+    }
+
+    // The split group must read back through its own command surface with
+    // every part present — how the POS shows a cashier which parts remain
+    // unpaid.
+    const groupId = invoices[0].split_group_id;
+    if (groupId) {
+      const groupResp = await bridge.request<{ ok: boolean; invoices?: InvoiceLike[] }>({
+        op: "list_invoices_for_split_group", split_group_id: groupId,
+      });
+      if (!groupResp.ok || (groupResp.invoices?.length ?? 0) !== invoices.length) {
+        mark(result.invariants, "12_split_conservation", false,
+          `list_invoices_for_split_group returned ${groupResp.invoices?.length} parts for a ${invoices.length}-part split`);
+      }
+    }
+
+    // Each part is a real GST invoice in its own right, and the discount (if
+    // any) travels with the line into whichever part carries it.
+    for (const inv of invoices) {
+      checkTaxReconciliation(result.invariants, inv, `split part ${inv.split_index}`);
+      checkDiscountApplied(inv, discountedLineId, expectedPerUnitDiscount, `split part ${inv.split_index}`);
+    }
+
+    // Settle and print one part, so the payment and print paths are
+    // exercised against a split bill and not only against a whole one.
+    await settleInvoice(orderIdForInvoice, invoices[0]);
+    await printInvoice(invoices[0].id);
+  }
+
+  /** Invariant 13: the bill actually became a print job. Enqueues through
+   * the real `print_invoice` command (which resolves the outlet's BILL-role
+   * printer via printer_role — contracts 0.4.7), then reads the job back BY
+   * ID from the spool, because a returned id proves only that the command
+   * ran, not that a row exists.
+   *
+   * A job in FAILED is not a failure of this invariant: the harness's
+   * printers are file-backed scratch devices and a render/transport problem
+   * is exactly what `list_failed_print_jobs` exists to surface. What must
+   * never happen is the job not existing, or existing against a printer
+   * that is not the configured bill printer. */
+  async function printInvoice(invoiceId: string): Promise<void> {
+    const resp = await bridge.request<{ ok: boolean; job_ids?: string[]; error?: any }>({
+      op: "print_invoice", invoice_id: invoiceId,
+    });
+    log({ action: "print_invoice", ok: resp.ok, error: resp.error });
+    if (!resp.ok || !resp.job_ids) {
+      mark(result.invariants, "13_invoice_print", false,
+        `print_invoice was rejected for an issued invoice at an outlet with a BILL printer configured: ${JSON.stringify(resp.error)}`);
+      return;
+    }
+    if (resp.job_ids.length === 0) {
+      mark(result.invariants, "13_invoice_print", false,
+        "print_invoice reported success but queued no jobs — an empty spool must never read as a printed bill");
+      return;
+    }
+
+    const jobsResp = await bridge.request<{ ok: boolean; jobs?: { id: string; invoice_id: string | null; kot_id: string | null; printer_id: string; status: string }[] }>({
+      op: "get_print_jobs", job_ids: resp.job_ids,
+    });
+    const jobs = jobsResp.jobs ?? [];
+    if (jobs.length !== resp.job_ids.length) {
+      mark(result.invariants, "13_invoice_print", false,
+        `print_invoice returned ${resp.job_ids.length} job id(s) but only ${jobs.length} exist in the spool`);
+      return;
+    }
+    let ok = true;
+    for (const job of jobs) {
+      if (job.invoice_id !== invoiceId) {
+        ok = false;
+        mark(result.invariants, "13_invoice_print", false,
+          `print job ${job.id} names invoice ${job.invoice_id}, not the invoice printed (${invoiceId})`);
+      }
+      if (job.kot_id !== null) {
+        ok = false;
+        mark(result.invariants, "13_invoice_print", false,
+          `print job ${job.id} carries both an invoice_id and a kot_id`);
+      }
+      if (job.printer_id !== info.printers.bill) {
+        ok = false;
+        mark(result.invariants, "13_invoice_print", false,
+          `bill was queued at printer ${job.printer_id}, which is not the outlet's BILL-role printer (${info.printers.bill})`);
+      }
+      if (!["QUEUED", "PRINTING", "PRINTED", "FAILED"].includes(job.status)) {
+        ok = false;
+        mark(result.invariants, "13_invoice_print", false, `print job ${job.id} has unknown status ${job.status}`);
+      }
+      // The harness's bill printer is a file-backed scratch device that
+      // cannot legitimately fail, so a FAILED job here means the RENDER
+      // broke — the invoice template refusing the invoice it was handed.
+      // That is a real defect, not an environment problem, and the failure
+      // message is worth surfacing rather than tolerating.
+      if (job.status === "FAILED") {
+        ok = false;
+        mark(result.invariants, "13_invoice_print", false,
+          `bill print job ${job.id} reached FAILED against a file-backed scratch printer that cannot fail to accept bytes — the invoice render itself was rejected`);
+      }
+    }
+    if (ok) {
+      recordShape("invoice_print_job_enqueued");
+      // Only counted once the job is otherwise valid — a bill that printed
+      // at the WRONG printer is not evidence the print path works, and
+      // recording it here would let the shape guard stay green through
+      // exactly the defect invariant 13 just caught (found by falsifying
+      // this invariant: `printed` stayed at 8 while `enqueued` went to 0).
+      for (const job of jobs) {
+        if (job.status === "PRINTED") recordShape("invoice_print_job_printed");
+      }
+      mark(result.invariants, "13_invoice_print", true);
     }
   }
 

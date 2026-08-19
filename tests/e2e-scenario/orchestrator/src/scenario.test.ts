@@ -18,7 +18,7 @@
 // single new violation anywhere fails the job.
 import { describe, expect, it } from "vitest";
 import { runSuite } from "./run";
-import { ALL_INVARIANTS } from "./types";
+import { ALL_INVARIANTS, REQUIRED_SHAPES } from "./types";
 
 const CI_SEED = 424242;
 const CI_COUNT = 50;
@@ -60,6 +60,21 @@ describe("e2e-scenario-harness (CI reduced run)", () => {
           );
         }
         expect(failures.length, `invariant ${inv} must pass on every scenario that checked it`).toBe(0);
+      }
+
+      // Green-on-absent-data guard. Every invariant above can pass while its
+      // subject never occurred: invariants 9/10 passed on 54/54 scenarios
+      // for three tracks while every invoice carried a zero discount, every
+      // bill was a single part, and no bill was ever queued to a printer.
+      // A run that produced none of those proved nothing about them, so the
+      // shape counts are asserted as hard as the invariants are.
+      console.log("Shapes produced this run:", summary.shapeCounts);
+      expect(
+        summary.missingShapes,
+        `these data shapes never occurred in the run, so the invariants covering them are green on absent data: ${summary.missingShapes.join(", ")}`,
+      ).toEqual([]);
+      for (const shape of REQUIRED_SHAPES) {
+        expect(summary.shapeCounts[shape], `shape ${shape} must occur at least once`).toBeGreaterThan(0);
       }
     },
   );

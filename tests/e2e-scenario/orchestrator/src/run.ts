@@ -4,7 +4,8 @@ import os from "node:os";
 import { HarnessBridge } from "./bridge";
 import { runScenario, type ScenarioOptions } from "./runner";
 import { writeReport } from "./report";
-import type { ScenarioResult } from "./types";
+import type { ScenarioResult, ShapeId } from "./types";
+import { REQUIRED_SHAPES } from "./types";
 
 // A run report is a scratch artifact, not a tracked file — it used to land
 // at tests/e2e-scenario/REPORT.md (inside the repo, so every run left an
@@ -56,6 +57,31 @@ export interface RunSummary {
   results: ScenarioResult[];
   fatalCount: number;
   reportPath: string;
+  /** How many times the whole run produced each required shape. A zero here
+   * means an invariant "passed" without its subject ever existing. */
+  shapeCounts: Record<ShapeId, number>;
+  /** Shapes with a zero count — the run is not trustworthy while non-empty,
+   * however green the invariants look. */
+  missingShapes: ShapeId[];
+}
+
+/** Sums each scenario's observed shape counts across the run. This is the
+ * guard against the failure mode that motivated the whole billing track: a
+ * money invariant can pass on every scenario while never once seeing a
+ * non-zero discount, a split of more than one part, or a queued bill. Green
+ * on absent data is not green. */
+export function summariseShapes(results: ScenarioResult[]): {
+  shapeCounts: Record<ShapeId, number>;
+  missingShapes: ShapeId[];
+} {
+  const shapeCounts = {} as Record<ShapeId, number>;
+  for (const shape of REQUIRED_SHAPES) {
+    shapeCounts[shape] = results.reduce((a, r) => a + (r.shapes[shape] ?? 0), 0);
+  }
+  return {
+    shapeCounts,
+    missingShapes: REQUIRED_SHAPES.filter((s) => shapeCounts[s] === 0),
+  };
 }
 
 export async function runSuite(seedBase: number, randomizedCount: number, includeNamed = true): Promise<RunSummary> {
@@ -76,5 +102,12 @@ export async function runSuite(seedBase: number, randomizedCount: number, includ
   }
   const outPath = reportPath(seedBase);
   writeReport(outPath, seedBase, results);
-  return { results, fatalCount: results.filter((r) => r.fatalError).length, reportPath: outPath };
+  const { shapeCounts, missingShapes } = summariseShapes(results);
+  return {
+    results,
+    fatalCount: results.filter((r) => r.fatalError).length,
+    reportPath: outPath,
+    shapeCounts,
+    missingShapes,
+  };
 }

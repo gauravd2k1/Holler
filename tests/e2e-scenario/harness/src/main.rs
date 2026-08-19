@@ -37,9 +37,11 @@ use holler_edge_database::crypto::EncryptionKey;
 use holler_edge_database::{model, repo, Db};
 use holler_edge_device::{server, CachedCredentialVerifier, DeviceTokenVerifier};
 use holler_pos_lib::commands::billing::{
-    issue_invoice_impl, list_invoices_for_order_impl, list_payments_for_order_impl,
-    record_payment_impl, LineDiscountInput,
+    issue_invoice_impl, issue_split_invoices_impl, list_discount_definitions_impl,
+    list_invoices_for_order_impl, list_invoices_for_split_group_impl,
+    list_payments_for_order_impl, record_payment_impl, LineDiscountInput, SplitPartInput,
 };
+use holler_pos_lib::commands::kitchen::print_invoice_impl;
 use holler_pos_lib::commands::kitchen::{
     list_kots_for_order_impl, send_order_to_kitchen_impl, transition_kot_status_impl,
 };
@@ -84,6 +86,40 @@ const COMPLIANCE_VERSION_ID: &str = "0191c000-0000-7000-8000-000000000001";
 const TAX_PROFILE_ID: &str = "0191c000-0000-7000-8000-000000000002";
 const FISCAL_PROFILE_ID: &str = "0191c000-0000-7000-8000-000000000003";
 const INVOICE_SERIES_ID: &str = "0191c000-0000-7000-8000-000000000004";
+
+// ---- Harness-minted billing fixtures for the three shapes M3's billing
+// invariants were passing without ever seeing (the "green on absent data"
+// trap): a real per-line discount, a real split bill, and a real invoice
+// print job. Contracts 0.4.6 (discount_definition) and 0.4.7
+// (printer_role). ----
+//
+// Three discount definitions, deliberately covering the accept AND both
+// reject paths of `domain::discount::resolve_line_discount_per_unit_paise`,
+// because "a discount applied" is only half the invariant — a discount that
+// should have been refused and was not is the more expensive bug:
+//   - PCT: 10% off, no permission, no reason. The one that must APPLY, and
+//     the one that puts a non-zero discount_per_unit_paise on a real line.
+//   - PERM: requires `order.void`, which devseed's cashier does NOT have
+//     (its permission set is order.create/order.modify/table.manage) — must
+//     be refused with DISCOUNT_PERMISSION_DENIED.
+//   - REASON: requires_reason — must be refused without one, accepted with.
+const DISCOUNT_PCT_ID: &str = "0191d000-0000-7000-8000-000000000001";
+const DISCOUNT_PERM_ID: &str = "0191d000-0000-7000-8000-000000000002";
+const DISCOUNT_REASON_ID: &str = "0191d000-0000-7000-8000-000000000003";
+/// The permission `DISCOUNT_PERM_ID` demands. Chosen because devseed's
+/// cashier lacks it — the point of the fixture is the refusal.
+const DISCOUNT_REQUIRED_PERMISSION: &str = "order.void";
+
+// A BILL-role printer, and a KITCHEN-role one alongside it. Both exist so
+// the harness proves the bill went to the printer configured for bills
+// rather than "whichever printer happened to be at the outlet" — with only
+// one printer seeded, a resolver that ignored `printer_role` entirely would
+// still pass. `ESCPOS_USB` + a real scratch file path means
+// `transport::build_transport` resolves to the file-backed PathTransport and
+// the render actually executes, rather than a network printer that would
+// simply fail to connect.
+const PRINTER_BILL_ID: &str = "0191d000-0000-7000-8000-000000000010";
+const PRINTER_KITCHEN_ID: &str = "0191d000-0000-7000-8000-000000000011";
 
 // ---- Harness-minted KDS device credential (ADR-017 amendment): edge/device
 // now requires a verifiable device_token as the connection's first frame on
@@ -232,6 +268,39 @@ enum Request {
     ListPaymentsForOrder {
         order_id: String,
     },
+    // ------------------------------ split / discount / print (M3 final) --
+    /// Issues N invoices over one order sharing a `split_group_id`
+    /// (ADR-016 §4). `parts` deserializes `holler_pos_lib`'s own
+    /// `SplitPartInput`, so a change to that shape is a compile error here
+    /// rather than a silently-dropped key — the same discipline
+    /// `IssueInvoice`'s `discounts` follows.
+    IssueSplitInvoices {
+        order_id: String,
+        created_by_user_id: String,
+        parts: Vec<SplitPartInput>,
+        #[serde(default)]
+        discounts: Vec<LineDiscountInput>,
+    },
+    ListInvoicesForSplitGroup {
+        split_group_id: String,
+    },
+    /// Queues an issued invoice at this outlet's BILL-role printer(s) and
+    /// sweeps once — the real `print_invoice` command surface.
+    PrintInvoice {
+        invoice_id: String,
+    },
+    /// The persisted `print_job` rows for one invoice, read back through
+    /// `holler_edge_printer::spool` (never raw SQL). This is what lets the
+    /// orchestrator assert a job actually EXISTS with a status, rather than
+    /// trusting the ids `PrintInvoice` returned.
+    GetPrintJobs {
+        job_ids: Vec<String>,
+    },
+    /// This outlet's discount catalogue, through the real
+    /// `list_discount_definitions` command — so the orchestrator applies
+    /// discounts the outlet genuinely has rather than ids baked into the
+    /// test.
+    ListDiscountDefinitions,
 }
 
 /// One modifier selection submitted alongside a cart line over the bridge —
@@ -503,6 +572,125 @@ fn build_template(root: &Path) -> PathBuf {
     )
     .expect("seed invoice series");
 
+    // ---- discount definitions (contracts 0.4.6): without these the
+    // "a per-line discount is unreachable" coverage gap this harness
+    // recorded for three tracks stays unreachable — issue_invoice now takes
+    // discounts, but a discount can only be applied against a definition
+    // this outlet actually has. See the const block above for why three. ----
+    repo::upsert_discount_definition(
+        conn,
+        &model::DiscountDefinition {
+            id: DISCOUNT_PCT_ID.to_string(),
+            outlet_id: devseed_ids::OUTLET_ID.to_string(),
+            code: "E2E_PCT_10".to_string(),
+            name: "e2e 10% line discount".to_string(),
+            scope: "LINE".to_string(),
+            method: "PERCENT".to_string(),
+            value_bps: Some(1000),
+            value_paise: None,
+            max_discount_paise: None,
+            required_permission: None,
+            requires_reason: false,
+            is_active: true,
+            effective_from: "2020-01-01T00:00:00Z".to_string(),
+            effective_to: None,
+            config_version: 1,
+        },
+    )
+    .expect("seed percent discount definition");
+
+    repo::upsert_discount_definition(
+        conn,
+        &model::DiscountDefinition {
+            id: DISCOUNT_PERM_ID.to_string(),
+            outlet_id: devseed_ids::OUTLET_ID.to_string(),
+            code: "E2E_MANAGER_50".to_string(),
+            name: "e2e 50% manager discount".to_string(),
+            scope: "LINE".to_string(),
+            method: "PERCENT".to_string(),
+            value_bps: Some(5000),
+            value_paise: None,
+            max_discount_paise: None,
+            required_permission: Some(DISCOUNT_REQUIRED_PERMISSION.to_string()),
+            requires_reason: false,
+            is_active: true,
+            effective_from: "2020-01-01T00:00:00Z".to_string(),
+            effective_to: None,
+            config_version: 1,
+        },
+    )
+    .expect("seed permission-gated discount definition");
+
+    repo::upsert_discount_definition(
+        conn,
+        &model::DiscountDefinition {
+            id: DISCOUNT_REASON_ID.to_string(),
+            outlet_id: devseed_ids::OUTLET_ID.to_string(),
+            code: "E2E_SPOILAGE".to_string(),
+            name: "e2e spoilage write-off".to_string(),
+            scope: "LINE".to_string(),
+            method: "AMOUNT".to_string(),
+            value_bps: None,
+            value_paise: Some(500),
+            max_discount_paise: None,
+            required_permission: None,
+            requires_reason: true,
+            is_active: true,
+            effective_from: "2020-01-01T00:00:00Z".to_string(),
+            effective_to: None,
+            config_version: 1,
+        },
+    )
+    .expect("seed reason-gated discount definition");
+
+    // ---- printers and their roles (contracts 0.4.7). The BILL printer is
+    // what makes `print_invoice` reachable at all; the KITCHEN one exists so
+    // that a resolver ignoring printer_role would be caught rather than
+    // accidentally correct. Both are ESCPOS_USB pointed at a real scratch
+    // file, so a sweep renders and dispatches for real through
+    // `transport::PathTransport` — the file is proof the renderer ran, not
+    // merely that a row was enqueued. ----
+    let bill_receipt_path = root.join("bill-printer.out");
+    let kitchen_receipt_path = root.join("kitchen-printer.out");
+    std::fs::write(&bill_receipt_path, b"").expect("create bill printer device file");
+    std::fs::write(&kitchen_receipt_path, b"").expect("create kitchen printer device file");
+
+    for (id, name, path) in [
+        (PRINTER_BILL_ID, "e2e Bill Printer", &bill_receipt_path),
+        (
+            PRINTER_KITCHEN_ID,
+            "e2e Kitchen Printer",
+            &kitchen_receipt_path,
+        ),
+    ] {
+        repo::upsert_printer(
+            conn,
+            &model::Printer {
+                id: id.to_string(),
+                outlet_id: devseed_ids::OUTLET_ID.to_string(),
+                name: name.to_string(),
+                connection_kind: "ESCPOS_USB".to_string(),
+                address: path.to_string_lossy().to_string(),
+                paper_width_mm: 80,
+                is_active: true,
+                config_version: 1,
+            },
+        )
+        .expect("seed printer");
+    }
+
+    repo::replace_printer_roles(conn, PRINTER_BILL_ID, &["BILL".to_string()], 1)
+        .expect("give the bill printer the BILL role");
+    repo::replace_printer_roles(conn, PRINTER_KITCHEN_ID, &["KITCHEN".to_string()], 1)
+        .expect("give the kitchen printer the KITCHEN role");
+    // Route both stations' tickets at the KITCHEN printer, so send-to-kitchen
+    // exercises the KOT print path too rather than logging NoPrinterRouted on
+    // every scenario (which is what it had been doing — no printer existed).
+    for station_id in [devseed_ids::STATION_1_ID, STATION_2_ID] {
+        repo::replace_station_printers(conn, station_id, &[PRINTER_KITCHEN_ID.to_string()], 1)
+            .expect("route station to the kitchen printer");
+    }
+
     // ---- KDS device credential (ADR-017 amendment): edge/device's server
     // now requires a verifiable device_token as the connection's first frame
     // (apps/kds/src/lib/lanConfig.ts) — without this row every KDS
@@ -553,9 +741,34 @@ fn scenario_response(dir_name: &str, port: u16) -> Value {
                     { "id": devseed_ids::MOD_EXTRA_SUGAR_ID, "group_name": "Sugar", "option_name": "Extra Sugar", "price_delta_paise": 500 },
                 ] },
             "single_station_2": { "id": devseed_ids::ITEM_THALI_ID, "unit_price_paise": 22000 },
+
             "multi_station": { "id": ITEM_MULTI_ID, "unit_price_paise": 35000 },
             "no_station": { "id": ITEM_NO_STATION_ID, "unit_price_paise": 1000 },
         },
+        // The three discount definitions, with the properties the
+        // orchestrator needs to predict the CORRECT outcome of applying each
+        // (not merely to name them): `applies` says whether devseed's cashier
+        // can use it at all, so a scenario asserts a refusal where a refusal
+        // is right and an application where that is right.
+        "discounts": {
+            "percent": {
+                "id": DISCOUNT_PCT_ID, "code": "E2E_PCT_10",
+                "method": "PERCENT", "value_bps": 1000,
+                "requires_reason": false, "requires_permission": false, "applies": true,
+            },
+            "permission_gated": {
+                "id": DISCOUNT_PERM_ID, "code": "E2E_MANAGER_50",
+                "method": "PERCENT", "value_bps": 5000,
+                "requires_reason": false, "requires_permission": true, "applies": false,
+                "required_permission": DISCOUNT_REQUIRED_PERMISSION,
+            },
+            "reason_gated": {
+                "id": DISCOUNT_REASON_ID, "code": "E2E_SPOILAGE",
+                "method": "AMOUNT", "value_paise": 500,
+                "requires_reason": true, "requires_permission": false, "applies": true,
+            },
+        },
+        "printers": { "bill": PRINTER_BILL_ID, "kitchen": PRINTER_KITCHEN_ID },
     })
 }
 
@@ -849,6 +1062,68 @@ fn dispatch(h: &mut Harness, req: Request) -> Value {
             let sc = h.scenario.as_ref().expect("scenario active");
             match list_payments_for_order_impl(&sc.state, &order_id) {
                 Ok(payments) => json!({ "ok": true, "payments": payments }),
+                Err(e) => json!({ "ok": false, "error": app_error_to_json(&e) }),
+            }
+        }
+        Request::IssueSplitInvoices {
+            order_id,
+            created_by_user_id,
+            parts,
+            discounts,
+        } => {
+            let sc = h.scenario.as_ref().expect("scenario active");
+            match issue_split_invoices_impl(
+                &sc.state,
+                &order_id,
+                &created_by_user_id,
+                &parts,
+                &discounts,
+            ) {
+                Ok(invoices) => json!({ "ok": true, "invoices": invoices }),
+                Err(e) => json!({ "ok": false, "error": app_error_to_json(&e) }),
+            }
+        }
+        Request::ListInvoicesForSplitGroup { split_group_id } => {
+            let sc = h.scenario.as_ref().expect("scenario active");
+            match list_invoices_for_split_group_impl(&sc.state, &split_group_id) {
+                Ok(invoices) => json!({ "ok": true, "invoices": invoices }),
+                Err(e) => json!({ "ok": false, "error": app_error_to_json(&e) }),
+            }
+        }
+        Request::PrintInvoice { invoice_id } => {
+            let sc = h.scenario.as_ref().expect("scenario active");
+            match print_invoice_impl(&sc.state, &invoice_id) {
+                Ok(job_ids) => json!({ "ok": true, "job_ids": job_ids }),
+                Err(e) => json!({ "ok": false, "error": app_error_to_json(&e) }),
+            }
+        }
+        Request::GetPrintJobs { job_ids } => {
+            let sc = h.scenario.as_ref().expect("scenario active");
+            let db = sc.state.db.lock().unwrap_or_else(|e| e.into_inner());
+            let jobs: Vec<Value> = job_ids
+                .iter()
+                .filter_map(|id| {
+                    holler_edge_printer::spool::get_by_id(db.connection(), id)
+                        .ok()
+                        .flatten()
+                })
+                .map(|j| {
+                    json!({
+                        "id": j.id,
+                        "kot_id": j.kot_id,
+                        "invoice_id": j.invoice_id,
+                        "printer_id": j.printer_id,
+                        "status": j.status.as_db_str(),
+                        "attempt_count": j.attempt_count,
+                    })
+                })
+                .collect();
+            json!({ "ok": true, "jobs": jobs })
+        }
+        Request::ListDiscountDefinitions => {
+            let sc = h.scenario.as_ref().expect("scenario active");
+            match list_discount_definitions_impl(&sc.state) {
+                Ok(defs) => json!({ "ok": true, "definitions": defs }),
                 Err(e) => json!({ "ok": false, "error": app_error_to_json(&e) }),
             }
         }

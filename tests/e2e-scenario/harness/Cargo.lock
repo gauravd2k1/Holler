@@ -893,6 +893,7 @@ dependencies = [
  "base64 0.22.1",
  "holler-edge-database",
  "holler-edge-device",
+ "holler-edge-printer",
  "holler-pos",
  "serde",
  "serde_json",
