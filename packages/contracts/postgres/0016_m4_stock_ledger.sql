@@ -90,6 +90,22 @@ CREATE TABLE stock_ledger_entry (
     -- DEFERRED, landing M5 (ADR-018 §8).
     unit_cost_paise     BIGINT,
 
+    -- EXACTLY-ONE PROVENANCE, keyed on origin. Two nullable provenance groups
+    -- with nothing joining them would let a row claim both a recipe and a
+    -- modifier, or neither while calling itself RECIPE -- and a half-attributed
+    -- deduction is the thing this provenance exists to prevent. Same
+    -- exactly-one discipline as recipe_ingredient's component_kind.
+    CHECK (
+        (origin = 'RECIPE'
+            AND recipe_id IS NOT NULL
+            AND modifier_delta_id IS NULL)
+     OR (origin = 'MODIFIER_DELTA'
+            AND modifier_delta_id IS NOT NULL
+            AND recipe_id IS NULL)
+     OR (origin IN ('MANUAL','COUNT_ADJUSTMENT','WASTAGE')
+            AND recipe_id IS NULL
+            AND modifier_delta_id IS NULL)
+    ),
     -- A duplicate mark would make "not covered by the mark" ambiguous in
     -- exactly the way the date was.
     UNIQUE (outlet_id, entry_seq)

@@ -129,6 +129,16 @@ CREATE TABLE item_unit_conversion (
     numerator           INTEGER NOT NULL CHECK (numerator > 0),
     denominator         INTEGER NOT NULL CHECK (denominator > 0),
     config_version      INTEGER NOT NULL,
+    -- A pack label may NEVER be a unit the frozen dimensional map already
+    -- defines. If an item could define its own kg->g there would be two
+    -- sources of truth for the same conversion and a silent precedence rule
+    -- deciding which wins -- and a silent precedence rule between two
+    -- disagreeing numbers is how a deduction becomes quietly wrong.
+    -- Tier 1 is physics and lives in code; Tier 2 is per-item packaging and
+    -- lives here. The two sets are disjoint by construction.
+    CHECK (lower(pack_unit_label) NOT IN (
+        'mg','g','kg','ml','l','litre','liter','piece','pieces','pc','dozen'
+    )),
     UNIQUE (inventory_item_id, pack_unit_label)
 );
 

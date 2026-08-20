@@ -64,3 +64,16 @@ binary. Run the full suite once, at the end, when you report.
 is un-interruptible and unreviewable — a stuck loop and slow progress look
 identical from outside. Say what you are starting before a long build, suite or
 download, and what it produced when it finishes.
+
+**A guard nobody has watched fail is not a guard.** Any lint, invariant,
+ratchet or symmetry check you write gets falsified before you trust it: break
+it on purpose, watch it fail, and watch it fail *for the stated reason*. This
+is §66 applied to your own tooling, and it is not optional — three guards
+written in one session each failed on their own bugs first, one of them
+flagging a table that made no claim at all. Report the falsification, not just
+the pass.
+
+**A test whose fixtures did not insert is not a passing test.** Assert the rows
+exist before asserting anything about them. A rejected INSERT leaves zero rows,
+every later assertion trivially "passes", and the result is green on absent
+data — the exact failure `REQUIRED_SHAPES` exists to catch.

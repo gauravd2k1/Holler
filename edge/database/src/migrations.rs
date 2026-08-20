@@ -101,6 +101,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0017_m4_stock_snapshot.sql",
         include_str!("../../../packages/contracts/sqlite/0017_m4_stock_snapshot.sql"),
     ),
+    (
+        "0018_immutability_enforcement.sql",
+        include_str!("../../../packages/contracts/sqlite/0018_immutability_enforcement.sql"),
+    ),
 ];
 
 /// Applies any migrations not yet reflected in `PRAGMA user_version`. Safe
@@ -392,39 +396,117 @@ mod tests {
     /// A COMMENT THAT ASSERTS A PROPERTY NOTHING VERIFIES IS WORSE THAN NO
     /// COMMENT, because it stops the next reader from checking. That class is
     /// named in docs/retro.md (2026-08-20).
-    const UNENFORCED_IMMUTABILITY_CLAIMS: &[(&str, &str, &str)] = &[
+    /// Tables described as APPEND-ONLY or IMMUTABLE with no trigger behind the
+    /// claim. A RATCHET: it may shrink and must never grow.
+    ///
+    /// **It is empty, and that is the point.** When this lint was written it
+    /// held three entries -- `audit_event`, `cash_movement` and `invoice` --
+    /// found on the very run that made the lint pass, after it had been
+    /// written for a fourth (`payment`). Filing them behind a stated reason
+    /// was the wrong disposition: an exemption with a reason is still a false
+    /// claim sitting in the schema, and the reason makes it easier to live
+    /// with rather than easier to fix. All four are enforced now
+    /// (sqlite/0009, sqlite/0018, postgres/0018, postgres/0019).
+    ///
+    /// Leave it empty. An entry here is a claim the schema makes and does not
+    /// keep.
+    const UNENFORCED_IMMUTABILITY_CLAIMS: &[(&str, &str, &str)] = &[];
+
+    /// The SQLite `invoice` immutability trigger enumerates columns, because
+    /// SQLite has no whole-row comparison. That enumeration is itself a claim
+    /// that could quietly become false: add a column to `invoice` and it is
+    /// unprotected, silently, with every test still green.
+    ///
+    /// So the enumeration is checked against reality. The PostgreSQL mirror
+    /// uses `to_jsonb(OLD) <> to_jsonb(NEW)` and covers new columns
+    /// automatically, which is why only this side needs the guard.
+    #[test]
+    fn invoice_immutability_trigger_covers_every_column() {
+        let conn = Connection::open_in_memory().expect("open");
+        configure_connection(&conn).expect("pragmas");
+        apply_all(&conn).expect("apply");
+
+        let mut stmt = conn.prepare("PRAGMA table_info(invoice)").unwrap();
+        let columns: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(!columns.is_empty(), "invoice has no columns -- wrong table?");
+
+        let trigger_sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='trigger' \
+                 AND name='invoice_is_immutable_except_cancellation'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("the invoice immutability trigger must exist");
+
+        // What a legal cancellation is allowed to change. The first three are
+        // the cancellation itself; the last three are sync bookkeeping -- a
+        // cancellation IS a new version to replay, so version, sync_status and
+        // updated_at necessarily move with it.
+        //
+        // This list was written with only the first three, and this test is
+        // what caught the omission: `invoice` carries the sync trio, they were
+        // absent from both the trigger and this allow-list, and the guard
+        // refused to accept either answer until one was chosen deliberately.
+        // Nothing else can move -- the trigger still requires
+        // ISSUED -> CANCELLED for ANY update, so these three cannot be bumped
+        // on their own.
+        let mutable = [
+            "status",
+            "cancelled_at",
+            "cancelled_reason",
+            "updated_at",
+            "version",
+            "sync_status",
+        ];
+
+        for column in &columns {
+            if mutable.contains(&column.as_str()) {
+                continue;
+            }
+            assert!(
+                trigger_sql.contains(&format!("NEW.{column} ")),
+                "invoice.{column} is not compared in \
+                 invoice_is_immutable_except_cancellation, so it can be \
+                 changed on a cancellation without the trigger noticing. Add \
+                 `AND NEW.{column} IS OLD.{column}` to \
+                 sqlite/0018_immutability_enforcement.sql. (SQLite cannot \
+                 compare whole rows; the PostgreSQL mirror can, and covers new \
+                 columns automatically.)"
+            );
+        }
+    }
+
+    /// Comments whose APPEND-ONLY / IMMUTABLE wording is about the SYNC
+    /// PROTOCOL rather than the storage engine, each with the reason it is not
+    /// a storage claim.
+    ///
+    /// This list exists because the alternative -- silently skipping any line
+    /// containing "replay" -- is an undeclared escape hatch, and an undeclared
+    /// escape hatch is where the next false claim lives. Someone writes
+    /// "append-only replay" about a table that genuinely should be immutable,
+    /// and the lint waves it through leaving no trace that it did. Declared,
+    /// the same wording fails until a human writes down why it is prose.
+    const PROTOCOL_PROSE_CLAIMS: &[(&str, &str, &str)] = &[
         (
             "sqlite",
-            "audit_event",
-            "0002:63 'Local append-only audit'. An audit log that can be \
-             edited is not an audit log, so this is the most serious of the \
-             three. Not fixed here only because it is outside M4's blast \
-             radius; filed in docs/backlog-m2.md.",
+            "table_session",
+            "0002:40 'replayed edge→cloud append-only' describes how the row              CROSSES the boundary. The row itself is mutated constantly at the              edge (it is live table state) and upserted by version on arrival,              so a trigger here would be wrong, not missing.",
         ),
         (
-            "sqlite",
-            "cash_movement",
-            "0006:392 'Append-only: a correction is another movement'. Same \
-             shape as `payment`, same fix (a BEFORE UPDATE/DELETE trigger), \
-             deliberately not bundled into an inventory milestone.",
+            "postgres",
+            "table_session",
+            "0002:74, the same protocol statement from the cloud side: 'the              cloud never mutates these rows' is about replay authority, not              row immutability.",
         ),
         (
-            "sqlite",
+            "postgres",
             "invoice",
-            "0006:176 'EDGE-AUTHORITATIVE (edge→cloud, append-only)'. This one \
-             may be a wording defect rather than a missing trigger: `invoice` \
-             has an ISSUED->CANCELLED status with cancelled_at, so the row IS \
-             updated by design and the comment means append-only REPLAY, not \
-             an immutable row. Resolve the wording before adding any trigger.",
+            "0007:142 'edge→cloud, replay only, append-only'. The cloud never              originates an invoice edit; the row IS updated on the legal              ISSUED->CANCELLED transition, which postgres/0019 now enforces              precisely rather than blanket-forbidding.",
         ),
-        // postgres.invoice is NOT listed, and the difference from its SQLite
-        // twin is instructive rather than an oversight. postgres/0007:142 says
-        // "edge→cloud, REPLAY only, append-only" and is therefore protocol
-        // prose the lint correctly ignores; sqlite/0006:176 says
-        // "edge→cloud, append-only" with no such qualifier, and reads as a
-        // storage claim. Same intent, two wordings, and only one of them
-        // asserts something about the table. Aligning the wording is the fix,
-        // not adding a trigger.
     ];
 
     /// Every APPEND-ONLY / IMMUTABLE claim must have enforcement behind it, or
@@ -444,6 +526,7 @@ mod tests {
             .join("contracts");
 
         let mut unenforced: Vec<(String, String)> = Vec::new();
+        let mut protocol_prose: Vec<(String, String)> = Vec::new();
 
         for store in ["sqlite", "postgres"] {
             let dir = contracts.join(store);
@@ -451,7 +534,8 @@ mod tests {
             // Collect every table that has an immutability trigger anywhere in
             // the store, and every table claimed immutable in a comment.
             let mut triggered: Vec<String> = Vec::new();
-            let mut claimed: Vec<String> = Vec::new();
+            // (table, was the claim worded as being about REPLAY)
+            let mut claimed: Vec<(String, bool)> = Vec::new();
 
             let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
                 .unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()))
@@ -497,16 +581,17 @@ mod tests {
                         continue;
                     }
                     // A claim about REPLAY is about the sync protocol, not the
-                    // storage engine. "replayed edge→cloud append-only"
-                    // describes how `table_session` crosses the boundary --
-                    // and that row is mutated constantly at the edge and
-                    // upserted by version on arrival, so a trigger would be
-                    // wrong, not missing. The distinction is narrow and load
-                    // bearing: without it this lint demands enforcement of a
-                    // property the system deliberately does not have.
-                    if upper.contains("REPLAY") {
-                        continue;
-                    }
+                    // storage engine -- but that escape hatch is NOT blanket.
+                    //
+                    // A keyword that silently excuses a line is exactly where
+                    // the next false claim would live: someone writes
+                    // "append-only replay" about a table that really should be
+                    // immutable, and this lint waves it through with no record
+                    // that it did. So the exclusion is a DECLARED LIST with a
+                    // stated reason per entry, the same discipline as
+                    // SINGLE_STORE_MIGRATIONS -- and an undeclared use of the
+                    // word fails below rather than being skipped here.
+                    let is_replay_worded = upper.contains("REPLAY");
                     // Attribute to the NEAREST `CREATE TABLE` by line
                     // distance, above or below.
                     //
@@ -540,14 +625,21 @@ mod tests {
                     };
 
                     if let Some(table) = nearest {
-                        claimed.push(table);
+                        claimed.push((table, is_replay_worded));
                     }
                 }
             }
 
             let triggered: Vec<String> = triggered.iter().map(|t| t.to_lowercase()).collect();
 
-            for table in &claimed {
+            for (table, is_replay_worded) in &claimed {
+                if *is_replay_worded {
+                    // Protocol prose, not a storage claim -- but only if it is
+                    // declared as such. Otherwise it is an undeclared escape
+                    // hatch, which is what this branch exists to prevent.
+                    protocol_prose.push((store.to_string(), table.clone()));
+                    continue;
+                }
                 if !triggered.contains(table) {
                     unenforced.push((store.to_string(), table.clone()));
                 }
@@ -556,6 +648,24 @@ mod tests {
 
         unenforced.sort();
         unenforced.dedup();
+        protocol_prose.sort();
+        protocol_prose.dedup();
+
+        for (store, table) in &protocol_prose {
+            assert!(
+                PROTOCOL_PROSE_CLAIMS
+                    .iter()
+                    .any(|(s, t, _)| s == store && t == table),
+                "{store}.{table} carries APPEND-ONLY/IMMUTABLE wording that                  mentions replay, so this lint treated it as protocol prose                  rather than a storage claim -- but it is not declared in                  PROTOCOL_PROSE_CLAIMS. Declare it WITH THE REASON it is not a                  storage claim, or reword it. An undeclared escape hatch is                  where the next false claim will live."
+            );
+        }
+
+        for (store, table, reason) in PROTOCOL_PROSE_CLAIMS {
+            assert!(
+                protocol_prose.iter().any(|(s, t)| s == store && t == table),
+                "PROTOCOL_PROSE_CLAIMS still lists {store}.{table} ({reason}),                  but no such claim is present any more. Remove the stale entry."
+            );
+        }
 
         for (store, table) in &unenforced {
             assert!(

@@ -113,48 +113,50 @@ part 1  taxable 8000   disc 0     CGST 200  SGST 200  round_off 0    total 8400
 part 2  taxable 19800  disc 2200  CGST 495  SGST 495  round_off +10  total 20800
 ```
 
-### CORRECTION (2026-08-20) — the business-day bucketing is wrong in shipped code
+### CORRECTION (2026-08-20) — how M2 and M3 were verified, not four separate bugs
 
-Filed during M4 planning. **This section previously claimed a correctness it does
-not have.**
+**This section previously claimed correctness it did not have.** M4 planning
+found four defects in shipped M2/M3 code. Listing them individually would miss
+the point: at four they stop being a list and become a finding about the
+verification itself.
 
-`business_date_from` (`apps/pos/src-tauri/src/commands/billing.rs:71`) and the
-display-number reset (`edge/database/src/repo.rs`) bucket by **UTC calendar day**.
-In IST the UTC day rolls at **05:30 local**, so for any outlet trading past
-midnight, every invoice number and every day-end / cash-shift reconciliation
-between local midnight and 05:30 is assigned to the **previous** business day.
-CLAUDE.md states the business day may cross midnight; this code assumes it does
-not.
+| Defect | What was claimed | What was true |
+|---|---|---|
+| `business_date_from` | Named "business date", doc-commented "Outlet-local business day" | First ten characters of a **UTC** instant |
+| `payment` (PostgreSQL) | `0007:286` comment: "APPEND-ONLY" | No trigger. SQLite had them since 0.4.5 |
+| `audit_event` | `0002:63` "Local append-only audit" | No trigger, either store |
+| `cash_movement` | `0006:392` "Append-only: a correction is another movement" | No trigger, either store |
 
-It was carried as a "known limitation" in §5 below and in two source comments.
-That framing was wrong — the consequence was never quantified in business units.
-Full write-up in `docs/retro.md`, 2026-08-20.
+**The pattern: structural guarantees written as comments, and implemented on at
+most one side.** Every one of them was *documented correctly and enforced
+nowhere*, which is why every suite stayed green and why several careful readings
+missed them. A comment asserting a property nothing verifies consumes the
+scrutiny that would have found the gap — named as a class in `docs/retro.md`
+(2026-08-20).
 
-Scope of the correction: none of §2's observed flows are invalidated — they ran
-inside a single UTC day — but **M3 must not be recorded as having correct invoice
-numbering or day-end reconciliation** until this closes. The fix is a
-schema-level decision in contracts v0.5.0 (ADR-018 §9.2), in the M4 pre-track.
+What it cost, concretely: in IST the UTC day rolls at **05:30 local**, so any
+outlet trading past midnight has been booking the busiest tail of dinner service
+to the previous business day — invoice numbers and cash-shift reconciliation
+both. And anyone with a psql prompt could edit a payment, an audit row, a cash
+movement, or an invoice total.
 
-### CORRECTION 2 (2026-08-20) — PostgreSQL `payment` was never append-only
+**All four are fixed or decided at contracts 0.5.0**: `outlet.day_start_time`
+plus a pinned `business_date` definition (ADR-018 §9.2), `postgres/0018`,
+`sqlite/0018` and `postgres/0019`. `invoice` gained real enforcement too — every
+column immutable with exactly one legal `ISSUED → CANCELLED` transition — after
+an earlier draft proposed only rewording its comment.
 
-`postgres/0007_m3_billing.sql:286` carried the comment "APPEND-ONLY
-(docs/spec/payments.md §Conflict policy)" and **nothing behind it**. The SQLite
-side got real triggers at 0.4.5; PostgreSQL got the sentence. So the guarantee
-ADR-016 leans on — a tender is corrected by an appended reversal, never a
-mutation — was structural at the edge and prose in the cloud, which is the one
-environment where an engineer has a psql prompt and "just fix the row" is a
-keystroke away.
+**Two lints now hold the ground**, both watched to fail first:
+`every_append_only_claim_has_a_trigger_behind_it` fails the build on any
+APPEND-ONLY/IMMUTABLE claim without enforcement, and
+`invoice_immutability_trigger_covers_every_column` fails if a column is added to
+`invoice` without being covered — it immediately caught three (`version`,
+`sync_status`, `updated_at`) that neither the trigger nor its allow-list named.
 
-Fixed at contracts 0.5.0 (`postgres/0018_payment_append_only_triggers.sql`), and
-a lint (`every_append_only_claim_has_a_trigger_behind_it`) now fails the build
-on any table claimed APPEND-ONLY or IMMUTABLE without enforcement behind it. It
-found two more on its first passing run — `audit_event` and `cash_movement` —
-both filed in `docs/backlog-m2.md`.
-
-**This is the second M3 defect found during M4 planning.** Fixing it does not
-retire the fact that M3 was reported complete while carrying both this and the
-UTC business-date bucketing. Both stayed invisible for the same reason, now
-named in `docs/retro.md` (2026-08-20): a claim that nothing verifies.
+Scope: none of §2's observed flows are invalidated — they ran inside a single
+UTC day and did not edit history. But **M3 must not be recorded as having
+correct invoice numbering, day-end reconciliation, or tamper-evident financial
+records** until these land in a release.
 
 ### What this did NOT cover — do not overstate it
 
