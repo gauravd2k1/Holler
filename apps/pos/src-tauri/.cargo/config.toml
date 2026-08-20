@@ -1,0 +1,20 @@
+# ADR-013: outlet machines are bare Windows 10 with no internet guaranteed at
+# install time, and Tauri's bundler config has no knob to embed the VC++
+# runtime the way it does for WebView2 (`bundle.windows.webviewInstallMode`).
+# The equivalent fix for the VC++ runtime is to not depend on it at all:
+# statically link the MSVC C/C++ runtime into the binary itself, so the
+# installer never needs `vcruntime140.dll`/`msvcp140.dll` to already be on
+# the machine or to fetch them.
+#
+# `cc` (used by `rusqlite`'s bundled sqlite3.c, and any other C dependency in
+# this workspace) reads `CARGO_CFG_TARGET_FEATURE` and switches from `/MD` to
+# `/MT` automatically when `crt-static` is set, so this stays consistent
+# across every crate in the build rather than only the top-level Rust code.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.i686-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
