@@ -378,6 +378,214 @@ mod tests {
         );
     }
 
+    /// Tables described as APPEND-ONLY or IMMUTABLE in a contract migration
+    /// with NO trigger enforcing it. A RATCHET: this list may shrink and must
+    /// never grow.
+    ///
+    /// WHY THIS LINT EXISTS. `postgres/0007_m3_billing.sql:286` said
+    /// "APPEND-ONLY" about `payment` and had nothing behind it for two
+    /// contract versions, while SQLite had real triggers — the guarantee was
+    /// structural where nobody has a console and prose where an engineer has a
+    /// psql prompt. Writing this lint immediately found two more of the same
+    /// shape, which is the argument for a guard over one more fix.
+    ///
+    /// A COMMENT THAT ASSERTS A PROPERTY NOTHING VERIFIES IS WORSE THAN NO
+    /// COMMENT, because it stops the next reader from checking. That class is
+    /// named in docs/retro.md (2026-08-20).
+    const UNENFORCED_IMMUTABILITY_CLAIMS: &[(&str, &str, &str)] = &[
+        (
+            "sqlite",
+            "audit_event",
+            "0002:63 'Local append-only audit'. An audit log that can be \
+             edited is not an audit log, so this is the most serious of the \
+             three. Not fixed here only because it is outside M4's blast \
+             radius; filed in docs/backlog-m2.md.",
+        ),
+        (
+            "sqlite",
+            "cash_movement",
+            "0006:392 'Append-only: a correction is another movement'. Same \
+             shape as `payment`, same fix (a BEFORE UPDATE/DELETE trigger), \
+             deliberately not bundled into an inventory milestone.",
+        ),
+        (
+            "sqlite",
+            "invoice",
+            "0006:176 'EDGE-AUTHORITATIVE (edge→cloud, append-only)'. This one \
+             may be a wording defect rather than a missing trigger: `invoice` \
+             has an ISSUED->CANCELLED status with cancelled_at, so the row IS \
+             updated by design and the comment means append-only REPLAY, not \
+             an immutable row. Resolve the wording before adding any trigger.",
+        ),
+        // postgres.invoice is NOT listed, and the difference from its SQLite
+        // twin is instructive rather than an oversight. postgres/0007:142 says
+        // "edge→cloud, REPLAY only, append-only" and is therefore protocol
+        // prose the lint correctly ignores; sqlite/0006:176 says
+        // "edge→cloud, append-only" with no such qualifier, and reads as a
+        // storage claim. Same intent, two wordings, and only one of them
+        // asserts something about the table. Aligning the wording is the fix,
+        // not adding a trigger.
+    ];
+
+    /// Every APPEND-ONLY / IMMUTABLE claim must have enforcement behind it, or
+    /// be declared above as a known gap with a reason.
+    ///
+    /// Deliberately narrow about what counts as a claim: prose describing
+    /// REPLAY semantics ("replayed edge→cloud append-only", about
+    /// `table_session`, which is mutated constantly) is a statement about the
+    /// sync protocol, not about the storage engine. Only a claim attached to a
+    /// table definition in the same file is treated as a storage claim.
+    #[test]
+    fn every_append_only_claim_has_a_trigger_behind_it() {
+        let contracts = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("packages")
+            .join("contracts");
+
+        let mut unenforced: Vec<(String, String)> = Vec::new();
+
+        for store in ["sqlite", "postgres"] {
+            let dir = contracts.join(store);
+
+            // Collect every table that has an immutability trigger anywhere in
+            // the store, and every table claimed immutable in a comment.
+            let mut triggered: Vec<String> = Vec::new();
+            let mut claimed: Vec<String> = Vec::new();
+
+            let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+                .unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()))
+                .map(|e| e.expect("readable directory entry").path())
+                .filter(|p| {
+                    p.extension()
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("sql"))
+                })
+                .collect();
+            files.sort();
+
+            assert!(!files.is_empty(), "no .sql files found in {}", dir.display());
+
+            for path in &files {
+                let sql = std::fs::read_to_string(path).expect("readable migration");
+
+                // Trigger targets: "... ON <table>" inside a CREATE TRIGGER.
+                for line in sql.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.starts_with("--") {
+                        continue;
+                    }
+                    let upper = trimmed.to_uppercase();
+                    if upper.contains("UPDATE") || upper.contains("DELETE") {
+                        if let Some(idx) = upper.find(" ON ") {
+                            if let Some(table) = trimmed[idx + 4..].split_whitespace().next() {
+                                triggered.push(table.trim_matches('"').to_string());
+                            }
+                        }
+                    }
+                }
+
+                // Claims: a comment naming append-only/immutable, attributed to
+                // the table defined nearest below it in the same file.
+                let lines: Vec<&str> = sql.lines().collect();
+                for (i, line) in lines.iter().enumerate() {
+                    let trimmed = line.trim();
+                    if !trimmed.starts_with("--") {
+                        continue;
+                    }
+                    let upper = trimmed.to_uppercase();
+                    if !(upper.contains("APPEND-ONLY") || upper.contains("IMMUTABLE")) {
+                        continue;
+                    }
+                    // A claim about REPLAY is about the sync protocol, not the
+                    // storage engine. "replayed edge→cloud append-only"
+                    // describes how `table_session` crosses the boundary --
+                    // and that row is mutated constantly at the edge and
+                    // upserted by version on arrival, so a trigger would be
+                    // wrong, not missing. The distinction is narrow and load
+                    // bearing: without it this lint demands enforcement of a
+                    // property the system deliberately does not have.
+                    if upper.contains("REPLAY") {
+                        continue;
+                    }
+                    // Attribute to the NEAREST `CREATE TABLE` by line
+                    // distance, above or below.
+                    //
+                    // Not "the next one below", which is what this test did
+                    // when first written -- and it promptly mis-attributed
+                    // PostgreSQL's trigger comments, which sit AFTER their
+                    // table (plpgsql needs the table to exist first), to
+                    // whichever table happened to be defined next. The guard
+                    // failed on its own bug rather than on a schema defect,
+                    // which is the whole argument for falsifying guards too.
+                    let table_at = |idx: usize| -> Option<String> {
+                        let lt = lines[idx].trim();
+                        if lt.starts_with("--") {
+                            return None;
+                        }
+                        lt.to_uppercase()
+                            .strip_prefix("CREATE TABLE ")
+                            .and_then(|rest| rest.split_whitespace().next().map(str::to_string))
+                            .map(|name| name.trim_matches('"').to_lowercase())
+                    };
+
+                    let below = (i..lines.len()).find_map(|j| table_at(j).map(|t| (j - i, t)));
+                    let above = (0..=i).rev().find_map(|j| table_at(j).map(|t| (i - j, t)));
+
+                    let nearest = match (above, below) {
+                        (Some((da, ta)), Some((db, tb))) => {
+                            Some(if da <= db { ta } else { tb })
+                        }
+                        (Some((_, t)), None) | (None, Some((_, t))) => Some(t),
+                        (None, None) => None, // file-level remark, no table
+                    };
+
+                    if let Some(table) = nearest {
+                        claimed.push(table);
+                    }
+                }
+            }
+
+            let triggered: Vec<String> = triggered.iter().map(|t| t.to_lowercase()).collect();
+
+            for table in &claimed {
+                if !triggered.contains(table) {
+                    unenforced.push((store.to_string(), table.clone()));
+                }
+            }
+        }
+
+        unenforced.sort();
+        unenforced.dedup();
+
+        for (store, table) in &unenforced {
+            assert!(
+                UNENFORCED_IMMUTABILITY_CLAIMS
+                    .iter()
+                    .any(|(s, t, _)| s == store && t == table),
+                "{store}.{table} is described as APPEND-ONLY or IMMUTABLE in a \
+                 contract migration, with no trigger enforcing it. Either add \
+                 the trigger, fix the wording, or declare it in \
+                 UNENFORCED_IMMUTABILITY_CLAIMS with the reason. A comment \
+                 asserting a property nothing verifies is worse than no \
+                 comment: it stops the next reader from checking."
+            );
+        }
+
+        // The other direction: a declared gap that has since been closed must
+        // be removed from the list, so the list never drifts into fiction --
+        // the same ratchet discipline as the gen_random_uuid baseline.
+        for (store, table, reason) in UNENFORCED_IMMUTABILITY_CLAIMS {
+            assert!(
+                unenforced
+                    .iter()
+                    .any(|(s, t)| s == store && t == table),
+                "UNENFORCED_IMMUTABILITY_CLAIMS still lists {store}.{table} \
+                 ({reason}), but it is now enforced or no longer claimed. \
+                 Remove the entry so the list keeps meaning what it says."
+            );
+        }
+    }
+
     /// Known `DEFAULT gen_random_uuid()` columns in the PostgreSQL contracts,
     /// all of them in `0001_init.sql`. A RATCHET: this number may go DOWN and
     /// must never go up.
@@ -480,15 +688,11 @@ mod tests {
              own device_credential lives in postgres/device_enrollment.sql; \
              this is the cache, and caching is an edge concern.",
         ),
-        (
-            "sqlite",
-            "payment_append_only_triggers.sql",
-            "ADR-016 0.4.5: append-only enforcement for `payment`. NOTE: the \
-             PostgreSQL `payment` table carries only a COMMENT saying \
-             append-only, with no trigger behind it — so this asymmetry is \
-             half deliberate and half a gap, and the gap is filed in \
-             docs/backlog-m2.md rather than hidden here.",
-        ),
+        // `payment_append_only_triggers.sql` was listed here as SQLite-only.
+        // It was never a deliberate asymmetry — it was a gap wearing one, and
+        // declaring it is what made that visible. postgres/0018 now mirrors
+        // it, so the entry is gone and this guard is what would fail if the
+        // mirror were ever removed again.
         (
             "sqlite",
             "print_job_invoice_ref.sql",

@@ -62,6 +62,30 @@ CREATE TABLE stock_ledger_entry (
     id                  TEXT PRIMARY KEY,       -- UUIDv7, app-generated (§74)
     outlet_id           TEXT NOT NULL REFERENCES outlet(id),
 
+    -- THE HIGH-WATER MARK. A per-outlet monotonic counter assigned by the edge
+    -- at insert, in the same transaction — the invoice_sequence pattern, and
+    -- edge-local for the same reason.
+    --
+    -- WHY A COUNTER AND NOT JUST business_date. A snapshot seals a day. If the
+    -- delta query were "business_date > snapshot.business_date", an entry that
+    -- ARRIVES after its day is sealed while CARRYING that day's business_date
+    -- would be excluded from the snapshot (it did not exist at seal time) AND
+    -- from the delta (its date is too old). It would vanish from the derived
+    -- balance permanently, with no error — and a seal is never UPDATEd, so
+    -- nothing would ever put it back.
+    --
+    -- That is not hypothetical. A count started 23:40 and completed 00:15
+    -- posts COUNT_ADJUSTMENT entries dated to the earlier business day.
+    -- Cloud-side re-derivation over a replayed ledger arrives in replay order,
+    -- not business-date order. Any adjustment carrying an explicit business
+    -- date does the same.
+    --
+    -- So the delta selects everything NOT COVERED BY THE MARK
+    -- (entry_seq > through_entry_seq), never everything after the date. A late
+    -- arrival gets a mark above the seal, so it self-heals into the very next
+    -- read instead of disappearing.
+    entry_seq           INTEGER NOT NULL,
+
     -- Snapshotted, NO FK. See the header above.
     inventory_item_id   TEXT NOT NULL,
     inventory_item_name TEXT NOT NULL,
@@ -115,11 +139,25 @@ CREATE TABLE stock_ledger_entry (
 
     created_by_user_id  TEXT,
 
+    -- Modifier provenance, and it carries the same weight as the recipe
+    -- provenance above. A row deducted from a modifier_ingredient_delta is
+    -- explained by NONE of recipe_id/version/name — so without these three,
+    -- "extra paneer took 50g" becomes unauditable the moment somebody edits
+    -- the delta. Identical hole to the recipe one, one table over.
+    -- Nullable and no FK, exactly like the recipe fields.
+    modifier_delta_id       TEXT,
+    modifier_name           TEXT,   -- 'Spice: Hot', 'Extra Paneer' — as shown to the cashier
+    modifier_delta_version  INTEGER,-- the delta row's config_version when applied
+
     -- DEFERRED, landing M5 (ADR-018 §8). NULL in M4, pinned by exact
     -- assertion. Cost lives HERE and not on inventory_item because a weighted
     -- average is derived from edge-recorded purchases: on the cloud-owned
     -- config row it would be a split-authority column.
-    unit_cost_paise     INTEGER
+    unit_cost_paise     INTEGER,
+
+    -- The mark is per outlet and gapless-monotonic; a duplicate would make
+    -- "not covered by the mark" ambiguous in exactly the way the date was.
+    UNIQUE (outlet_id, entry_seq)
 );
 
 -- The read pattern the snapshot depends on: everything for one item since a

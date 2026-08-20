@@ -81,6 +81,8 @@ An earlier draft of this ADR used mg / ml / milli-piece and accepted a 1 ml prec
 
 **Tier 1 — dimensional, global, frozen in code.** kg→g→mg, l→ml, dozen→piece. These are physical constants, not configuration. They ship as a constant map in `packages/contracts`, not as a table: no config write path, no sync, no drift, nothing to get wrong per tenant.
 
+**Cross-dimension conversion is Tier 2, always.** Oil is bought in kg and cooked in ml, and density varies per ingredient, so g↔ml is **not** a physical constant and has no place in Tier 1. A single global g→ml factor would be a wrong number for every ingredient it touched. `item_unit_conversion.source_dimension` records which dimension a label is measured in, and it need not be the item's own.
+
 **Tier 2 — pack conversions, item-scoped.** `item_unit_conversion { inventory_item_id, pack_unit_label, numerator, denominator }`, a child row of `inventory_item`. "1 packet paneer = 200 g" is a property of *that* paneer, not of packets. Two outlets, or two suppliers, may disagree; a global packet size would be wrong for one of them.
 
 Both tiers are `numerator`/`denominator` **integer** pairs. A conversion is a rational multiplication, never a decimal factor.
@@ -103,7 +105,9 @@ Rounding once at the leaf, rather than at each level of the sub-recipe tree, is 
 
 `stock_ledger_entry` stores **the quantity actually applied** as the authoritative value, and snapshots enough context to be read without any other table:
 
+- `entry_seq` — the **high-water mark**: a per-outlet monotonic counter assigned by the edge at insert, `UNIQUE (outlet_id, entry_seq)`. A stock read selects entries **not covered by the mark**, never entries after a date. See §9.
 - `inventory_item_id` + `inventory_item_name` + `dimension` (MASS | VOLUME | COUNT) — snapshotted, **no FK**
+- `modifier_delta_id` + `modifier_name` + `modifier_delta_version` — modifier provenance, carrying the same weight as the recipe provenance. A row deducted from a `modifier_ingredient_delta` is explained by none of the recipe fields, so without these "extra paneer took 50g" becomes unauditable the moment the delta is edited — the identical hole, one table over.
 - `recipe_id` + `recipe_version` + `recipe_name` — provenance, **no FK**
 - `source_order_id` + `source_order_item_id` — provenance, **no FK**
 - `origin` — `RECIPE` | `MODIFIER_DELTA` | `MANUAL` | `COUNT_ADJUSTMENT` | `WASTAGE`
@@ -136,6 +140,8 @@ Sub-recipes resolve **transitively at deduction time**. A semi-finished item is 
 | `yield_factor_ppm` | `recipe_ingredient`, `inventory_item` | M5 |
 | `unit_cost_paise` | `stock_ledger_entry` | M5 |
 
+`yield_factor_ppm` is **inert**, not merely unused: `NOT NULL DEFAULT 1000000` — the identity, 100% — nothing reads it, and the round-trip test pins it to exactly that. A yield silently applied in M4 would change every deduction in the product while looking like an ordinary data-entry field, which is the worst way for a number to become wrong.
+
 They are written as a fixed placeholder in M4 and pinned by **exact assertion** in the round-trip tests — the synthesized-canonical-field precedent at `edge/database/src/lib.rs:4026`, where a deferred field's placeholder is asserted equal to its exact value so that the day it starts carrying data, the test fails and says so.
 
 Cost belongs on the ledger entry rather than on `inventory_item` for the §1 reason: a weighted average cost is derived from edge-recorded purchases, so on the config row it would be a split-authority column.
@@ -146,7 +152,16 @@ This is a volume decision, not a tidiness one. Adding a column to a 5M-row SQLit
 
 `stock_balance_snapshot { outlet_id, inventory_item_id, business_date, closing_quantity_micro, dimension, last_entry_id, sealed_at }`, primary key `(outlet_id, inventory_item_id, business_date)` — three NOT NULL columns.
 
-Current stock = **latest sealed snapshot + entries since**. A stock read is therefore bounded to one business day's entries forever, regardless of how large the ledger grows.
+Current stock = **latest sealed snapshot + entries not covered by its mark**:
+
+```
+closing_quantity_micro
++ SUM(quantity_applied_micro) WHERE entry_seq > through_entry_seq
+```
+
+**Not `business_date > business_date`.** An entry that arrives after its day is sealed while carrying that day's business date would be absent from the seal (it did not exist yet) and excluded by a date predicate (too old) — vanishing from the balance permanently and silently, since a seal is never UPDATEd. A count started 23:40 and completed 00:15, cloud-side re-derivation in replay order, and any back-dated adjustment each produce exactly that row. Selecting by the mark makes a late arrival self-heal into the very next read.
+
+Falsified rather than argued: with a real late arrival, the date predicate reports 8000000 while the ledger truth and the mark predicate both report 7500000. A stock read is therefore bounded to one business day's entries forever, regardless of how large the ledger grows.
 
 **There is no materialized current-stock table.** An earlier draft proposed one; the snapshot makes it redundant, and removing it removes an entire class of projection-drift defect. Current stock is a bounded query, not a row someone must remember to update.
 

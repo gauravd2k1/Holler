@@ -72,13 +72,19 @@ CREATE TABLE inventory_item (
     storage_location    TEXT,
     is_active           INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
 
-    -- DEFERRED, landing M5 (ADR-018 §8). Written as NULL in M4 and pinned by
-    -- exact assertion in the round-trip tests, the synthesized-canonical-field
-    -- precedent (edge/database/src/lib.rs:4026). It lands NOW because adding a
-    -- column to a multi-million-row table on a spinning disk, at an outlet,
-    -- during an upgrade, is not an operation this product should ever perform.
+    -- DEFERRED, landing M5 (ADR-018 §8), and INERT until then.
+    --
+    -- The default is the IDENTITY -- 1_000_000 ppm = 100% -- nothing reads it,
+    -- and a round-trip test pins it to exactly that value. A yield quietly
+    -- applied in M4 would change every deduction in the product while looking
+    -- like an ordinary data-entry field, which is the worst way for a number
+    -- to become wrong. It is inert on purpose, not merely unused.
+    --
+    -- It lands NOW because adding a column to a multi-million-row table on a
+    -- spinning disk, at an outlet, during an upgrade, is not an operation this
+    -- product should ever have to perform.
     -- ppm: parts per million, so 92.5% is 925000. Integer, like everything else.
-    yield_factor_ppm    INTEGER,
+    yield_factor_ppm    INTEGER NOT NULL DEFAULT 1000000 CHECK (yield_factor_ppm > 0),
 
     config_version      INTEGER NOT NULL,
 
@@ -108,6 +114,18 @@ CREATE TABLE item_unit_conversion (
     id                  TEXT PRIMARY KEY,       -- UUIDv7, app-generated
     inventory_item_id   TEXT NOT NULL REFERENCES inventory_item(id),
     pack_unit_label     TEXT NOT NULL,          -- 'packet', 'sack', 'crate', 'bottle'
+
+    -- The dimension the label is measured IN, which need NOT be the item's own.
+    --
+    -- CROSS-DIMENSION CONVERSION IS ITEM-SCOPED, ALWAYS. Oil is bought in kg
+    -- and cooked in ml. Density varies per ingredient, so g<->ml is NOT a
+    -- physical constant and has no place in the frozen map: a single global
+    -- g->ml factor would be a wrong number for every ingredient it touched.
+    -- The frozen map holds WITHIN-dimension conversions only (kg->g, l->ml,
+    -- dozen->piece); anything crossing dimensions is a property of the
+    -- substance and lives here, per item.
+    source_dimension    TEXT NOT NULL CHECK (source_dimension IN ('MASS','VOLUME','COUNT')),
+
     numerator           INTEGER NOT NULL CHECK (numerator > 0),
     denominator         INTEGER NOT NULL CHECK (denominator > 0),
     config_version      INTEGER NOT NULL,
@@ -221,8 +239,9 @@ CREATE TABLE recipe_ingredient (
     -- they live in modifier_ingredient_delta below.
     quantity_micro      INTEGER NOT NULL CHECK (quantity_micro > 0),
 
-    -- DEFERRED, landing M5 (ADR-018 §8). See inventory_item.yield_factor_ppm.
-    yield_factor_ppm    INTEGER,
+    -- DEFERRED, landing M5 (ADR-018 §8), and INERT: identity default, nothing
+    -- reads it, pinned by exact assertion. See inventory_item.yield_factor_ppm.
+    yield_factor_ppm    INTEGER NOT NULL DEFAULT 1000000 CHECK (yield_factor_ppm > 0),
 
     sort_order          INTEGER NOT NULL DEFAULT 0,
     config_version      INTEGER NOT NULL,

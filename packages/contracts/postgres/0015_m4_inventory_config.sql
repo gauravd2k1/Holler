@@ -47,8 +47,11 @@ CREATE TABLE inventory_item (
     par_level_micro     BIGINT,
     storage_location    TEXT,
     is_active           BOOLEAN NOT NULL DEFAULT TRUE,
-    -- DEFERRED, landing M5 (ADR-018 §8). NULL in M4, pinned by exact assertion.
-    yield_factor_ppm    INTEGER,
+    -- DEFERRED, landing M5 (ADR-018 §8). INERT in M4: the default is the
+    -- identity (1_000_000 ppm = 100%), nothing reads it, and a round-trip test
+    -- pins it to exactly that. A yield silently applied in M4 would change
+    -- every deduction while looking like a data-entry field.
+    yield_factor_ppm    INTEGER NOT NULL DEFAULT 1000000 CHECK (yield_factor_ppm > 0),
     config_version      INTEGER NOT NULL,
     -- Tenant-scoped, never global.
     UNIQUE (outlet_id, sku)
@@ -60,6 +63,13 @@ CREATE TABLE item_unit_conversion (
     id                  UUID PRIMARY KEY,
     inventory_item_id   UUID NOT NULL REFERENCES inventory_item(id),
     pack_unit_label     TEXT NOT NULL,
+    -- The dimension the label is measured IN, which need not be the item's own.
+    -- CROSS-DIMENSION CONVERSION IS ITEM-SCOPED, ALWAYS: oil is bought in kg
+    -- and cooked in ml, and density varies per ingredient, so g<->ml is not a
+    -- physical constant. The frozen constant map holds WITHIN-dimension
+    -- conversions only. A single global g->ml entry would be a wrong number
+    -- for every ingredient it touched.
+    source_dimension    TEXT NOT NULL CHECK (source_dimension IN ('MASS','VOLUME','COUNT')),
     numerator           BIGINT NOT NULL CHECK (numerator > 0),
     denominator         BIGINT NOT NULL CHECK (denominator > 0),
     config_version      INTEGER NOT NULL,
@@ -85,8 +95,8 @@ CREATE TABLE recipe_ingredient (
     inventory_item_id   UUID REFERENCES inventory_item(id),
     sub_recipe_id       UUID REFERENCES recipe(id),
     quantity_micro      BIGINT NOT NULL CHECK (quantity_micro > 0),
-    -- DEFERRED, landing M5.
-    yield_factor_ppm    INTEGER,
+    -- DEFERRED, landing M5. INERT: identity default, nothing reads it.
+    yield_factor_ppm    INTEGER NOT NULL DEFAULT 1000000 CHECK (yield_factor_ppm > 0),
     sort_order          INTEGER NOT NULL DEFAULT 0,
     config_version      INTEGER NOT NULL,
     -- Exactly one component reference; both-set and neither-set equally wrong.

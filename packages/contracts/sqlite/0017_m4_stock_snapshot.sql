@@ -83,9 +83,27 @@ CREATE TABLE stock_balance_snapshot (
     closing_quantity_micro  INTEGER NOT NULL,   -- signed; may be negative (Rule 1)
     dimension               TEXT NOT NULL CHECK (dimension IN ('MASS','VOLUME','COUNT')),
 
-    -- The last ledger entry included in this seal. Makes the seal auditable
-    -- after the fact and gives the catch-up path an unambiguous resume point.
-    last_entry_id           TEXT,
+    -- THE HIGH-WATER MARK, and the reason a stock read is correct rather than
+    -- merely fast. The read is:
+    --
+    --     closing_quantity_micro
+    --   + SUM(quantity_applied_micro) FROM stock_ledger_entry
+    --     WHERE outlet_id = ? AND inventory_item_id = ?
+    --       AND entry_seq > through_entry_seq
+    --
+    -- NOT "AND business_date > business_date". An entry that arrives after its
+    -- day is sealed but carries that day's business_date is absent from the
+    -- seal (it did not exist yet) and would be excluded by a date predicate
+    -- (too old) — vanishing from the balance permanently and silently, since
+    -- a seal is never UPDATEd. A count spanning midnight, cloud-side
+    -- re-derivation in replay order, and any back-dated adjustment all produce
+    -- exactly that row.
+    --
+    -- Selecting by "not covered by the mark" makes a late arrival self-heal
+    -- into the next read rather than disappear. This replaces the last_entry_id
+    -- an earlier draft carried: an id identifies the last row seen but does not
+    -- order it against a row that arrives later.
+    through_entry_seq       INTEGER NOT NULL,
 
     sealed_at               TEXT NOT NULL,      -- ISO8601 UTC
 

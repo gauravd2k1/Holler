@@ -135,6 +135,27 @@ inside a single UTC day — but **M3 must not be recorded as having correct invo
 numbering or day-end reconciliation** until this closes. The fix is a
 schema-level decision in contracts v0.5.0 (ADR-018 §9.2), in the M4 pre-track.
 
+### CORRECTION 2 (2026-08-20) — PostgreSQL `payment` was never append-only
+
+`postgres/0007_m3_billing.sql:286` carried the comment "APPEND-ONLY
+(docs/spec/payments.md §Conflict policy)" and **nothing behind it**. The SQLite
+side got real triggers at 0.4.5; PostgreSQL got the sentence. So the guarantee
+ADR-016 leans on — a tender is corrected by an appended reversal, never a
+mutation — was structural at the edge and prose in the cloud, which is the one
+environment where an engineer has a psql prompt and "just fix the row" is a
+keystroke away.
+
+Fixed at contracts 0.5.0 (`postgres/0018_payment_append_only_triggers.sql`), and
+a lint (`every_append_only_claim_has_a_trigger_behind_it`) now fails the build
+on any table claimed APPEND-ONLY or IMMUTABLE without enforcement behind it. It
+found two more on its first passing run — `audit_event` and `cash_movement` —
+both filed in `docs/backlog-m2.md`.
+
+**This is the second M3 defect found during M4 planning.** Fixing it does not
+retire the fact that M3 was reported complete while carrying both this and the
+UTC business-date bucketing. Both stayed invisible for the same reason, now
+named in `docs/retro.md` (2026-08-20): a claim that nothing verifies.
+
 ### What this did NOT cover — do not overstate it
 
 - **The manual GUI runbook was written but NOT executed.** A 10-step tickable

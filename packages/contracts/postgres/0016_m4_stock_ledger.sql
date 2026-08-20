@@ -27,6 +27,16 @@ CREATE TABLE stock_ledger_entry (
     id                  UUID PRIMARY KEY,
     outlet_id           UUID NOT NULL REFERENCES outlet(id),
 
+    -- THE HIGH-WATER MARK. Per-outlet monotonic, assigned by the EDGE at
+    -- insert and replayed verbatim; the cloud never mints one. A stock read
+    -- selects entries NOT COVERED BY THE MARK (entry_seq > through_entry_seq),
+    -- never entries after a date: an entry that arrives after its day is
+    -- sealed while carrying that day's business_date would be excluded by a
+    -- date predicate and absent from the seal, vanishing permanently and
+    -- silently. Cloud-side re-derivation over a replayed ledger is one of the
+    -- paths that produces exactly that row.
+    entry_seq           BIGINT NOT NULL,
+
     -- Snapshotted, NO FK to config: a recipe edit must never retro-alter a
     -- past deduction, and a year of ledger must stay readable without the
     -- config tables, which sync overwrites repeatedly.
@@ -69,8 +79,20 @@ CREATE TABLE stock_ledger_entry (
 
     created_by_user_id  UUID,
 
+    -- Modifier provenance, carrying the same weight as the recipe provenance
+    -- above: a row deducted from a modifier_ingredient_delta is explained by
+    -- none of recipe_id/version/name, so without these "extra paneer took 50g"
+    -- becomes unauditable the moment the delta is edited.
+    modifier_delta_id       UUID,
+    modifier_name           TEXT,
+    modifier_delta_version  INTEGER,
+
     -- DEFERRED, landing M5 (ADR-018 §8).
-    unit_cost_paise     BIGINT
+    unit_cost_paise     BIGINT,
+
+    -- A duplicate mark would make "not covered by the mark" ambiguous in
+    -- exactly the way the date was.
+    UNIQUE (outlet_id, entry_seq)
 );
 
 CREATE INDEX idx_stock_ledger_entry_item_date

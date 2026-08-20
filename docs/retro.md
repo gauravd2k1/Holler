@@ -377,3 +377,61 @@ The corrected definition lands as a schema-level decision in contracts v0.5.0
 (ADR-018 §9.2), not as an implementation fix in a later track: `business_date` is
 a 0.5.0 column, `stock_balance_snapshot` keys on it, and a day-start time is
 outlet config. Settling it after the column froze would have been backwards.
+
+## 2026-08-20 — Naming the class: a claim that nothing verifies
+
+Two instances surfaced within one week, and they are the same defect wearing
+different clothes.
+
+- **`business_date_from`** — named "business date", doc-commented "Outlet-local
+  business day", computing the first ten characters of a UTC instant.
+- **The migration symmetry check** — named
+  `every_contract_sqlite_file_is_registered_and_vice_versa`, reading only the
+  SQLite directory, and therefore structurally unable to notice that
+  `stock_balance_snapshot` had no PostgreSQL counterpart. It had been green for
+  every one of `invoice_sequence`'s versions without ever having looked.
+
+### The class
+
+**A NAME OR COMMENT THAT ASSERTS A PROPERTY NOTHING VERIFIES.**
+
+It is worse than making no claim at all, and the reason is not aesthetic: **it
+stops the next reader from checking.** An unnamed, undocumented behaviour gets
+read. A function called `business_date_from` with "Outlet-local business day"
+on the first line gets *trusted*, at every call site, by every reader, forever.
+The claim consumes the scrutiny that would have found the defect.
+
+That is why both of these survived multiple readings by people who were
+specifically looking for problems. Nobody re-derived what the comment asserted,
+because the comment had already answered the question.
+
+A third instance appeared while writing the guard for the first two: the new
+append-only lint attributed PostgreSQL trigger comments — which necessarily sit
+*after* their table, since plpgsql needs the table to exist — to whichever table
+happened to be defined next. It failed on `stock_deduction_gap`, a table with no
+immutability claim at all. The guard was wrong in exactly the way the things it
+guards were wrong, on its first run.
+
+### What changes
+
+**§66 now covers meta-tests and guards, not only feature tests.** Every lint,
+symmetry check, ratchet and invariant is falsified before it is trusted: made to
+fail on purpose, and observed failing for the stated reason. A guard nobody has
+watched fail is not a guard — the rule already applied to invariants, and the
+only reason it had not been applied to guards is that guards feel like
+infrastructure rather than assertions. They are assertions.
+
+Three guards landed with this milestone, each watched to fail first:
+`every_single_store_migration_is_declared`,
+`every_append_only_claim_has_a_trigger_behind_it`, and
+`postgres_db_side_uuid_defaults_only_ever_decrease`. The second one found two
+unenforced `APPEND-ONLY` comments (`audit_event`, `cash_movement`) and one
+wording defect (`invoice`) on the run that made it pass, which is the argument
+for the class being real rather than two coincidences.
+
+### The cheap habit that would have caught all of them
+
+When writing a name or a comment that asserts a property, ask: *what would fail
+if this were false?* If the answer is "nothing", either write the check or
+weaken the claim to what is actually true. "Truncates to the UTC date" would
+have been correct, ugly, and impossible to misread.
