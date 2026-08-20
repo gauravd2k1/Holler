@@ -57,6 +57,500 @@ const TABLE_2_ID: &str = "0191a000-0000-7000-8000-000000000021";
 const STATION_ID: &str = "0191a000-0000-7000-8000-000000000030";
 const STATION_CODE: &str = "MAIN_KITCHEN";
 
+// ---- T0b: the real seed menu (HOLLER_DEV_MENU_SPEC.md) ----
+//
+// Everything below is ADDITIVE to the fixture above. The original category
+// (CATEGORY_ID "Beverages"), its two items (ITEM_CHAI_ID, ITEM_THALI_ID,
+// with VARIANT_ID/MOD_LESS_SUGAR_ID/MOD_EXTRA_SUGAR_ID) and the original
+// station (STATION_ID "MAIN_KITCHEN") are left completely untouched on
+// purpose: `tests/e2e-scenario/harness` pins those exact ids, that exact
+// price (4000 paise), that exact single-station routing and that exact
+// `tax_profile_id = None` fallback behaviour, and does not run with
+// `HOLLER_SEED_BILLING=1`. Renaming, re-pricing or re-routing any of them
+// would silently break that harness. The spec's own "Beverages" category
+// (which happens to share a name with the legacy one) is therefore seeded
+// as a SECOND, separate category below rather than folded into CATEGORY_ID.
+//
+// DEV VALUES ONLY: every price, HSN/SAC code and tax profile below is a
+// representative development fixture chosen to exercise the tax/KOT-routing
+// engine end to end. A production outlet configures its own catalogue,
+// prices, HSN/SAC codes and tax profiles — none of this ships.
+//
+// Ids are generated deterministically from small integer sequences (below)
+// rather than hand-typed one at a time, so the ~39 items in the spec don't
+// need ~39 hand-maintained constants. Re-running devseed with the same
+// inputs always produces the same ids and the same rows (byte-stable
+// snapshot), because the sequence -> id mapping is a pure function.
+fn menu_category_id(seq: u32) -> String {
+    format!("0191e100-0000-7000-8000-{seq:012x}")
+}
+fn menu_item_id(seq: u32) -> String {
+    format!("0191e200-0000-7000-8000-{seq:012x}")
+}
+fn menu_variant_id(seq: u32) -> String {
+    format!("0191e300-0000-7000-8000-{seq:012x}")
+}
+fn menu_modifier_id(seq: u32) -> String {
+    format!("0191e400-0000-7000-8000-{seq:012x}")
+}
+
+/// The three GST 2.0 (post-Sept-2025) tax profiles the spec's Beverages
+/// category needs to exercise mixed-rate invoicing (5% / 18% / 40%) in one
+/// order. Seeded unconditionally (menu_item.tax_profile_id is a NOT-NULL-
+/// enforceable foreign key once set, and PRAGMA foreign_keys is ON — see
+/// pragma.rs), but deliberately `is_default: false` and with NO `tax_rule`
+/// children here: a `tax_rule` needs a `compliance_version_id`, and the
+/// only `compliance_version` this crate seeds lives behind
+/// `HOLLER_SEED_BILLING=1` in `seed_billing` below, precisely so the
+/// harness's bare (non-billing) devseed run never gains a second
+/// `compliance_version` row and never sees its own resolution silently
+/// redirected to this one (`tax::resolve_compliance_version` has no
+/// tie-break beyond insertion order). Menu items below reference these
+/// profiles explicitly (never `None`), so the `is_default` fallback these
+/// items would otherwise trigger is never reached — only the untouched
+/// legacy ITEM_CHAI_ID/ITEM_THALI_ID pair relies on that fallback.
+const TAX_PROFILE_FOOD5_ID: &str = "0191e600-0000-7000-8000-000000000001";
+const TAX_PROFILE_PACKAGED18_ID: &str = "0191e600-0000-7000-8000-000000000002";
+const TAX_PROFILE_AERATED40_ID: &str = "0191e600-0000-7000-8000-000000000003";
+
+/// The five stations the spec's KOT routing needs (ADR-014). Distinct from
+/// the legacy STATION_ID/"MAIN_KITCHEN" above for the same harness-safety
+/// reason as the tax profiles: nothing renames or reroutes a fixture the
+/// harness already pins.
+const STATION_TANDOOR_ID: &str = "0191e500-0000-7000-8000-000000000001";
+const STATION_TANDOOR_CODE: &str = "TANDOOR";
+const STATION_MAIN_ID: &str = "0191e500-0000-7000-8000-000000000002";
+const STATION_MAIN_CODE: &str = "MAIN";
+const STATION_CHAT_ID: &str = "0191e500-0000-7000-8000-000000000003";
+const STATION_CHAT_CODE: &str = "CHAT";
+const STATION_BAR_ID: &str = "0191e500-0000-7000-8000-000000000004";
+const STATION_BAR_CODE: &str = "BAR";
+const STATION_DESSERT_ID: &str = "0191e500-0000-7000-8000-000000000005";
+const STATION_DESSERT_CODE: &str = "DESSERT";
+
+/// One row per spec menu item. `variants`/`modifier_groups` are literal
+/// spec data: the spec gives variant NAMES (Half/Full, Dry/Gravy, ...) with
+/// no price deltas, so every seeded variant carries `price_delta_paise: 0`
+/// — a representative dev value, not a claim about real half-portion
+/// pricing. Modifier deltas are exactly the paise figures the spec lists.
+struct SeedItem {
+    name: &'static str,
+    price_paise: i64,
+    tax_profile_id: &'static str,
+    hsn_sac: &'static str,
+    station_code: &'static str,
+    variants: &'static [&'static str],
+    modifier_groups: &'static [(&'static str, &'static [(&'static str, i64)])],
+}
+
+const SPICE_GROUP: (&str, &[(&str, i64)]) =
+    ("Spice", &[("Mild", 0), ("Med", 0), ("Hot", 0)]);
+
+/// (category name, sort_order, items) — sort_order continues on from the
+/// legacy "Beverages" category (sort_order 1) so the legacy category still
+/// sorts first in any dev UI that orders by it.
+const SEED_CATEGORIES: &[(&str, i64, &[SeedItem])] = &[
+    (
+        "Starters & Chaat",
+        2,
+        &[
+            SeedItem {
+                name: "Samosa (2 pc)",
+                price_paise: 6000,
+                tax_profile_id: TAX_PROFILE_FOOD5_ID,
+                hsn_sac: "9963",
+                station_code: STATION_CHAT_CODE,
+                variants: &[],
+                modifier_groups: &[("Extras", &[("Extra chutney", 1500)])],
+            },
+            SeedItem {
+                name: "Paneer Tikka",
+                price_paise: 32000,
+                tax_profile_id: TAX_PROFILE_FOOD5_ID,
+                hsn_sac: "9963",
+                station_code: STATION_TANDOOR_CODE,
+                variants: &["Half", "Full"],
+                modifier_groups: &[SPICE_GROUP],
+            },
+            SeedItem {
+                name: "Veg Manchurian",
+                price_paise: 24000,
+                tax_profile_id: TAX_PROFILE_FOOD5_ID,
+                hsn_sac: "9963",
+                station_code: STATION_MAIN_CODE,
+                variants: &["Dry", "Gravy"],
+                modifier_groups: &[SPICE_GROUP],
+            },
+            SeedItem {
+                name: "Chicken 65",
+                price_paise: 34000,
+                tax_profile_id: TAX_PROFILE_FOOD5_ID,
+                hsn_sac: "9963",
+                station_code: STATION_MAIN_CODE,
+                variants: &["Half", "Full"],
+                modifier_groups: &[SPICE_GROUP],
+            },
+            SeedItem {
+                name: "Pani Puri (6 pc)",
+                price_paise: 8000,
+                tax_profile_id: TAX_PROFILE_FOOD5_ID,
+                hsn_sac: "9963",
+                station_code: STATION_CHAT_CODE,
+                variants: &[],
+                modifier_groups: &[("Extras", &[("Extra puri", 3000)])],
+            },
+            SeedItem {
+                name: "Aloo Tikki Chaat",
+                price_paise: 12000,
+                tax_profile_id: TAX_PROFILE_FOOD5_ID,
+                hsn_sac: "9963",
+                station_code: STATION_CHAT_CODE,
+                variants: &[],
+                modifier_groups: &[("Extras", &[("Extra dahi", 2000)])],
+            },
+        ],
+    ),
+    (
+        "Tandoor & Kebabs",
+        3,
+        &[
+            SeedItem {
+                name: "Tandoori Chicken",
+                price_paise: 42000,
+                tax_profile_id: TAX_PROFILE_FOOD5_ID,
+                hsn_sac: "9963",
+                station_code: STATION_TANDOOR_CODE,
+                variants: &["Half", "Full"],
+                modifier_groups: &[SPICE_GROUP],
+            },
+            SeedItem {
+                name: "Seekh Kebab (4 pc)",
+                price_paise: 36000,
+                tax_profile_id: TAX_PROFILE_FOOD5_ID,
+                hsn_sac: "9963",
+                station_code: STATION_TANDOOR_CODE,
+                variants: &[],
+                modifier_groups: &[SPICE_GROUP],
+            },
+            SeedItem {
+                name: "Malai Tikka",
+                price_paise: 34000,
+                tax_profile_id: TAX_PROFILE_FOOD5_ID,
+                hsn_sac: "9963",
+                station_code: STATION_TANDOOR_CODE,
+                variants: &["Half", "Full"],
+                modifier_groups: &[],
+            },
+        ],
+    ),
+    (
+        "Main Course — Veg",
+        4,
+        &[
+            SeedItem {
+                name: "Paneer Butter Masala",
+                price_paise: 32000,
+                tax_profile_id: TAX_PROFILE_FOOD5_ID,
+                hsn_sac: "9963",
+                station_code: STATION_MAIN_CODE,
+                variants: &["Half", "Full"],
+                modifier_groups: &[SPICE_GROUP, ("Extras", &[("Extra gravy", 4000)])],
+            },
+            SeedItem {
+                name: "Dal Makhani",
+                price_paise: 26000,
+                tax_profile_id: TAX_PROFILE_FOOD5_ID,
+                hsn_sac: "9963",
+                station_code: STATION_MAIN_CODE,
+                variants: &["Half", "Full"],
+                modifier_groups: &[("Extras", &[("Butter", 2000)])],
+            },
+            SeedItem {
+                name: "Palak Paneer",
+                price_paise: 30000,
+                tax_profile_id: TAX_PROFILE_FOOD5_ID,
+                hsn_sac: "9963",
+                station_code: STATION_MAIN_CODE,
+                variants: &["Half", "Full"],
+                modifier_groups: &[SPICE_GROUP],
+            },
+            SeedItem {
+                name: "Chana Masala",
+                price_paise: 22000,
+                tax_profile_id: TAX_PROFILE_FOOD5_ID,
+                hsn_sac: "9963",
+                station_code: STATION_MAIN_CODE,
+                variants: &["Half", "Full"],
+                modifier_groups: &[SPICE_GROUP],
+            },
+            SeedItem {
+                name: "Mixed Veg Curry",
+                price_paise: 24000,
+                tax_profile_id: TAX_PROFILE_FOOD5_ID,
+                hsn_sac: "9963",
+                station_code: STATION_MAIN_CODE,
+                variants: &["Half", "Full"],
+                modifier_groups: &[],
+            },
+        ],
+    ),
+    (
+        "Main Course — Non-Veg",
+        5,
+        &[
+            SeedItem {
+                name: "Butter Chicken",
+                price_paise: 38000,
+                tax_profile_id: TAX_PROFILE_FOOD5_ID,
+                hsn_sac: "9963",
+                station_code: STATION_MAIN_CODE,
+                variants: &["Half", "Full"],
+                modifier_groups: &[SPICE_GROUP, ("Extras", &[("Extra gravy", 4000)])],
+            },
+            SeedItem {
+                name: "Chicken Curry",
+                price_paise: 34000,
+                tax_profile_id: TAX_PROFILE_FOOD5_ID,
+                hsn_sac: "9963",
+                station_code: STATION_MAIN_CODE,
+                variants: &["Half", "Full"],
+                modifier_groups: &[SPICE_GROUP],
+            },
+            SeedItem {
+                name: "Mutton Rogan Josh",
+                price_paise: 46000,
+                tax_profile_id: TAX_PROFILE_FOOD5_ID,
+                hsn_sac: "9963",
+                station_code: STATION_MAIN_CODE,
+                variants: &["Half", "Full"],
+                modifier_groups: &[SPICE_GROUP],
+            },
+            SeedItem {
+                name: "Fish Curry",
+                price_paise: 40000,
+                tax_profile_id: TAX_PROFILE_FOOD5_ID,
+                hsn_sac: "9963",
+                station_code: STATION_MAIN_CODE,
+                variants: &["Half", "Full"],
+                modifier_groups: &[SPICE_GROUP],
+            },
+            SeedItem {
+                name: "Egg Bhurji",
+                price_paise: 18000,
+                tax_profile_id: TAX_PROFILE_FOOD5_ID,
+                hsn_sac: "9963",
+                station_code: STATION_MAIN_CODE,
+                variants: &[],
+                modifier_groups: &[],
+            },
+        ],
+    ),
+    (
+        "Biryani & Rice",
+        6,
+        &[
+            SeedItem {
+                name: "Chicken Biryani",
+                price_paise: 32000,
+                tax_profile_id: TAX_PROFILE_FOOD5_ID,
+                hsn_sac: "9963",
+                station_code: STATION_MAIN_CODE,
+                variants: &["Half", "Full"],
+                modifier_groups: &[SPICE_GROUP, ("Extras", &[("Extra raita", 3000)])],
+            },
+            SeedItem {
+                name: "Veg Biryani",
+                price_paise: 26000,
+                tax_profile_id: TAX_PROFILE_FOOD5_ID,
+                hsn_sac: "9963",
+                station_code: STATION_MAIN_CODE,
+                variants: &["Half", "Full"],
+                modifier_groups: &[("Extras", &[("Extra raita", 3000)])],
+            },
+            SeedItem {
+                name: "Mutton Biryani",
+                price_paise: 42000,
+                tax_profile_id: TAX_PROFILE_FOOD5_ID,
+                hsn_sac: "9963",
+                station_code: STATION_MAIN_CODE,
+                variants: &["Half", "Full"],
+                modifier_groups: &[SPICE_GROUP],
+            },
+            SeedItem {
+                name: "Jeera Rice",
+                price_paise: 14000,
+                tax_profile_id: TAX_PROFILE_FOOD5_ID,
+                hsn_sac: "9963",
+                station_code: STATION_MAIN_CODE,
+                variants: &[],
+                modifier_groups: &[],
+            },
+            SeedItem {
+                name: "Steamed Rice",
+                price_paise: 10000,
+                tax_profile_id: TAX_PROFILE_FOOD5_ID,
+                hsn_sac: "9963",
+                station_code: STATION_MAIN_CODE,
+                variants: &[],
+                modifier_groups: &[],
+            },
+        ],
+    ),
+    (
+        "Breads",
+        7,
+        &[
+            SeedItem {
+                name: "Butter Naan",
+                price_paise: 6000,
+                tax_profile_id: TAX_PROFILE_FOOD5_ID,
+                hsn_sac: "9963",
+                station_code: STATION_TANDOOR_CODE,
+                variants: &[],
+                modifier_groups: &[("Extras", &[("Extra butter", 1500)])],
+            },
+            SeedItem {
+                name: "Garlic Naan",
+                price_paise: 7000,
+                tax_profile_id: TAX_PROFILE_FOOD5_ID,
+                hsn_sac: "9963",
+                station_code: STATION_TANDOOR_CODE,
+                variants: &[],
+                modifier_groups: &[],
+            },
+            SeedItem {
+                name: "Tandoori Roti",
+                price_paise: 4000,
+                tax_profile_id: TAX_PROFILE_FOOD5_ID,
+                hsn_sac: "9963",
+                station_code: STATION_TANDOOR_CODE,
+                variants: &["Plain", "Butter"],
+                modifier_groups: &[],
+            },
+            SeedItem {
+                name: "Laccha Paratha",
+                price_paise: 7000,
+                tax_profile_id: TAX_PROFILE_FOOD5_ID,
+                hsn_sac: "9963",
+                station_code: STATION_TANDOOR_CODE,
+                variants: &[],
+                modifier_groups: &[],
+            },
+        ],
+    ),
+    (
+        "Beverages",
+        8,
+        &[
+            SeedItem {
+                name: "Masala Chai",
+                price_paise: 4000,
+                tax_profile_id: TAX_PROFILE_FOOD5_ID,
+                hsn_sac: "9963",
+                station_code: STATION_BAR_CODE,
+                variants: &[],
+                modifier_groups: &[("Extras", &[("Extra strong", 0)])],
+            },
+            SeedItem {
+                name: "Filter Coffee",
+                price_paise: 5000,
+                tax_profile_id: TAX_PROFILE_FOOD5_ID,
+                hsn_sac: "9963",
+                station_code: STATION_BAR_CODE,
+                variants: &[],
+                modifier_groups: &[],
+            },
+            SeedItem {
+                name: "Fresh Lime Soda",
+                price_paise: 8000,
+                tax_profile_id: TAX_PROFILE_FOOD5_ID,
+                hsn_sac: "9963",
+                station_code: STATION_BAR_CODE,
+                variants: &["Sweet", "Salted"],
+                modifier_groups: &[],
+            },
+            SeedItem {
+                name: "Sweet Lassi",
+                price_paise: 9000,
+                tax_profile_id: TAX_PROFILE_FOOD5_ID,
+                hsn_sac: "9963",
+                station_code: STATION_BAR_CODE,
+                variants: &["Sweet", "Mango"],
+                modifier_groups: &[],
+            },
+            SeedItem {
+                name: "Bottled Water 1L",
+                price_paise: 2000,
+                tax_profile_id: TAX_PROFILE_PACKAGED18_ID,
+                hsn_sac: "2201",
+                station_code: STATION_BAR_CODE,
+                variants: &[],
+                modifier_groups: &[],
+            },
+            SeedItem {
+                name: "Packaged Fruit Juice",
+                price_paise: 6000,
+                tax_profile_id: TAX_PROFILE_PACKAGED18_ID,
+                hsn_sac: "2202",
+                station_code: STATION_BAR_CODE,
+                variants: &["Mango", "Mixed"],
+                modifier_groups: &[],
+            },
+            SeedItem {
+                name: "Coca-Cola (can)",
+                price_paise: 5000,
+                tax_profile_id: TAX_PROFILE_AERATED40_ID,
+                hsn_sac: "2202",
+                station_code: STATION_BAR_CODE,
+                variants: &[],
+                modifier_groups: &[],
+            },
+            SeedItem {
+                name: "Thums Up (can)",
+                price_paise: 5000,
+                tax_profile_id: TAX_PROFILE_AERATED40_ID,
+                hsn_sac: "2202",
+                station_code: STATION_BAR_CODE,
+                variants: &[],
+                modifier_groups: &[],
+            },
+        ],
+    ),
+    (
+        "Desserts",
+        9,
+        &[
+            SeedItem {
+                name: "Gulab Jamun (2 pc)",
+                price_paise: 8000,
+                tax_profile_id: TAX_PROFILE_FOOD5_ID,
+                hsn_sac: "9963",
+                station_code: STATION_DESSERT_CODE,
+                variants: &[],
+                modifier_groups: &[],
+            },
+            SeedItem {
+                name: "Gajar Halwa",
+                price_paise: 12000,
+                tax_profile_id: TAX_PROFILE_FOOD5_ID,
+                hsn_sac: "9963",
+                station_code: STATION_DESSERT_CODE,
+                variants: &[],
+                modifier_groups: &[("Extras", &[("Extra dry fruits", 3000)])],
+            },
+            SeedItem {
+                name: "Kulfi",
+                price_paise: 9000,
+                tax_profile_id: TAX_PROFILE_FOOD5_ID,
+                hsn_sac: "9963",
+                station_code: STATION_DESSERT_CODE,
+                variants: &["Malai", "Pista"],
+                modifier_groups: &[],
+            },
+        ],
+    ),
+];
+
 // ---- Billing / acceptance fixtures (opt-in, HOLLER_SEED_BILLING=1) ----
 //
 // OPT-IN ON PURPOSE. `tests/e2e-scenario/harness` invokes this binary and
@@ -331,6 +825,8 @@ fn seed(db: &Db, password_hash: &str) -> Result<(), holler_edge_database::DbErro
         )?;
     }
 
+    seed_menu(conn)?;
+
     if env::var("HOLLER_SEED_BILLING").is_ok_and(|v| v == "1") {
         seed_billing(conn)?;
     }
@@ -339,6 +835,169 @@ fn seed(db: &Db, password_hash: &str) -> Result<(), holler_edge_database::DbErro
     // once the sync worker is eventually wired up.
     repo::init_sync_state(conn, OUTLET_ID)?;
 
+    Ok(())
+}
+
+/// Seeds the real dev menu from `HOLLER_DEV_MENU_SPEC.md`: 5 stations, 3
+/// (rule-less — see `TAX_PROFILE_FOOD5_ID` doc comment) tax profiles, 8
+/// categories and 39 items with their variants, modifier groups and
+/// station routing. Unconditional (not gated by `HOLLER_SEED_BILLING`):
+/// menu display, ordering and KOT routing need none of the billing
+/// fixtures, and gating the catalogue itself behind that flag would leave
+/// the default `devseed` run back at the 2-item placeholder this task
+/// exists to retire.
+fn seed_menu(conn: &rusqlite::Connection) -> Result<(), holler_edge_database::DbError> {
+    for (id, code, name, sort_order) in [
+        (STATION_TANDOOR_ID, STATION_TANDOOR_CODE, "Tandoor", 2),
+        (STATION_MAIN_ID, STATION_MAIN_CODE, "Main Kitchen (Curries)", 3),
+        (STATION_CHAT_ID, STATION_CHAT_CODE, "Chat / Cold Counter", 4),
+        (STATION_BAR_ID, STATION_BAR_CODE, "Bar / Beverages", 5),
+        (STATION_DESSERT_ID, STATION_DESSERT_CODE, "Dessert", 6),
+    ] {
+        repo::upsert_station(
+            conn,
+            &Station {
+                id: id.to_string(),
+                outlet_id: OUTLET_ID.to_string(),
+                code: code.to_string(),
+                name: name.to_string(),
+                sort_order,
+                is_active: true,
+                config_version: CONFIG_VERSION,
+            },
+        )?;
+    }
+
+    // GST 2.0 (post-Sept-2025) profiles. INCLUSIVE pricing_mode: the spec's
+    // menu prices already include tax, per Indian restaurant convention —
+    // this exercises the engine's inclusive-mode back-computation path,
+    // which the legacy EXCLUSIVE GST_5 profile in `seed_billing` never did.
+    for (id, code, name) in [
+        (TAX_PROFILE_FOOD5_ID, "GST_FOOD_5", "GST 5% (food)"),
+        (
+            TAX_PROFILE_PACKAGED18_ID,
+            "GST_PACKAGED_18",
+            "GST 18% (packaged, non-aerated)",
+        ),
+        (
+            TAX_PROFILE_AERATED40_ID,
+            "GST_AERATED_40",
+            "GST 40% (aerated/sweetened)",
+        ),
+    ] {
+        repo::upsert_tax_profile(
+            conn,
+            &TaxProfile {
+                id: id.to_string(),
+                outlet_id: OUTLET_ID.to_string(),
+                code: code.to_string(),
+                name: name.to_string(),
+                pricing_mode: "INCLUSIVE".to_string(),
+                is_default: false,
+                is_active: true,
+                config_version: CONFIG_VERSION,
+            },
+        )?;
+    }
+
+    let mut category_seq = 0u32;
+    let mut item_seq = 0u32;
+    let mut variant_seq = 0u32;
+    let mut modifier_seq = 0u32;
+
+    for (category_name, sort_order, items) in SEED_CATEGORIES {
+        category_seq += 1;
+        let category_id = menu_category_id(category_seq);
+        repo::upsert_menu_category(
+            conn,
+            &MenuCategory {
+                id: category_id.clone(),
+                outlet_id: OUTLET_ID.to_string(),
+                name: category_name.to_string(),
+                sort_order: *sort_order,
+                config_version: CONFIG_VERSION,
+            },
+        )?;
+
+        for item in *items {
+            item_seq += 1;
+            let item_id = menu_item_id(item_seq);
+            let station_id = match item.station_code {
+                s if s == STATION_TANDOOR_CODE => STATION_TANDOOR_ID,
+                s if s == STATION_MAIN_CODE => STATION_MAIN_ID,
+                s if s == STATION_CHAT_CODE => STATION_CHAT_ID,
+                s if s == STATION_BAR_CODE => STATION_BAR_ID,
+                s if s == STATION_DESSERT_CODE => STATION_DESSERT_ID,
+                other => {
+                    return Err(holler_edge_database::DbError::InvalidInput(format!(
+                        "devseed: unknown station code {other} for item {}",
+                        item.name
+                    )))
+                }
+            };
+
+            repo::upsert_menu_item(
+                conn,
+                &MenuItem {
+                    id: item_id.clone(),
+                    outlet_id: OUTLET_ID.to_string(),
+                    category_id: category_id.clone(),
+                    name: item.name.to_string(),
+                    base_price_paise: item.price_paise,
+                    is_available: true,
+                    config_version: CONFIG_VERSION,
+                    tax_profile_id: Some(item.tax_profile_id.to_string()),
+                    hsn_sac: Some(item.hsn_sac.to_string()),
+                },
+            )?;
+            repo::replace_menu_item_stations(
+                conn,
+                &item_id,
+                &[station_id.to_string()],
+                CONFIG_VERSION,
+            )?;
+
+            for variant_name in item.variants {
+                variant_seq += 1;
+                repo::upsert_menu_item_variant(
+                    conn,
+                    &MenuItemVariant {
+                        id: menu_variant_id(variant_seq),
+                        menu_item_id: item_id.clone(),
+                        name: variant_name.to_string(),
+                        // The spec names variant options but gives no price
+                        // deltas for any of them (unlike modifiers, which
+                        // always carry an explicit figure) — 0 is the
+                        // representative dev value, not a claim that e.g.
+                        // Half and Full cost the same at a real outlet.
+                        price_delta_paise: 0,
+                        config_version: CONFIG_VERSION,
+                    },
+                )?;
+            }
+
+            for (group_name, options) in item.modifier_groups {
+                for (option_name, delta) in *options {
+                    modifier_seq += 1;
+                    repo::upsert_menu_item_modifier(
+                        conn,
+                        &MenuItemModifier {
+                            id: menu_modifier_id(modifier_seq),
+                            menu_item_id: item_id.clone(),
+                            group_name: group_name.to_string(),
+                            option_name: option_name.to_string(),
+                            price_delta_paise: *delta,
+                            min_selection: 0,
+                            max_selection: 1,
+                            config_version: CONFIG_VERSION,
+                        },
+                    )?;
+                }
+            }
+        }
+    }
+
+    println!("devseed: seed menu — {item_seq} items across {category_seq} categories, 5 stations, 3 tax profiles (GST_FOOD_5/GST_PACKAGED_18/GST_AERATED_40)");
     Ok(())
 }
 
@@ -393,6 +1052,35 @@ fn seed_billing(
                 config_version: CONFIG_VERSION,
             },
         )?;
+    }
+
+    // Rates for the spec's three menu tax profiles (seed_menu creates the
+    // profiles themselves unconditionally, but withholds their tax_rule
+    // rows because a rule needs a compliance_version — see
+    // TAX_PROFILE_FOOD5_ID's doc comment). Reusing COMPLIANCE_VERSION_ID
+    // here rather than minting a second compliance_version is what keeps
+    // `tax::resolve_compliance_version` unambiguous for this outlet: one
+    // compliance version, four tax profiles hanging off it.
+    for (profile_id, cgst_bps, sgst_bps) in [
+        (TAX_PROFILE_FOOD5_ID, 250i64, 250i64),
+        (TAX_PROFILE_PACKAGED18_ID, 900i64, 900i64),
+        (TAX_PROFILE_AERATED40_ID, 2000i64, 2000i64),
+    ] {
+        for (component, rate_bps) in [("CGST", cgst_bps), ("SGST", sgst_bps)] {
+            repo::upsert_tax_rule(
+                conn,
+                &TaxRule {
+                    id: format!("{profile_id}-{component}"),
+                    tax_profile_id: profile_id.to_string(),
+                    compliance_version_id: COMPLIANCE_VERSION_ID.to_string(),
+                    component: component.to_string(),
+                    rate_bps,
+                    effective_from: "2020-01-01T00:00:00Z".to_string(),
+                    effective_to: None,
+                    config_version: CONFIG_VERSION,
+                },
+            )?;
+        }
     }
 
     // Fictional GSTIN/FSSAI: valid in FORMAT so the renderer and any
