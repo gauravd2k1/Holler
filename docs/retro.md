@@ -312,3 +312,68 @@ Contract changes were being treated as edits to `packages/contracts/`. They are 
 ### Note
 
 The count assertion that was supposed to catch the unregistered migration was `assert_eq!(MIGRATIONS.len(), 11)` — a hand-maintained literal, which catches nothing that a person bumping it by hand would not also bump. It has been replaced with a symmetric comparison against the contracts directory that **panics with the path if the directory cannot be read**, rather than skipping. A check that silently passes when it cannot find its inputs is the same failure one level up, and this file already records three instances of it.
+
+## 2026-08-20 — A function named for outlet-local time, computing UTC, on a row that already held the timezone
+
+Found during M4 contract planning, not by any test, and not by anyone using the
+feature.
+
+`apps/pos/src-tauri/src/commands/billing.rs`:
+
+```rust
+/// Outlet-local business day. Truncates the UTC invoice moment to its date
+/// part rather than resolving `outlet.timezone` — the same known limitation
+/// already disclosed on `edge/database/src/repo.rs`'s display-number reset
+/// bucketing ...
+fn business_date_from(instant_iso: &str) -> String {
+    instant_iso.get(0..10).unwrap_or(instant_iso).to_string()
+}
+```
+
+The name says outlet-local. The first doc line says outlet-local. The body takes
+the first ten characters of a UTC instant.
+
+### Why this is a defect and not a limitation
+
+It was filed as a known limitation, disclosed honestly in two places, and
+inherited from an older disclosure on the display-number reset. That framing was
+wrong, and the disclosure is what made it comfortable.
+
+In IST the UTC day rolls at **05:30 local**. Every Indian restaurant trading past
+midnight — which is most of them — has been assigning invoice numbers and
+day-end / cash-shift reconciliation to the wrong business day for the entire
+window between local midnight and 05:30. That is not a rounding difference at a
+boundary nobody reaches. It is the busiest tail of a dinner service, landing in
+the wrong day's books, in shipped M3 code. The M3 milestone record claims
+correctness it does not have.
+
+`outlet.timezone` has existed since `packages/contracts/sqlite/0001_init.sql:13`,
+defaulting to `Asia/Kolkata`. The data needed to compute this correctly was on
+the row the whole time.
+
+### The lesson
+
+**A disclosure is not a severity assessment, and repeating one is not
+re-assessing it.** The comment was accurate about the mechanism and silent about
+the consequence, so each subsequent reader — including the one who wrote the
+second disclosure by pointing at the first — inherited "known limitation" without
+anyone recomputing what it cost. Nobody ever multiplied "UTC day" by "IST" by
+"restaurants serve dinner late".
+
+Two specific habits fall out:
+
+1. **Name and doc-comment are claims, and a wrong one is worse than none.** A
+   function called `business_date_from` with "Outlet-local business day" on the
+   first line reads as correct at every call site. Had it been named
+   `utc_date_prefix`, its callers would have looked wrong on sight.
+2. **Quantify a limitation in the units of the business, once, at the moment you
+   disclose it.** "Buckets by UTC day" is a mechanism. "Every bill between
+   midnight and 05:30 IST books to the previous day" is a severity — and it would
+   never have survived three disclosures unfixed.
+
+### What changed
+
+The corrected definition lands as a schema-level decision in contracts v0.5.0
+(ADR-018 §9.2), not as an implementation fix in a later track: `business_date` is
+a 0.5.0 column, `stock_balance_snapshot` keys on it, and a day-start time is
+outlet config. Settling it after the column froze would have been backwards.

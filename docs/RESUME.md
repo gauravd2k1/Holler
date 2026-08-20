@@ -113,6 +113,28 @@ part 1  taxable 8000   disc 0     CGST 200  SGST 200  round_off 0    total 8400
 part 2  taxable 19800  disc 2200  CGST 495  SGST 495  round_off +10  total 20800
 ```
 
+### CORRECTION (2026-08-20) — the business-day bucketing is wrong in shipped code
+
+Filed during M4 planning. **This section previously claimed a correctness it does
+not have.**
+
+`business_date_from` (`apps/pos/src-tauri/src/commands/billing.rs:71`) and the
+display-number reset (`edge/database/src/repo.rs`) bucket by **UTC calendar day**.
+In IST the UTC day rolls at **05:30 local**, so for any outlet trading past
+midnight, every invoice number and every day-end / cash-shift reconciliation
+between local midnight and 05:30 is assigned to the **previous** business day.
+CLAUDE.md states the business day may cross midnight; this code assumes it does
+not.
+
+It was carried as a "known limitation" in §5 below and in two source comments.
+That framing was wrong — the consequence was never quantified in business units.
+Full write-up in `docs/retro.md`, 2026-08-20.
+
+Scope of the correction: none of §2's observed flows are invalidated — they ran
+inside a single UTC day — but **M3 must not be recorded as having correct invoice
+numbering or day-end reconciliation** until this closes. The fix is a
+schema-level decision in contracts v0.5.0 (ADR-018 §9.2), in the M4 pre-track.
+
 ### What this did NOT cover — do not overstate it
 
 - **The manual GUI runbook was written but NOT executed.** A 10-step tickable
