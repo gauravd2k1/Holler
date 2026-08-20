@@ -31,3 +31,29 @@ The outlet runs exactly one thing: the Holler POS, a native Windows executable. 
 - The encryption-at-rest design (ADR-011) must not acquire a dependency that assumes a developer toolchain. The current AES-256-GCM approach is pure Rust and satisfies this; a future move to SQLCipher must keep the outlet install free of OpenSSL/Perl runtime requirements even though building it needs them.
 - Modest hardware sharpens two existing gaps: the POS decrypts its database to a working file on open, which costs disk I/O on a spinning disk, and the in-session plaintext window is longer on slow hardware. Both are already recorded.
 - KDS is a LAN-first PWA (Milestone 2) and must not assume a server process on the counter machine beyond the POS itself.
+
+---
+
+## Addendum — how the two runtime dependencies were actually closed (2026-08-20)
+
+The Decision above required the installer to carry both runtimes. Only one of them could be done that way.
+
+### WebView2 — embedded, as specified
+
+`bundle.windows.webviewInstallMode = { "type": "offlineInstaller", "silent": true }`. The runtime is packaged into the setup executable at build time. Evidence: the NSIS artefact is 209 MB, consistent with the ~127 MB offline package being embedded rather than fetched. Install-time needs no network, which is what this ADR requires.
+
+**Build-time still needs one.** The bundler downloads the WebView2 package from `go.microsoft.com` while building, so an air-gapped *build machine* does not work. That is a different machine from the outlet and is not a violation of this ADR — recorded so nobody discovers it as a surprise.
+
+### VC++ runtime — dependency removed rather than embedded, and this is a risk with a fallback
+
+Tauri's bundler has **no** configuration for the Visual C++ redistributable; confirmed by reading `tauri-utils-2.9.3/src/config.rs`, where no such field exists. So the dependency is eliminated instead: `apps/pos/src-tauri/.cargo/config.toml` sets `-C target-feature=+crt-static` for the MSVC targets, statically linking the CRT.
+
+**Why this is safe rather than merely convenient.** The dangerous failure mode for a static CRT is a *mixed* one: some C dependency left on the dynamic runtime, allocating on one heap and freeing on another. That does not fail at startup — it produces rare, unreproducible corruption in production, which is the worst class of defect this product could ship. `dumpbin /DEPENDENTS` on the release binary shows **no `vcruntime140.dll` and no `msvcp140.dll`** import, only `api-ms-win-crt-*` forwarders resolving to the UCRT, an OS component on Windows 10. The bundled SQLite compiled through `cc` picks the flag up automatically via `CARGO_CFG_TARGET_FEATURE`, so nothing in the tree is on a mixed CRT. The absence of that import is the evidence that matters.
+
+**RISK, recorded rather than closed:** WebView2 initialisation under a static CRT is proven only by a windowed smoke test, not by analysis. The release binary is confirmed to load and execute (it reaches its own provisioning guard and aborts there — `panic=abort`, `0xC0000409`, not a loader failure at `0xC0000135`), but that is before any window exists.
+
+**NAMED FALLBACK, if a static CRT ever misbehaves:** bundle `vc_redist.x64.exe` alongside the installer and run it silently from an NSIS install hook. This is cheap, well-trodden, and reverses the decision without touching application code — which is why a smoke test is the right level of rigour here and a dedicated verification agent is not.
+
+### NSIS is the only supported installer
+
+`bundle.targets` is `["nsis"]`, not `"all"`. The MSI/WiX target was never verified end to end — the WiX toolchain download timed out twice — and **two half-verified installers are worse than one verified one**. If MSI is ever required, it returns with its own verification, tracked in `docs/backlog-m2.md`.

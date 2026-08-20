@@ -27,6 +27,14 @@ M2 ships kitchen features to this same target, so validating the target before a
 
 ---
 
+## Deferred with a trigger (filed 2026-08-20, T0)
+
+- **MSI/WiX installer — dropped, not failed.** `bundle.targets` is `["nsis"]`. The MSI target was never verified end to end (the WiX toolchain download timed out twice), and two half-verified installers are worse than one verified one. **Trigger: a deployment that requires MSI specifically** — Group Policy / SCCM push, or an enterprise customer whose IT will not run an NSIS executable. It returns with its own clean-VM verification, not by flipping `targets` back to `"all"`.
+
+- **Air-gapped build machine.** The WebView2 offline package is downloaded from `go.microsoft.com` at *build* time and embedded into the installer. Install-time is offline, which is what ADR-013 requires and what is proven. **Trigger: a build environment without egress** — a customer-hosted or regulated build. The fix is vendoring the runtime package into the repo or an internal artefact store.
+
+---
+
 ## Correctness and hardening
 
 - **P0 REGRESSION — order type and table lock on the first item tap, and dine-in can never reach the kitchen.** Found in the first manual run on real hardware, not by any test.

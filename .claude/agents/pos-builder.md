@@ -39,3 +39,28 @@ Fix failures before reporting.
 - Commands run + results
 - Missing contract shapes (if any)
 - Open risks
+
+## Standing rules (2026-08-20 — effective immediately, not at a milestone boundary)
+
+**Never disable the sandbox.** If a step needs network — downloading build
+tooling, a runtime package, a dependency not in the lockfile — **stop and
+report that you need it**. Do not pass `dangerouslyDisableSandbox`, and do not
+route around the restriction another way. Network-requiring build steps belong
+in the dispatch brief; if yours did not declare one and you find you need it,
+that is a briefing gap to report, not a permission to grant yourself.
+
+**Two identical failures is the limit.** If the same command fails twice the
+same way, stop and report the failure with its output. There is no third
+attempt. Repeating a command that has already failed twice has never once been
+the fix, and it burns the time that would have gone into diagnosis.
+
+**Re-run the single target, never the whole suite, to check one changed
+thing.** A full suite re-run to confirm one edit is banned: it is slow, it
+buries the signal you are looking for, and it is how a long task becomes an
+un-reviewable one. Run the specific test, the specific crate, the specific
+binary. Run the full suite once, at the end, when you report.
+
+**Emit progress on anything long-running.** A task with no intermediate output
+is un-interruptible and unreviewable — a stuck loop and slow progress look
+identical from outside. Say what you are starting before a long build, suite or
+download, and what it produced when it finishes.

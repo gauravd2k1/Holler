@@ -105,6 +105,24 @@ message. Since ADR-017 that parameter carries real authority, and it currently
 lands in every proxy and access log on the path. This is credential material in
 already-shipped code. It is not waiter-app blocked and does not wait for M9.
 
+### 2.5 Heartbeat output for long gates — now in T0's tail
+
+Long-running work must emit intermediate progress. **A nine-hour agent with no
+intermediate output is unreviewable and un-interruptible: a stuck loop and slow
+progress look identical from outside**, and the only way to tell them apart is to
+wait for the end, which is the thing that costs nine hours.
+
+Both T0 and T0b ran multi-hour with a single terminal report each. That is the
+concrete case; the rule is general and applies to any gate, build or suite that
+can run long.
+
+Note for the record: this was believed to be an existing entry in
+`docs/backlog-m2.md`, carried through two milestones. It is not there — a
+repo-wide search finds "heartbeat" only in `docs/DEV_SETUP.md`, describing the
+unrelated KDS LAN protocol heartbeat. So it is filed here as new work rather than
+promoted, which is the same outcome by a different route: it is now in a track,
+not in a backlog.
+
 ### 2.3 Waiter app — M9, and it stops being carried as pending
 
 The waiter/captain app lands in **Milestone 9 (Customer Experience)**. Actions:
@@ -183,7 +201,7 @@ and therefore not deferrable to an implementation track:
 
 | Track | Deliverable | Notes |
 |---|---|---|
-| **T0** (concurrent with T1) | Windows 10 gate + `bundle.windows` + `device_token` out of the query string | §2.2. No hardware needed. Produces the first measured numbers from the target box. |
+| **T0** (concurrent with T1) | Windows 10 gate + `bundle.windows` + **heartbeat output for long gates** | §2.2, §2.5. No hardware needed. Produces the first measured numbers from the target box. |
 | **T0b** | Implement `HOLLER_DEV_MENU_SPEC.md` in `devseed` — commit the spec file first | Hard prerequisite of T1/T2. See §5. |
 | **T1** | Units, integer conversion, recipe resolution incl. sub-recipes with cycle/depth guards | Pure arithmetic. Same shape as the tax engine; test it to death. |
 | **T2** | Ledger + automatic deduction inside the `confirm_order` transaction | Includes the deduction-gap path (§4 rule 2). |
