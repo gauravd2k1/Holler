@@ -467,3 +467,146 @@ func TestEdgeDeviceCredentialFixtureRoundTrip(t *testing.T) {
 		t.Fatalf("fixture credential is live; revoked_at must be nil")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Milestone 4 — inventory and recipes (0.5.0, ADR-018)
+// ---------------------------------------------------------------------------
+
+func TestMilestone4FixturesRoundTrip(t *testing.T) {
+	var item InventoryItem
+	roundTrip(t, "inventory_item.json", &item)
+	var conv ItemUnitConversion
+	roundTrip(t, "item_unit_conversion.json", &conv)
+	var recipe Recipe
+	roundTrip(t, "recipe.json", &recipe)
+	var ingredient RecipeIngredient
+	roundTrip(t, "recipe_ingredient.json", &ingredient)
+	var delta ModifierIngredientDelta
+	roundTrip(t, "modifier_ingredient_delta.json", &delta)
+	var entry StockLedgerEntry
+	roundTrip(t, "stock_ledger_entry.json", &entry)
+	var count StockCount
+	roundTrip(t, "stock_count.json", &count)
+	var line StockCountLine
+	roundTrip(t, "stock_count_line.json", &line)
+	var gap StockDeductionGap
+	roundTrip(t, "stock_deduction_gap.json", &gap)
+}
+
+// ADR-018: the same cut every milestone before it drew. A raw material's
+// definition and a recipe are management decisions; consuming, wasting and
+// counting stock are shop-floor transactions the outlet performs with the
+// uplink down.
+func TestMilestone4AggregateAuthority(t *testing.T) {
+	expected := map[AggregateType]SyncDirection{
+		AggregateTypeInventoryItem:     SyncDirectionCloudToEdge,
+		AggregateTypeRecipe:            SyncDirectionCloudToEdge,
+		AggregateTypeStockLedgerEntry:  SyncDirectionEdgeToCloud,
+		AggregateTypeStockCount:        SyncDirectionEdgeToCloud,
+		AggregateTypeStockDeductionGap: SyncDirectionEdgeToCloud,
+	}
+	for aggregate, direction := range expected {
+		if AggregateAuthority[aggregate] != direction {
+			t.Fatalf("%s must be %s per §50.1 (ADR-018)", aggregate, direction)
+		}
+	}
+}
+
+// stock_balance_snapshot is edge-local: the cloud MAY re-derive its own stock
+// view by summing the ingested ledger, but mirroring the edge's projection
+// would make it a second authority on stock — the same mistake mirroring
+// invoice_sequence would make about invoice numbers. The rest are child rows,
+// absent for the ordinary reason: they travel inside their parent's payload.
+func TestInventoryProjectionAndChildRowsAreNotAggregates(t *testing.T) {
+	for _, forbidden := range []AggregateType{
+		"stock_balance_snapshot",
+		"item_unit_conversion",
+		"recipe_ingredient",
+		"modifier_ingredient_delta",
+		"stock_count_line",
+	} {
+		if _, exists := AggregateAuthority[forbidden]; exists {
+			t.Fatalf("%s must not be an aggregate: it is edge-local or a child row (ADR-018)", forbidden)
+		}
+	}
+}
+
+// The deferred columns must stay INERT in M4. yield_factor_ppm defaults to the
+// identity and nothing reads it; unit_cost_paise is null until M5. Pinned by
+// exact assertion, the synthesized-canonical-field precedent — the day either
+// starts carrying real data, this fails and says so.
+func TestMilestone4DeferredFieldsAreInert(t *testing.T) {
+	var item InventoryItem
+	roundTrip(t, "inventory_item.json", &item)
+	if item.YieldFactorPPM != YieldFactorPPMIdentity {
+		t.Fatalf("inventory_item.yield_factor_ppm must be the identity %d in M4, got %d (ADR-018 §8)",
+			YieldFactorPPMIdentity, item.YieldFactorPPM)
+	}
+
+	var ingredient RecipeIngredient
+	roundTrip(t, "recipe_ingredient.json", &ingredient)
+	if ingredient.YieldFactorPPM != YieldFactorPPMIdentity {
+		t.Fatalf("recipe_ingredient.yield_factor_ppm must be the identity %d in M4, got %d (ADR-018 §8)",
+			YieldFactorPPMIdentity, ingredient.YieldFactorPPM)
+	}
+
+	var entry StockLedgerEntry
+	roundTrip(t, "stock_ledger_entry.json", &entry)
+	if entry.UnitCostPaise != nil {
+		t.Fatalf("stock_ledger_entry.unit_cost_paise lands in M5 and must be null in M4, got %d (ADR-018 §8)",
+			*entry.UnitCostPaise)
+	}
+}
+
+// Tier 1 is physics and lives in code; Tier 2 is per-item packaging and lives
+// in item_unit_conversion. The two sets must stay disjoint: two sources of
+// truth for kg→g would need a silent precedence rule between disagreeing
+// numbers, which is how a deduction becomes quietly wrong.
+//
+// Cross-dimension conversion is deliberately absent here — density varies per
+// ingredient, so g↔ml is not a physical constant.
+func TestDimensionalConversionsAreWithinDimensionOnly(t *testing.T) {
+	expected := map[string]DimensionalConversion{
+		"mg":    {Dimension: DimensionMass, Micro: 1_000},
+		"g":     {Dimension: DimensionMass, Micro: 1_000_000},
+		"kg":    {Dimension: DimensionMass, Micro: 1_000_000_000},
+		"ml":    {Dimension: DimensionVolume, Micro: 1_000},
+		"l":     {Dimension: DimensionVolume, Micro: 1_000_000},
+		"piece": {Dimension: DimensionCount, Micro: 1_000_000},
+		"dozen": {Dimension: DimensionCount, Micro: 12_000_000},
+	}
+	if len(DimensionalConversions) != len(expected) {
+		t.Fatalf("DimensionalConversions has %d entries, expected %d — a new one must be a physical constant, not a per-item property",
+			len(DimensionalConversions), len(expected))
+	}
+	for unit, want := range expected {
+		got, ok := DimensionalConversions[unit]
+		if !ok {
+			t.Fatalf("DimensionalConversions is missing %q", unit)
+		}
+		if got != want {
+			t.Fatalf("DimensionalConversions[%q] = %+v, want %+v — these are physical constants and must match the TypeScript mirror exactly",
+				unit, got, want)
+		}
+	}
+}
+
+// M4 adds three permissions and one that rides along. wastage.approve is
+// deliberately absent: the approval workflow moves to M5 with the append-only
+// approval row that enforces it, and an unused permission is a documented
+// obligation dressed as structural enforcement.
+func TestMilestone4Permissions(t *testing.T) {
+	for _, required := range []Permission{
+		PermissionInventoryManage,
+		PermissionInventoryCount,
+		PermissionRecipeManage,
+		PermissionBillingManage,
+	} {
+		if required == "" {
+			t.Fatalf("permission constant is empty")
+		}
+	}
+	if Permission("wastage.approve") == PermissionInventoryManage {
+		t.Fatalf("wastage.approve must not exist in 0.5.0 (ADR-018 §11)")
+	}
+}

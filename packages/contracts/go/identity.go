@@ -41,6 +41,23 @@ const (
 	PermissionTableManage  Permission = "table.manage"
 	PermissionOutletManage Permission = "outlet.manage"
 	PermissionUserManage   Permission = "user.manage"
+
+	// Milestone 4 additions (ADR-018). RoleCodeInventoryManager has existed
+	// since Milestone 1 and mapped to no permissions at all.
+	PermissionInventoryManage Permission = "inventory.manage"
+	PermissionInventoryCount  Permission = "inventory.count"
+	PermissionRecipeManage    Permission = "recipe.manage"
+	// Rides along, and lands WITH its enforced check on the GSTIN write path.
+	// backend/internal/compliance gated those writes on outlet.manage, so
+	// whoever could rename a table could set the GSTIN printed on every
+	// invoice. A permission defined and never checked is a documented
+	// obligation dressed as structural enforcement.
+	//
+	// PermissionWastageApprove is deliberately absent: the approval workflow
+	// moves to M5 with the append-only approval row that enforces it, because
+	// a mutable approval flag on an append-only row is a contradiction.
+	// Wastage RECORDING ships in M4 under inventory.manage.
+	PermissionBillingManage Permission = "billing.manage"
 )
 
 type Role struct {

@@ -39,9 +39,13 @@ M2 ships kitchen features to this same target, so validating the target before a
 
   This is why `recipe` deliberately does **not** carry its own `tenant_id` (ADR-018 §2): a lone tenant column no constraint forces to agree with the tree is a second answer to "whose row is this". The fix is RLS on the tree, not a column on one table.
 
-  **What is honest today, checked rather than assumed:** ADR-006 already says isolation is "enforced at the application/query layer" via "repository-layer conventions" — it makes no SQL-level claim, and neither does §57 of the master prompt or `SYSTEM_ARCHITECTURE.md`. A repo-wide search for "SQL-level isolation" returns nothing. The documentation is accurate; the gap is real but was never oversold.
+  **The documentation is accurate.** ADR-006 says isolation is "enforced at the application/query layer" via "repository-layer conventions"; §57 of the master prompt and `SYSTEM_ARCHITECTURE.md` are equally careful. Nothing in the repo oversells this.
 
-  **The concrete hole is a missing test, and it is exactly the wrong context.** ADR-006 promises "automated cross-tenant access tests", and they exist for `ordering`, `outlet`, `kitchen`, `tenant` and `cmd/api` (`TestPostgresRepository_CrossTenantOrderLookupIsNotFound`, `TestSyncConfig_CrossTenantOutletIsNotFound`, `TestEnrollDevice_RejectsCrossTenantOutlet`, and more). **`backend/internal/menu` has four test files and not one cross-tenant test** — the single context whose tree every recipe now hangs off. Add those tests before the RLS work; they are cheap and they are what would actually catch a forgotten join.
+  **The hole is a missing test, in exactly the wrong context.** ADR-006 promises "automated cross-tenant access tests", and they exist for `ordering`, `outlet`, `kitchen`, `tenant` and `cmd/api` (`TestPostgresRepository_CrossTenantOrderLookupIsNotFound`, `TestSyncConfig_CrossTenantOutletIsNotFound`, `TestEnrollDevice_RejectsCrossTenantOutlet`, and more). **`backend/internal/menu` has four test files and not one cross-tenant test** — the single context whose tree every recipe hangs off.
+
+  **SCOPE SPLIT (2026-08-20).** This entry covers the **retrofit** only: cross-tenant tests for the pre-existing menu tables (`menu_item`, `menu_item_variant`, `menu_item_modifier`), which is M1-era code and stays filed against the trigger above.
+
+  **M4's own three tables are not deferred.** `recipe`, `recipe_ingredient` and `modifier_ingredient_delta` ship cross-tenant tests **in T4**, as part of the track that writes them. Adding three tables to an untested isolation boundary is precisely how the boundary stays untested — the new code does not get to inherit the old code's exemption.
 
 - ~~**Four structural guarantees written as comments and enforced nowhere.**~~ **ALL FIXED at contracts 0.5.0.** `payment` (PostgreSQL had the words and no trigger since 0.4.5), `audit_event` ("Local append-only audit" — an audit log that can be edited is not an audit log, and it is the table you reach for precisely when you suspect an edit), `cash_movement`, and `invoice`.
 

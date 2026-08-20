@@ -1,0 +1,12 @@
+{
+  "id": "0191f2a0-1c3d-7a10-9f01-000000000202",
+  "recipe_id": "0191f2a0-1c3d-7a10-9f01-000000000201",
+  "component_kind": "ITEM",
+  "inventory_item_id": "0191f2a0-1c3d-7a10-9f01-000000000101",
+  "sub_recipe_id": null,
+  "quantity_micro": 220000000,
+  "yield_factor_ppm": 1000000,
+  "sort_order": 0,
+  "config_version": 7,
+  "schema_version": 1
+}

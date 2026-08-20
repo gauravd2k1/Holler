@@ -38,6 +38,19 @@ const (
 	AggregateTypeComplianceVersion  AggregateType = "compliance_version"
 	AggregateTypeInvoiceSeries      AggregateType = "invoice_series"
 	AggregateTypeDiscountDefinition AggregateType = "discount_definition"
+
+	// Milestone 4 additions (ADR-018). item_unit_conversion,
+	// recipe_ingredient, modifier_ingredient_delta and stock_count_line are
+	// deliberately absent — child rows travelling inside their parent's
+	// payload or config bundle. stock_balance_snapshot is absent for the
+	// invoice_sequence reason: it is an edge-local derived projection and must
+	// never sync. The cloud may re-derive its own stock view from the ledger;
+	// it may never mirror the edge's.
+	AggregateTypeInventoryItem     AggregateType = "inventory_item"
+	AggregateTypeRecipe            AggregateType = "recipe"
+	AggregateTypeStockLedgerEntry  AggregateType = "stock_ledger_entry"
+	AggregateTypeStockCount        AggregateType = "stock_count"
+	AggregateTypeStockDeductionGap AggregateType = "stock_deduction_gap"
 )
 
 type SyncDirection string
@@ -86,18 +99,31 @@ var AggregateAuthority = map[AggregateType]SyncDirection{
 	AggregateTypeComplianceVersion:  SyncDirectionCloudToEdge,
 	AggregateTypeInvoiceSeries:      SyncDirectionCloudToEdge,
 	AggregateTypeDiscountDefinition: SyncDirectionCloudToEdge,
+
+	// Milestone 4 (ADR-018). The same cut as every milestone before it: a raw
+	// material's definition and a recipe are management decisions, while
+	// consuming, wasting and counting stock are shop-floor transactions the
+	// outlet performs with the uplink down.
+	AggregateTypeInventoryItem:    SyncDirectionCloudToEdge,
+	AggregateTypeRecipe:           SyncDirectionCloudToEdge,
+	AggregateTypeStockLedgerEntry: SyncDirectionEdgeToCloud,
+	AggregateTypeStockCount:       SyncDirectionEdgeToCloud,
+	// A signal, not a correction — cloud-visible because the person who can
+	// see it and the person who can fix it are different people in different
+	// places. Shares the ledger ingest route rather than taking its own.
+	AggregateTypeStockDeductionGap: SyncDirectionEdgeToCloud,
 }
 
 type SyncEnvelope struct {
-	RecordID      string          `json:"record_id"`
-	TenantID      string          `json:"tenant_id"`
-	OutletID      string          `json:"outlet_id"`
-	DeviceID      string          `json:"device_id"`
-	AggregateType AggregateType   `json:"aggregate_type"`
-	Direction     SyncDirection   `json:"direction"`
-	CreatedAt     time.Time       `json:"created_at"`
-	UpdatedAt     time.Time       `json:"updated_at"`
-	Version       int             `json:"version"`
-	SyncStatus    SyncStatus      `json:"sync_status"`
-	Payload       interface{}     `json:"payload"`
+	RecordID      string        `json:"record_id"`
+	TenantID      string        `json:"tenant_id"`
+	OutletID      string        `json:"outlet_id"`
+	DeviceID      string        `json:"device_id"`
+	AggregateType AggregateType `json:"aggregate_type"`
+	Direction     SyncDirection `json:"direction"`
+	CreatedAt     time.Time     `json:"created_at"`
+	UpdatedAt     time.Time     `json:"updated_at"`
+	Version       int           `json:"version"`
+	SyncStatus    SyncStatus    `json:"sync_status"`
+	Payload       interface{}   `json:"payload"`
 }

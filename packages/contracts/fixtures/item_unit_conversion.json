@@ -1,0 +1,10 @@
+{
+  "id": "0191f2a0-1c3d-7a10-9f01-000000000102",
+  "inventory_item_id": "0191f2a0-1c3d-7a10-9f01-000000000101",
+  "pack_unit_label": "packet",
+  "source_dimension": "MASS",
+  "numerator": 200000000,
+  "denominator": 1,
+  "config_version": 7,
+  "schema_version": 1
+}

@@ -1,0 +1,11 @@
+{
+  "id": "0191f2a0-1c3d-7a10-9f01-000000000401",
+  "outlet_id": "0191f2a0-1c3d-7a10-9f01-000000000001",
+  "business_date": "2026-08-20",
+  "status": "COMPLETED",
+  "started_at": "2026-08-20T22:10:00.000Z",
+  "completed_at": "2026-08-20T22:41:00.000Z",
+  "counted_by_user_id": "0191f2a0-1c3d-7a10-9f01-000000000021",
+  "note": "End of day, cold room only",
+  "schema_version": 1
+}

@@ -1,0 +1,14 @@
+{
+  "id": "0191f2a0-1c3d-7a10-9f01-000000000501",
+  "outlet_id": "0191f2a0-1c3d-7a10-9f01-000000000001",
+  "order_id": "0191f2a0-1c3d-7a10-9f01-000000000011",
+  "order_item_id": "0191f2a0-1c3d-7a10-9f01-000000000013",
+  "menu_item_id": "0191f2a0-1c3d-7a10-9f01-000000000030",
+  "menu_item_variant_id": "0191f2a0-1c3d-7a10-9f01-000000000032",
+  "menu_item_name": "Chicken 65 (Half)",
+  "quantity": 2,
+  "reason": "NO_RECIPE",
+  "occurred_at": "2026-08-20T13:45:12.000Z",
+  "business_date": "2026-08-20",
+  "schema_version": 1
+}

@@ -1,0 +1,15 @@
+{
+  "id": "0191f2a0-1c3d-7a10-9f01-000000000101",
+  "outlet_id": "0191f2a0-1c3d-7a10-9f01-000000000001",
+  "sku": "PANEER-BULK",
+  "name": "Paneer",
+  "category": "Dairy",
+  "dimension": "MASS",
+  "reorder_level_micro": 5000000000,
+  "par_level_micro": 20000000000,
+  "storage_location": "Cold room",
+  "is_active": true,
+  "yield_factor_ppm": 1000000,
+  "config_version": 7,
+  "schema_version": 1
+}

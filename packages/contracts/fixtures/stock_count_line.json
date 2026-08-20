@@ -1,0 +1,11 @@
+{
+  "id": "0191f2a0-1c3d-7a10-9f01-000000000402",
+  "stock_count_id": "0191f2a0-1c3d-7a10-9f01-000000000401",
+  "inventory_item_id": "0191f2a0-1c3d-7a10-9f01-000000000101",
+  "inventory_item_name": "Paneer",
+  "dimension": "MASS",
+  "counted_quantity_micro": 4750000000,
+  "expected_quantity_micro": 5120000000,
+  "note": "370g short",
+  "schema_version": 1
+}

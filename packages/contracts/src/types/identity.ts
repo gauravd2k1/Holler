@@ -38,6 +38,22 @@ export const PermissionSchema = z.enum([
   "table.manage",
   "outlet.manage",
   "user.manage",
+  // Milestone 4 additions (ADR-018). RoleCode INVENTORY_MANAGER has existed
+  // since Milestone 1 and mapped to no permissions at all.
+  "inventory.manage",
+  "inventory.count",
+  "recipe.manage",
+  // Rides along, and lands WITH its enforced check on the GSTIN write path.
+  // backend/internal/compliance gated those writes on outlet.manage, so
+  // whoever could rename a table could set the GSTIN printed on every invoice.
+  // A permission defined and never checked is a documented obligation dressed
+  // as structural enforcement.
+  //
+  // wastage.approve is deliberately NOT here: the approval workflow moves to
+  // M5 with the append-only approval row that enforces it, because a mutable
+  // approval flag on an append-only row is a contradiction. Wastage RECORDING
+  // ships in M4 under inventory.manage.
+  "billing.manage",
 ]);
 export type Permission = z.infer<typeof PermissionSchema>;
 

@@ -10,6 +10,7 @@ import { SyncEnvelopeSchema, AGGREGATE_AUTHORITY, AggregateTypeSchema } from "./
 import {
   AppUserSchema,
   AuditEventSchema,
+  PermissionSchema,
   AUDIT_REDACTED_FIELDS,
   EdgeUserCacheEntrySchema,
   EdgeDeviceCredentialSchema,
@@ -27,6 +28,20 @@ import { OUTBOX_EVENT_TYPES } from "./events";
 import { TaxProfileSchema } from "./tax";
 import { InvoiceSchema } from "./invoice";
 import { PaymentSchema, CashShiftSchema } from "./payment";
+// Milestone 4 additions (0.5.0, ADR-018).
+import {
+  InventoryItemSchema,
+  ItemUnitConversionSchema,
+  RecipeSchema,
+  RecipeIngredientSchema,
+  ModifierIngredientDeltaSchema,
+  StockLedgerEntrySchema,
+  StockCountSchema,
+  StockCountLineSchema,
+  StockDeductionGapSchema,
+  DIMENSIONAL_CONVERSIONS,
+  YIELD_FACTOR_PPM_IDENTITY,
+} from "./inventory";
 
 function loadFixture(name: string): unknown {
   return JSON.parse(readFileSync(resolve(__dirname, "../../fixtures", name), "utf-8"));
@@ -395,5 +410,157 @@ describe("contract drift", () => {
     expect(serialized).not.toContain("refresh_token");
     expect(serialized).not.toContain("access_token");
     expect(serialized).not.toContain("plaintext");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Milestone 4 — inventory and recipes (0.5.0, ADR-018)
+// ---------------------------------------------------------------------------
+
+describe("Milestone 4 inventory contracts", () => {
+  const fixture = (name: string) => loadFixture(name) as Record<string, unknown>;
+
+  it("every fixture parses against its schema", () => {
+    expect(() => InventoryItemSchema.parse(fixture("inventory_item.json"))).not.toThrow();
+    expect(() => ItemUnitConversionSchema.parse(fixture("item_unit_conversion.json"))).not.toThrow();
+    expect(() => RecipeSchema.parse(fixture("recipe.json"))).not.toThrow();
+    expect(() => RecipeIngredientSchema.parse(fixture("recipe_ingredient.json"))).not.toThrow();
+    expect(() =>
+      ModifierIngredientDeltaSchema.parse(fixture("modifier_ingredient_delta.json")),
+    ).not.toThrow();
+    expect(() => StockLedgerEntrySchema.parse(fixture("stock_ledger_entry.json"))).not.toThrow();
+    expect(() => StockCountSchema.parse(fixture("stock_count.json"))).not.toThrow();
+    expect(() => StockCountLineSchema.parse(fixture("stock_count_line.json"))).not.toThrow();
+    expect(() =>
+      StockDeductionGapSchema.parse(fixture("stock_deduction_gap.json")),
+    ).not.toThrow();
+  });
+
+  it("assigns §50.1 authority the same way every milestone before it did", () => {
+    expect(AGGREGATE_AUTHORITY.inventory_item).toBe("CLOUD_TO_EDGE");
+    expect(AGGREGATE_AUTHORITY.recipe).toBe("CLOUD_TO_EDGE");
+    expect(AGGREGATE_AUTHORITY.stock_ledger_entry).toBe("EDGE_TO_CLOUD");
+    expect(AGGREGATE_AUTHORITY.stock_count).toBe("EDGE_TO_CLOUD");
+    expect(AGGREGATE_AUTHORITY.stock_deduction_gap).toBe("EDGE_TO_CLOUD");
+  });
+
+  // The cloud may re-derive its own stock view by summing the ingested ledger.
+  // Mirroring the edge's projection would make it a second authority on stock —
+  // the mistake mirroring invoice_sequence would make about invoice numbers.
+  it("keeps the edge-local projection and the child rows out of AggregateType", () => {
+    for (const forbidden of [
+      "stock_balance_snapshot",
+      "item_unit_conversion",
+      "recipe_ingredient",
+      "modifier_ingredient_delta",
+      "stock_count_line",
+    ]) {
+      expect(AggregateTypeSchema.options).not.toContain(forbidden);
+    }
+  });
+
+  // Rule 1: stock never blocks a sale. A negative balance is a variance signal,
+  // and no schema may quietly enforce non-negative.
+  it("accepts a negative applied quantity", () => {
+    const entry = fixture("stock_ledger_entry.json");
+    expect(() =>
+      StockLedgerEntrySchema.parse({ ...entry, quantity_applied_micro: -999_999_999 }),
+    ).not.toThrow();
+  });
+
+  it("rejects a micro-quantity beyond Number.MAX_SAFE_INTEGER", () => {
+    const entry = fixture("stock_ledger_entry.json");
+    expect(() =>
+      StockLedgerEntrySchema.parse({
+        ...entry,
+        quantity_applied_micro: Number.MAX_SAFE_INTEGER + 2,
+      }),
+    ).toThrow();
+  });
+
+  it("requires exactly one provenance group, keyed on origin", () => {
+    const entry = fixture("stock_ledger_entry.json");
+    // RECIPE row carrying a modifier delta as well.
+    expect(() =>
+      StockLedgerEntrySchema.parse({ ...entry, modifier_delta_id: entry.recipe_id }),
+    ).toThrow();
+    // RECIPE row carrying no recipe.
+    expect(() =>
+      StockLedgerEntrySchema.parse({ ...entry, recipe_id: null }),
+    ).toThrow();
+    // WASTAGE row must carry neither.
+    expect(() =>
+      StockLedgerEntrySchema.parse({ ...entry, origin: "WASTAGE" }),
+    ).toThrow();
+    // MODIFIER_DELTA row with its delta and no recipe.
+    expect(() =>
+      StockLedgerEntrySchema.parse({
+        ...entry,
+        origin: "MODIFIER_DELTA",
+        recipe_id: null,
+        recipe_version: null,
+        recipe_name: null,
+        modifier_delta_id: entry.source_order_id,
+        modifier_name: "Extra Paneer",
+        modifier_delta_version: 7,
+      }),
+    ).not.toThrow();
+  });
+
+  it("requires exactly one recipe component, and refuses self-reference", () => {
+    const ing = fixture("recipe_ingredient.json");
+    expect(() =>
+      RecipeIngredientSchema.parse({ ...ing, sub_recipe_id: ing.recipe_id }),
+    ).toThrow();
+    expect(() =>
+      RecipeIngredientSchema.parse({ ...ing, inventory_item_id: null }),
+    ).toThrow();
+    expect(() =>
+      RecipeIngredientSchema.parse({
+        ...ing,
+        component_kind: "SUB_RECIPE",
+        inventory_item_id: null,
+        sub_recipe_id: ing.recipe_id,
+      }),
+    ).toThrow();
+  });
+
+  // Two sources of truth for kg→g would need a silent precedence rule between
+  // disagreeing numbers, which is how a deduction becomes quietly wrong.
+  it("refuses a pack label that collides with the frozen dimensional map", () => {
+    const conv = fixture("item_unit_conversion.json");
+    for (const reserved of ["kg", "KG", "g", "ml", "litre", "dozen"]) {
+      expect(() =>
+        ItemUnitConversionSchema.parse({ ...conv, pack_unit_label: reserved }),
+      ).toThrow();
+    }
+    expect(() =>
+      ItemUnitConversionSchema.parse({ ...conv, pack_unit_label: "crate" }),
+    ).not.toThrow();
+  });
+
+  // These are physical constants and must match the Go mirror exactly.
+  it("holds within-dimension conversions only", () => {
+    expect(DIMENSIONAL_CONVERSIONS.kg).toEqual({ dimension: "MASS", micro: 1_000_000_000 });
+    expect(DIMENSIONAL_CONVERSIONS.ml).toEqual({ dimension: "VOLUME", micro: 1_000 });
+    expect(DIMENSIONAL_CONVERSIONS.dozen).toEqual({ dimension: "COUNT", micro: 12_000_000 });
+    expect(Object.keys(DIMENSIONAL_CONVERSIONS)).toHaveLength(7);
+  });
+
+  // Deferred columns stay inert in M4, pinned by exact assertion.
+  it("keeps the deferred fields inert", () => {
+    expect(fixture("inventory_item.json").yield_factor_ppm).toBe(YIELD_FACTOR_PPM_IDENTITY);
+    expect(fixture("recipe_ingredient.json").yield_factor_ppm).toBe(YIELD_FACTOR_PPM_IDENTITY);
+    expect(fixture("stock_ledger_entry.json").unit_cost_paise).toBeNull();
+  });
+
+  // wastage.approve is deliberately absent: an unused permission is a
+  // documented obligation dressed as structural enforcement.
+  it("adds the M4 permissions and not wastage.approve", () => {
+    expect(PermissionSchema.options).toContain("inventory.manage");
+    expect(PermissionSchema.options).toContain("inventory.count");
+    expect(PermissionSchema.options).toContain("recipe.manage");
+    expect(PermissionSchema.options).toContain("billing.manage");
+    expect(PermissionSchema.options).not.toContain("wastage.approve");
   });
 });

@@ -34,6 +34,17 @@ export const AggregateTypeSchema = z.enum([
   "compliance_version",
   "invoice_series",
   "discount_definition",
+  // Milestone 4 additions (ADR-018). item_unit_conversion, recipe_ingredient,
+  // modifier_ingredient_delta and stock_count_line are deliberately absent —
+  // child rows travelling inside their parent's payload or config bundle.
+  // stock_balance_snapshot is absent for the invoice_sequence reason: it is an
+  // edge-local derived projection and must never sync. The cloud may re-derive
+  // its own stock view by summing the ledger; it may never mirror the edge's.
+  "inventory_item",
+  "recipe",
+  "stock_ledger_entry",
+  "stock_count",
+  "stock_deduction_gap",
 ]);
 export type AggregateType = z.infer<typeof AggregateTypeSchema>;
 
@@ -70,6 +81,18 @@ export const AGGREGATE_AUTHORITY: Record<AggregateType, SyncDirection> = {
   compliance_version: "CLOUD_TO_EDGE",
   invoice_series: "CLOUD_TO_EDGE",
   discount_definition: "CLOUD_TO_EDGE",
+  // Milestone 4 (ADR-018). Same cut as every milestone before it: a raw
+  // material's definition and a recipe are management decisions, while
+  // consuming, wasting and counting stock are shop-floor transactions the
+  // outlet performs with the uplink down.
+  inventory_item: "CLOUD_TO_EDGE",
+  recipe: "CLOUD_TO_EDGE",
+  stock_ledger_entry: "EDGE_TO_CLOUD",
+  stock_count: "EDGE_TO_CLOUD",
+  // A signal, not a correction — and cloud-visible because the person who can
+  // see it and the person who can fix it are different people in different
+  // places. Shares the ledger ingest route rather than taking its own.
+  stock_deduction_gap: "EDGE_TO_CLOUD",
 };
 
 export const SyncEnvelopeSchema = z

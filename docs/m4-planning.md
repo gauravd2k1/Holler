@@ -206,7 +206,7 @@ and therefore not deferrable to an implementation track:
 | **T1** | Units, integer conversion, recipe resolution incl. sub-recipes with cycle/depth guards | Pure arithmetic. Same shape as the tax engine; test it to death. |
 | **T2** | Ledger + automatic deduction inside the `confirm_order` transaction | Includes the deduction-gap path (§4 rule 2). |
 | **T3** | Wastage recording, stock counts, variance, snapshot sealing | Wastage **recording** is in M4; only the approval workflow moved to M5. The business-date definition is settled in the pre-track, not here. |
-| **T4** | `backend/internal/inventory` — config write routes, `/sync/config` contribution, envelope-wrapped ledger ingest | Directory is currently empty. |
+| **T4** | `backend/internal/inventory` — config write routes, `/sync/config` contribution, envelope-wrapped ledger ingest, **cross-tenant isolation tests for `recipe`, `recipe_ingredient`, `modifier_ingredient_delta`** | Directory is currently empty. The isolation tests are not optional: `backend/internal/menu` has none today, and adding three tables to an untested boundary is how it stays untested. The retrofit for the pre-existing menu tables stays in the backlog; M4's own tables do not inherit that exemption. |
 | **T5** | POS surfaces — stock list, wastage entry, count entry, visible low-stock signal, "items sold with no recipe" report | §64 error design binds: a gap that reaches nobody is not a feature. |
 | **T6** | e2e harness invariants, including the skip-three-days sealing invariant (§2.4) | Each **deliberately broken and observed to fail** before being trusted, per the §66 precedent. Persistence round-trip tests are **not** here — see §4(h). |
 
