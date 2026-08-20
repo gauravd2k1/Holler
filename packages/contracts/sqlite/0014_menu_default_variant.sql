@@ -1,0 +1,55 @@
+-- Holler Edge SQLite — menu_item_variant.is_default. Contracts 0.5.0, ADR-018 §2.1.
+--
+-- CONFIG, cloud->edge. A child row of menu_item, exactly as before; this adds
+-- a column to an existing child, not a new shape and not a new aggregate.
+--
+-- WHY. ADR-018 binds a recipe to a sellable unit NOT NULL:
+-- recipe(tenant, menu_item, menu_item_variant) with one unique index and no
+-- fallback branch anywhere in the deduction path. The nullable alternative —
+-- NULL meaning "applies to all variants" — was rejected on a structural
+-- defect, not a preference: NULL != NULL in both SQLite and PostgreSQL, so a
+-- unique index over a nullable variant column does NOT prevent two "all
+-- variants" recipes for one item. Making that safe needs two indexes, an
+-- exact-match-else-null resolution rule duplicated in edge Rust and cloud Go,
+-- and a precedence rule for when both exist. Three drift surfaces against one
+-- index and no rule.
+--
+-- NOT NULL only holds if every sellable item resolves to a variant. It does
+-- not today: order_item.variant_id is nullable (0001_init.sql), carried as
+-- Option<String> in edge/database/src/model.rs and apps/pos/src-tauri/src/dto.rs,
+-- and the dev seed menu has items with no variant at all (Samosa, Pani Puri,
+-- the breads).
+--
+-- THE FIX IS A DEFAULT VARIANT, NOT A NULLABLE FK.
+--
+--   1. This column, with at most one default per item (index below).
+--   2. Every menu item has at least one variant. An item authored with none
+--      gets an auto-created 'Regular' at price_delta_paise = 0, so pricing is
+--      unchanged and no bill moves by a paisa.
+--   3. add_order_item STAMPS variant_id = chosen ?? the item's default, at
+--      line creation. Deduction therefore never sees a NULL and needs no
+--      fallback — the rule lives in ONE place, at the write, instead of in
+--      every reader.
+--
+-- WHY THIS KEEPS 0.5.0 ADDITIVE. order_item.variant_id STAYS NULLABLE.
+-- Historical rows keep their NULLs and are never backfilled, because no
+-- deduction was ever computed against a pre-M4 sale. Nothing that compiles
+-- today stops compiling, and no data migration runs on an outlet's database.
+--
+-- THE SOFT SPOT, STATED RATHER THAN HIDDEN. "Every menu item has at least one
+-- variant" is a cross-row invariant no DB constraint can express. It is
+-- enforced at the cloud menu write path, in devseed, and by a CI assertion.
+-- ADR-018 Rule 2 is the safety net: a line that somehow reaches deduction with
+-- no variant records a deduction gap and COMPLETES THE SALE. A config defect
+-- must never fail a confirm.
+--
+-- The POS stamps silently. A cashier is never made to choose 'Regular'.
+ALTER TABLE menu_item_variant ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0
+    CHECK (is_default IN (0, 1));
+
+-- Partial, and deliberately so. This is the one place a partial unique index
+-- is the right tool: it enforces AT MOST ONE default per item, rather than
+-- trying to distinguish rows by a nullable value — which is the exact misuse
+-- the recipe binding above rejects.
+CREATE UNIQUE INDEX idx_menu_item_variant_one_default
+    ON menu_item_variant(menu_item_id) WHERE is_default = 1;

@@ -1,0 +1,50 @@
+-- Holler Edge SQLite — outlet.day_start_time. Contracts 0.5.0, ADR-018 §9.2.
+--
+-- CONFIG, cloud->edge. A trading day's start is a management decision, and it
+-- travels on the outlet row that already carries `timezone` and
+-- `config_version`. Not a new aggregate; `outlet` is already config.
+--
+-- WHY THIS EXISTS, AND WHY IT IS A DEFECT FIX RATHER THAN A FEATURE.
+--
+-- `invoice.business_date` (0006) is commented "outlet-local YYYY-MM-DD; may
+-- cross midnight". It is not outlet-local. `business_date_from`
+-- (apps/pos/src-tauri/src/commands/billing.rs) is:
+--
+--     instant_iso.get(0..10).unwrap_or(instant_iso).to_string()
+--
+-- — the first ten characters of a UTC instant. The display-number reset in
+-- edge/database/src/repo.rs buckets the same way. In IST the UTC day rolls at
+-- 05:30 LOCAL, so every outlet trading past midnight has been assigning
+-- invoice numbers and day-end / cash-shift reconciliation to the PREVIOUS
+-- business day for the whole midnight-to-05:30 window — the busiest tail of a
+-- dinner service, in shipped M3 code. docs/retro.md, 2026-08-20.
+--
+-- `outlet.timezone` has been on this row since 0001_init.sql. The data needed
+-- to compute it correctly was always there; nothing consumed it.
+--
+-- THE DEFINITION, pinned here because two languages must agree byte for byte:
+--
+--     business_date(instant_utc, outlet)
+--         = date_part( (instant_utc -> outlet.timezone) - outlet.day_start_time )
+--
+-- '00:00' — the default, and correct for any outlet that closes before
+-- midnight — makes this the plain outlet-local date. '04:00' books a 01:30
+-- sale to the previous date.
+--
+-- TWO RULES BIND EVERY CONSUMER.
+--
+-- 1. Both sides resolve IANA zone identifiers (Rust `chrono-tz`, Go
+--    `time.LoadLocation`). Never a hard-coded offset: an offset is right for
+--    Asia/Kolkata today and wrong for the first zone with DST.
+--
+-- 2. `business_date` is computed ONCE, at write time, at the edge, and stored.
+--    It is NEVER recomputed on read. Changing an outlet's timezone or
+--    day-start must not retro-move a past invoice, a past shift, or a sealed
+--    stock snapshot into a different day — the same immutability reasoning
+--    that keeps stock_ledger_entry free of FKs to config (ADR-018 §6).
+--
+-- WHY IT LANDS IN 0.5.0 AND NOT IN AN IMPLEMENTATION TRACK. `business_date` is
+-- a 0.5.0 column and `stock_balance_snapshot` (0017) keys on it. Settling what
+-- the value MEANS after the column that stores it has frozen would be
+-- backwards.
+ALTER TABLE outlet ADD COLUMN day_start_time TEXT NOT NULL DEFAULT '00:00';

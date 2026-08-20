@@ -1,0 +1,23 @@
+-- Holler Cloud PostgreSQL — outlet.day_start_time. Contracts 0.5.0, ADR-018 §9.2.
+-- Mirror of sqlite/0013_outlet_day_start.sql, whose header carries the full
+-- reasoning. CONFIG, cloud->edge, on the outlet row that already holds
+-- `timezone`. Not a new aggregate.
+--
+-- Summary of the decision recorded in the SQLite mirror:
+--   * business_date has been computed as the first ten characters of a UTC
+--     instant, while being named and documented as outlet-local. In IST the
+--     UTC day rolls at 05:30 local, so any outlet trading past midnight has
+--     been booking invoice numbers and day-end reconciliation to the previous
+--     business day. A defect in shipped M3 code, not a new feature.
+--   * business_date(instant_utc, outlet)
+--         = date_part( (instant_utc -> outlet.timezone) - outlet.day_start_time )
+--   * Both sides resolve IANA identifiers; never a hard-coded offset.
+--   * The value is computed once at write time at the edge and stored, never
+--     recomputed on read. Changing a timezone or day-start must not retro-move
+--     a past invoice or a sealed snapshot into another day.
+--
+-- The cloud never computes business_date for an edge-authoritative row: it
+-- replays what the edge sent. This column exists here because it is config the
+-- cloud OWNS and ships down, and because cloud-side reporting must be able to
+-- group by the same day boundary the outlet used.
+ALTER TABLE outlet ADD COLUMN day_start_time TEXT NOT NULL DEFAULT '00:00';

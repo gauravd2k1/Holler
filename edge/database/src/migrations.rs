@@ -75,6 +75,32 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0012_printer_role.sql",
         include_str!("../../../packages/contracts/sqlite/0012_printer_role.sql"),
     ),
+    // 0013-0017 (ADR-018, contracts 0.5.0) — M4 inventory. Registered in the
+    // same change that created them, deliberately: 0009-0011 and 0005 before
+    // them each sat on disk unregistered and therefore never applied, and the
+    // symmetric check below is what now makes that impossible to repeat
+    // silently. If you add a file to packages/contracts/sqlite/, it belongs
+    // here in the same commit.
+    (
+        "0013_outlet_day_start.sql",
+        include_str!("../../../packages/contracts/sqlite/0013_outlet_day_start.sql"),
+    ),
+    (
+        "0014_menu_default_variant.sql",
+        include_str!("../../../packages/contracts/sqlite/0014_menu_default_variant.sql"),
+    ),
+    (
+        "0015_m4_inventory_config.sql",
+        include_str!("../../../packages/contracts/sqlite/0015_m4_inventory_config.sql"),
+    ),
+    (
+        "0016_m4_stock_ledger.sql",
+        include_str!("../../../packages/contracts/sqlite/0016_m4_stock_ledger.sql"),
+    ),
+    (
+        "0017_m4_stock_snapshot.sql",
+        include_str!("../../../packages/contracts/sqlite/0017_m4_stock_snapshot.sql"),
+    ),
 ];
 
 /// Applies any migrations not yet reflected in `PRAGMA user_version`. Safe
@@ -350,6 +376,244 @@ mod tests {
              never applies to any edge database (the 0009-0011 bug); an \
              entry in this list with no file on disk is stale"
         );
+    }
+
+    /// Known `DEFAULT gen_random_uuid()` columns in the PostgreSQL contracts,
+    /// all of them in `0001_init.sql`. A RATCHET: this number may go DOWN and
+    /// must never go up.
+    ///
+    /// §74 requires ids be app-generated UUIDv7/ULID, and the contract rubric
+    /// forbids DB-side random defaults. A database-side default is not merely
+    /// stylistically off: it is a second id authority, it produces UUIDv4
+    /// (unsorted, so it indexes badly on the very tables that grow fastest),
+    /// and for an edge-authoritative row it is actively wrong, because the id
+    /// is minted at the outlet and replayed.
+    ///
+    /// Retrofitting is one ALTER per table and the app already supplies every
+    /// id, but it is not this change's job. Filed in docs/backlog-m2.md with
+    /// the trigger "the next migration that touches the table". This lint is
+    /// what makes that trigger safe to wait for: the debt cannot grow while it
+    /// waits.
+    const POSTGRES_DB_SIDE_UUID_DEFAULT_BASELINE: usize = 8;
+
+    /// The ratchet. Fails if a new DB-side random id default appears anywhere
+    /// in the PostgreSQL contracts, and fails just as loudly if the baseline
+    /// above is stale after a retrofit — so the number tracks reality rather
+    /// than drifting into fiction.
+    #[test]
+    fn postgres_db_side_uuid_defaults_only_ever_decrease() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("packages")
+            .join("contracts")
+            .join("postgres");
+
+        let mut found = 0usize;
+        let mut files: Vec<String> = Vec::new();
+
+        for entry in std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()))
+        {
+            let entry = entry.expect("readable directory entry");
+            if !entry
+                .path()
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("sql"))
+            {
+                continue;
+            }
+            let sql = std::fs::read_to_string(entry.path()).expect("readable migration");
+            // Comments discussing the pattern are not uses of it -- several
+            // migrations, including this milestone's, explain in prose why
+            // they do NOT use it.
+            let count = sql
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("--"))
+                .filter(|line| line.contains("gen_random_uuid()"))
+                .count();
+            if count > 0 {
+                files.push(format!("{}: {count}", entry.file_name().to_string_lossy()));
+                found += count;
+            }
+        }
+
+        files.sort();
+
+        assert!(
+            found <= POSTGRES_DB_SIDE_UUID_DEFAULT_BASELINE,
+            "DEFAULT gen_random_uuid() count rose to {found} (baseline \
+             {POSTGRES_DB_SIDE_UUID_DEFAULT_BASELINE}). Ids are app-generated \
+             UUIDv7 per §74; a DB-side random default is a second id authority \
+             and is actively wrong for an edge-authoritative row, whose id is \
+             minted at the outlet and replayed. Found in: {files:?}"
+        );
+
+        assert_eq!(
+            found, POSTGRES_DB_SIDE_UUID_DEFAULT_BASELINE,
+            "DEFAULT gen_random_uuid() count fell to {found} -- good. Lower \
+             POSTGRES_DB_SIDE_UUID_DEFAULT_BASELINE to {found} so the ratchet \
+             holds the new ground instead of allowing a silent regression back \
+             up to {POSTGRES_DB_SIDE_UUID_DEFAULT_BASELINE}."
+        );
+    }
+
+    /// Migrations that exist in ONE store on purpose, each with the reason it
+    /// does. Keyed by the stem after the four-digit prefix, because the two
+    /// stores have drifted out of numeric step (postgres/0003_refresh_token
+    /// has no SQLite twin, so every later pair is offset).
+    ///
+    /// WHY THIS LIST EXISTS. Before it, the asymmetry was real but undeclared:
+    /// `invoice_sequence` is edge-local by an explicit ADR-016 decision, and
+    /// **nothing anywhere asserted that it must not gain a PostgreSQL mirror**.
+    /// The registration check above reads only the SQLite directory, so a
+    /// future author "tidying up" the missing file would have broken a
+    /// load-bearing authority decision and no test would have objected.
+    ///
+    /// The declaration IS the guard: adding the missing counterpart now fails
+    /// this test, and the failure names the reason the file is missing.
+    const SINGLE_STORE_MIGRATIONS: &[(&str, &str, &str)] = &[
+        (
+            "sqlite",
+            "edge_device_credential_cache.sql",
+            "ADR-017: the edge-cached half of device enrollment. The cloud's \
+             own device_credential lives in postgres/device_enrollment.sql; \
+             this is the cache, and caching is an edge concern.",
+        ),
+        (
+            "sqlite",
+            "payment_append_only_triggers.sql",
+            "ADR-016 0.4.5: append-only enforcement for `payment`. NOTE: the \
+             PostgreSQL `payment` table carries only a COMMENT saying \
+             append-only, with no trigger behind it — so this asymmetry is \
+             half deliberate and half a gap, and the gap is filed in \
+             docs/backlog-m2.md rather than hidden here.",
+        ),
+        (
+            "sqlite",
+            "print_job_invoice_ref.sql",
+            "ADR-016 0.4.5: print_job is EDGE-LOCAL and deliberately absent \
+             from AggregateType. A spool job never crosses to the cloud, so \
+             there is nothing for a mirror to hold.",
+        ),
+        (
+            "sqlite",
+            "m4_stock_snapshot.sql",
+            "ADR-018 §9: stock_balance_snapshot is an edge-local derived \
+             projection. The cloud MAY re-derive its own stock view by summing \
+             the ingested ledger; mirroring the edge's projection would make \
+             it a second authority on stock, the same mistake mirroring \
+             invoice_sequence would make about invoice numbers (§33).",
+        ),
+        (
+            "postgres",
+            "refresh_token.sql",
+            "ADR-012: refresh tokens are cloud-only and deliberately not an \
+             AggregateType. An edge node never issues or rotates one.",
+        ),
+        (
+            "postgres",
+            "device_enrollment.sql",
+            "ADR-017: device_credential is cloud-only. The plaintext token is \
+             returned once at enrollment; the edge holds only the cache above.",
+        ),
+        (
+            "postgres",
+            "device_credential_config_version.sql",
+            "ADR-017 0.4.5: per-row config_version on the cloud-only \
+             device_credential, so /sync/config's since_version filter reaches \
+             it. Amends a cloud-only table.",
+        ),
+    ];
+
+    /// Every SQLite/PostgreSQL asymmetry must be a DECLARED one.
+    ///
+    /// This does not require the two stores to match — they legitimately do
+    /// not. It requires that each place they differ is listed above with a
+    /// reason, so an undeclared divergence fails loudly and a deliberate one
+    /// cannot be silently "fixed".
+    #[test]
+    fn every_single_store_migration_is_declared() {
+        fn stems(dir: &std::path::Path) -> Vec<String> {
+            std::fs::read_dir(dir)
+                .unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()))
+                .map(|entry| entry.expect("readable directory entry"))
+                .filter(|entry| {
+                    entry
+                        .path()
+                        .extension()
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("sql"))
+                })
+                .map(|entry| {
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    // Strip the four-digit prefix and its underscore; the two
+                    // stores are numbered independently.
+                    name.get(5..).unwrap_or(&name).to_string()
+                })
+                .collect()
+        }
+
+        let contracts = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("packages")
+            .join("contracts");
+
+        let sqlite = stems(&contracts.join("sqlite"));
+        let postgres = stems(&contracts.join("postgres"));
+
+        assert!(
+            !sqlite.is_empty() && !postgres.is_empty(),
+            "found zero .sql files in one of the contract stores — the path is \
+             almost certainly wrong, not the directory empty"
+        );
+
+        let declared = |store: &str, stem: &str| {
+            SINGLE_STORE_MIGRATIONS
+                .iter()
+                .any(|(s, name, _)| *s == store && *name == stem)
+        };
+
+        for stem in &sqlite {
+            assert!(
+                postgres.contains(stem) || declared("sqlite", stem),
+                "sqlite/*_{stem} has no PostgreSQL counterpart and is not \
+                 declared in SINGLE_STORE_MIGRATIONS. Either add the mirror, \
+                 or declare the asymmetry WITH THE REASON it is deliberate."
+            );
+        }
+
+        for stem in &postgres {
+            assert!(
+                sqlite.contains(stem) || declared("postgres", stem),
+                "postgres/*_{stem} has no SQLite counterpart and is not \
+                 declared in SINGLE_STORE_MIGRATIONS. Either add the mirror, \
+                 or declare the asymmetry WITH THE REASON it is deliberate."
+            );
+        }
+
+        // The guard in the other direction: a declared single-store migration
+        // that has since GAINED its counterpart is a decision that was quietly
+        // reversed. Fail, so the reversal is deliberate and the reason above
+        // is deleted along with it.
+        for (store, stem, reason) in SINGLE_STORE_MIGRATIONS {
+            let (own, other) = match *store {
+                "sqlite" => (&sqlite, &postgres),
+                _ => (&postgres, &sqlite),
+            };
+            assert!(
+                own.contains(&stem.to_string()),
+                "SINGLE_STORE_MIGRATIONS lists {store}/*_{stem}, which no \
+                 longer exists. Remove the stale entry."
+            );
+            assert!(
+                !other.contains(&stem.to_string()),
+                "{store}/*_{stem} was declared single-store because: {reason}\n\
+                 A counterpart now exists in the other store. If that is \
+                 intended, the authority decision behind it has changed and \
+                 the ADR must say so — do not silently delete this entry."
+            );
+        }
     }
 
     #[test]

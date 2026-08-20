@@ -39,7 +39,7 @@ A recipe binds at the same grain as a price.
 
 The nullable form — null meaning "applies to all variants" — is **rejected on a structural defect, not a preference**: `NULL != NULL` in both PostgreSQL and SQLite, so a unique index over a nullable `menu_item_variant_id` does not prevent two "all variants" rows for the same item. Making it safe needs two indexes (one partial), plus an exact-match-else-null fallback rule duplicated in edge Rust and cloud Go, plus a precedence rule for when both exist. Three drift surfaces against one index and no rule.
 
-- `recipe` is unique on `(tenant_id, menu_item_id, menu_item_variant_id)`, all NOT NULL. One index. No fallback branch exists anywhere in the resolution path.
+- `recipe` is unique on **`menu_item_variant_id` alone**, NOT NULL. A variant belongs to exactly one menu item, which belongs to exactly one brand, so this is inherently tenant-scoped and needs no composite key — and it carries no denormalised `menu_item_id` that could disagree with the variant's own parent. (An earlier draft of this section specified `(tenant_id, menu_item_id, menu_item_variant_id)`; writing the migration showed that to be the same rule expressed loosely, with two redundant columns. The tighter form is what shipped.) One index. No fallback branch exists anywhere in the resolution path.
 - `modifier_ingredient_delta` keys on `menu_item_modifier_id` and carries a **signed** `quantity_micro` — "Extra Paneer" is positive, "No Onion" is negative.
 - **A modifier with no delta row deducts nothing.** Absence is never read as consent — 0.4.7's `printer_role` rule applied to ingredients.
 
