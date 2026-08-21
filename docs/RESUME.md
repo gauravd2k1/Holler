@@ -123,6 +123,7 @@ verification itself.
 | Defect | What was claimed | What was true |
 |---|---|---|
 | `business_date_from` | Named "business date", doc-commented "Outlet-local business day" | First ten characters of a **UTC** instant |
+| `outlet.day_start_time` (added 2026-08-21) | A configurable business-day cutoff | The column is read and never written, so the cutoff is stuck at `'00:00'`. **Half of the fix works**: `outlet.timezone` IS written, so `business_date` is the correct outlet-local calendar date and dinner service no longer books to the wrong day. What is broken is the configurable cutoff — an outlet wanting a 4am boundary cannot have one. An unusable config knob, not live wrong data. |
 | `payment` (PostgreSQL) | `0007:286` comment: "APPEND-ONLY" | No trigger. SQLite had them since 0.4.5 |
 | `audit_event` | `0002:63` "Local append-only audit" | No trigger, either store |
 | `cash_movement` | `0006:392` "Append-only: a correction is another movement" | No trigger, either store |

@@ -485,3 +485,31 @@ that tells it what milestone it is in — what it may build and what it must not
 touch — had no version, no review and no check, and it was wrong for months.
 If a document is load-bearing for a machine, treat it like code: give it a
 single source of truth and something that fails when the copies disagree.
+
+## 2026-08-21 — Two agents owned one crate, and the commit was the least of it
+
+T0b (seeding) and T2 (deduction fixes) were dispatched concurrently. Both owned
+`edge/database`. Both edited `repo.rs`. By the time it surfaced — as a
+`git status` showing one file with two tracks' work interleaved — every option
+was bad: split by file and the tree does not compile; revert one and live
+in-progress work is destroyed; commit together and the history stops
+distinguishing them.
+
+Committing together was correct. Manufacturing a clean history by rewriting an
+agent's work to suit it would have been worse, and the commit message says
+plainly what happened.
+
+**But the commit was never the problem. The dispatch was.**
+
+Disjoint directory ownership is already the rule, and it came out of the
+worktree data-loss incident (2026-08-07). It is a **dispatch-time** decision:
+the moment two briefs name the same directory, the outcome is determined, and
+nothing later recovers it. What made it easy to miss here is that the two tasks
+*sounded* disjoint — "seed some data" and "fix three defects" — while sharing a
+repository module neither brief mentioned.
+
+**The check is on the owned-directory list, not on the task description.** Two
+briefs naming the same directory are a conflict however unrelated the work
+reads. If the work genuinely must share a directory, serialise it: dispatch,
+wait, dispatch again.
+

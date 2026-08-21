@@ -105,6 +105,27 @@ message. Since ADR-017 that parameter carries real authority, and it currently
 lands in every proxy and access log on the path. This is credential material in
 already-shipped code. It is not waiter-app blocked and does not wait for M9.
 
+### 2.8 The config-delivery guard, generalised — and T4's acceptance condition
+
+Three instances is enough evidence that scoping a guard to the last instance
+does not hold. `/sync/config` returned an empty `users` array; `printer_role`
+never reached an edge at all; `outlet.day_start_time` is read and never written.
+Each time the fix was narrower than the class.
+
+**The guard, stated generally:** for every column of every cloud-authoritative
+table in the SQLite schema, assert that it appears in `syncConfigResponse` **or**
+is explicitly declared edge-local-derived, with a reason per exemption. Same
+shape as `SINGLE_STORE_MIGRATIONS`, and for the same purpose — the declaration
+is the guard, and an undeclared omission fails rather than passing quietly.
+
+Columns, not aggregates: `day_start_time` is a column on `outlet` and would slip
+past an aggregate-scoped check.
+
+**T4's acceptance condition, because a write path is not a working knob:**
+acceptance **must exercise a non-midnight `day_start_time`**. Ship the write
+path, run every test at `00:00`, and the knob is green without ever having
+turned — which is how `day_start_time` reached this state in the first place.
+
 ### 2.7 Stopping rule for further contract bumps before T2
 
 0.5.1 and 0.5.2 both landed between T1 and T2, each correcting a defect the
@@ -246,7 +267,7 @@ and therefore not deferrable to an implementation track:
 | **T1** | Units, integer conversion, recipe resolution incl. sub-recipes with cycle/depth guards | Pure arithmetic. Same shape as the tax engine; test it to death. |
 | **T2** | Ledger + automatic deduction inside the `confirm_order` transaction | Includes the deduction-gap path (§4 rule 2). |
 | **T3** | Wastage recording, stock counts, variance, snapshot sealing | Wastage **recording** is in M4; only the approval workflow moved to M5. The business-date definition is settled in the pre-track, not here. |
-| **T4** | `backend/internal/inventory` — config write routes, `/sync/config` contribution, envelope-wrapped ledger ingest, **cross-tenant isolation tests for `recipe`, `recipe_ingredient`, `modifier_ingredient_delta`**, **the `printer_roles` and `day_start_time` sync-bundle fixes**, and **a guard asserting every config field the edge reads appears in `syncConfigResponse`** — fields, not only aggregates: `day_start_time` is a column on `outlet` and would slip past an aggregate-only guard | Directory is currently empty. The isolation tests are not optional: `backend/internal/menu` has none today, and adding three tables to an untested boundary is how it stays untested. The retrofit for the pre-existing menu tables stays in the backlog; M4's own tables do not inherit that exemption. |
+| **T4** | `backend/internal/inventory` — config write routes, `/sync/config` contribution, envelope-wrapped ledger ingest, **cross-tenant isolation tests for `recipe`, `recipe_ingredient`, `modifier_ingredient_delta`**, **the `printer_roles` and `day_start_time` sync-bundle fixes**, and **the generalised config-delivery guard** (§2.8) | Directory is currently empty. The isolation tests are not optional: `backend/internal/menu` has none today, and adding three tables to an untested boundary is how it stays untested. The retrofit for the pre-existing menu tables stays in the backlog; M4's own tables do not inherit that exemption. |
 | **T5** | POS surfaces — stock list, wastage entry, count entry, visible low-stock signal, "items sold with no recipe" report | §64 error design binds: a gap that reaches nobody is not a feature. |
 | **T6** | e2e harness invariants, including the skip-three-days sealing invariant (§2.4) | Each **deliberately broken and observed to fail** before being trusted, per the §66 precedent. Persistence round-trip tests are **not** here — see §4(h). |
 
