@@ -5060,3 +5060,444 @@ mod m3_billing_config_tests {
         );
     }
 }
+
+// ---------------------------------- Milestone 4: wastage / counts / variance
+// / snapshot sealing (T3, ADR-018) -------------------------------------------
+// Business logic (permission gating is the caller's, per ADR-018 §11 — see
+// `crate::stock`'s module doc comment) lives in `crate::stock::*`; this
+// section is the plain SQL these functions call, matching the split
+// `crate::payment::cash_shift` already draws against this file.
+
+/// `stock_ledger_entry`, as stored — the reverse of `deduction::ledger::
+/// insert_stock_ledger_entry`'s column list. `&Connection`, not
+/// `&Transaction`: callers that need this inside an open write transaction
+/// pass `&tx` (`rusqlite::Transaction` derefs to `Connection`), the same
+/// pattern `get_outlet_business_date_config` documents for the reverse
+/// direction.
+fn stock_ledger_entry_from_row(row: &rusqlite::Row) -> rusqlite::Result<StockLedgerEntry> {
+    Ok(StockLedgerEntry {
+        id: row.get(0)?,
+        outlet_id: row.get(1)?,
+        entry_seq: row.get(2)?,
+        inventory_item_id: row.get(3)?,
+        inventory_item_name: row.get(4)?,
+        dimension: row.get(5)?,
+        entry_type: row.get(6)?,
+        origin: row.get(7)?,
+        quantity_applied_micro: row.get(8)?,
+        recipe_id: row.get(9)?,
+        recipe_version: row.get(10)?,
+        recipe_name: row.get(11)?,
+        source_order_id: row.get(12)?,
+        source_order_item_id: row.get(13)?,
+        reason_code: row.get(14)?,
+        note: row.get(15)?,
+        occurred_at: row.get(16)?,
+        business_date: row.get(17)?,
+        created_by_user_id: row.get(18)?,
+        modifier_delta_id: row.get(19)?,
+        modifier_name: row.get(20)?,
+        modifier_delta_version: row.get(21)?,
+        unit_cost_paise: row.get(22)?,
+    })
+}
+
+const STOCK_LEDGER_ENTRY_COLUMNS: &str = "id, outlet_id, entry_seq, inventory_item_id, \
+    inventory_item_name, dimension, entry_type, origin, quantity_applied_micro, recipe_id, \
+    recipe_version, recipe_name, source_order_id, source_order_item_id, reason_code, note, \
+    occurred_at, business_date, created_by_user_id, modifier_delta_id, modifier_name, \
+    modifier_delta_version, unit_cost_paise";
+
+/// Fetches the exact row a just-completed insert wrote, by `(outlet_id,
+/// entry_seq)` — the table's own uniqueness key (0016) — so
+/// `crate::stock::wastage::record_wastage` can hand the caller back what was
+/// actually persisted rather than re-deriving it from the request.
+pub(crate) fn get_stock_ledger_entry_by_seq(
+    conn: &Connection,
+    outlet_id: &str,
+    entry_seq: i64,
+) -> DbResult<Option<StockLedgerEntry>> {
+    conn.query_row(
+        &format!(
+            "SELECT {STOCK_LEDGER_ENTRY_COLUMNS} FROM stock_ledger_entry \
+             WHERE outlet_id = ?1 AND entry_seq = ?2"
+        ),
+        params![outlet_id, entry_seq],
+        stock_ledger_entry_from_row,
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+/// `(name, dimension)` for one `inventory_item` — the snapshot every M4
+/// stock write needs and no config row's own identity should ever be
+/// trusted to still carry later (0016's no-FK provenance rule).
+pub(crate) fn get_inventory_item_snapshot(
+    conn: &Connection,
+    inventory_item_id: &str,
+) -> DbResult<Option<(String, String)>> {
+    conn.query_row(
+        "SELECT name, dimension FROM inventory_item WHERE id = ?1",
+        params![inventory_item_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+// -------------------------------------------------------- stock_count ------
+
+pub(crate) fn insert_stock_count(
+    conn: &Connection,
+    id: &str,
+    outlet_id: &str,
+    business_date: &str,
+    started_at: &str,
+    counted_by_user_id: Option<&str>,
+    note: Option<&str>,
+) -> DbResult<()> {
+    conn.execute(
+        "INSERT INTO stock_count
+            (id, outlet_id, business_date, status, started_at, completed_at,
+             counted_by_user_id, note)
+         VALUES (?1, ?2, ?3, 'OPEN', ?4, NULL, ?5, ?6)",
+        params![
+            id,
+            outlet_id,
+            business_date,
+            started_at,
+            counted_by_user_id,
+            note
+        ],
+    )?;
+    Ok(())
+}
+
+fn stock_count_from_row(row: &rusqlite::Row) -> rusqlite::Result<StockCount> {
+    Ok(StockCount {
+        id: row.get(0)?,
+        outlet_id: row.get(1)?,
+        business_date: row.get(2)?,
+        status: row.get(3)?,
+        started_at: row.get(4)?,
+        completed_at: row.get(5)?,
+        counted_by_user_id: row.get(6)?,
+        note: row.get(7)?,
+    })
+}
+
+const STOCK_COUNT_COLUMNS: &str = "id, outlet_id, business_date, status, started_at, \
+    completed_at, counted_by_user_id, note";
+
+pub(crate) fn get_stock_count(conn: &Connection, id: &str) -> DbResult<Option<StockCount>> {
+    conn.query_row(
+        &format!("SELECT {STOCK_COUNT_COLUMNS} FROM stock_count WHERE id = ?1"),
+        params![id],
+        stock_count_from_row,
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+/// Marks a stock count COMPLETED. Returns the number of rows affected (`0`
+/// or `1`) rather than erroring itself — `crate::stock::count` checks
+/// `status == 'OPEN'` before calling this in the SAME transaction, so `0`
+/// here can only mean a logic error in that caller, not a legitimate race
+/// (the edge is a single SQLite writer, ADR-018 Rule 3) — the same
+/// "checked-then-affected" shape `close_cash_shift_in_tx` already uses.
+pub(crate) fn mark_stock_count_completed(
+    tx: &Transaction,
+    id: &str,
+    completed_at: &str,
+) -> DbResult<usize> {
+    let affected = tx.execute(
+        "UPDATE stock_count SET completed_at = ?2, status = 'COMPLETED' \
+         WHERE id = ?1 AND status = 'OPEN'",
+        params![id, completed_at],
+    )?;
+    Ok(affected)
+}
+
+fn stock_count_line_from_row(row: &rusqlite::Row) -> rusqlite::Result<StockCountLine> {
+    Ok(StockCountLine {
+        id: row.get(0)?,
+        stock_count_id: row.get(1)?,
+        inventory_item_id: row.get(2)?,
+        inventory_item_name: row.get(3)?,
+        dimension: row.get(4)?,
+        counted_quantity_micro: row.get(5)?,
+        expected_quantity_micro: row.get(6)?,
+        note: row.get(7)?,
+    })
+}
+
+const STOCK_COUNT_LINE_COLUMNS: &str = "id, stock_count_id, inventory_item_id, \
+    inventory_item_name, dimension, counted_quantity_micro, expected_quantity_micro, note";
+
+/// Inserts a new line, or corrects an existing one for the same
+/// `(stock_count_id, inventory_item_id)` (the table's own `UNIQUE` index) —
+/// "mutable while OPEN" (0016's header). `new_id_if_inserted` is used only
+/// on the INSERT branch; on a conflict the existing row's `id` survives
+/// untouched (the `DO UPDATE SET` clause never assigns `id`), so a line's
+/// identity is stable across corrections. If `stock_count_id` names a count
+/// that is not `OPEN`, the table's own
+/// `stock_count_line_is_immutable_once_completed` trigger aborts this —
+/// `crate::stock::count::add_or_update_count_line` checks status first so
+/// the caller gets `DbError::StockCountNotOpen` instead of a raw trigger
+/// failure surfacing as `DbError::Sqlite`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn upsert_stock_count_line(
+    tx: &Transaction,
+    new_id_if_inserted: &str,
+    stock_count_id: &str,
+    inventory_item_id: &str,
+    inventory_item_name: &str,
+    dimension: &str,
+    counted_quantity_micro: i64,
+    expected_quantity_micro: i64,
+    note: Option<&str>,
+) -> DbResult<StockCountLine> {
+    tx.query_row(
+        &format!(
+            "INSERT INTO stock_count_line
+                (id, stock_count_id, inventory_item_id, inventory_item_name, dimension,
+                 counted_quantity_micro, expected_quantity_micro, note)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(stock_count_id, inventory_item_id) DO UPDATE SET
+                inventory_item_name = excluded.inventory_item_name,
+                dimension = excluded.dimension,
+                counted_quantity_micro = excluded.counted_quantity_micro,
+                expected_quantity_micro = excluded.expected_quantity_micro,
+                note = excluded.note
+             RETURNING {STOCK_COUNT_LINE_COLUMNS}"
+        ),
+        params![
+            new_id_if_inserted,
+            stock_count_id,
+            inventory_item_id,
+            inventory_item_name,
+            dimension,
+            counted_quantity_micro,
+            expected_quantity_micro,
+            note,
+        ],
+        stock_count_line_from_row,
+    )
+    .map_err(Into::into)
+}
+
+pub(crate) fn list_stock_count_lines(
+    conn: &Connection,
+    stock_count_id: &str,
+) -> DbResult<Vec<StockCountLine>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {STOCK_COUNT_LINE_COLUMNS} FROM stock_count_line \
+         WHERE stock_count_id = ?1 ORDER BY inventory_item_name"
+    ))?;
+    let rows = stmt
+        .query_map(params![stock_count_id], stock_count_line_from_row)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// The total sellable units sold with an unresolvable recipe (ADR-018 §10.1
+/// "N sales unaccounted"), for one outlet, up to and including
+/// `business_date` — the same cumulative posture the bounded stock read
+/// itself takes, since a count's `expected_quantity_micro` is also
+/// cumulative-since-forever, not scoped to one day.
+pub(crate) fn sum_unaccounted_sales_through_business_date(
+    conn: &Connection,
+    outlet_id: &str,
+    business_date: &str,
+) -> DbResult<i64> {
+    conn.query_row(
+        "SELECT COALESCE(SUM(quantity), 0) FROM stock_deduction_gap \
+         WHERE outlet_id = ?1 AND business_date <= ?2",
+        params![outlet_id, business_date],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
+// --------------------------------------------- stock_balance_snapshot ------
+// EDGE-LOCAL, no AggregateType, no sync direction, ever (ADR-018 §9). See
+// `crate::stock::snapshot` for the sealing algorithm these functions serve.
+
+/// The bounded stock read (ADR-018 §9's formula, verbatim): the latest
+/// SEALED snapshot's closing balance plus every entry NOT COVERED BY ITS
+/// MARK — `entry_seq > through_entry_seq`, never `business_date > business_date`
+/// (a late arrival carrying a sealed day's business_date must still be
+/// counted; see the 0017 migration header for the falsified failure mode).
+/// `0` covers an item that has never been sealed AND never had a ledger
+/// entry — genuinely zero stock recorded, not a sentinel.
+pub(crate) fn get_current_stock(
+    conn: &Connection,
+    outlet_id: &str,
+    inventory_item_id: &str,
+) -> DbResult<i64> {
+    let sealed: Option<(i64, i64)> = conn
+        .query_row(
+            "SELECT closing_quantity_micro, through_entry_seq FROM stock_balance_snapshot \
+             WHERE outlet_id = ?1 AND inventory_item_id = ?2 \
+             ORDER BY business_date DESC LIMIT 1",
+            params![outlet_id, inventory_item_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let (closing, mark) = sealed.unwrap_or((0, 0));
+    let delta: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(quantity_applied_micro), 0) FROM stock_ledger_entry \
+         WHERE outlet_id = ?1 AND inventory_item_id = ?2 AND entry_seq > ?3",
+        params![outlet_id, inventory_item_id, mark],
+        |row| row.get(0),
+    )?;
+    Ok(closing + delta)
+}
+
+/// The outlet-wide bounded stock read T5's low-stock surfacing reads:
+/// every `is_active` `inventory_item`, joined against
+/// [`get_current_stock`]'s same formula per item (a correlated subquery,
+/// not a materialised join — ADR-018 §9: "there is no materialized
+/// current-stock table"). Ordered by name for a stable, human-readable list.
+pub(crate) fn list_current_stock_for_outlet(
+    conn: &Connection,
+    outlet_id: &str,
+) -> DbResult<Vec<CurrentStockLine>> {
+    let mut stmt = conn.prepare(
+        "SELECT ii.id, ii.name, ii.dimension, ii.reorder_level_micro, ii.par_level_micro, \
+                COALESCE(snap.closing_quantity_micro, 0) + COALESCE((
+                    SELECT SUM(sle.quantity_applied_micro) FROM stock_ledger_entry sle
+                     WHERE sle.outlet_id = ii.outlet_id AND sle.inventory_item_id = ii.id
+                       AND sle.entry_seq > COALESCE(snap.through_entry_seq, 0)
+                ), 0) AS current_quantity_micro
+         FROM inventory_item ii
+         LEFT JOIN stock_balance_snapshot snap
+           ON snap.outlet_id = ii.outlet_id AND snap.inventory_item_id = ii.id
+          AND snap.business_date = (
+              SELECT MAX(s2.business_date) FROM stock_balance_snapshot s2
+               WHERE s2.outlet_id = ii.outlet_id AND s2.inventory_item_id = ii.id
+          )
+         WHERE ii.outlet_id = ?1 AND ii.is_active = 1
+         ORDER BY ii.name",
+    )?;
+    let rows = stmt
+        .query_map(params![outlet_id], |row| {
+            Ok(CurrentStockLine {
+                inventory_item_id: row.get(0)?,
+                inventory_item_name: row.get(1)?,
+                dimension: row.get(2)?,
+                reorder_level_micro: row.get(3)?,
+                par_level_micro: row.get(4)?,
+                current_quantity_micro: row.get(5)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Every distinct `(inventory_item_id, business_date)` pair that has ledger
+/// activity strictly before `today` and no existing sealed snapshot for
+/// that exact day, ascending by date then item — the catch-up work list
+/// (ADR-018 §9.1: "every unsealed prior business day is sealed, in order").
+pub(crate) fn find_unsealed_item_days_before(
+    tx: &Transaction,
+    outlet_id: &str,
+    today_business_date: &str,
+) -> DbResult<Vec<(String, String)>> {
+    let mut stmt = tx.prepare(
+        "SELECT DISTINCT sle.inventory_item_id, sle.business_date
+         FROM stock_ledger_entry sle
+         WHERE sle.outlet_id = ?1 AND sle.business_date < ?2
+           AND NOT EXISTS (
+               SELECT 1 FROM stock_balance_snapshot s
+                WHERE s.outlet_id = sle.outlet_id AND s.inventory_item_id = sle.inventory_item_id
+                  AND s.business_date = sle.business_date
+           )
+         ORDER BY sle.business_date ASC, sle.inventory_item_id ASC",
+    )?;
+    let rows = stmt
+        .query_map(params![outlet_id, today_business_date], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// For one `(outlet, item)`, as of the end of `through_business_date`
+/// (inclusive): the item's own most recent `dimension`, the HIGH-WATER MARK
+/// (`MAX(entry_seq)` among its own entries dated on-or-before that day —
+/// each item's mark is independent, since the bounded read filters by item
+/// too) and the full closing balance up to that mark. Recomputed as a full
+/// sum rather than incrementally from a prior seal: catch-up sealing is rare
+/// (it runs once per skipped day, at `Db::open`), so the simpler, obviously-
+/// correct form is worth more here than the saved re-scan.
+pub(crate) fn compute_seal_for_item_day(
+    tx: &Transaction,
+    outlet_id: &str,
+    inventory_item_id: &str,
+    through_business_date: &str,
+) -> DbResult<Option<(String, i64, i64)>> {
+    tx.query_row(
+        "SELECT
+            (SELECT dimension FROM stock_ledger_entry
+              WHERE outlet_id = ?1 AND inventory_item_id = ?2 AND business_date <= ?3
+              ORDER BY entry_seq DESC LIMIT 1) AS dimension,
+            MAX(entry_seq) AS mark,
+            SUM(quantity_applied_micro) AS closing
+         FROM stock_ledger_entry
+         WHERE outlet_id = ?1 AND inventory_item_id = ?2 AND business_date <= ?3",
+        params![outlet_id, inventory_item_id, through_business_date],
+        |row| {
+            let dimension: Option<String> = row.get(0)?;
+            let mark: Option<i64> = row.get(1)?;
+            let closing: Option<i64> = row.get(2)?;
+            Ok(match (dimension, mark, closing) {
+                (Some(d), Some(m), Some(c)) => Some((d, m, c)),
+                _ => None,
+            })
+        },
+    )
+    .map_err(Into::into)
+}
+
+/// Seals one `(outlet, item, business_date)` — an INSERT whose primary-key
+/// collision is a NO-OP, never an UPDATE (the 0017 trigger enforces this;
+/// `INSERT OR IGNORE` is how this function stays idempotent without ever
+/// tripping it — ADR-018 §9.1: "sealing an already-sealed day is a no-op,
+/// not an error and not a second row").
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn seal_snapshot(
+    tx: &Transaction,
+    outlet_id: &str,
+    inventory_item_id: &str,
+    business_date: &str,
+    closing_quantity_micro: i64,
+    dimension: &str,
+    through_entry_seq: i64,
+    sealed_at: &str,
+) -> DbResult<()> {
+    tx.execute(
+        "INSERT OR IGNORE INTO stock_balance_snapshot
+            (outlet_id, inventory_item_id, business_date, closing_quantity_micro, dimension,
+             through_entry_seq, sealed_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            outlet_id,
+            inventory_item_id,
+            business_date,
+            closing_quantity_micro,
+            dimension,
+            through_entry_seq,
+            sealed_at,
+        ],
+    )?;
+    Ok(())
+}
+
+pub(crate) fn list_all_outlet_ids(tx: &Transaction) -> DbResult<Vec<String>> {
+    let mut stmt = tx.prepare("SELECT id FROM outlet")?;
+    let rows = stmt
+        .query_map([], |row| row.get(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}

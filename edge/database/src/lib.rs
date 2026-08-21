@@ -17,6 +17,7 @@ pub mod model;
 mod payment;
 mod pragma;
 pub mod repo;
+pub(crate) mod stock;
 pub mod tax;
 
 pub use error::{DbError, DbResult};
@@ -43,6 +44,21 @@ use std::collections::BTreeMap;
 /// only assigned transactionally at insert time. Scoped to `OrderCreated`
 /// specifically so a future caller of these two methods with a different
 /// event type is never silently rewritten.
+/// The ADR-018 §9.1 catch-up call: every unsealed prior business day, for
+/// every outlet, sealed before this `Db` handle is ever returned to a
+/// caller that could serve a stock read. Called from both [`Db::open`] and
+/// [`Db::open_in_memory_for_tests`] — deliberately unconditional, since a
+/// guarantee that depends on a human performing day-end close is not a
+/// guarantee (`crate::stock::snapshot`'s module doc comment). Runs in its
+/// own transaction, separate from migrations, so a sealing failure never
+/// masks (or is masked by) a migration failure.
+fn seal_unsealed_stock_snapshots_on_open(conn: &mut Connection) -> DbResult<()> {
+    let tx = conn.transaction()?;
+    stock::snapshot::seal_unsealed_business_days(&tx, chrono::Utc::now())?;
+    tx.commit()?;
+    Ok(())
+}
+
 fn patch_display_number_if_order_created(
     outbox: &NewOutboxEntry,
     display_number: &str,
@@ -93,9 +109,10 @@ impl Db {
 
         crypto::open_file(sealed_path, plaintext_path, &key)?;
 
-        let conn = Connection::open(plaintext_path)?;
+        let mut conn = Connection::open(plaintext_path)?;
         pragma::configure_connection(&conn)?;
         migrations::apply_all(&conn)?;
+        seal_unsealed_stock_snapshots_on_open(&mut conn)?;
 
         // Mark this session unclean-until-closed. Presence of this marker
         // on a future open is what makes an unclean shutdown detectable
@@ -115,9 +132,10 @@ impl Db {
     /// caller that does not need persistence — never used for a real
     /// device, since it is never sealed at rest.
     pub fn open_in_memory_for_tests() -> DbResult<Self> {
-        let conn = Connection::open_in_memory()?;
+        let mut conn = Connection::open_in_memory()?;
         pragma::configure_connection(&conn)?;
         migrations::apply_all(&conn)?;
+        seal_unsealed_stock_snapshots_on_open(&mut conn)?;
         Ok(Self {
             conn: Some(conn),
             plaintext_path: PathBuf::new(),
@@ -579,6 +597,120 @@ impl Db {
         )?;
         tx.commit()?;
         Ok(())
+    }
+
+    // --------------------------------- Milestone 4: wastage / stock counts /
+    // variance / snapshot sealing (T3, ADR-018). Permission gating
+    // (`inventory.manage`/`inventory.count`) is the CALLER's responsibility —
+    // see `crate::stock`'s module doc comment for why no permission check
+    // lives in this crate.
+
+    /// Records one wastage event as a negative `stock_ledger_entry`
+    /// (`entry_type='WASTAGE'`, `origin='WASTAGE'`) — there is no dedicated
+    /// wastage table. **Caller must have already checked `inventory.manage`.**
+    /// Rejects before any write on a non-positive quantity
+    /// ([`DbError::WastageQuantityNotPositive`]) or a blank reason
+    /// ([`DbError::WastageReasonRequired`]).
+    pub fn record_wastage(
+        &mut self,
+        req: model::NewWastageEntry,
+    ) -> DbResult<model::StockLedgerEntry> {
+        let tx = self.connection_mut().transaction()?;
+        let result = stock::wastage::record_wastage(&tx, req)?;
+        tx.commit()?;
+        Ok(result)
+    }
+
+    /// Opens a new physical stock count. **Caller must have already checked
+    /// `inventory.count`.** `business_date` is computed once, internally,
+    /// from `req.started_at` (ADR-018 §9.2) — see `crate::stock::count`.
+    pub fn open_stock_count(&mut self, req: model::NewStockCount) -> DbResult<model::StockCount> {
+        let tx = self.connection_mut().transaction()?;
+        let result = stock::count::open_stock_count(&tx, req)?;
+        tx.commit()?;
+        Ok(result)
+    }
+
+    /// Adds a new counted line, or corrects an existing one for the same
+    /// item, on an OPEN count — "mutable while OPEN" (0016). Rejects with
+    /// [`DbError::StockCountNotOpen`] once the count is `COMPLETED`.
+    /// `expected_quantity_micro` is snapshotted fresh, right now, via the
+    /// bounded stock read — never accepted from the caller.
+    pub fn add_or_update_stock_count_line(
+        &mut self,
+        stock_count_id: &str,
+        outlet_id: &str,
+        req: model::NewStockCountLine,
+    ) -> DbResult<model::StockCountLine> {
+        let tx = self.connection_mut().transaction()?;
+        let result = stock::count::add_or_update_count_line(&tx, stock_count_id, outlet_id, req)?;
+        tx.commit()?;
+        Ok(result)
+    }
+
+    pub fn list_stock_count_lines(
+        &self,
+        stock_count_id: &str,
+    ) -> DbResult<Vec<model::StockCountLine>> {
+        repo::list_stock_count_lines(self.connection(), stock_count_id)
+    }
+
+    pub fn get_stock_count(&self, id: &str) -> DbResult<Option<model::StockCount>> {
+        repo::get_stock_count(self.connection(), id)
+    }
+
+    /// Completes an OPEN count: marks it `COMPLETED`, then posts one
+    /// `COUNT_ADJUSTMENT` `stock_ledger_entry` per line with a non-zero
+    /// variance, so the ledger stays the single source of stock. Every
+    /// posted entry carries the count's own `business_date`, not
+    /// `completed_at`'s — see `crate::stock::count`'s module doc comment for
+    /// why (the late-arrival shape `crate::stock::snapshot` exists to
+    /// survive).
+    pub fn complete_stock_count(
+        &mut self,
+        stock_count_id: &str,
+        outlet_id: &str,
+        completed_at: &str,
+    ) -> DbResult<model::StockCount> {
+        let tx = self.connection_mut().transaction()?;
+        let result =
+            stock::count::complete_stock_count(&tx, stock_count_id, outlet_id, completed_at)?;
+        tx.commit()?;
+        Ok(result)
+    }
+
+    /// Builds the Actual-vs-Theoretical variance report for a COMPLETED
+    /// count — DERIVED, never stored. `sales_unaccounted` is the named
+    /// "N sales unaccounted" term (ADR-018 §10.1), never folded into any
+    /// line's shrinkage.
+    pub fn get_stock_count_variance_report(
+        &mut self,
+        stock_count_id: &str,
+        outlet_id: &str,
+    ) -> DbResult<model::StockCountVarianceReport> {
+        let tx = self.connection_mut().transaction()?;
+        let result = stock::variance::build_variance_report(&tx, stock_count_id, outlet_id)?;
+        tx.commit()?;
+        Ok(result)
+    }
+
+    /// The bounded current-stock read for one item (ADR-018 §9): latest
+    /// sealed snapshot's closing balance plus every entry not covered by its
+    /// mark. Never a materialised column — this always re-derives.
+    pub fn get_current_stock(
+        &self,
+        outlet_id: &str,
+        inventory_item_id: &str,
+    ) -> DbResult<i64> {
+        repo::get_current_stock(self.connection(), outlet_id, inventory_item_id)
+    }
+
+    /// The outlet-wide bounded stock read T5's low-stock surfacing reads —
+    /// every active `inventory_item` with its current quantity and reorder/
+    /// par levels, so a caller can flag a crossed threshold without a second
+    /// query per item.
+    pub fn list_current_stock(&self, outlet_id: &str) -> DbResult<Vec<model::CurrentStockLine>> {
+        repo::list_current_stock_for_outlet(self.connection(), outlet_id)
     }
 
     /// Sets `order_type`/`table_id` on a `DRAFT` order — the cashier

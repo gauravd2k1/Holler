@@ -299,6 +299,40 @@ pub enum DbError {
         order_id: String,
         items: Vec<MissingHsnSacItem>,
     },
+
+    /// Milestone 4, ADR-018 §11: wastage recording is gated on
+    /// `inventory.manage`, and a `WASTAGE` ledger entry must carry a real
+    /// reason code — the same "no unexplained shortfall in an append-only
+    /// table" discipline `CashVarianceReasonRequired` and
+    /// `CashMovementReasonRequired` already enforce for cash. Checked BEFORE
+    /// any write, mirroring the `stock_ledger_entry` table's own
+    /// `reason_code` column comment ("wastage: SPOILAGE, PREP_LOSS,
+    /// BREAKAGE, ..."). Permission enforcement itself is out of this
+    /// crate's authority — see the doc comment on `Db::record_wastage`.
+    #[error("a WASTAGE ledger entry requires a non-blank reason_code")]
+    WastageReasonRequired,
+
+    /// A caller supplied a non-positive wastage quantity. The request
+    /// carries the MAGNITUDE lost, always `> 0`; the negative sign that
+    /// makes it a consumption is applied internally
+    /// (`crate::stock::wastage`), the same convention `deduction::ledger`
+    /// already uses for recipe consumption. Zero or negative here is a
+    /// caller defect, not "nothing wasted" (that call should simply not be
+    /// made).
+    #[error("wastage quantity {quantity_micro} micro-units must be > 0")]
+    WastageQuantityNotPositive { quantity_micro: i64 },
+
+    /// A caller tried to add/update a line on, or complete, a `stock_count`
+    /// that is not currently `OPEN` — either it does not exist, or it was
+    /// already completed. Checked here first so the caller gets a specific,
+    /// actionable message (§64) rather than the raw
+    /// `stock_count_line_is_immutable_once_completed` trigger failure that
+    /// would otherwise surface as an opaque `DbError::Sqlite`.
+    #[error("stock count {stock_count_id} is not open (status is {status})")]
+    StockCountNotOpen {
+        stock_count_id: String,
+        status: String,
+    },
 }
 
 pub type DbResult<T> = Result<T, DbError>;

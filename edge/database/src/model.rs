@@ -1285,6 +1285,173 @@ pub struct NewStockDeductionGap {
     pub business_date: String,
 }
 
+/// A `stock_ledger_entry`, as stored — field-for-field the table plus
+/// nothing else, the read counterpart of [`NewStockLedgerEntry`]. Returned
+/// by [`crate::stock::wastage::record_wastage`] and by the completed lines
+/// of [`crate::stock::count::complete_stock_count`] so a caller can display
+/// what was actually written without a second query.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StockLedgerEntry {
+    pub id: String,
+    pub outlet_id: String,
+    pub entry_seq: i64,
+    pub inventory_item_id: String,
+    pub inventory_item_name: String,
+    pub dimension: String,
+    pub entry_type: String,
+    pub origin: String,
+    pub quantity_applied_micro: i64,
+    pub recipe_id: Option<String>,
+    pub recipe_version: Option<i64>,
+    pub recipe_name: Option<String>,
+    pub source_order_id: Option<String>,
+    pub source_order_item_id: Option<String>,
+    pub reason_code: Option<String>,
+    pub note: Option<String>,
+    pub occurred_at: String,
+    pub business_date: String,
+    pub created_by_user_id: Option<String>,
+    pub modifier_delta_id: Option<String>,
+    pub modifier_name: Option<String>,
+    pub modifier_delta_version: Option<i64>,
+    pub unit_cost_paise: Option<i64>,
+}
+
+// ------------------------------ wastage / stock counts / variance (M4, T3) --
+// `stock_count`/`stock_count_line` are EDGE-AUTHORITATIVE (edge->cloud;
+// `stock_count` is the AggregateType, the line rides as a child row — the
+// `invoice`/`invoice_line` precedent). Wastage has NO table of its own: it
+// is one more `stock_ledger_entry` row (`entry_type='WASTAGE'`,
+// `origin='WASTAGE'`), exactly as the 0016 migration's own `entry_type`
+// list documents.
+
+/// Caller-supplied fields to record one wastage event. `quantity_micro` is
+/// the MAGNITUDE lost (always `> 0`, rejected otherwise —
+/// [`crate::error::DbError::WastageQuantityNotPositive`]); the negative
+/// sign that makes it a consumption is applied inside
+/// [`crate::stock::wastage::record_wastage`], not carried by the caller.
+/// `reason_code` is mandatory and non-blank
+/// ([`crate::error::DbError::WastageReasonRequired`]) — an append-only
+/// shortfall with no named cause reads as theft.
+///
+/// `business_date` is deliberately ABSENT here: it is computed once,
+/// internally, from `occurred_at` and the outlet's own
+/// `timezone`/`day_start_time` — the same discipline
+/// `deduction::ledger::deduct_stock_for_confirmed_order` already applies to
+/// every other M4 stock write, never accepted from a caller (ADR-018 §9.2).
+#[derive(Debug, Clone)]
+pub struct NewWastageEntry {
+    pub outlet_id: String,
+    pub inventory_item_id: String,
+    pub quantity_micro: i64,
+    pub reason_code: String,
+    pub note: Option<String>,
+    pub occurred_at: String,
+    pub created_by_user_id: Option<String>,
+}
+
+/// Caller-supplied fields to open a physical stock count. `business_date` is
+/// likewise absent — computed once, internally, from `started_at` (ADR-018
+/// §9.2), never accepted from a caller.
+#[derive(Debug, Clone)]
+pub struct NewStockCount {
+    pub id: String,
+    pub outlet_id: String,
+    pub started_at: String,
+    pub counted_by_user_id: Option<String>,
+    pub note: Option<String>,
+}
+
+/// A `stock_count`, as stored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StockCount {
+    pub id: String,
+    pub outlet_id: String,
+    pub business_date: String,
+    /// `"OPEN" | "COMPLETED"`.
+    pub status: String,
+    pub started_at: String,
+    pub completed_at: Option<String>,
+    pub counted_by_user_id: Option<String>,
+    pub note: Option<String>,
+}
+
+/// Caller-supplied fields to add or correct one counted line on an OPEN
+/// count. `expected_quantity_micro` is deliberately absent: it is derived
+/// from the bounded stock read AT THE MOMENT OF COUNTING
+/// ([`crate::stock::snapshot::get_current_stock_in_tx`]) inside
+/// [`crate::stock::count::add_or_update_count_line`], never accepted from a
+/// caller and never recomputed once written — ADR-018's "snapshotted at the
+/// moment of counting, never recomputed" rule.
+#[derive(Debug, Clone)]
+pub struct NewStockCountLine {
+    pub inventory_item_id: String,
+    pub counted_quantity_micro: i64,
+    pub note: Option<String>,
+}
+
+/// A `stock_count_line`, as stored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StockCountLine {
+    pub id: String,
+    pub stock_count_id: String,
+    pub inventory_item_id: String,
+    pub inventory_item_name: String,
+    pub dimension: String,
+    pub counted_quantity_micro: i64,
+    pub expected_quantity_micro: i64,
+    pub note: Option<String>,
+}
+
+/// One line of a variance report: Actual (counted) vs Theoretical
+/// (expected), as quantity and as a basis-point percentage — never a float
+/// (§31/0006's `rate_bps` precedent, generalised the way ADR-018 §3
+/// generalised money-is-paise to quantity-is-micro). `variance_percentage_bps`
+/// is `None` when `expected_quantity_micro` is zero: a percentage OF zero
+/// theoretical stock is undefined, not zero.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StockCountVarianceLine {
+    pub inventory_item_id: String,
+    pub inventory_item_name: String,
+    pub dimension: String,
+    pub counted_quantity_micro: i64,
+    pub expected_quantity_micro: i64,
+    /// `counted_quantity_micro - expected_quantity_micro`. Positive: more
+    /// was found than theory predicted. Negative: shrinkage.
+    pub variance_quantity_micro: i64,
+    pub variance_percentage_bps: Option<i64>,
+}
+
+/// A completed count's variance report — DERIVED, never stored as
+/// authoritative (ADR-018: "the ledger is the only source of stock").
+/// `sales_unaccounted` is the named term ADR-018 §10.1 requires: the number
+/// of sellable units sold with no resolvable recipe, up to and including
+/// this count's own `business_date`, at this outlet — reported standalone
+/// rather than folded into any line's shrinkage, because a
+/// `stock_deduction_gap` carries no `inventory_item_id` to attribute it to
+/// (that is the entire reason the gap exists: nothing was resolved).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StockCountVarianceReport {
+    pub stock_count_id: String,
+    pub business_date: String,
+    pub lines: Vec<StockCountVarianceLine>,
+    pub sales_unaccounted: i64,
+}
+
+/// One row of the bounded, outlet-wide current-stock read (ADR-018 §9) —
+/// what T5's low-stock surfacing reads from. `current_quantity_micro` is
+/// ALWAYS `latest_sealed_snapshot.closing + entries not covered by its
+/// mark`, per [`crate::stock::snapshot`]; it is never a stored column.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CurrentStockLine {
+    pub inventory_item_id: String,
+    pub inventory_item_name: String,
+    pub dimension: String,
+    pub current_quantity_micro: i64,
+    pub reorder_level_micro: Option<i64>,
+    pub par_level_micro: Option<i64>,
+}
+
 #[derive(Debug, Clone)]
 pub struct SyncState {
     pub outlet_id: String,
