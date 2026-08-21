@@ -1105,6 +1105,80 @@ pub struct DeviceCredentialCache {
     pub config_version: i64,
 }
 
+// -------------------------------------- stock_ledger_entry / gap (M4, T2) --
+// EDGE-AUTHORITATIVE (edge->cloud), ADR-018 §6/§10.1. See
+// `packages/contracts/sqlite/0016_m4_stock_ledger.sql`'s header for the four
+// rules every consumer of these two tables must keep; `crate::deduction` is
+// their only writer.
+
+/// Caller-supplied fields to insert one `stock_ledger_entry` row. `id` and
+/// `entry_seq` are minted by [`crate::deduction::ledger`] at insert time —
+/// not by the caller — the same reason `NewOrder`'s KOT ids are minted
+/// inside this crate rather than accepted: `entry_seq` is a per-outlet
+/// monotonic mark assigned atomically in the SAME transaction as the insert
+/// (`UNIQUE (outlet_id, entry_seq)`, the `invoice_sequence` pattern), so a
+/// value chosen outside that transaction could never be guaranteed gapless.
+///
+/// Every field here is a direct mirror of the 0016 column of the same name;
+/// see that migration's comments for what each one means and why the row
+/// carries no foreign keys. `quantity_applied_micro` is SIGNED — negative
+/// for consumption — and already carries its sign; this struct does not
+/// re-derive or re-check it.
+#[derive(Debug, Clone)]
+pub struct NewStockLedgerEntry {
+    pub outlet_id: String,
+    pub inventory_item_id: String,
+    pub inventory_item_name: String,
+    /// `"MASS" | "VOLUME" | "COUNT"` — [`crate::inventory::Dimension::as_str`].
+    pub dimension: String,
+    /// `"PURCHASE" | "CONSUMPTION" | "WASTAGE" | "TRANSFER_IN" |
+    /// "TRANSFER_OUT" | "ADJUSTMENT" | "RETURN_TO_VENDOR" |
+    /// "PRODUCTION_CONSUMPTION" | "PRODUCTION_OUTPUT"`.
+    pub entry_type: String,
+    /// `"RECIPE" | "MODIFIER_DELTA" | "MANUAL" | "COUNT_ADJUSTMENT" |
+    /// "WASTAGE"` — fixes which of the two provenance groups below must be
+    /// populated (the table's own CHECK, mirrored by
+    /// [`crate::deduction::ledger::insert_stock_ledger_entry`]'s caller).
+    pub origin: String,
+    pub quantity_applied_micro: i64,
+    pub recipe_id: Option<String>,
+    pub recipe_version: Option<i64>,
+    pub recipe_name: Option<String>,
+    pub source_order_id: Option<String>,
+    pub source_order_item_id: Option<String>,
+    pub reason_code: Option<String>,
+    pub note: Option<String>,
+    pub occurred_at: String,
+    /// Computed ONCE by [`crate::deduction::business_date::compute_business_date`]
+    /// before this struct is built — never recomputed inside the insert.
+    pub business_date: String,
+    pub created_by_user_id: Option<String>,
+    pub modifier_delta_id: Option<String>,
+    pub modifier_name: Option<String>,
+    pub modifier_delta_version: Option<i64>,
+}
+
+/// Caller-supplied fields to insert one `stock_deduction_gap` row — a
+/// SIGNAL, never backfilled once the recipe is authored (ADR-018 §10.1).
+/// `id` is minted by [`crate::deduction::ledger`], matching every other
+/// operational insert in this crate.
+#[derive(Debug, Clone)]
+pub struct NewStockDeductionGap {
+    pub outlet_id: String,
+    pub order_id: String,
+    pub order_item_id: String,
+    pub menu_item_id: String,
+    pub menu_item_variant_id: Option<String>,
+    pub menu_item_name: String,
+    pub quantity: i64,
+    /// [`crate::inventory::GapReason::as_str`] — `"NO_RECIPE"`,
+    /// `"NO_VARIANT"`, `"CYCLE"`, `"DEPTH_EXCEEDED"`, `"UNKNOWN_UNIT"`, or
+    /// `"DIMENSION_MISMATCH"`.
+    pub reason: String,
+    pub occurred_at: String,
+    pub business_date: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct SyncState {
     pub outlet_id: String,

@@ -41,24 +41,38 @@
 //! so even a long acyclic chain (which a real menu will never produce, but a
 //! restored backup or an older writer might) cannot recurse unboundedly.
 //!
-//! **`DIMENSION_MISMATCH` — what this resolver can and cannot detect.** A
-//! parent asking for a quantity of a sub-recipe's output implicitly asks in
-//! whatever dimension that sub-recipe currently declares
-//! (`recipe_ingredient` carries no independent dimension tag of its own —
-//! `quantity_micro` is a bare integer, and MASS/VOLUME/COUNT all share the
-//! same micro-scale, so the stored number alone cannot reveal whether an
-//! author typed "180 g" or "180 ml"). That makes a `SUB_RECIPE` reference
-//! tautologically dimension-consistent with whatever the child currently
-//! declares — a real drift (the child's own dimension changed *after* the
-//! parent referenced it) is a cloud write-time concern (ADR-018 addendum),
-//! not something this row's stored data lets the edge detect after the
-//! fact. The one place a mismatch **is** independently checkable from data
-//! alone is the root: an order always requests a COUNT quantity (servings
-//! sold), regardless of what the resolved recipe declares, so a root
-//! recipe whose `output_dimension` is not `COUNT` is a genuine, detectable
-//! authoring defect — e.g. a recipe meant only as a sub-recipe component
-//! (a gravy, `VOLUME`) mistakenly bound to a sellable `menu_item_variant`.
-//! That is the one case this resolver checks and gaps on.
+//! **`DIMENSION_MISMATCH` — three independent checks, not one.**
+//!
+//! 1. **The root.** An order always requests a COUNT quantity (servings
+//!    sold), regardless of what the resolved recipe declares, so a root
+//!    recipe whose `output_dimension` is not `COUNT` is a genuine authoring
+//!    defect — e.g. a recipe meant only as a sub-recipe component (a gravy,
+//!    `VOLUME`) mistakenly bound to a sellable `menu_item_variant`.
+//! 2. **Every `ITEM` row** (contracts 0.5.2, `recipe_ingredient
+//!    .quantity_dimension`, `packages/contracts/sqlite/
+//!    0020_recipe_ingredient_dimension.sql`). Before 0.5.2 a stored
+//!    `quantity_micro` was dimensionless — 220_000_000 meant grams only
+//!    because the referenced item happened to declare MASS, so reclassifying
+//!    that item silently reinterpreted every recipe that used it. 0.5.2
+//!    added the author's own recorded unit; `walk` compares it against the
+//!    referenced `inventory_item.dimension` at resolution time. **Never
+//!    derived from the referent** — deriving it would make the comparison
+//!    `x == x` and the guard could never fire, the exact defect 0.5.2's
+//!    migration header warns every future writer against.
+//! 3. **Every `SUB_RECIPE` row**, same column, same check, against the
+//!    referenced recipe's `output_dimension` instead of an item's
+//!    `dimension` — the postgres/0021 trigger's `ELSE` branch, mirrored here
+//!    defensively. Before 0.5.2 this arm was tautologically consistent (see
+//!    the git history of this comment): `recipe_ingredient` carried no
+//!    dimension tag of its own, so a `SUB_RECIPE` row's implicit dimension
+//!    *was* whatever the child currently declared, by construction, and no
+//!    drift could ever be observed from stored data alone. 0.5.2 gives the
+//!    row an independent opinion to compare against.
+//!
+//! In every case: no cross-dimension conversion is attempted (a recipe has
+//! no `item_unit_conversion` density row, and converting an item's own
+//! author-chosen unit would defeat the point of recording it) — a mismatch
+//! is reported, never coerced, exactly like a cycle.
 
 use std::collections::HashMap;
 
@@ -194,6 +208,15 @@ struct IngredientRow {
     inventory_item_id: Option<String>,
     sub_recipe_id: Option<String>,
     quantity_micro: i64,
+    /// `recipe_ingredient.quantity_dimension` (contracts 0.5.2, ADR-018
+    /// addendum) — the unit the AUTHOR chose, never derived from the
+    /// referent. Compared against the referent's own dimension at
+    /// resolution time (`walk`, below); the edge deliberately carries no
+    /// trigger enforcing agreement (only the cloud does, at write time), so
+    /// this stored value and the referent's current dimension can
+    /// legitimately disagree — that disagreement is exactly what
+    /// `GapReason::DimensionMismatch` reports.
+    quantity_dimension: String,
 }
 
 struct ItemRow {
@@ -244,7 +267,7 @@ fn fetch_recipe_by_id(conn: &Connection, recipe_id: &str) -> Result<Option<Recip
 
 fn fetch_ingredients(conn: &Connection, recipe_id: &str) -> Result<Vec<IngredientRow>, DbError> {
     let mut stmt = conn.prepare(
-        "SELECT component_kind, inventory_item_id, sub_recipe_id, quantity_micro \
+        "SELECT component_kind, inventory_item_id, sub_recipe_id, quantity_micro, quantity_dimension \
          FROM recipe_ingredient WHERE recipe_id = ?1 ORDER BY sort_order, id",
     )?;
     let rows = stmt
@@ -254,6 +277,7 @@ fn fetch_ingredients(conn: &Connection, recipe_id: &str) -> Result<Vec<Ingredien
                 inventory_item_id: row.get(1)?,
                 sub_recipe_id: row.get(2)?,
                 quantity_micro: row.get(3)?,
+                quantity_dimension: row.get(4)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -401,6 +425,14 @@ fn walk(
                 let Some(item) = fetch_item(conn, &item_id)? else {
                     return Ok(Some(GapReason::UnknownUnit));
                 };
+                // contracts 0.5.2: the AUTHOR's recorded unit must still
+                // match what this row actually points at. Never derived
+                // from `item.dimension` here — that would make the
+                // comparison `x == x` and the guard could never fire (the
+                // exact defect the 0.5.2 migration header warns against).
+                if Dimension::parse(&ingredient.quantity_dimension) != Some(item.dimension) {
+                    return Ok(Some(GapReason::DimensionMismatch));
+                }
                 let Some(contribution) =
                     multiplier.checked_mul_ratio(ingredient.quantity_micro as i128, 1)
                 else {
@@ -430,6 +462,15 @@ fn walk(
                     // Dangling reference: config gap, not a cycle.
                     return Ok(Some(GapReason::NoRecipe));
                 };
+                // contracts 0.5.2: same check as the ITEM arm, against the
+                // referenced recipe's `output_dimension` rather than an
+                // inventory item's `dimension` — the postgres/0021 trigger's
+                // ELSE branch, mirrored defensively at the edge.
+                if Dimension::parse(&ingredient.quantity_dimension)
+                    != Dimension::parse(&sub_recipe.output_dimension)
+                {
+                    return Ok(Some(GapReason::DimensionMismatch));
+                }
                 // `ingredient.quantity_micro` is an ABSOLUTE quantity of the
                 // CHILD's own declared output (contracts 0.5.1) — "180 ml of
                 // Makhani Gravy" — never a dimensionless execution count.

@@ -51,5 +51,13 @@ serde_json = "1"
 # this target.
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 
+# IANA timezone database, for `business_date` (ADR-018 §9.2, contracts 0.5.0
+# `outlet.day_start_time`, sqlite/0013). `business_date` is computed once, at
+# write time, from `outlet.timezone` resolved through this crate — never a
+# hard-coded offset, so a zone with DST (unlike Asia/Kolkata) still behaves
+# correctly. "std" only; no `filter-by-regex`/wasm features needed on this
+# target.
+chrono-tz = { version = "0.9", default-features = false, features = ["std"] }
+
 [dev-dependencies]
 tempfile = "3"

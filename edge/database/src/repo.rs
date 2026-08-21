@@ -73,6 +73,33 @@ pub fn get_outlet(conn: &Connection, id: &str) -> DbResult<Option<Outlet>> {
     .map_err(Into::into)
 }
 
+/// `(timezone, day_start_time)` for one outlet — the two `business_date`
+/// inputs (ADR-018 §9.2, 0013), read directly rather than through the
+/// [`Outlet`] struct/[`get_outlet`] deliberately: `Outlet` is a public type
+/// constructed by name at several call sites outside this crate (`edge/sync`
+/// config-bundle tests), and this crate's contract with them is additive-
+/// only — adding a field to a struct they build as an exhaustive literal
+/// would be a breaking change to a workspace this task does not own. A
+/// narrow, transaction-scoped read avoids that cascade entirely.
+/// `DbError::NotFound("outlet")` if the outlet row is missing, which should
+/// be unreachable for a `confirm_order` call (the order's own `outlet_id`
+/// FK already guarantees the row exists) but is still a typed, propagated
+/// `DbError` rather than a silent default — an outlet that has vanished out
+/// from under a confirm is a genuine data-integrity failure, not a config
+/// gap `business_date` should paper over.
+pub(crate) fn get_outlet_business_date_config(
+    tx: &Transaction,
+    outlet_id: &str,
+) -> DbResult<(String, String)> {
+    tx.query_row(
+        "SELECT timezone, day_start_time FROM outlet WHERE id = ?1",
+        params![outlet_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .optional()?
+    .ok_or(crate::error::DbError::NotFound("outlet"))
+}
+
 // ----------------------------------------------------------------- device --
 
 pub fn upsert_device(conn: &Connection, d: &Device) -> DbResult<()> {

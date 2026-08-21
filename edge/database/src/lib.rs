@@ -8,6 +8,7 @@
 
 pub mod auth;
 pub mod crypto;
+mod deduction;
 mod error;
 mod invoice;
 pub mod inventory;
@@ -564,6 +565,18 @@ impl Db {
         let outlet_id = repo::require_draft_order_for_confirm(&tx, order_id)?;
         repo::stamp_order_confirmed(&tx, order_id, &meta.confirmed_at, &meta.occurred_at)?;
         repo::insert_order_confirmed_outbox(&tx, &outlet_id, order_id, meta)?;
+        // Milestone 4, ADR-018: automatic stock deduction, in the SAME
+        // transaction as the confirm it rides with (ADR-018 Rule 3). Never
+        // aborts this transaction for a business/config reason — see
+        // `deduction::ledger`'s module doc comment; a genuine `DbError`
+        // (real SQLite failure) still propagates via `?` like every other
+        // call in this method.
+        deduction::ledger::deduct_stock_for_confirmed_order(
+            &tx,
+            &outlet_id,
+            order_id,
+            &meta.confirmed_at,
+        )?;
         tx.commit()?;
         Ok(())
     }
@@ -1375,6 +1388,7 @@ impl Drop for Db {
 mod tests {
     use super::*;
     use crate::model::{NewOrder, NewOrderItem, NewOutboxEntry};
+    use rusqlite::params;
     use tempfile::tempdir;
 
     /// The plaintext artifacts that must never outlive an open handle.
@@ -3003,6 +3017,541 @@ mod tests {
         assert!(pending
             .iter()
             .all(|e| e.aggregate_id != "order-confirm-fail" || e.event_type != "OrderConfirmed"));
+    }
+
+    // ------------------------------------------------------ M4 T2: deduction --
+    // Milestone 4, ADR-018: automatic stock deduction wired into
+    // `confirm_order_with_outbox`, in the SAME transaction. These tests live
+    // in this module (rather than an integration test crate) because the
+    // rollback/crash proofs below need `Db::simulate_crash_for_tests`, which
+    // is `#[cfg(test)]`-private to this crate — the same reason the invoice
+    // crash test lives here rather than under `tests/`.
+
+    fn insert_inventory_item(conn: &Connection, id: &str, outlet_id: &str, name: &str, dimension: &str) {
+        conn.execute(
+            "INSERT INTO inventory_item (id, outlet_id, sku, name, dimension, config_version) \
+             VALUES (?1, ?2, ?1, ?3, ?4, 1)",
+            params![id, outlet_id, name, dimension],
+        )
+        .expect("insert inventory_item");
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM inventory_item WHERE id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .expect("count inventory_item");
+        assert_eq!(count, 1, "inventory_item fixture did not land: {id}");
+    }
+
+    /// A one-serving recipe (`output_dimension = COUNT`,
+    /// `output_quantity_micro = 1_000_000`) bound to `variant_id`, with one
+    /// `ITEM` ingredient. Asserts both rows landed.
+    fn insert_one_serving_recipe_with_item_ingredient(
+        conn: &Connection,
+        recipe_id: &str,
+        variant_id: &str,
+        inventory_item_id: &str,
+        quantity_micro: i64,
+        quantity_dimension: &str,
+    ) {
+        conn.execute(
+            "INSERT INTO recipe (id, menu_item_variant_id, name, output_dimension, output_quantity_micro, config_version) \
+             VALUES (?1, ?2, 'Test Recipe', 'COUNT', 1000000, 1)",
+            params![recipe_id, variant_id],
+        )
+        .expect("insert recipe");
+        conn.execute(
+            "INSERT INTO recipe_ingredient \
+                (id, recipe_id, component_kind, inventory_item_id, sub_recipe_id, quantity_micro, quantity_dimension, config_version) \
+             VALUES (?1, ?2, 'ITEM', ?3, NULL, ?4, ?5, 1)",
+            params![
+                format!("{recipe_id}-ing"),
+                recipe_id,
+                inventory_item_id,
+                quantity_micro,
+                quantity_dimension
+            ],
+        )
+        .expect("insert recipe_ingredient");
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM recipe WHERE id = ?1", [recipe_id], |r| {
+                r.get(0)
+            })
+            .expect("count recipe");
+        assert_eq!(count, 1, "recipe fixture did not land: {recipe_id}");
+    }
+
+    fn insert_modifier_ingredient_delta(
+        conn: &Connection,
+        id: &str,
+        menu_item_modifier_id: &str,
+        inventory_item_id: &str,
+        quantity_micro: i64,
+    ) {
+        conn.execute(
+            "INSERT INTO modifier_ingredient_delta \
+                (id, menu_item_modifier_id, inventory_item_id, quantity_micro, config_version) \
+             VALUES (?1, ?2, ?3, ?4, 1)",
+            params![id, menu_item_modifier_id, inventory_item_id, quantity_micro],
+        )
+        .expect("insert modifier_ingredient_delta");
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM modifier_ingredient_delta WHERE id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .expect("count modifier_ingredient_delta");
+        assert_eq!(count, 1, "modifier_ingredient_delta fixture did not land: {id}");
+    }
+
+    struct LedgerRow {
+        entry_seq: i64,
+        inventory_item_id: String,
+        origin: String,
+        quantity_applied_micro: i64,
+        recipe_id: Option<String>,
+        modifier_delta_id: Option<String>,
+        modifier_name: Option<String>,
+        business_date: String,
+    }
+
+    fn list_stock_ledger_entries(conn: &Connection, outlet_id: &str) -> Vec<LedgerRow> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT entry_seq, inventory_item_id, origin, quantity_applied_micro, \
+                        recipe_id, modifier_delta_id, modifier_name, business_date \
+                 FROM stock_ledger_entry WHERE outlet_id = ?1 ORDER BY entry_seq",
+            )
+            .unwrap();
+        stmt.query_map([outlet_id], |row| {
+            Ok(LedgerRow {
+                entry_seq: row.get(0)?,
+                inventory_item_id: row.get(1)?,
+                origin: row.get(2)?,
+                quantity_applied_micro: row.get(3)?,
+                recipe_id: row.get(4)?,
+                modifier_delta_id: row.get(5)?,
+                modifier_name: row.get(6)?,
+                business_date: row.get(7)?,
+            })
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+    }
+
+    struct GapRow {
+        reason: String,
+        menu_item_id: String,
+        menu_item_variant_id: Option<String>,
+        menu_item_name: String,
+        quantity: i64,
+        business_date: String,
+    }
+
+    fn list_stock_deduction_gaps(conn: &Connection, outlet_id: &str) -> Vec<GapRow> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT reason, menu_item_id, menu_item_variant_id, menu_item_name, quantity, business_date \
+                 FROM stock_deduction_gap WHERE outlet_id = ?1",
+            )
+            .unwrap();
+        stmt.query_map([outlet_id], |row| {
+            Ok(GapRow {
+                reason: row.get(0)?,
+                menu_item_id: row.get(1)?,
+                menu_item_variant_id: row.get(2)?,
+                menu_item_name: row.get(3)?,
+                quantity: row.get(4)?,
+                business_date: row.get(5)?,
+            })
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+    }
+
+    #[test]
+    fn confirm_order_deducts_stock_for_a_resolved_recipe_in_the_same_transaction() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+        let (_, item_id, variant_id) = seed_menu(&db, "outlet-1");
+
+        insert_inventory_item(db.connection(), "inv-flour", "outlet-1", "Flour", "MASS");
+        insert_one_serving_recipe_with_item_ingredient(
+            db.connection(),
+            "recipe-1",
+            &variant_id,
+            "inv-flour",
+            250_000_000, // 250g per serving
+            "MASS",
+        );
+
+        let order = sample_order("order-deduct-1", "outlet-1", "device-1");
+        let mut item = sample_order_item("order-item-deduct-1", "order-deduct-1", &item_id, 30_000);
+        item.variant_id = Some(variant_id.clone());
+        item.quantity = 3;
+        db.create_order_with_outbox(&order, &[item], &sample_outbox("order-deduct-1"))
+            .expect("create draft order");
+
+        db.confirm_order_with_outbox("order-deduct-1", &order_confirmed_meta("order-deduct-1"))
+            .expect("confirm order with a resolvable recipe must succeed");
+
+        let stored = db.get_order("order-deduct-1").unwrap().expect("order exists");
+        assert_eq!(stored.status, "CONFIRMED");
+
+        let entries = list_stock_ledger_entries(db.connection(), "outlet-1");
+        assert_eq!(entries.len(), 1, "exactly one leaf ingredient must deduct");
+        let e = &entries[0];
+        assert_eq!(e.entry_seq, 1, "first entry at a fresh outlet starts the mark at 1");
+        assert_eq!(e.inventory_item_id, "inv-flour");
+        assert_eq!(e.origin, "RECIPE");
+        assert_eq!(
+            e.quantity_applied_micro, -750_000_000,
+            "250g * 3 servings, NEGATIVE (consumption)"
+        );
+        assert_eq!(e.recipe_id.as_deref(), Some("recipe-1"));
+        assert!(e.modifier_delta_id.is_none());
+        // outlet-1's day_start_time is the '00:00' schema default (never
+        // overridden by seed_outlet_and_device), and 2026-08-08T11:59:59Z is
+        // 17:29:59 IST -- no midnight crossing, so business_date is the
+        // plain local calendar date.
+        assert_eq!(e.business_date, "2026-08-08");
+
+        assert!(
+            list_stock_deduction_gaps(db.connection(), "outlet-1").is_empty(),
+            "a fully-resolved line must not also produce a gap"
+        );
+    }
+
+    /// FALSIFICATION target for "a missing or broken recipe never fails a
+    /// confirm": no `recipe` row exists at all for the sold variant. Proves
+    /// BOTH halves the task brief asks for — the sale still completes AND
+    /// the gap row is there afterwards — in one test, since either half
+    /// failing silently would make the other meaningless on its own.
+    #[test]
+    fn confirm_order_writes_a_deduction_gap_and_still_completes_the_sale_when_no_recipe_exists() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+        let (_, item_id, variant_id) = seed_menu(&db, "outlet-1");
+        // Deliberately NO recipe/inventory_item fixture for this variant.
+
+        let order = sample_order("order-gap-1", "outlet-1", "device-1");
+        let mut item = sample_order_item("order-item-gap-1", "order-gap-1", &item_id, 25_000);
+        item.variant_id = Some(variant_id.clone());
+        item.quantity = 2;
+        db.create_order_with_outbox(&order, &[item], &sample_outbox("order-gap-1"))
+            .expect("create draft order");
+
+        let result =
+            db.confirm_order_with_outbox("order-gap-1", &order_confirmed_meta("order-gap-1"));
+        assert!(
+            result.is_ok(),
+            "a missing recipe must never fail confirm_order: {result:?}"
+        );
+
+        let stored = db.get_order("order-gap-1").unwrap().expect("order exists");
+        assert_eq!(
+            stored.status, "CONFIRMED",
+            "the sale must complete despite the missing recipe"
+        );
+
+        let gaps = list_stock_deduction_gaps(db.connection(), "outlet-1");
+        assert_eq!(gaps.len(), 1, "the gap row must exist afterwards");
+        assert_eq!(gaps[0].reason, "NO_RECIPE");
+        assert_eq!(gaps[0].menu_item_id, item_id);
+        assert_eq!(gaps[0].menu_item_variant_id.as_deref(), Some(variant_id.as_str()));
+        assert_eq!(gaps[0].menu_item_name, "Burger");
+        assert_eq!(gaps[0].quantity, 2);
+        assert_eq!(gaps[0].business_date, "2026-08-08");
+
+        assert!(
+            list_stock_ledger_entries(db.connection(), "outlet-1").is_empty(),
+            "nothing resolved, so no ledger row may exist"
+        );
+    }
+
+    #[test]
+    fn confirm_order_deducts_a_modifier_delta_scaled_by_line_quantity() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+        let (_, item_id, variant_id) = seed_menu(&db, "outlet-1"); // seeds modifier-1 "Extra Paneer"
+
+        insert_inventory_item(db.connection(), "inv-paneer", "outlet-1", "Paneer", "MASS");
+        insert_modifier_ingredient_delta(
+            db.connection(),
+            "delta-1",
+            "modifier-1",
+            "inv-paneer",
+            50_000_000, // 50g per serving
+        );
+
+        let order = sample_order("order-mod-1", "outlet-1", "device-1");
+        let mut item = sample_order_item("order-item-mod-1", "order-mod-1", &item_id, 30_000);
+        item.variant_id = Some(variant_id);
+        item.quantity = 2;
+        let modifier = sample_modifier("mod-sel-1", "order-item-mod-1", 3000);
+        db.create_order_with_outbox_and_modifiers(
+            &order,
+            &[item],
+            &[vec![modifier]],
+            &sample_outbox("order-mod-1"),
+        )
+        .expect("create draft order with modifier");
+
+        db.confirm_order_with_outbox("order-mod-1", &order_confirmed_meta("order-mod-1"))
+            .expect("confirm order");
+
+        let entries = list_stock_ledger_entries(db.connection(), "outlet-1");
+        let modifier_entries: Vec<&LedgerRow> =
+            entries.iter().filter(|e| e.origin == "MODIFIER_DELTA").collect();
+        assert_eq!(modifier_entries.len(), 1);
+        let m = modifier_entries[0];
+        assert_eq!(m.inventory_item_id, "inv-paneer");
+        assert_eq!(
+            m.quantity_applied_micro, -100_000_000,
+            "50g * 2 servings, NEGATIVE (consumption)"
+        );
+        assert_eq!(m.modifier_delta_id.as_deref(), Some("delta-1"));
+        assert_eq!(m.modifier_name.as_deref(), Some("Cheese: Extra Paneer"));
+    }
+
+    /// FALSIFICATION target for "a modifier with no delta row deducts
+    /// nothing": the modifier is selected on the order, but no
+    /// `modifier_ingredient_delta` row was ever authored for it. Absence
+    /// must never be read as consent.
+    #[test]
+    fn a_modifier_with_no_delta_row_deducts_nothing() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+        let (_, item_id, variant_id) = seed_menu(&db, "outlet-1"); // modifier-1 exists, no delta row
+
+        let order = sample_order("order-mod-nodelta-1", "outlet-1", "device-1");
+        let mut item = sample_order_item("order-item-mod-nodelta-1", "order-mod-nodelta-1", &item_id, 30_000);
+        item.variant_id = Some(variant_id);
+        item.quantity = 1;
+        let modifier = sample_modifier("mod-sel-nodelta-1", "order-item-mod-nodelta-1", 3000);
+        db.create_order_with_outbox_and_modifiers(
+            &order,
+            &[item],
+            &[vec![modifier]],
+            &sample_outbox("order-mod-nodelta-1"),
+        )
+        .expect("create draft order with modifier");
+
+        db.confirm_order_with_outbox(
+            "order-mod-nodelta-1",
+            &order_confirmed_meta("order-mod-nodelta-1"),
+        )
+        .expect("confirm order");
+
+        let entries = list_stock_ledger_entries(db.connection(), "outlet-1");
+        assert!(
+            entries.iter().all(|e| e.origin != "MODIFIER_DELTA"),
+            "no delta row exists, so no MODIFIER_DELTA ledger entry may exist"
+        );
+    }
+
+    /// FALSIFICATION target for "a rollback must take the entry_seq mark
+    /// with it, leaving no hole": constructs a confirm whose FIRST line
+    /// resolves (would-be `entry_seq = 1`, written but not yet committed)
+    /// and whose SECOND line hits a genuine SQLite failure (its
+    /// `menu_item` row is deleted out from under the still-referencing
+    /// `order_item` — the dangling-reference technique the resolver's own
+    /// test suite uses, `PRAGMA foreign_keys = OFF` for exactly the one
+    /// DELETE that manufactures it). The whole transaction must roll back —
+    /// including the first line's ledger row — so a SUBSEQUENT, valid
+    /// confirm reuses `entry_seq = 1` rather than skipping it.
+    #[test]
+    fn a_genuine_failure_mid_deduction_rolls_back_the_whole_confirm_with_no_entry_seq_hole() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+        let (category_id, item_id, variant_id) = seed_menu(&db, "outlet-1");
+
+        insert_inventory_item(db.connection(), "inv-flour", "outlet-1", "Flour", "MASS");
+        insert_one_serving_recipe_with_item_ingredient(
+            db.connection(),
+            "recipe-1",
+            &variant_id,
+            "inv-flour",
+            250_000_000,
+            "MASS",
+        );
+
+        // A second, doomed menu item: no variant, so its line gaps
+        // (NoVariant) rather than resolving -- but the gap path itself
+        // still must look up its `menu_item.name`, which is what the
+        // deleted row below turns into a genuine DbError.
+        repo::upsert_menu_item(
+            db.connection(),
+            &model::MenuItem {
+                id: "item-doomed".to_string(),
+                outlet_id: "outlet-1".to_string(),
+                category_id: category_id.clone(),
+                name: "Doomed Item".to_string(),
+                base_price_paise: 10_000,
+                is_available: true,
+                config_version: 1,
+                tax_profile_id: None,
+                hsn_sac: Some("9963".to_string()),
+            },
+        )
+        .expect("seed doomed menu item");
+
+        let order = sample_order("order-rollback-1", "outlet-1", "device-1");
+        let mut item_ok =
+            sample_order_item("order-item-rollback-ok", "order-rollback-1", &item_id, 30_000);
+        item_ok.variant_id = Some(variant_id.clone());
+        item_ok.quantity = 1;
+        item_ok.created_at = "2026-08-08T10:05:00Z".to_string(); // sorts first
+        let mut item_doomed = sample_order_item(
+            "order-item-rollback-doomed",
+            "order-rollback-1",
+            "item-doomed",
+            10_000,
+        );
+        item_doomed.created_at = "2026-08-08T10:06:00Z".to_string(); // sorts second
+        db.create_order_with_outbox(
+            &order,
+            &[item_ok, item_doomed],
+            &sample_outbox("order-rollback-1"),
+        )
+        .expect("create draft order");
+
+        db.connection()
+            .execute("PRAGMA foreign_keys = OFF", [])
+            .expect("disable foreign_keys for the dangling-fixture delete");
+        db.connection()
+            .execute("DELETE FROM menu_item WHERE id = 'item-doomed'", [])
+            .expect("delete the doomed menu item out from under its order_item");
+        db.connection()
+            .execute("PRAGMA foreign_keys = ON", [])
+            .expect("restore foreign_keys");
+
+        let result = db.confirm_order_with_outbox(
+            "order-rollback-1",
+            &order_confirmed_meta("order-rollback-1"),
+        );
+        assert!(
+            result.is_err(),
+            "a genuine SQLite failure mid-deduction must propagate, not degrade to a gap"
+        );
+
+        let stored = db.get_order("order-rollback-1").unwrap().expect("order exists");
+        assert_eq!(
+            stored.status, "DRAFT",
+            "the whole confirm, including the order's own status stamp, must roll back"
+        );
+        assert!(
+            list_stock_ledger_entries(db.connection(), "outlet-1").is_empty(),
+            "the FIRST line's ledger row must be rolled back too -- one transaction, one outcome"
+        );
+
+        // A second, entirely valid order must reuse entry_seq = 1: the
+        // failed attempt above must not have burned it.
+        let order2 = sample_order("order-rollback-2", "outlet-1", "device-1");
+        let mut item2 =
+            sample_order_item("order-item-rollback-2", "order-rollback-2", &item_id, 30_000);
+        item2.variant_id = Some(variant_id);
+        item2.quantity = 1;
+        db.create_order_with_outbox(
+            &order2,
+            &[item2],
+            &NewOutboxEntry {
+                id: "outbox-rollback-2".to_string(),
+                ..sample_outbox("order-rollback-2")
+            },
+        )
+        .expect("create second draft order");
+        db.confirm_order_with_outbox(
+            "order-rollback-2",
+            &order_confirmed_meta("order-rollback-2"),
+        )
+        .expect("confirm the second, valid order");
+
+        let entries = list_stock_ledger_entries(db.connection(), "outlet-1");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].entry_seq, 1,
+            "entry_seq must not skip 1 -- the failed attempt left no hole"
+        );
+    }
+
+    /// M4 acceptance criterion 2, generalised from the durable-cart crash
+    /// test to the stock ledger: kill the POS between confirm and
+    /// deduction having been durably written, reopen an INDEPENDENT `Db`
+    /// handle on the same sealed file, and assert the order and its ledger
+    /// entries agree. Follows the exact pattern
+    /// `invoice_survives_a_crash_mid_session_and_reads_back_on_independent_reopen`
+    /// established: `Db::simulate_crash_for_tests` drops the connection
+    /// with nothing sealed, leaving on-disk crash artifacts; a genuinely
+    /// separate `Db::open` call (not the handle that confirmed the order)
+    /// proves durability rather than merely proving the same process
+    /// remembers its own write.
+    #[test]
+    fn order_and_ledger_agree_after_a_crash_between_confirm_and_reopen() {
+        let dir = tempdir().expect("tempdir");
+        let sealed = dir.path().join("edge.db.enc");
+        let plaintext = dir.path().join("edge.db");
+        let key_bytes = [61u8; 32];
+
+        {
+            let mut db =
+                Db::open(&sealed, &plaintext, EncryptionKey::new(key_bytes)).expect("first open");
+            seed_outlet_and_device(&db, "outlet-1", "device-1");
+            let (_, item_id, variant_id) = seed_menu(&db, "outlet-1");
+            insert_inventory_item(db.connection(), "inv-flour", "outlet-1", "Flour", "MASS");
+            insert_one_serving_recipe_with_item_ingredient(
+                db.connection(),
+                "recipe-1",
+                &variant_id,
+                "inv-flour",
+                250_000_000,
+                "MASS",
+            );
+
+            let order = sample_order("order-crash-1", "outlet-1", "device-1");
+            let mut item =
+                sample_order_item("order-item-crash-1", "order-crash-1", &item_id, 30_000);
+            item.variant_id = Some(variant_id);
+            item.quantity = 4;
+            db.create_order_with_outbox(&order, &[item], &sample_outbox("order-crash-1"))
+                .expect("create draft order before crash");
+
+            db.confirm_order_with_outbox(
+                "order-crash-1",
+                &order_confirmed_meta("order-crash-1"),
+            )
+            .expect("confirm (and deduct) before crash");
+
+            db.simulate_crash_for_tests();
+        }
+
+        assert!(plaintext.exists(), "precondition: plaintext left behind");
+        assert!(
+            crypto::marker_path(&plaintext).exists(),
+            "precondition: unclean marker left behind"
+        );
+
+        let db2 = Db::open(&sealed, &plaintext, EncryptionKey::new(key_bytes))
+            .expect("reopen after crash must succeed");
+
+        let order = db2
+            .get_order("order-crash-1")
+            .expect("read order")
+            .expect("the committed pre-crash order must survive recovery");
+        assert_eq!(order.status, "CONFIRMED");
+
+        let entries = list_stock_ledger_entries(db2.connection(), "outlet-1");
+        assert_eq!(
+            entries.len(),
+            1,
+            "the committed pre-crash ledger entry must survive recovery"
+        );
+        assert_eq!(entries[0].quantity_applied_micro, -1_000_000_000); // 250g * 4
+        assert_eq!(entries[0].entry_seq, 1);
     }
 
     /// The regression this crate exists to fix (task T14, docs/retro.md P0):

@@ -174,35 +174,46 @@ fn insert_one_serving_recipe(conn: &Connection, id: &str, variant_id: &str, name
     insert_recipe(conn, id, variant_id, name, "COUNT", ONE_SERVING_MICRO);
 }
 
+/// `quantity_dimension` (contracts 0.5.2, ADR-018 addendum) is a required
+/// argument at every call site, deliberately — never derived from
+/// `inventory_item_id`'s own dimension here, the same discipline the 0.5.2
+/// migration header demands of a real write path: a test helper that looked
+/// the dimension up itself would make every fixture's mismatch check
+/// tautological, the exact defect that column exists to catch.
 fn insert_item_ingredient(
     conn: &Connection,
     id: &str,
     recipe_id: &str,
     inventory_item_id: &str,
     quantity_micro: i64,
+    quantity_dimension: &str,
 ) {
     conn.execute(
         "INSERT INTO recipe_ingredient \
-            (id, recipe_id, component_kind, inventory_item_id, sub_recipe_id, quantity_micro, config_version) \
-         VALUES (?1, ?2, 'ITEM', ?3, NULL, ?4, 1)",
-        params![id, recipe_id, inventory_item_id, quantity_micro],
+            (id, recipe_id, component_kind, inventory_item_id, sub_recipe_id, quantity_micro, quantity_dimension, config_version) \
+         VALUES (?1, ?2, 'ITEM', ?3, NULL, ?4, ?5, 1)",
+        params![id, recipe_id, inventory_item_id, quantity_micro, quantity_dimension],
     )
     .expect("insert ITEM recipe_ingredient");
     assert_row_exists(conn, "recipe_ingredient", id);
 }
 
+/// See [`insert_item_ingredient`]'s doc comment: `quantity_dimension` here
+/// must match the REFERENCED RECIPE's `output_dimension`, and is likewise
+/// never derived from it by this helper.
 fn insert_sub_recipe_ingredient(
     conn: &Connection,
     id: &str,
     recipe_id: &str,
     sub_recipe_id: &str,
     quantity_micro: i64,
+    quantity_dimension: &str,
 ) {
     conn.execute(
         "INSERT INTO recipe_ingredient \
-            (id, recipe_id, component_kind, inventory_item_id, sub_recipe_id, quantity_micro, config_version) \
-         VALUES (?1, ?2, 'SUB_RECIPE', NULL, ?3, ?4, 1)",
-        params![id, recipe_id, sub_recipe_id, quantity_micro],
+            (id, recipe_id, component_kind, inventory_item_id, sub_recipe_id, quantity_micro, quantity_dimension, config_version) \
+         VALUES (?1, ?2, 'SUB_RECIPE', NULL, ?3, ?4, ?5, 1)",
+        params![id, recipe_id, sub_recipe_id, quantity_micro, quantity_dimension],
     )
     .expect("insert SUB_RECIPE recipe_ingredient");
     assert_row_exists(conn, "recipe_ingredient", id);
@@ -264,6 +275,7 @@ fn resolves_a_flat_recipe_scaled_by_order_quantity() {
         "recipe-paneer-tikka-half",
         "inv-paneer",
         200_000_000,
+        "MASS",
     );
     insert_item_ingredient(
         db.connection(),
@@ -271,6 +283,7 @@ fn resolves_a_flat_recipe_scaled_by_order_quantity() {
         "recipe-paneer-tikka-half",
         "inv-butter",
         20_000_000,
+        "MASS",
     );
 
     // Two servings sold.
@@ -435,6 +448,7 @@ fn resolves_the_spec_butter_chicken_example_with_a_real_sub_recipe_yield() {
         "recipe-makhani-gravy",
         "inv-tomato",
         convert_tier1("g", 250).unwrap().1 as i64,
+        "MASS",
     );
     insert_item_ingredient(
         db.connection(),
@@ -442,6 +456,7 @@ fn resolves_the_spec_butter_chicken_example_with_a_real_sub_recipe_yield() {
         "recipe-makhani-gravy",
         "inv-butter",
         convert_tier1("g", 25).unwrap().1 as i64,
+        "MASS",
     );
     insert_item_ingredient(
         db.connection(),
@@ -449,6 +464,7 @@ fn resolves_the_spec_butter_chicken_example_with_a_real_sub_recipe_yield() {
         "recipe-makhani-gravy",
         "inv-cream",
         convert_tier1("ml", 25).unwrap().1 as i64,
+        "VOLUME",
     );
 
     // The spec's own five quantities, read from the file rather than
@@ -473,6 +489,7 @@ fn resolves_the_spec_butter_chicken_example_with_a_real_sub_recipe_yield() {
         "recipe-butter-chicken",
         "inv-chicken",
         convert_tier1(chicken_unit, *chicken_qty as i128).unwrap().1 as i64,
+        "MASS",
     );
     insert_sub_recipe_ingredient(
         db.connection(),
@@ -482,6 +499,7 @@ fn resolves_the_spec_butter_chicken_example_with_a_real_sub_recipe_yield() {
         convert_tier1(gravy_used_unit, *gravy_used_qty as i128)
             .unwrap()
             .1 as i64,
+        gravy_dimension.as_str(),
     );
     insert_item_ingredient(
         db.connection(),
@@ -489,6 +507,7 @@ fn resolves_the_spec_butter_chicken_example_with_a_real_sub_recipe_yield() {
         "recipe-butter-chicken",
         "inv-butter",
         convert_tier1(butter_unit, *butter_qty as i128).unwrap().1 as i64,
+        "MASS",
     );
     insert_item_ingredient(
         db.connection(),
@@ -496,6 +515,7 @@ fn resolves_the_spec_butter_chicken_example_with_a_real_sub_recipe_yield() {
         "recipe-butter-chicken",
         "inv-cream",
         convert_tier1(cream_unit, *cream_qty as i128).unwrap().1 as i64,
+        "VOLUME",
     );
     insert_item_ingredient(
         db.connection(),
@@ -503,6 +523,7 @@ fn resolves_the_spec_butter_chicken_example_with_a_real_sub_recipe_yield() {
         "recipe-butter-chicken",
         "inv-kasuri-methi",
         convert_tier1(kasuri_unit, *kasuri_qty as i128).unwrap().1 as i64,
+        "MASS",
     );
 
     let outcome = resolve_recipe_for_variant(db.connection(), Some(&bc_variant), 1)
@@ -577,6 +598,7 @@ fn a_two_serving_recipe_is_expressible_and_scales_by_servings_requested_not_exec
         "recipe-family-platter",
         "inv-chicken-platter",
         500_000_000,
+        "MASS",
     );
 
     // 2 servings requested (one whole platter, one execution): the FULL
@@ -662,6 +684,7 @@ fn rounds_exactly_once_at_the_leaf_and_disagrees_with_per_level_rounding() {
         "recipe-rounding-l2",
         "inv-essence",
         5,
+        "MASS",
     );
 
     // Level 1: one execution yields 1_000_000 micro-units of its own
@@ -683,6 +706,7 @@ fn rounds_exactly_once_at_the_leaf_and_disagrees_with_per_level_rounding() {
         "recipe-rounding-l1",
         "recipe-rounding-l2",
         333_334,
+        "MASS",
     );
 
     // Root: one serving requests 333_334 micro-units of L1's output.
@@ -693,6 +717,7 @@ fn rounds_exactly_once_at_the_leaf_and_disagrees_with_per_level_rounding() {
         "recipe-rounding-root",
         "recipe-rounding-l1",
         333_334,
+        "MASS",
     );
 
     let outcome = resolve_recipe_for_variant(db.connection(), Some(&root_variant), 1)
@@ -801,6 +826,7 @@ fn a_recipe_referencing_an_unsynced_inventory_item_is_an_unknown_unit_gap() {
         "recipe-dangling",
         "inv-does-not-exist",
         1_000_000,
+        "MASS",
     );
     db.connection()
         .execute("PRAGMA foreign_keys = ON", [])
@@ -847,10 +873,93 @@ fn a_root_recipe_whose_output_is_not_count_is_a_dimension_mismatch_gap() {
         "recipe-mis-bound-gravy",
         "inv-tomato-mismatch",
         250_000_000,
+        "MASS",
     );
 
     let outcome =
         resolve_recipe_for_variant(db.connection(), Some(&variant_id), 1).expect("no DbError");
+    assert_eq!(outcome, ResolveOutcome::Gap(GapReason::DimensionMismatch));
+}
+
+// ---------------------------------------------------------------------
+// DIMENSION_MISMATCH (contracts 0.5.2, ADR-018 addendum): the AUTHOR's own
+// recorded `recipe_ingredient.quantity_dimension` disagreeing with what the
+// row actually references -- never derivable from the referent, so this is
+// the one case that can only be exercised by deliberately authoring the two
+// out of step (bulk import from a spreadsheet is where the ADR says this
+// genuinely fires).
+// ---------------------------------------------------------------------
+
+#[test]
+fn an_item_row_whose_quantity_dimension_disagrees_with_the_item_is_a_dimension_mismatch_gap() {
+    let db = Db::open_in_memory_for_tests().expect("open db");
+    seed_outlet_and_category(&db);
+    let variant_id = seed_menu_item_with_variant(
+        &db,
+        "item-dim-mismatch",
+        "variant-dim-mismatch",
+        "Dimension Mismatch Dish",
+    );
+    // Authored as MASS ("220g of chicken"), but the item itself is VOLUME.
+    insert_inventory_item(db.connection(), "inv-dim-mismatch", "Odd Item", "VOLUME");
+    insert_one_serving_recipe(db.connection(), "recipe-dim-mismatch", &variant_id, "Dish");
+    insert_item_ingredient(
+        db.connection(),
+        "ri-dim-mismatch",
+        "recipe-dim-mismatch",
+        "inv-dim-mismatch",
+        220_000_000,
+        "MASS", // disagrees with the item's own VOLUME
+    );
+
+    let outcome =
+        resolve_recipe_for_variant(db.connection(), Some(&variant_id), 1).expect("no DbError");
+    assert_eq!(outcome, ResolveOutcome::Gap(GapReason::DimensionMismatch));
+}
+
+#[test]
+fn a_sub_recipe_row_whose_quantity_dimension_disagrees_with_the_childs_output_is_a_gap() {
+    let db = Db::open_in_memory_for_tests().expect("open db");
+    seed_outlet_and_category(&db);
+    let parent_variant = seed_menu_item_with_variant(
+        &db,
+        "item-dim-mismatch-parent",
+        "variant-dim-mismatch-parent",
+        "Parent Dish",
+    );
+    let child_variant = seed_menu_item_with_variant(
+        &db,
+        "item-dim-mismatch-child",
+        "variant-dim-mismatch-child",
+        "Child Gravy (internal)",
+    );
+    // Child yields VOLUME (a gravy).
+    insert_recipe(
+        db.connection(),
+        "recipe-dim-mismatch-child",
+        &child_variant,
+        "Child Gravy",
+        "VOLUME",
+        300_000_000,
+    );
+    insert_one_serving_recipe(
+        db.connection(),
+        "recipe-dim-mismatch-parent",
+        &parent_variant,
+        "Parent Dish",
+    );
+    // Parent's row claims MASS for a request of the child's (VOLUME) output.
+    insert_sub_recipe_ingredient(
+        db.connection(),
+        "ri-dim-mismatch-parent-child",
+        "recipe-dim-mismatch-parent",
+        "recipe-dim-mismatch-child",
+        180_000_000,
+        "MASS", // disagrees with the child recipe's own VOLUME output
+    );
+
+    let outcome = resolve_recipe_for_variant(db.connection(), Some(&parent_variant), 1)
+        .expect("no DbError");
     assert_eq!(outcome, ResolveOutcome::Gap(GapReason::DimensionMismatch));
 }
 
@@ -879,10 +988,16 @@ fn a_genuine_two_step_cycle_terminates_as_a_cycle_gap() {
 
     // A -> B, B -> C: both are ordinary forward references to
     // already-existing rows, no FK trick needed.
-    insert_sub_recipe_ingredient(db.connection(), "ri-a-b", "recipe-a", "recipe-b", 1_000_000);
-    insert_sub_recipe_ingredient(db.connection(), "ri-b-c", "recipe-b", "recipe-c", 1_000_000);
+    insert_sub_recipe_ingredient(
+        db.connection(), "ri-a-b", "recipe-a", "recipe-b", 1_000_000, "COUNT",
+    );
+    insert_sub_recipe_ingredient(
+        db.connection(), "ri-b-c", "recipe-b", "recipe-c", 1_000_000, "COUNT",
+    );
     // C -> A closes the cycle.
-    insert_sub_recipe_ingredient(db.connection(), "ri-c-a", "recipe-c", "recipe-a", 1_000_000);
+    insert_sub_recipe_ingredient(
+        db.connection(), "ri-c-a", "recipe-c", "recipe-a", 1_000_000, "COUNT",
+    );
 
     // Prerequisite: the loop-closing row must actually exist, or the
     // "resolver terminates on a cycle" claim below would be trivially true
@@ -938,6 +1053,7 @@ fn a_chain_deeper_than_max_recipe_depth_terminates_as_a_depth_exceeded_gap() {
             &recipe_ids[level],
             &recipe_ids[level + 1],
             1_000_000,
+            "COUNT",
         );
     }
     // The deepest recipe finally references a real leaf, so a resolver
@@ -950,6 +1066,7 @@ fn a_chain_deeper_than_max_recipe_depth_terminates_as_a_depth_exceeded_gap() {
         recipe_ids.last().unwrap(),
         "inv-depth-leaf",
         1_000_000,
+        "MASS",
     );
 
     let root_variant_id = "variant-depth-0";
