@@ -10,6 +10,7 @@ pub mod auth;
 pub mod crypto;
 mod error;
 mod invoice;
+pub mod inventory;
 mod migrations;
 pub mod model;
 mod payment;
