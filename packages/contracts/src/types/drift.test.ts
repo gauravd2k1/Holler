@@ -197,6 +197,11 @@ describe("contract drift", () => {
       "PaymentRefunded",
       "CashShiftOpened",
       "CashShiftClosed",
+      // Milestone 4 (0.5.5): a completed stocktake is an individually
+      // meaningful, low-volume fact, so it rides the outbox while the ledger
+      // rides the entry_seq cursor.
+      "StockCountOpened",
+      "StockCountCompleted",
     ]);
   });
 

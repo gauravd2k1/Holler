@@ -140,6 +140,14 @@ const (
 	EventTypePaymentRefunded = "PaymentRefunded"
 	EventTypeCashShiftOpened = "CashShiftOpened"
 	EventTypeCashShiftClosed = "CashShiftClosed"
+
+	// Milestone 4 (0.5.5). stock_count is EDGE_TO_CLOUD and had no push
+	// mechanism: the ledger replays by entry_seq-ranged cursor and a count
+	// carries no entry_seq, so it fell between the two. Events rather than a
+	// cursor because a completed stocktake is an individually meaningful,
+	// low-volume fact -- the same cut the ranged-sync decision drew.
+	EventTypeStockCountOpened    = "StockCountOpened"
+	EventTypeStockCountCompleted = "StockCountCompleted"
 )
 
 // OutboxEventTypes mirrors OUTBOX_EVENT_TYPES in src/types/events.ts, in the
@@ -162,4 +170,6 @@ var OutboxEventTypes = []string{
 	EventTypePaymentRefunded,
 	EventTypeCashShiftOpened,
 	EventTypeCashShiftClosed,
+	EventTypeStockCountOpened,
+	EventTypeStockCountCompleted,
 }

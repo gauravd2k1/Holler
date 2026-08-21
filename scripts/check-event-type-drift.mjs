@@ -51,6 +51,14 @@ const RUST_ROOTS = [
 // the tracks that emit them. Each entry names the track that must remove it —
 // an entry that outlives its track is the signal this map exists to produce.
 const NOT_YET_EMITTED = {
+  StockCountOpened:
+    "Contract landed at 0.5.5, closing the gap T3 found: stock_count is EDGE_TO_CLOUD " +
+    "with no push mechanism, since a count carries no entry_seq and so falls outside " +
+    "the ranged cursor. Emitted once the edge count feature (T3's surface, wired in " +
+    "T5) queues outbox rows; the cloud ingest side is T4.",
+  StockCountCompleted:
+    "Same as StockCountOpened — the pair land together when the count surface wires " +
+    "its outbox writes.",
   InvoiceCreated:
     "Contract landed at 0.4.0; emitted once the edge billing track (T7) issues invoices.",
   PaymentReceived:

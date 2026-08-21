@@ -235,5 +235,17 @@ export const OUTBOX_EVENT_TYPES = [
   "PaymentRefunded",
   "CashShiftOpened",
   "CashShiftClosed",
+  // Milestone 4 (0.5.5). stock_count is EDGE_TO_CLOUD and had no way to reach
+  // the cloud at all: the ledger and its gaps replay by entry_seq-ranged
+  // cursor (ADR-018), and a count carries no entry_seq, so it fell between the
+  // two mechanisms.
+  //
+  // Events rather than a ranged cursor, and the distinction is the one the
+  // ranged-sync decision already drew: the outbox earns its cost for
+  // INDIVIDUALLY MEANINGFUL, low-volume facts, while a ledger entry is a row
+  // in a stream. A completed stocktake is a discrete business event -- one per
+  // count, a handful a week -- so it belongs on the side that names things.
+  "StockCountOpened",
+  "StockCountCompleted",
 ] as const;
 export type OutboxEventType = (typeof OUTBOX_EVENT_TYPES)[number];

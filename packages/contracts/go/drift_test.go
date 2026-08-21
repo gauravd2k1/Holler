@@ -201,6 +201,11 @@ func TestOutboxEventTypes(t *testing.T) {
 		"PaymentRefunded",
 		"CashShiftOpened",
 		"CashShiftClosed",
+		// Milestone 4 (0.5.5): a completed stocktake is an individually
+		// meaningful, low-volume fact, so it rides the outbox while the
+		// ledger rides the entry_seq cursor.
+		"StockCountOpened",
+		"StockCountCompleted",
 	}
 	if !reflect.DeepEqual(OutboxEventTypes, want) {
 		t.Fatalf("OutboxEventTypes drifted from TypeScript: got %v want %v", OutboxEventTypes, want)
