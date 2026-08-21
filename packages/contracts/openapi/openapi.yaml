@@ -2904,7 +2904,7 @@ components:
 
     StockDeductionGapReason:
       type: string
-      enum: [NO_RECIPE, NO_VARIANT, CYCLE, DEPTH_EXCEEDED, UNKNOWN_UNIT, DIMENSION_MISMATCH]
+      enum: [NO_RECIPE, NO_VARIANT, CYCLE, DEPTH_EXCEEDED, UNKNOWN_UNIT, DIMENSION_MISMATCH, UNRESOLVABLE_REFERENCE]
 
     StockDeductionGap:
       type: object

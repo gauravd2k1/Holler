@@ -113,6 +113,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0020_recipe_ingredient_dimension.sql",
         include_str!("../../../packages/contracts/sqlite/0020_recipe_ingredient_dimension.sql"),
     ),
+    (
+        "0021_stock_ledger_sequence.sql",
+        include_str!("../../../packages/contracts/sqlite/0021_stock_ledger_sequence.sql"),
+    ),
 ];
 
 /// Applies any migrations not yet reflected in `PRAGMA user_version`. Safe
@@ -826,6 +830,16 @@ mod tests {
              the ingested ledger; mirroring the edge's projection would make \
              it a second authority on stock, the same mistake mirroring \
              invoice_sequence would make about invoice numbers (§33).",
+        ),
+        (
+            "sqlite",
+            "stock_ledger_sequence.sql",
+            "ADR-018 0.5.3: the entry_seq counter is EDGE-LOCAL, the              invoice_sequence precedent. Mirroring it would make the cloud a              second minter of ordering marks for a stream the edge owns — and              the mark is what the cloud's own gap detection relies on being              edge-authored. The PostgreSQL twin (0022) carries only the              magnitude bound half of that migration.",
+        ),
+        (
+            "postgres",
+            "quantity_magnitude_bound.sql",
+            "ADR-018 0.5.3: the SQLite half of this bound lives inside              0021_stock_ledger_sequence.sql, because SQLite cannot ADD              CONSTRAINT and needs triggers instead. Same rule, different file              name, so the stem match cannot pair them.",
         ),
         (
             "postgres",

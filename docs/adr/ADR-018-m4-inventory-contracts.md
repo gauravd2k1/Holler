@@ -344,3 +344,57 @@ Three consequences, all wanted:
 
 No consumer has shipped, no outlet has authored a recipe, and **no ledger row exists**. The `DEFAULT`s in `sqlite/0019` and `postgres/0020` exist only so the migration applies to rows written during 0.5.0, and are the identity for a single-serving dish. Once a ledger row references a resolved quantity, this correction stops being a schema change and becomes a data migration across an append-only table.
 
+---
+
+## Addendum — 0.5.3: a durable mark, a bounded quantity, and a named absence (2026-08-21)
+
+**Status:** Accepted. All three came out of reviewing T2.
+
+### 1. `entry_seq` is a durable counter, not `MAX(entry_seq) + 1`
+
+T2 derived the mark from the surviving rows. That is correct today **only because `stock_ledger_entry` carries a no-delete trigger** — and §9's retention design requires removing exactly that trigger. Both are committed to this repository and they cannot both be right.
+
+After any archival, `MAX + 1` restarts the sequence. A sealed `stock_balance_snapshot` stores `through_entry_seq = N` and reads "everything not covered by the mark", so reused marks make that read double-count or skip — silently, surfacing as unexplained variance months later. It also breaks the cloud gap detection the mark was added for, producing both false positives and false negatives.
+
+`stock_ledger_sequence` (`sqlite/0021`) is edge-local, SQLite-only, declared in `SINGLE_STORE_MIGRATIONS`, and taken **in the same transaction as the insert**. The `invoice_sequence` shape, minus the period bucket: an invoice number is a human-facing reference that resets by fiscal policy, this is an internal ordering mark whose only job is to increase forever.
+
+Fixed before T3 rather than at 0.6.0 because T3 adds wastage, counts and variance — three more ledger writers. Threading a durable counter through one writer is cheaper than through four.
+
+### 2. A magnitude bound, so overflow stops being a runtime condition
+
+T2's modifier path skipped silently on an `i64` overflow. The fix is not an error code for the overflow — it is to make the state unreachable. **Nine quintillion micrograms is bad data, not a runtime condition.**
+
+`|quantity| ≤ 1e15` micro-units: a thousand tonnes of one ingredient in one row, absurd by nine orders of magnitude, and it keeps `1e15 × a four-digit line quantity` inside `i64` while every stored value stays inside JavaScript's 2⁵³ — the tighter of the two limits. PostgreSQL gets `CHECK` constraints; SQLite gets triggers, because it cannot `ADD CONSTRAINT`.
+
+### 3. `UNRESOLVABLE_REFERENCE`, added rather than approximated
+
+T2 skipped a dangling `modifier_ingredient_delta.inventory_item_id` silently — no ledger row, no gap — reasoning that no named reason existed and it would rather report nothing than report a cause the schema could not represent.
+
+That inverts the architecture. **`stock_deduction_gap` exists precisely because a real failure with an absent signal is an absent feature.** Silence over an imprecise label trades a fixable inaccuracy for an unfixable absence.
+
+Reusing `UNKNOWN_UNIT` was rejected for the same reason the enum was extended rather than approximated: it would write permanently mislabelled rows into an append-only table, and **a wrong reason code is as unfixable as a wrong quantity**.
+
+### This sharpens the pre-T2 stopping rule
+
+The rule was: *does it become impossible, or require rewriting ledger rows, once T2 has run?* It now has a second clause:
+
+> **Does the INTERIM write rows that would need rewriting?**
+
+Deferring `UNRESOLVABLE_REFERENCE` to 0.6.0 passes the first clause — adding an enum member touches no existing row — and fails the second, because the interim behaviour (silence, or a reused wrong label) writes permanent history either way.
+
+---
+
+## Addendum — replay is ranged on `entry_seq`, not per-entry outbox events (2026-08-21)
+
+Decided before T4 rather than during it. `stock_ledger_entry` and `stock_deduction_gap` are **not** given `OUTBOX_EVENT_TYPES` members.
+
+**Volume.** 15,000 ledger rows a day means 15,000 outbox rows a day on top, on a 4GB spinning disk. The outbox earns that cost for individually meaningful events — an order confirmed, a payment taken. **A ledger entry is a row in a stream**, not an event with its own identity.
+
+**The machinery already exists.** M1's resumable cursors: `last_acked_entry_seq` per outlet, send `entry_seq > cursor` in batches, advance on ack. `stock_deduction_gap` gets its own cursor on the same mechanism and the same route.
+
+**It makes the retention condition trivially readable.** §9 archives a row once its replay is acked and a sealed snapshot covers it. Under ranged sync, "replay acked" *is* `last_acked_entry_seq` — a comparison. Under per-entry outbox it is a join from outbox state to ledger rows to answer the same question, and archival is what this whole sequence exists to enable.
+
+**It composes with gap detection.** Contiguity of received `entry_seq` is a one-line assertion on the cloud side, which is what the mark was introduced for.
+
+**The ingest rule does not change.** Batches stay `SyncEnvelope`-wrapped with `aggregate_type` and `direction` validated per §10; a mismatch is still 422. Ranged sync changes the cursor, not the envelope.
+

@@ -317,6 +317,10 @@ const (
 	// convert through — a recipe is not an inventory item. Rejected at cloud
 	// write time; a gap at the edge, never a failed confirm.
 	StockDeductionGapReasonDimensionMismatch StockDeductionGapReason = "DIMENSION_MISMATCH"
+	// 0.5.3: a delta or ingredient referencing an item that is not there.
+	// Skipping it silently, as T2 did, inverts why this table exists — a real
+	// failure with an absent signal is an absent feature.
+	StockDeductionGapReasonUnresolvableReference StockDeductionGapReason = "UNRESOLVABLE_REFERENCE"
 )
 
 // StockDeductionGap is a SIGNAL, NEVER A CORRECTION. Deductions are never

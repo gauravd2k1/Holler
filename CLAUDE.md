@@ -42,6 +42,7 @@ The split that matters: WSL2 hosts the **cloud** dependencies for local developm
 - Provider-specific code (aggregators, payments, printers) behind interfaces — never leak into core domain.
 - No magic numbers, no hard-coded tax rates/restaurant IDs/URLs, no secrets committed.
 - Contracts (`packages/contracts/`) are edited only by the orchestrator/architect session — never by a builder agent.
+- **An ADDITIVE contract change has a consumer list too.** A version is not complete until every consumer is updated or explicitly deferred with a reason — the discipline already applied to breaking changes. 0.5.2 added `recipe_ingredient.quantity_dimension` and nothing was updated to read it, so the guard it existed for still could not fire; a builder found it. **A column nothing reads is a column that does not exist.**
 - Never `// TODO implement later` for current-milestone or excluded-list work.
 
 ## Directory ownership
@@ -58,7 +59,7 @@ The split that matters: WSL2 hosts the **cloud** dependencies for local developm
 - POS: `pnpm test` / `pnpm tauri dev` inside `apps/pos/`.
 - CI: lint, format, unit, integration, contract-drift check, build, security scan.
 
-## Contracts status: FROZEN at v0.5.2 (Milestone 4 inventory + recipes applied; migrations through sqlite 0020 / postgres 0021)
+## Contracts status: FROZEN at v0.5.3 (Milestone 4 inventory + recipes applied; migrations through sqlite 0021 / postgres 0022)
 `packages/contracts/` holds the source of truth — SQLite schema, PostgreSQL migrations, TS+Zod types, mirrored Go structs, OpenAPI spec, and fixtures with Go+TS round-trip drift tests wired into CI. **Read-only to builder agents** (ADR-008); only the orchestrator/architect session edits it, serialized, with a version bump + ADR note for semantic changes.
 
 v0.2.0 added identity/RBAC/tables for Milestone 1 (ADR-011): `app_user`, `role`, `role_permission`, `user_role`, `restaurant_table`, `table_session`, `audit_event`. Three rules bind every builder:

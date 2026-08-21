@@ -214,7 +214,12 @@ CREATE TABLE stock_deduction_gap (
     quantity            INTEGER NOT NULL CHECK (quantity > 0),
     reason              TEXT NOT NULL CHECK (reason IN (
                             'NO_RECIPE','NO_VARIANT','CYCLE',
-                            'DEPTH_EXCEEDED','UNKNOWN_UNIT')),
+                            'DEPTH_EXCEEDED','UNKNOWN_UNIT',
+                            -- 0.5.3: a delta or ingredient pointing at an item
+                            -- that is not there. Silence over an imprecise
+                            -- label trades a fixable inaccuracy for an
+                            -- unfixable absence.
+                            'UNRESOLVABLE_REFERENCE')),
     occurred_at         TIMESTAMPTZ NOT NULL,
     business_date       DATE NOT NULL
 );

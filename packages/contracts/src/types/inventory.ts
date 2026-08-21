@@ -389,6 +389,13 @@ export const StockDeductionGapReasonSchema = z.enum([
   // may hold config from an older cloud, degrades to a gap and completes the
   // sale, exactly as it does for a cycle.
   "DIMENSION_MISMATCH",
+  // 0.5.3: a modifier delta or ingredient referencing an item that is not
+  // there. T2 skipped this silently — no ledger row and no gap — on the
+  // reasoning that no named reason existed. That inverts the architecture:
+  // stock_deduction_gap exists BECAUSE a real failure with an absent signal is
+  // an absent feature, so silence over an imprecise label trades a fixable
+  // inaccuracy for an unfixable absence.
+  "UNRESOLVABLE_REFERENCE",
 ]);
 export type StockDeductionGapReason = z.infer<typeof StockDeductionGapReasonSchema>;
 

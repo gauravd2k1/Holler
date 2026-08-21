@@ -346,7 +346,15 @@ CREATE TABLE stock_deduction_gap (
                             'NO_VARIANT',       -- line carried no variant; 0014's invariant failed
                             'CYCLE',            -- sub-recipe cycle reached the edge
                             'DEPTH_EXCEEDED',   -- deeper than MAX_RECIPE_DEPTH
-                            'UNKNOWN_UNIT')),   -- no conversion for a pack unit
+                            'UNKNOWN_UNIT',     -- no conversion for a pack unit
+                            -- 0.5.3: a modifier delta or ingredient pointing at
+                            -- an item that is not there. T2 skipped this case
+                            -- silently -- no ledger row, no gap -- reasoning
+                            -- that no named reason existed. That inverts why
+                            -- this table exists: a real failure with an absent
+                            -- signal is an absent feature. Silence trades a
+                            -- fixable inaccuracy for an unfixable absence.
+                            'UNRESOLVABLE_REFERENCE')),
 
     occurred_at         TEXT NOT NULL,          -- ISO8601 UTC
     business_date       TEXT NOT NULL           -- per 0013
