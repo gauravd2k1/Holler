@@ -2019,3 +2019,233 @@ fn parse_key_hex(hex: &str) -> Result<EncryptionKey, String> {
     }
     Ok(EncryptionKey::new(bytes))
 }
+
+// T1b: seeded data is only real coverage if it actually resolves — a
+// fixture nobody has run through the resolver it exists to feed is exactly
+// the "green on absent data" trap CLAUDE.md warns against. These run the
+// REAL `seed` function (never a hand-rolled subset) against an in-memory
+// database and drive the REAL `holler_edge_database::inventory::
+// resolve_recipe_for_variant`.
+#[cfg(test)]
+mod t1b_seed_resolves_tests {
+    use super::*;
+    use holler_edge_database::inventory::{resolve_recipe_for_variant, GapReason, ResolveOutcome};
+
+    fn seeded_db() -> Db {
+        let db = Db::open_in_memory_for_tests().expect("open in-memory db");
+        seed(&db, "unused-in-tests-hash").expect("seed");
+        db
+    }
+
+    /// docs/spec/inventory.md's own worked example, through a real
+    /// sub-recipe at a genuinely fractional multiplier (180/300 = 0.6).
+    #[test]
+    fn butter_chicken_resolves_through_the_makhani_gravy_sub_recipe() {
+        let db = seeded_db();
+        let variant_id = &db
+            .connection()
+            .query_row(
+                "SELECT v.id FROM menu_item_variant v JOIN menu_item m ON m.id = v.menu_item_id \
+                 WHERE m.name = 'Butter Chicken' AND v.name = 'Full'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .expect("Butter Chicken / Full variant exists");
+
+        let outcome =
+            resolve_recipe_for_variant(db.connection(), Some(variant_id), 1).expect("no DbError");
+        let ResolveOutcome::Resolved(resolution) = outcome else {
+            panic!("expected Butter Chicken to resolve, got {outcome:?}");
+        };
+        assert_eq!(resolution.recipe_name, "Butter Chicken");
+
+        // Chicken: a plain ITEM row, 220 g direct.
+        let chicken = resolution
+            .leaves
+            .iter()
+            .find(|l| l.inventory_item_name == "Chicken (Curry Cut, Bone-In)")
+            .expect("chicken leaf present");
+        assert_eq!(chicken.applied_micro, 220_000_000);
+
+        // Tomato: ONLY reachable through the Makhani Gravy sub-recipe,
+        // scaled by 180/300 of the batch's 250 g -> 150 g exactly.
+        let tomato = resolution
+            .leaves
+            .iter()
+            .find(|l| l.inventory_item_name == "Tomato")
+            .expect("tomato leaf present (via the sub-recipe)");
+        assert_eq!(
+            tomato.applied_micro, 150_000_000,
+            "180/300 of the gravy batch's 250 g tomato must be exactly 150 g, not a rounded approximation"
+        );
+
+        // Cream: BOTH a direct Butter Chicken ingredient (30 ml) AND inside
+        // the gravy (60 ml * 180/300 = 36 ml) — must sum, not overwrite.
+        let cream = resolution
+            .leaves
+            .iter()
+            .find(|l| l.inventory_item_name == "Fresh Cream")
+            .expect("cream leaf present");
+        assert_eq!(cream.applied_micro, 30_000 + 36_000);
+    }
+
+    /// A 2x order quantity scales every leaf by 2, including through the
+    /// sub-recipe.
+    #[test]
+    fn butter_chicken_scales_by_order_quantity_through_the_sub_recipe() {
+        let db = seeded_db();
+        let variant_id: String = db
+            .connection()
+            .query_row(
+                "SELECT v.id FROM menu_item_variant v JOIN menu_item m ON m.id = v.menu_item_id \
+                 WHERE m.name = 'Butter Chicken' AND v.name = 'Full'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("variant exists");
+        let outcome = resolve_recipe_for_variant(db.connection(), Some(&variant_id), 2)
+            .expect("no DbError");
+        let ResolveOutcome::Resolved(resolution) = outcome else {
+            panic!("expected resolution");
+        };
+        let chicken = resolution
+            .leaves
+            .iter()
+            .find(|l| l.inventory_item_name == "Chicken (Curry Cut, Bone-In)")
+            .unwrap();
+        assert_eq!(chicken.applied_micro, 440_000_000);
+    }
+
+    /// Bottled Water: the simplest recipe in the seed, a straight COUNT ->
+    /// COUNT passthrough with no sub-recipe and no other ingredient.
+    #[test]
+    fn bottled_water_resolves_as_a_single_count_passthrough() {
+        let db = seeded_db();
+        let variant_id: String = db
+            .connection()
+            .query_row(
+                "SELECT v.id FROM menu_item_variant v JOIN menu_item m ON m.id = v.menu_item_id \
+                 WHERE m.name = 'Bottled Water 1L' AND v.name = 'Regular'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("variant exists");
+        let outcome =
+            resolve_recipe_for_variant(db.connection(), Some(&variant_id), 3).expect("no DbError");
+        let ResolveOutcome::Resolved(resolution) = outcome else {
+            panic!("expected resolution");
+        };
+        assert_eq!(resolution.leaves.len(), 1);
+        assert_eq!(resolution.leaves[0].inventory_item_name, "Bottled Water 1L");
+        assert_eq!(resolution.leaves[0].applied_micro, 3_000_000);
+    }
+
+    /// Chana Masala has a variant (0.5.0's own requirement) but was
+    /// deliberately left without a recipe row for it — `NoRecipe`, not
+    /// `NoVariant`.
+    #[test]
+    fn chana_masala_is_deliberately_a_no_recipe_gap() {
+        let db = seeded_db();
+        let variant_id: String = db
+            .connection()
+            .query_row(
+                "SELECT v.id FROM menu_item_variant v JOIN menu_item m ON m.id = v.menu_item_id \
+                 WHERE m.name = 'Chana Masala' AND v.name = 'Full'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("Chana Masala DOES have a variant — the seed must not remove it");
+        let outcome =
+            resolve_recipe_for_variant(db.connection(), Some(&variant_id), 1).expect("no DbError");
+        assert_eq!(outcome, ResolveOutcome::Gap(GapReason::NoRecipe));
+    }
+
+    /// Samosa has no variant at all (the spec itself gives it none) — an
+    /// order line for it carries no `menu_item_variant_id`, which is
+    /// `NoVariant`, structurally different from `Chana Masala`'s gap above.
+    #[test]
+    fn samosa_has_no_variant_at_all() {
+        let db = seeded_db();
+        let variant_count: i64 = db
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM menu_item_variant v JOIN menu_item m ON m.id = v.menu_item_id \
+                 WHERE m.name = 'Samosa (2 pc)'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("query succeeds");
+        assert_eq!(variant_count, 0);
+        let outcome = resolve_recipe_for_variant(db.connection(), None, 1).expect("no DbError");
+        assert_eq!(outcome, ResolveOutcome::Gap(GapReason::NoVariant));
+    }
+
+    /// The signed modifier delta pair on the legacy Sugar group: positive
+    /// for Extra Sugar, negative for Less Sugar, same inventory item.
+    #[test]
+    fn extra_and_less_sugar_deltas_are_signed_opposites_on_the_same_item() {
+        let db = seeded_db();
+        let (extra, less): (i64, i64) = (
+            db.connection()
+                .query_row(
+                    "SELECT quantity_micro FROM modifier_ingredient_delta WHERE menu_item_modifier_id = ?1",
+                    [MOD_EXTRA_SUGAR_ID],
+                    |r| r.get(0),
+                )
+                .expect("extra sugar delta row exists"),
+            db.connection()
+                .query_row(
+                    "SELECT quantity_micro FROM modifier_ingredient_delta WHERE menu_item_modifier_id = ?1",
+                    [MOD_LESS_SUGAR_ID],
+                    |r| r.get(0),
+                )
+                .expect("less sugar delta row exists"),
+        );
+        assert_eq!(extra, 8_000_000);
+        assert_eq!(less, -8_000_000);
+    }
+
+    /// Every seeded `recipe_ingredient.quantity_dimension` must agree with
+    /// whatever it references (item or sub-recipe) — this seed authors
+    /// consistent data on purpose (dimension-mismatch fixtures belong to
+    /// `tests/inventory_recipe_resolution.rs`, not here), so every one of
+    /// the 22 dish recipes must resolve cleanly with quantity > 0 and never
+    /// hit `DimensionMismatch`.
+    #[test]
+    fn every_seeded_dish_recipe_resolves_cleanly() {
+        let db = seeded_db();
+        let mut stmt = db
+            .connection()
+            .prepare(
+                "SELECT v.id, m.name FROM recipe r \
+                 JOIN menu_item_variant v ON v.id = r.menu_item_variant_id \
+                 JOIN menu_item m ON m.id = v.menu_item_id \
+                 WHERE m.category_id != ?1",
+            )
+            .unwrap();
+        let rows: Vec<(String, String)> = stmt
+            .query_map([INTERNAL_CATEGORY_ID], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(rows.len(), SEED_RECIPES.len(), "every SEED_RECIPES row must have landed");
+        for (variant_id, name) in rows {
+            let outcome = resolve_recipe_for_variant(db.connection(), Some(&variant_id), 1)
+                .unwrap_or_else(|e| panic!("{name}: DbError: {e}"));
+            let ResolveOutcome::Resolved(resolution) = outcome else {
+                panic!("{name}: expected Resolved, got a gap: {outcome:?}");
+            };
+            assert!(
+                !resolution.leaves.is_empty(),
+                "{name}: resolved with zero leaves"
+            );
+            for leaf in &resolution.leaves {
+                assert!(
+                    leaf.applied_micro > 0,
+                    "{name}: leaf {} applied a non-positive quantity",
+                    leaf.inventory_item_name
+                );
+            }
+        }
+    }
+}
