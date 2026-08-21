@@ -1511,6 +1511,12 @@ paths:
           description: >
             The proposed sub-recipe reference would create a cycle, or exceeds
             MAX_RECIPE_DEPTH. The response names the path.
+        "422":
+          description: >
+            A sub-recipe reference whose quantity dimension differs from the
+            referenced recipe's output_dimension — 180 g of a recipe that yields
+            ml. Rejected rather than converted: a recipe is not an inventory
+            item, so no density row exists to convert through.
 
 components:
   responses:
@@ -2695,7 +2701,7 @@ components:
         price. menu_item_variant_id is required and unique; the nullable
         "applies to all variants" form was rejected because NULL != NULL
         defeats the unique index in both stores.
-      required: [id, menu_item_variant_id, name, recipe_version, config_version, schema_version]
+      required: [id, menu_item_variant_id, name, recipe_version, output_dimension, output_quantity_micro, config_version, schema_version]
       properties:
         id: { type: string, format: uuid }
         menu_item_variant_id: { type: string, format: uuid }
@@ -2707,6 +2713,25 @@ components:
         recipe_version:
           type: integer
           description: Increments on EVERY edit. Past entries keep the old number.
+        output_dimension:
+          $ref: "#/components/schemas/Dimension"
+        output_quantity_micro:
+          type: integer
+          description: >
+            What ONE execution of this recipe produces. Required on every
+            recipe, not only on those referenced as sub-recipes — a dish yields
+            1 serving (COUNT, 1000000), a gravy 300 ml, a spice mix 250 g.
+
+            It unifies the arithmetic: multiplier = requested_quantity /
+            output_quantity_micro, with no special case for the root. Added at
+            0.5.1 because without it a sub-recipe reference could only be a
+            dimensionless multiplier, and rescaling the sub-recipe then
+            silently multiplied every parent's deductions with no error.
+
+            A parent whose requested dimension differs from this one is an
+            AUTHORING ERROR and is rejected by POST /inventory/recipes. There is
+            nothing to convert through: a recipe is not an inventory item, so no
+            density row exists.
         config_version: { type: integer }
         schema_version: { type: integer, enum: [1] }
 
@@ -2862,7 +2887,7 @@ components:
 
     StockDeductionGapReason:
       type: string
-      enum: [NO_RECIPE, NO_VARIANT, CYCLE, DEPTH_EXCEEDED, UNKNOWN_UNIT]
+      enum: [NO_RECIPE, NO_VARIANT, CYCLE, DEPTH_EXCEEDED, UNKNOWN_UNIT, DIMENSION_MISMATCH]
 
     StockDeductionGap:
       type: object

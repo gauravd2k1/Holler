@@ -1,0 +1,81 @@
+-- Holler Edge SQLite — recipe output. Contracts 0.5.1, ADR-018 addendum.
+--
+-- CONFIG, cloud->edge. Two columns on `recipe`, NOT NULL on every row.
+--
+-- ============================================================================
+-- WHY: UNDER THE MULTIPLIER READING, EDITING A SUB-RECIPE SILENTLY CORRUPTS
+-- EVERY PARENT
+-- ============================================================================
+--
+-- 0.5.0 shipped `recipe` with no output, so a SUB_RECIPE ingredient's
+-- `quantity_micro` could only be read as a dimensionless multiplier
+-- (1_000_000 = "execute once"). That reading is self-consistent with the
+-- schema and is what T1 implemented. It is still wrong, and not for reasons of
+-- authoring taste:
+--
+--   Makhani Gravy yields 300 ml. Butter Chicken references it as 0.6 —
+--   180 ml expressed as a fraction of a batch. The kitchen moves to 3-litre
+--   batches and scales the gravy recipe 10x. EVERY PARENT IS NOW WRONG BY 10x.
+--   No error, no warning: just wrong deductions on every plate until a
+--   physical count catches the variance weeks later.
+--
+-- That is the exact failure class this contract line has spent its last four
+-- versions removing — a value that silently means something different after an
+-- unrelated edit. Under the reading this migration lands, 180 ml stays 180 ml
+-- and the multiplier is RE-DERIVED from the new yield.
+--
+-- It also contradicted the spec's own and only worked example
+-- (docs/spec/inventory.md:16: "Butter Chicken: Chicken 220g, Makhani gravy
+-- 180ml, ..."), which is now a literal test fixture so the two cannot drift
+-- apart again.
+--
+-- ============================================================================
+-- EVERY RECIPE HAS AN OUTPUT. NOT "ONLY WHEN REFERENCED AS A SUB-RECIPE".
+-- ============================================================================
+--
+-- Nullable-with-enforcement-at-reference-time is the shape this contract keeps
+-- rejecting (see 0014's header on the variant binding): it puts the rule in
+-- every reader instead of in the column, and NULL != NULL makes it
+-- unconstrainable besides.
+--
+-- So: NOT NULL on every recipe. A dish yields 1 serving (COUNT, 1_000_000). A
+-- gravy yields 300 ml. A spice mix yields 250 g.
+--
+-- THIS UNIFIES THE ARITHMETIC INTO ONE CODE PATH. The multiplier for any
+-- recipe, at any level, is:
+--
+--     multiplier = requested_quantity / recipe.output_quantity_micro
+--
+-- At the top level the request is (line_qty × 1 serving); for a sub-recipe it
+-- is the parent's `quantity_micro`. Same formula, no special case for the
+-- root — and a 2-serving sharing platter becomes expressible, which the
+-- multiplier reading could not express at all.
+--
+-- ============================================================================
+-- TWO RULES THE IMPLEMENTATION MUST KEEP
+-- ============================================================================
+--
+-- 1. NEVER MATERIALISE THE MULTIPLIER AS A ROUNDED NUMBER. 180/300 is clean;
+--    100/300 is not. Carry numerator and denominator into the leaf as an exact
+--    i128 rational and round once, there. Rounding the multiplier first is the
+--    333_334/1e6 defect T1 already falsified, arriving from a new direction.
+--
+-- 2. NO CROSS-DIMENSION CONVERSION FOR SUB-RECIPES. A recipe is not an
+--    inventory item: no density row exists to convert through, because
+--    `item_unit_conversion` keys on `inventory_item_id`. A parent asking for
+--    180 g of a recipe that yields ml is an AUTHORING ERROR, rejected at cloud
+--    write time — never silently converted. The edge, which may receive config
+--    from a cloud older than that rule, treats a mismatch as a deduction gap
+--    (`DIMENSION_MISMATCH`) and lets the sale complete, exactly as it does for
+--    a cycle.
+--
+-- The DEFAULTs below exist only so this migration can apply to rows written
+-- during 0.5.0; they are the identity for a single-serving dish. No outlet has
+-- authored a recipe yet — no consumer has shipped and no ledger row exists —
+-- which is what makes this the cheapest moment this change will ever be
+-- available.
+ALTER TABLE recipe ADD COLUMN output_dimension TEXT NOT NULL DEFAULT 'COUNT'
+    CHECK (output_dimension IN ('MASS','VOLUME','COUNT'));
+
+ALTER TABLE recipe ADD COLUMN output_quantity_micro INTEGER NOT NULL DEFAULT 1000000
+    CHECK (output_quantity_micro > 0);

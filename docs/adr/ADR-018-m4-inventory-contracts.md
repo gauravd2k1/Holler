@@ -308,3 +308,39 @@ Both questions this ADR was held open on were ruled at review on 2026-08-20 and 
 
 1. **Variant binding → NOT NULL** (§2). Rejected nullable on the `NULL != NULL` uniqueness defect rather than on preference. Triggered the default-variant prerequisite in §2.1, since sellable items demonstrably do not all carry a variant today.
 2. **Deduction gap → cloud-visible, sibling type on the ledger ingest route** (§10.1), with one mechanical correction reported: it must be a real `AggregateType` member, because `validateAuthority` rejects unknown types outright. It gets no route of its own.
+
+---
+
+## Addendum — 0.5.1: a sub-recipe reference needs an output to be a quantity of (2026-08-21)
+
+**Status:** Accepted. Found by T1, which had to implement the semantics and discovered the schema did not pin them.
+
+0.5.0 gave `recipe` no output. A `SUB_RECIPE` ingredient's `quantity_micro` therefore had nothing to be a quantity *of*, and the only self-consistent reading was a **dimensionless multiplier** — `1_000_000` meaning "execute once". T1 implemented that reading correctly.
+
+It was still wrong, and the deciding argument is not authoring ergonomics.
+
+**Under the multiplier reading, editing a sub-recipe silently corrupts every parent.** Makhani Gravy yields 300 ml; Butter Chicken references `0.6`. The kitchen moves to 3-litre batches and scales the gravy recipe 10×. Every parent is now wrong by 10× — no error, no warning, just wrong deductions on every plate until a physical count catches the variance weeks later. That is precisely the failure class the 0.4.x and 0.5.0 lines have spent four versions removing: a stored value that silently means something different after an unrelated edit.
+
+It also contradicted the spec's only worked example — `docs/spec/inventory.md:16`, "Butter Chicken: Chicken 220g, **Makhani gravy 180ml**, Butter 20g, Cream 30ml, Kasuri methi 2g" — an absolute volume, not an execution count. That example is now a literal test fixture so the two cannot drift apart again.
+
+### The decision
+
+`recipe.output_dimension` and `recipe.output_quantity_micro`, **NOT NULL on every recipe**.
+
+Not "required only when referenced as a sub-recipe": that is a nullable column with reference-time enforcement, the shape §2 already rejected for the variant binding. It puts the rule in every reader instead of in the column, and `NULL != NULL` makes it unconstrainable besides.
+
+Three consequences, all wanted:
+
+1. **One code path.** `multiplier = requested_quantity / recipe.output_quantity_micro`, at every level. The root is `(line_qty × 1 serving) / output_quantity_micro` — the same formula, with no special case.
+2. **A 2-serving sharing platter becomes expressible**, which the multiplier reading could not express at all.
+3. **M5 gets `output_quantity_micro` for free.** `semi_finished_batch` needs the expected yield to compute expected-versus-actual variance; deferring batches to M5 had quietly removed the figure sub-recipes needed *now*.
+
+### Two rules the implementation must keep
+
+- **Never materialise the multiplier as a rounded number.** 180/300 is clean; 100/300 is not. Carry numerator and denominator into the leaf as an exact `i128` rational and round once, there. Rounding the multiplier first is the `333_334/1e6` defect T1 already falsified, arriving from a new direction.
+- **No cross-dimension conversion for sub-recipes.** A recipe is not an inventory item, so no density row exists — `item_unit_conversion` keys on `inventory_item_id`. A parent asking for 180 g of a recipe that yields ml is an authoring error, **rejected at cloud write time** (422), never silently converted. The edge repeats the check defensively and degrades to a `DIMENSION_MISMATCH` deduction gap, exactly as it does for a cycle: a config defect must never fail a confirm.
+
+### Why now was the cheapest moment
+
+No consumer has shipped, no outlet has authored a recipe, and **no ledger row exists**. The `DEFAULT`s in `sqlite/0019` and `postgres/0020` exist only so the migration applies to rows written during 0.5.0, and are the identity for a single-serving dish. Once a ledger row references a resolved quantity, this correction stops being a schema change and becomes a data migration across an append-only table.
+

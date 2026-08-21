@@ -134,8 +134,17 @@ type Recipe struct {
 	// Incremented cloud-side on EVERY edit. Past entries keep the old number,
 	// so an edit can never retro-alter a past deduction.
 	RecipeVersion int `json:"recipe_version"`
-	ConfigVersion int `json:"config_version"`
-	SchemaVersion int `json:"schema_version"`
+	// WHAT ONE EXECUTION PRODUCES. Non-nullable on every recipe, not only on
+	// those referenced as sub-recipes. It unifies the arithmetic into one code
+	// path — multiplier = requested_quantity / OutputQuantityMicro, with no
+	// special case for the root — and makes a 2-serving platter expressible.
+	//
+	// Added at 0.5.1: without it, rescaling a sub-recipe silently multiplied
+	// every parent's deductions with no error (see sqlite/0019).
+	OutputDimension     Dimension `json:"output_dimension"`
+	OutputQuantityMicro int64     `json:"output_quantity_micro"`
+	ConfigVersion       int       `json:"config_version"`
+	SchemaVersion       int       `json:"schema_version"`
 }
 
 type RecipeComponentKind string
@@ -298,6 +307,10 @@ const (
 	StockDeductionGapReasonCycle         StockDeductionGapReason = "CYCLE"
 	StockDeductionGapReasonDepthExceeded StockDeductionGapReason = "DEPTH_EXCEEDED"
 	StockDeductionGapReasonUnknownUnit   StockDeductionGapReason = "UNKNOWN_UNIT"
+	// 0.5.1: a parent asking for 180g of a recipe that yields ml. Nothing to
+	// convert through — a recipe is not an inventory item. Rejected at cloud
+	// write time; a gap at the edge, never a failed confirm.
+	StockDeductionGapReasonDimensionMismatch StockDeductionGapReason = "DIMENSION_MISMATCH"
 )
 
 // StockDeductionGap is a SIGNAL, NEVER A CORRECTION. Deductions are never

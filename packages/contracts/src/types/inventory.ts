@@ -163,6 +163,20 @@ export const RecipeSchema = z.object({
   // Incremented cloud-side on EVERY edit. Past entries keep the old number, so
   // an edit can never retro-alter a past deduction.
   recipe_version: z.number().int().positive(),
+  // WHAT ONE EXECUTION OF THIS RECIPE PRODUCES. NOT NULL on every recipe, not
+  // only on those referenced as sub-recipes: nullable-with-enforcement-at-
+  // reference-time is the shape this contract keeps rejecting.
+  //
+  // It unifies the arithmetic into one code path —
+  //   multiplier = requested_quantity / output_quantity_micro
+  // with no special case for the root — and makes a 2-serving sharing platter
+  // expressible, which the 0.5.0 multiplier reading could not express at all.
+  //
+  // A dish yields 1 serving (COUNT, 1_000_000); a gravy 300 ml; a spice mix
+  // 250 g. Added at 0.5.1 because without it, rescaling a sub-recipe silently
+  // multiplied every parent's deductions — see sqlite/0019.
+  output_dimension: DimensionSchema,
+  output_quantity_micro: positiveMicroQuantity(),
   config_version: z.number().int(),
   schema_version: z.literal(1),
 });
@@ -357,6 +371,12 @@ export const StockDeductionGapReasonSchema = z.enum([
   "CYCLE",
   "DEPTH_EXCEEDED",
   "UNKNOWN_UNIT",
+  // 0.5.1: a parent asking for 180 g of a recipe that yields ml. There is
+  // nothing to convert through — a recipe is not an inventory item, so no
+  // density row exists. The cloud rejects this at write time; the edge, which
+  // may hold config from an older cloud, degrades to a gap and completes the
+  // sale, exactly as it does for a cycle.
+  "DIMENSION_MISMATCH",
 ]);
 export type StockDeductionGapReason = z.infer<typeof StockDeductionGapReasonSchema>;
 

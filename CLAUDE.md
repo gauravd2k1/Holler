@@ -58,7 +58,7 @@ The split that matters: WSL2 hosts the **cloud** dependencies for local developm
 - POS: `pnpm test` / `pnpm tauri dev` inside `apps/pos/`.
 - CI: lint, format, unit, integration, contract-drift check, build, security scan.
 
-## Contracts status: FROZEN at v0.5.0 (Milestone 4 inventory + recipes applied; migrations through sqlite 0018 / postgres 0019)
+## Contracts status: FROZEN at v0.5.1 (Milestone 4 inventory + recipes applied; migrations through sqlite 0019 / postgres 0020)
 `packages/contracts/` holds the source of truth — SQLite schema, PostgreSQL migrations, TS+Zod types, mirrored Go structs, OpenAPI spec, and fixtures with Go+TS round-trip drift tests wired into CI. **Read-only to builder agents** (ADR-008); only the orchestrator/architect session edits it, serialized, with a version bump + ADR note for semantic changes.
 
 v0.2.0 added identity/RBAC/tables for Milestone 1 (ADR-011): `app_user`, `role`, `role_permission`, `user_role`, `restaurant_table`, `table_session`, `audit_event`. Three rules bind every builder:
@@ -92,6 +92,8 @@ v0.5.0 (ADR-018) added the Milestone 4 inventory shapes — `inventory_item`, `i
 - **Quantities are integer micro-units end to end** (gram/litre/piece × 10⁶, scale in the field name), the money=paise rule generalised. The binding range limit is JavaScript's 2^53, not `i64`. Sub-recipes resolve as exact `i128` rationals and round **half away from zero exactly once**, at the leaf.
 - **Current stock is never a column on `inventory_item`, and cost never lives there either.** Stock is the ledger plus its sealed snapshot; cost is on the ledger entry. A quantity written by the edge on a cloud-owned config row is the half-config/half-transaction row ADR-011 forbids.
 - **`stock_balance_snapshot` is edge-local** — SQLite only, no Postgres mirror, no `AggregateType`, ever (the `invoice_sequence` precedent). Reads select entries **not covered by its `through_entry_seq` mark**, never entries after a date: a late arrival carrying a sealed day's date would otherwise vanish permanently and silently.
+
+**0.5.1** added `recipe.output_dimension` and `recipe.output_quantity_micro`, NOT NULL on every recipe. Without them a sub-recipe reference could only be a dimensionless multiplier, and rescaling a sub-recipe then silently multiplied every parent's deductions with no error — a gravy moving from 300ml to 3-litre batches makes every dish referencing it wrong by 10×. **The multiplier is `requested_quantity / output_quantity_micro`, carried to the leaf as an exact rational and never materialised as a rounded number.** A parent whose dimension differs from the sub-recipe's output is an authoring error rejected at cloud write time, never converted — a recipe is not an inventory item, so no density row exists.
 
 v0.5.0 also closed four M2/M3-era defects that shared one shape — structural guarantees written as comments and enforced on at most one side: UTC business-date bucketing (`outlet.day_start_time` now defines it), and missing append-only enforcement on `payment` (PostgreSQL), `audit_event` and `cash_movement`. `invoice` gained real immutability too: every column frozen, one legal `ISSUED→CANCELLED` transition. Three lints in `edge/database/src/migrations.rs` hold that ground — every APPEND-ONLY/IMMUTABLE claim must have a trigger, every single-store migration must be declared with a reason, and `DEFAULT gen_random_uuid()` may only decrease.
 

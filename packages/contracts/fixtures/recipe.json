@@ -3,6 +3,8 @@
   "menu_item_variant_id": "0191f2a0-1c3d-7a10-9f01-000000000031",
   "name": "Paneer Tikka (Full)",
   "recipe_version": 3,
+  "output_dimension": "COUNT",
+  "output_quantity_micro": 1000000,
   "config_version": 7,
   "schema_version": 1
 }
