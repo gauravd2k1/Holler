@@ -409,17 +409,19 @@ pub fn upsert_menu_item(conn: &Connection, m: &MenuItem) -> DbResult<()> {
 
 pub fn upsert_menu_item_variant(conn: &Connection, v: &MenuItemVariant) -> DbResult<()> {
     conn.execute(
-        "INSERT INTO menu_item_variant (id, menu_item_id, name, price_delta_paise, config_version)
-         VALUES (?1, ?2, ?3, ?4, ?5)
+        "INSERT INTO menu_item_variant (id, menu_item_id, name, price_delta_paise, is_default, config_version)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
          ON CONFLICT(id) DO UPDATE SET
             menu_item_id = excluded.menu_item_id, name = excluded.name,
-            price_delta_paise = excluded.price_delta_paise, config_version = excluded.config_version
+            price_delta_paise = excluded.price_delta_paise, is_default = excluded.is_default,
+            config_version = excluded.config_version
          WHERE excluded.config_version >= menu_item_variant.config_version",
         params![
             v.id,
             v.menu_item_id,
             v.name,
             v.price_delta_paise,
+            bool_to_i64(v.is_default),
             v.config_version
         ],
     )?;
@@ -508,7 +510,7 @@ pub fn list_menu_item_variants_for_outlet(
     outlet_id: &str,
 ) -> DbResult<Vec<MenuItemVariant>> {
     let mut stmt = conn.prepare(
-        "SELECT v.id, v.menu_item_id, v.name, v.price_delta_paise, v.config_version
+        "SELECT v.id, v.menu_item_id, v.name, v.price_delta_paise, v.is_default, v.config_version
          FROM menu_item_variant v
          JOIN menu_item m ON m.id = v.menu_item_id
          WHERE m.outlet_id = ?1
@@ -521,7 +523,8 @@ pub fn list_menu_item_variants_for_outlet(
                 menu_item_id: row.get(1)?,
                 name: row.get(2)?,
                 price_delta_paise: row.get(3)?,
-                config_version: row.get(4)?,
+                is_default: i64_to_bool(row.get(4)?),
+                config_version: row.get(5)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -2450,6 +2453,52 @@ pub fn replace_menu_item_stations(
     Ok(())
 }
 
+/// Per-row upsert for one `menu_item_station`, keyed on its actual primary
+/// key `(menu_item_id, station_id)` — M4 T4c's config-bundle apply path.
+///
+/// Deliberately NOT [`replace_menu_item_stations`]: that helper is DELETE-
+/// then-INSERT scoped to one `menu_item_id`, correct for a caller supplying
+/// an item's FULL current routing in one call. The cloud sync bundle instead
+/// ships a `since_version`-filtered DELTA of individual rows
+/// (`backend/internal/kitchen/repository.go::ItemStationsSince` filters on
+/// `mis.config_version > sinceVersion`, per-row) — the `printer_role`
+/// finding applied to this table's twin. Route REMOVAL is not representable
+/// by this delta model, matching every other delta-synced config family.
+pub fn upsert_menu_item_station(conn: &Connection, m: &MenuItemStation) -> DbResult<()> {
+    conn.execute(
+        "INSERT INTO menu_item_station (menu_item_id, station_id, config_version)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT(menu_item_id, station_id) DO UPDATE SET
+            config_version = excluded.config_version
+         WHERE excluded.config_version >= menu_item_station.config_version",
+        params![m.menu_item_id, m.station_id, m.config_version],
+    )?;
+    Ok(())
+}
+
+/// Raw (unjoined) read of one item's station routing rows, for a caller
+/// (e.g. a cross-crate test) that wants the `menu_item_station` rows
+/// themselves rather than [`list_stations_for_menu_item`]'s joined-and-
+/// active-filtered view.
+pub fn list_menu_item_stations(
+    conn: &Connection,
+    menu_item_id: &str,
+) -> DbResult<Vec<MenuItemStation>> {
+    let mut stmt = conn.prepare(
+        "SELECT menu_item_id, station_id, config_version FROM menu_item_station WHERE menu_item_id = ?1",
+    )?;
+    let rows = stmt
+        .query_map(params![menu_item_id], |row| {
+            Ok(MenuItemStation {
+                menu_item_id: row.get(0)?,
+                station_id: row.get(1)?,
+                config_version: row.get(2)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
 /// The stations one menu item routes to, active only, ordered so ticket
 /// generation is deterministic. Used both by the routing resolver in
 /// `crate::Db::send_order_to_kitchen_with_outbox` and by any caller that
@@ -2539,6 +2588,22 @@ pub fn replace_station_printers(
         )?;
     }
     tx.commit()?;
+    Ok(())
+}
+
+/// Per-row upsert for one `station_printer`, keyed on its actual primary key
+/// `(station_id, printer_id)` — the [`upsert_menu_item_station`] rationale
+/// applied to this table's twin (`StationPrintersSince` filters on
+/// `sp.config_version > sinceVersion`, per-row, same delta shape).
+pub fn upsert_station_printer(conn: &Connection, s: &StationPrinter) -> DbResult<()> {
+    conn.execute(
+        "INSERT INTO station_printer (station_id, printer_id, config_version)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT(station_id, printer_id) DO UPDATE SET
+            config_version = excluded.config_version
+         WHERE excluded.config_version >= station_printer.config_version",
+        params![s.station_id, s.printer_id, s.config_version],
+    )?;
     Ok(())
 }
 
@@ -4015,6 +4080,21 @@ const INVOICE_COLUMNS: &str = "id, outlet_id, order_id, split_group_id, split_in
     cess_paise, round_off_paise, grand_total_paise, compliance_version_id, tax_snapshot_json, \
     fiscal_profile_json, channel, tax_liability_party, eco_operator_name, eco_operator_gstin, \
     supply_classification, created_by_user_id, created_at, updated_at, version, sync_status";
+
+/// Cheap existence check, not a count — M4 T4c's config-apply path uses
+/// this to decide whether an empty `compliance_versions` array in an
+/// otherwise-newer bundle is suspicious enough to log loudly (an outlet
+/// that has already issued invoices should not suddenly have zero
+/// compliance rulesets locally).
+pub fn any_invoice_exists_for_outlet(conn: &Connection, outlet_id: &str) -> DbResult<bool> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM invoice WHERE outlet_id = ?1)",
+        params![outlet_id],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|v| v != 0)
+    .map_err(Into::into)
+}
 
 pub fn get_invoice(conn: &Connection, id: &str) -> DbResult<Option<Invoice>> {
     conn.query_row(

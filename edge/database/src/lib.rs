@@ -1704,6 +1704,7 @@ mod tests {
                 menu_item_id: item_id.clone(),
                 name: "Large".to_string(),
                 price_delta_paise: 5000,
+                is_default: true,
                 config_version: 1,
             },
         )
@@ -4166,6 +4167,57 @@ mod tests {
         // A different outlet must see none of this outlet's menu.
         let other = repo::list_menu_categories_for_outlet(db.connection(), "outlet-2").unwrap();
         assert!(other.is_empty());
+    }
+
+    /// M4 T4c: `repo::any_invoice_exists_for_outlet` backs the config-apply
+    /// "an outlet with issued invoices should not suddenly have zero
+    /// compliance_versions" warning (`edge/sync::config::apply_bundle`).
+    /// False before any invoice exists, true after one is issued — the
+    /// exact transition the warning branch keys on.
+    #[test]
+    fn any_invoice_exists_for_outlet_reflects_issued_invoices() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+        seed_app_user(&db, "outlet-1", "user-1");
+        let (_, item_id, _) = seed_menu(&db, "outlet-1");
+        seed_billing_config(&db, "outlet-1", "SALES", "NEVER");
+
+        assert!(
+            !repo::any_invoice_exists_for_outlet(db.connection(), "outlet-1")
+                .expect("query must succeed"),
+            "a fresh outlet with no invoices must report false"
+        );
+
+        let order = sample_order("order-1", "outlet-1", "device-1");
+        let outbox = sample_outbox("order-1");
+        let item = sample_order_item("order-item-1", "order-1", &item_id, 20_000);
+        db.create_order_with_outbox(&order, &[item], &outbox)
+            .expect("create order");
+
+        let header = sample_invoice_header("outlet-1", "order-1", "SALES", "user-1");
+        let share = InvoiceLineShare {
+            id: "invline-1".to_string(),
+            order_item_id: "order-item-1".to_string(),
+            quantity: 1,
+            discount_per_unit_paise: 0,
+        };
+        let meta = InvoiceOutboxMeta {
+            outbox_id: "outbox-invoice-1".to_string(),
+            occurred_at: "2026-08-22T12:00:00Z".to_string(),
+        };
+        db.issue_invoice_with_outbox(&header, "invoice-1".to_string(), vec![share], &meta)
+            .expect("issue invoice");
+
+        assert!(
+            repo::any_invoice_exists_for_outlet(db.connection(), "outlet-1")
+                .expect("query must succeed"),
+            "an outlet that has issued an invoice must report true"
+        );
+        assert!(
+            !repo::any_invoice_exists_for_outlet(db.connection(), "outlet-2")
+                .expect("query must succeed"),
+            "a different outlet's invoice must not leak across outlet_id scoping"
+        );
     }
 
     #[test]

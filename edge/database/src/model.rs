@@ -85,12 +85,20 @@ pub struct MenuItem {
     pub hsn_sac: Option<String>,
 }
 
+/// `is_default` (contracts 0.5.7, ADR-018 §2.1, migration
+/// `0014_menu_default_variant.sql`): at most one default per `menu_item`
+/// (partial unique index at the schema layer, not re-validated here). Landed
+/// on the wire at 0.5.7 — before that this crate could not sync it even
+/// though the column has existed locally since 0014; see
+/// `edge/sync::config::WireMenuItemVariant`'s doc comment for the M4 T4b/T4c
+/// history of that gap.
 #[derive(Debug, Clone)]
 pub struct MenuItemVariant {
     pub id: String,
     pub menu_item_id: String,
     pub name: String,
     pub price_delta_paise: i64,
+    pub is_default: bool,
     pub config_version: i64,
 }
 

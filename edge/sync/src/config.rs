@@ -17,7 +17,11 @@ use crate::error::SyncResult;
 
 /// No `Debug` derive, deliberately: `users` carries `WireAppUser`, which
 /// must never be formatted (ADR-011) — see `WireAppUser`'s own doc comment.
-#[derive(Deserialize)]
+/// `Default` IS derived (safe: every field is `Vec`/`Option`/`i64`, none of
+/// which need `WireAppUser`/etc. to implement `Default` themselves) so
+/// tests can build a bundle with `..Default::default()` rather than naming
+/// every M4 field at every call site.
+#[derive(Deserialize, Default)]
 pub struct ConfigBundle {
     pub config_version: i64,
     pub users: Vec<WireAppUser>,
@@ -85,22 +89,199 @@ pub struct ConfigBundle {
     pub recipe_ingredients: Vec<WireRecipeIngredient>,
     #[serde(default)]
     pub modifier_ingredient_deltas: Vec<WireModifierIngredientDelta>,
+    // -------------------------------------------------------- M4 (T4c) --
+    // The M2/M3 config families that were in the cloud bundle from the
+    // start but that this crate never applied — confirmed by grep and by
+    // reading every backend `*Since` repository method below: each one
+    // filters on `<table>.config_version > sinceVersion`, per row, the
+    // same delta shape `PrinterRolesSince` already established. `fiscal_
+    // profile` is the one exception (a single optional object, always the
+    // CURRENT one, never since_version-filtered — see its own field doc).
+    #[serde(default)]
+    pub stations: Vec<WireStation>,
+    #[serde(default)]
+    pub printers: Vec<WirePrinter>,
+    #[serde(default)]
+    pub item_stations: Vec<WireMenuItemStation>,
+    #[serde(default)]
+    pub station_printers: Vec<WireStationPrinter>,
+    #[serde(default)]
+    pub compliance_versions: Vec<WireComplianceVersion>,
+    #[serde(default)]
+    pub tax_profiles: Vec<WireTaxProfile>,
+    #[serde(default)]
+    pub tax_rules: Vec<WireTaxRule>,
+    #[serde(default)]
+    pub invoice_series: Vec<WireInvoiceSeries>,
+    #[serde(default)]
+    pub discount_definitions: Vec<WireDiscountDefinition>,
+    /// `backend/internal/compliance/service.go::SyncConfigBundle` always
+    /// calls `CurrentFiscalProfile` unconditionally — not `*Since` — so this
+    /// is the FULL current object every pull, never a delta, and `None`
+    /// means "no fiscal profile configured for this outlet yet", not "not
+    /// changed since last pull". Applied as a plain config_version-gated
+    /// upsert like everything else; the guard alone makes a stale replay
+    /// (an older `config_version` arriving after a newer one already
+    /// landed) a no-op rather than a regression.
+    #[serde(default)]
+    pub fiscal_profile: Option<WireOutletFiscalProfile>,
+}
+
+/// Mirrors `Station` (`packages/contracts/go/station.go`).
+#[derive(Debug, Deserialize)]
+pub struct WireStation {
+    pub id: String,
+    pub outlet_id: String,
+    pub code: String,
+    pub name: String,
+    pub sort_order: i64,
+    pub is_active: bool,
+    pub config_version: i64,
+}
+
+/// Mirrors `MenuItemStation` (`packages/contracts/go/station.go`).
+#[derive(Debug, Deserialize)]
+pub struct WireMenuItemStation {
+    pub menu_item_id: String,
+    pub station_id: String,
+    pub config_version: i64,
+}
+
+/// Mirrors `Printer` (`packages/contracts/go/printer.go`).
+#[derive(Debug, Deserialize)]
+pub struct WirePrinter {
+    pub id: String,
+    pub outlet_id: String,
+    pub name: String,
+    pub connection_kind: String,
+    pub address: String,
+    pub paper_width_mm: i64,
+    pub is_active: bool,
+    pub config_version: i64,
+}
+
+/// Mirrors `StationPrinter` (`packages/contracts/go/printer.go`).
+#[derive(Debug, Deserialize)]
+pub struct WireStationPrinter {
+    pub station_id: String,
+    pub printer_id: String,
+    pub config_version: i64,
+}
+
+/// Mirrors `ComplianceVersion` (`packages/contracts/go/tax.go`).
+#[derive(Debug, Deserialize)]
+pub struct WireComplianceVersion {
+    pub id: String,
+    pub outlet_id: String,
+    pub label: String,
+    pub effective_from: String,
+    #[serde(default)]
+    pub notes: Option<String>,
+    pub config_version: i64,
+}
+
+/// Mirrors `TaxProfile` (`packages/contracts/go/tax.go`).
+#[derive(Debug, Deserialize)]
+pub struct WireTaxProfile {
+    pub id: String,
+    pub outlet_id: String,
+    pub code: String,
+    pub name: String,
+    pub pricing_mode: String,
+    pub is_default: bool,
+    pub is_active: bool,
+    pub config_version: i64,
+}
+
+/// Mirrors `TaxRule` (`packages/contracts/go/tax.go`).
+#[derive(Debug, Deserialize)]
+pub struct WireTaxRule {
+    pub id: String,
+    pub tax_profile_id: String,
+    pub compliance_version_id: String,
+    pub component: String,
+    pub rate_bps: i64,
+    pub effective_from: String,
+    #[serde(default)]
+    pub effective_to: Option<String>,
+    pub config_version: i64,
+}
+
+/// Mirrors `InvoiceSeries` (`packages/contracts/go/invoice.go`).
+#[derive(Debug, Deserialize)]
+pub struct WireInvoiceSeries {
+    pub id: String,
+    pub outlet_id: String,
+    pub code: String,
+    pub prefix_template: String,
+    pub reset_policy: String,
+    pub padding_width: i64,
+    pub is_active: bool,
+    pub config_version: i64,
+}
+
+/// Mirrors `DiscountDefinition` (`packages/contracts/go/tax.go`).
+#[derive(Debug, Deserialize)]
+pub struct WireDiscountDefinition {
+    pub id: String,
+    pub outlet_id: String,
+    pub code: String,
+    pub name: String,
+    pub scope: String,
+    pub method: String,
+    #[serde(default)]
+    pub value_bps: Option<i64>,
+    #[serde(default)]
+    pub value_paise: Option<i64>,
+    #[serde(default)]
+    pub max_discount_paise: Option<i64>,
+    #[serde(default)]
+    pub required_permission: Option<String>,
+    pub requires_reason: bool,
+    pub is_active: bool,
+    pub effective_from: String,
+    #[serde(default)]
+    pub effective_to: Option<String>,
+    pub config_version: i64,
+}
+
+/// Mirrors `OutletFiscalProfile` (`packages/contracts/go/tax.go`).
+#[derive(Debug, Deserialize)]
+pub struct WireOutletFiscalProfile {
+    pub id: String,
+    pub outlet_id: String,
+    pub legal_name: String,
+    pub trade_name: String,
+    pub address_line1: String,
+    #[serde(default)]
+    pub address_line2: Option<String>,
+    pub city: String,
+    pub state_code: String,
+    pub state_name: String,
+    pub pincode: String,
+    pub gstin: String,
+    #[serde(default)]
+    pub fssai_number: Option<String>,
+    #[serde(default)]
+    pub invoice_footer_text: Option<String>,
+    pub effective_from: String,
+    pub config_version: i64,
 }
 
 /// Mirrors `MenuItemVariant` (`packages/contracts/go/menu.go`). See
 /// `ConfigBundle::menu_item_variants`'s doc comment for the field-name
-/// assumption. NOTE: the contract's `MenuItemVariant` does not yet carry
-/// `is_default` (ADR-018 §2.1 / migration `0014_menu_default_variant.sql`)
-/// even though the SQLite column exists — the Go/TS wire types this struct
-/// is required to mirror exactly have not caught up. `is_default` therefore
-/// cannot be synced by this crate yet; the column keeps its migration
-/// default (`0`) until contracts adds the field. Reported as an open risk.
+/// assumption. `is_default` (ADR-018 §2.1 / migration
+/// `0014_menu_default_variant.sql`) landed on the wire at contracts 0.5.7 —
+/// closing the gap this struct's doc comment used to name (M4 T4b/T4c) —
+/// and is applied straight through to `model::MenuItemVariant::is_default`,
+/// which now carries the same field.
 #[derive(Debug, Deserialize)]
 pub struct WireMenuItemVariant {
     pub id: String,
     pub menu_item_id: String,
     pub name: String,
     pub price_delta_paise: i64,
+    pub is_default: bool,
     pub config_version: i64,
 }
 
@@ -422,6 +603,7 @@ pub fn apply_bundle(
                     menu_item_id: v.menu_item_id.clone(),
                     name: v.name.clone(),
                     price_delta_paise: v.price_delta_paise,
+                    is_default: v.is_default,
                     config_version: v.config_version,
                 },
             )?;
@@ -480,18 +662,89 @@ pub fn apply_bundle(
                 bundle.config_version,
             )?;
         }
+        // M4 T4c: the M2/M3 config families that were in the cloud bundle
+        // from M2/M3 but that this crate never applied (T4b's flagged gap).
+        // FK order: station (needs only outlet, already present) -> printer
+        // (needs only outlet) -> item_stations (menu_item_id -> menu_item,
+        // applied above; station_id -> station, just above) ->
+        // station_printers (station_id, printer_id, both just above) ->
+        // printer_roles (below, printer_id -> printer, just above). This is
+        // also what closes T4b's flagged risk: `printer_role` no longer
+        // fails FK because `printer` now applies in the same bundle, before
+        // it, every time.
+        for s in &bundle.stations {
+            repo::upsert_station(
+                conn,
+                &model::Station {
+                    id: s.id.clone(),
+                    outlet_id: s.outlet_id.clone(),
+                    code: s.code.clone(),
+                    name: s.name.clone(),
+                    sort_order: s.sort_order,
+                    is_active: s.is_active,
+                    config_version: s.config_version,
+                },
+            )?;
+        }
+        for p in &bundle.printers {
+            repo::upsert_printer(
+                conn,
+                &model::Printer {
+                    id: p.id.clone(),
+                    outlet_id: p.outlet_id.clone(),
+                    name: p.name.clone(),
+                    connection_kind: p.connection_kind.clone(),
+                    address: p.address.clone(),
+                    paper_width_mm: p.paper_width_mm,
+                    is_active: p.is_active,
+                    config_version: p.config_version,
+                },
+            )?;
+        }
+        // Per-row upsert, not `repo::replace_menu_item_stations` — same
+        // delta-vs-wholesale reasoning as `printer_role`
+        // (`ItemStationsSince` filters `mis.config_version > sinceVersion`
+        // per row). A station a menu item stops routing to is not
+        // representable by this delta model; that matches every other
+        // delta-synced family in this bundle, `printer_role` included.
+        //
+        // kot.station stores the station CODE, not id (ADR-014), and this
+        // loop never touches kot rows at all — it only upserts
+        // menu_item_station, which is keyed on ids. A station rename
+        // (code or name) via `upsert_station` above changes the station
+        // row in place (same id), so `menu_item_station`'s FK to
+        // `station(id)` is never broken by anything in this block; no test
+        // added here because there is no code path in this file that could
+        // orphan a ticket — see this track's report for the reasoning
+        // spelled out.
+        for m in &bundle.item_stations {
+            repo::upsert_menu_item_station(
+                conn,
+                &model::MenuItemStation {
+                    menu_item_id: m.menu_item_id.clone(),
+                    station_id: m.station_id.clone(),
+                    config_version: m.config_version,
+                },
+            )?;
+        }
+        for sp in &bundle.station_printers {
+            repo::upsert_station_printer(
+                conn,
+                &model::StationPrinter {
+                    station_id: sp.station_id.clone(),
+                    printer_id: sp.printer_id.clone(),
+                    config_version: sp.config_version,
+                },
+            )?;
+        }
         // `printer_role` — per-row upsert, not the wholesale-replace helper
         // of the same table; see `repo::upsert_printer_role`'s doc comment
         // for why (the bundle ships a since_version-filtered DELTA of
         // individual rows, not each printer's full current role set).
         // Depends on the referenced `printer` row already existing locally
         // (`printer_role.printer_id REFERENCES printer(id)`, FK enforced) —
-        // this crate has no config-apply path for `printer`/`station`
-        // itself yet (see this track's report: a pre-existing gap, not
-        // introduced here), so a printer_role for an outlet whose printers
-        // were never separately seeded will fail this apply with a foreign
-        // key error, rolling back the whole bundle rather than landing a
-        // dangling row.
+        // now guaranteed by the `printers` loop just above, in the same
+        // transaction, every apply (T4b's flagged risk, closed by T4c).
         for r in &bundle.printer_roles {
             repo::upsert_printer_role(
                 conn,
@@ -585,6 +838,134 @@ pub fn apply_bundle(
                     inventory_item_id: d.inventory_item_id.clone(),
                     quantity_micro: d.quantity_micro,
                     config_version: d.config_version,
+                },
+            )?;
+        }
+        // M4 T4c: compliance_version -> tax_profile (both need only
+        // outlet_id) -> tax_rule (needs both, just above). invoice_series
+        // and discount_definitions need only outlet_id, applied anywhere
+        // after it. fiscal_profile likewise.
+        //
+        // An empty `compliance_versions` array on an otherwise-newer bundle
+        // is not rejected — an empty array is a legitimate value everywhere
+        // else in this bundle (ADR-018's "none configured" precedent) and
+        // a brand-new, not-yet-billing outlet genuinely has zero rulesets.
+        // But an outlet that has ALREADY issued invoices locally having
+        // zero compliance_versions arrive is suspicious enough to say so
+        // loudly (stderr; this crate carries no logging framework) without
+        // failing the apply — the coordinator's instruction is "log
+        // loudly", not "reject", and a config apply that can be rejected by
+        // a state derived from local invoice history would give a
+        // shrinking, disappearing config family the power to wedge sync.
+        if bundle.compliance_versions.is_empty()
+            && repo::any_invoice_exists_for_outlet(conn, outlet_id)?
+        {
+            eprintln!(
+                "holler-edge-sync: WARNING outlet {outlet_id} has issued invoices locally but \
+                 config bundle {} carries zero compliance_versions — tax rulesets may be \
+                 missing or the cloud config is regressing",
+                bundle.config_version
+            );
+        }
+        for v in &bundle.compliance_versions {
+            repo::upsert_compliance_version(
+                conn,
+                &model::ComplianceVersion {
+                    id: v.id.clone(),
+                    outlet_id: v.outlet_id.clone(),
+                    label: v.label.clone(),
+                    effective_from: v.effective_from.clone(),
+                    notes: v.notes.clone(),
+                    config_version: v.config_version,
+                },
+            )?;
+        }
+        for p in &bundle.tax_profiles {
+            repo::upsert_tax_profile(
+                conn,
+                &model::TaxProfile {
+                    id: p.id.clone(),
+                    outlet_id: p.outlet_id.clone(),
+                    code: p.code.clone(),
+                    name: p.name.clone(),
+                    pricing_mode: p.pricing_mode.clone(),
+                    is_default: p.is_default,
+                    is_active: p.is_active,
+                    config_version: p.config_version,
+                },
+            )?;
+        }
+        for r in &bundle.tax_rules {
+            repo::upsert_tax_rule(
+                conn,
+                &model::TaxRule {
+                    id: r.id.clone(),
+                    tax_profile_id: r.tax_profile_id.clone(),
+                    compliance_version_id: r.compliance_version_id.clone(),
+                    component: r.component.clone(),
+                    rate_bps: r.rate_bps,
+                    effective_from: r.effective_from.clone(),
+                    effective_to: r.effective_to.clone(),
+                    config_version: r.config_version,
+                },
+            )?;
+        }
+        for s in &bundle.invoice_series {
+            repo::upsert_invoice_series(
+                conn,
+                &model::InvoiceSeries {
+                    id: s.id.clone(),
+                    outlet_id: s.outlet_id.clone(),
+                    code: s.code.clone(),
+                    prefix_template: s.prefix_template.clone(),
+                    reset_policy: s.reset_policy.clone(),
+                    padding_width: s.padding_width,
+                    is_active: s.is_active,
+                    config_version: s.config_version,
+                },
+            )?;
+        }
+        for d in &bundle.discount_definitions {
+            repo::upsert_discount_definition(
+                conn,
+                &model::DiscountDefinition {
+                    id: d.id.clone(),
+                    outlet_id: d.outlet_id.clone(),
+                    code: d.code.clone(),
+                    name: d.name.clone(),
+                    scope: d.scope.clone(),
+                    method: d.method.clone(),
+                    value_bps: d.value_bps,
+                    value_paise: d.value_paise,
+                    max_discount_paise: d.max_discount_paise,
+                    required_permission: d.required_permission.clone(),
+                    requires_reason: d.requires_reason,
+                    is_active: d.is_active,
+                    effective_from: d.effective_from.clone(),
+                    effective_to: d.effective_to.clone(),
+                    config_version: d.config_version,
+                },
+            )?;
+        }
+        if let Some(f) = &bundle.fiscal_profile {
+            repo::upsert_outlet_fiscal_profile(
+                conn,
+                &model::OutletFiscalProfile {
+                    id: f.id.clone(),
+                    outlet_id: f.outlet_id.clone(),
+                    legal_name: f.legal_name.clone(),
+                    trade_name: f.trade_name.clone(),
+                    address_line1: f.address_line1.clone(),
+                    address_line2: f.address_line2.clone(),
+                    city: f.city.clone(),
+                    state_code: f.state_code.clone(),
+                    state_name: f.state_name.clone(),
+                    pincode: f.pincode.clone(),
+                    gstin: f.gstin.clone(),
+                    fssai_number: f.fssai_number.clone(),
+                    invoice_footer_text: f.invoice_footer_text.clone(),
+                    effective_from: f.effective_from.clone(),
+                    config_version: f.config_version,
                 },
             )?;
         }
@@ -688,15 +1069,7 @@ mod tests {
             categories: vec![],
             items: vec![],
             device_credentials: vec![],
-            day_start_time: None,
-            printer_roles: vec![],
-            menu_item_variants: vec![],
-            menu_item_modifiers: vec![],
-            inventory_items: vec![],
-            item_unit_conversions: vec![],
-            recipes: vec![],
-            recipe_ingredients: vec![],
-            modifier_ingredient_deltas: vec![],
+            ..Default::default()
         };
 
         let err = apply_bundle(&mut db, "outlet-1", 0, bundle).expect_err("empty users must error");
@@ -766,15 +1139,7 @@ mod tests {
                 expires_at: None,
                 config_version: 2,
             }],
-            day_start_time: None,
-            printer_roles: vec![],
-            menu_item_variants: vec![],
-            menu_item_modifiers: vec![],
-            inventory_items: vec![],
-            item_unit_conversions: vec![],
-            recipes: vec![],
-            recipe_ingredients: vec![],
-            modifier_ingredient_deltas: vec![],
+            ..Default::default()
         };
 
         let applied = apply_bundle(&mut db, "outlet-1", 0, bundle).expect("apply must succeed");
@@ -921,20 +1286,7 @@ mod tests {
                 permissions: vec![],
                 config_version,
             }],
-            roles: vec![],
-            tables: vec![],
-            categories: vec![],
-            items: vec![],
-            device_credentials: vec![],
-            day_start_time: None,
-            printer_roles: vec![],
-            menu_item_variants: vec![],
-            menu_item_modifiers: vec![],
-            inventory_items: vec![],
-            item_unit_conversions: vec![],
-            recipes: vec![],
-            recipe_ingredients: vec![],
-            modifier_ingredient_deltas: vec![],
+            ..Default::default()
         }
     }
 
@@ -1087,6 +1439,7 @@ mod tests {
             menu_item_id: "item-1".to_string(),
             name: "Regular".to_string(),
             price_delta_paise: 0,
+            is_default: true,
             config_version: 2,
         }];
         bundle.menu_item_modifiers = vec![WireMenuItemModifier {
@@ -1187,6 +1540,14 @@ mod tests {
         assert_eq!(recipe.menu_item_variant_id, "variant-1");
         assert_eq!(recipe.output_quantity_micro, grams(300));
 
+        let variants = repo::list_menu_item_variants_for_outlet(db.connection(), "outlet-1")
+            .expect("list variants");
+        assert_eq!(variants.len(), 1);
+        assert!(
+            variants[0].is_default,
+            "is_default sent by the cloud (contracts 0.5.7) must survive into the cache"
+        );
+
         let ingredient = repo::get_recipe_ingredient(db.connection(), "ri-1")
             .expect("lookup")
             .expect("recipe_ingredient must exist after apply");
@@ -1265,5 +1626,272 @@ mod tests {
             .expect("inventory_item must exist after re-apply");
         assert_eq!(item.name, "Chicken");
         assert_eq!(item.reorder_level_micro, None);
+    }
+
+    // ---------------------------------------------------------- M4 (T4c) --
+
+    /// Every M2/M3 config family this crate never applied before T4c —
+    /// station, printer, item_stations, station_printers, printer_roles,
+    /// compliance_version, tax_profile, tax_rule, invoice_series,
+    /// discount_definition, fiscal_profile — applies in one bundle, in FK
+    /// order, inside one transaction. `printer_roles` riding in the SAME
+    /// bundle as `printers` is also the direct proof that T4b's flagged
+    /// risk (a `printer_role` FK failure because `printer` never synced)
+    /// is closed: this bundle would have rolled back entirely under the
+    /// old, printer-less apply.
+    #[test]
+    fn m2_m3_config_families_apply_in_fk_order_within_one_bundle() {
+        let mut db = Db::open_in_memory_for_tests().expect("open db");
+        seed_outlet(&mut db, "outlet-1");
+
+        let mut bundle = empty_bundle(2);
+        bundle.categories = vec![WireMenuCategory {
+            id: "cat-1".to_string(),
+            outlet_id: "outlet-1".to_string(),
+            name: "Mains".to_string(),
+            sort_order: 1,
+            config_version: 2,
+        }];
+        bundle.items = vec![WireMenuItem {
+            id: "item-1".to_string(),
+            outlet_id: "outlet-1".to_string(),
+            category_id: "cat-1".to_string(),
+            name: "Butter Chicken".to_string(),
+            base_price_paise: 32000,
+            is_available: true,
+            tax_profile_id: None,
+            hsn_sac: Some("9963".to_string()),
+            config_version: 2,
+        }];
+        bundle.stations = vec![WireStation {
+            id: "station-1".to_string(),
+            outlet_id: "outlet-1".to_string(),
+            code: "MAIN_KITCHEN".to_string(),
+            name: "Main Kitchen".to_string(),
+            sort_order: 1,
+            is_active: true,
+            config_version: 2,
+        }];
+        bundle.printers = vec![WirePrinter {
+            id: "printer-1".to_string(),
+            outlet_id: "outlet-1".to_string(),
+            name: "Kitchen Printer".to_string(),
+            connection_kind: "ESCPOS_NETWORK".to_string(),
+            address: "192.168.1.51:9100".to_string(),
+            paper_width_mm: 80,
+            is_active: true,
+            config_version: 2,
+        }];
+        bundle.item_stations = vec![WireMenuItemStation {
+            menu_item_id: "item-1".to_string(),
+            station_id: "station-1".to_string(),
+            config_version: 2,
+        }];
+        bundle.station_printers = vec![WireStationPrinter {
+            station_id: "station-1".to_string(),
+            printer_id: "printer-1".to_string(),
+            config_version: 2,
+        }];
+        bundle.printer_roles = vec![WirePrinterRole {
+            printer_id: "printer-1".to_string(),
+            role: "KITCHEN".to_string(),
+            config_version: 2,
+        }];
+        bundle.compliance_versions = vec![WireComplianceVersion {
+            id: "cv-1".to_string(),
+            outlet_id: "outlet-1".to_string(),
+            label: "GST 2026-04".to_string(),
+            effective_from: "2026-04-01T00:00:00Z".to_string(),
+            notes: None,
+            config_version: 2,
+        }];
+        bundle.tax_profiles = vec![WireTaxProfile {
+            id: "tp-1".to_string(),
+            outlet_id: "outlet-1".to_string(),
+            code: "GST_5".to_string(),
+            name: "GST 5%".to_string(),
+            pricing_mode: "EXCLUSIVE".to_string(),
+            is_default: true,
+            is_active: true,
+            config_version: 2,
+        }];
+        bundle.tax_rules = vec![WireTaxRule {
+            id: "tr-1".to_string(),
+            tax_profile_id: "tp-1".to_string(),
+            compliance_version_id: "cv-1".to_string(),
+            component: "CGST".to_string(),
+            rate_bps: 250,
+            effective_from: "2026-04-01T00:00:00Z".to_string(),
+            effective_to: None,
+            config_version: 2,
+        }];
+        bundle.invoice_series = vec![WireInvoiceSeries {
+            id: "is-1".to_string(),
+            outlet_id: "outlet-1".to_string(),
+            code: "SALES".to_string(),
+            prefix_template: "INV-".to_string(),
+            reset_policy: "NEVER".to_string(),
+            padding_width: 6,
+            is_active: true,
+            config_version: 2,
+        }];
+        bundle.discount_definitions = vec![WireDiscountDefinition {
+            id: "dd-1".to_string(),
+            outlet_id: "outlet-1".to_string(),
+            code: "STAFF10".to_string(),
+            name: "Staff 10%".to_string(),
+            scope: "BILL".to_string(),
+            method: "PERCENT".to_string(),
+            value_bps: Some(1000),
+            value_paise: None,
+            max_discount_paise: None,
+            required_permission: None,
+            requires_reason: false,
+            is_active: true,
+            effective_from: "2026-04-01T00:00:00Z".to_string(),
+            effective_to: None,
+            config_version: 2,
+        }];
+        bundle.fiscal_profile = Some(WireOutletFiscalProfile {
+            id: "fp-1".to_string(),
+            outlet_id: "outlet-1".to_string(),
+            legal_name: "Test Restaurant Pvt Ltd".to_string(),
+            trade_name: "Test Outlet".to_string(),
+            address_line1: "123 MG Road".to_string(),
+            address_line2: None,
+            city: "Pune".to_string(),
+            state_code: "27".to_string(),
+            state_name: "Maharashtra".to_string(),
+            pincode: "411001".to_string(),
+            gstin: "27AAAAA0000A1Z5".to_string(),
+            fssai_number: None,
+            invoice_footer_text: None,
+            effective_from: "2026-04-01T00:00:00Z".to_string(),
+            config_version: 2,
+        });
+
+        let applied = apply_bundle(&mut db, "outlet-1", 0, bundle).expect("apply must succeed");
+        assert!(applied);
+
+        let stations = repo::list_stations_for_outlet(db.connection(), "outlet-1").expect("list");
+        assert_eq!(stations.len(), 1);
+        assert_eq!(stations[0].code, "MAIN_KITCHEN");
+
+        let printers = repo::list_printers_for_outlet(db.connection(), "outlet-1").expect("list");
+        assert_eq!(printers.len(), 1);
+
+        let item_stations =
+            repo::list_menu_item_stations(db.connection(), "item-1").expect("list");
+        assert_eq!(item_stations.len(), 1);
+        assert_eq!(item_stations[0].station_id, "station-1");
+
+        let station_printers =
+            repo::list_printers_for_station(db.connection(), "station-1").expect("list");
+        assert_eq!(station_printers.len(), 1);
+        assert_eq!(station_printers[0].printer_id, "printer-1");
+
+        let roles = repo::list_printer_roles(db.connection(), "printer-1").expect("list");
+        assert_eq!(
+            roles.len(),
+            1,
+            "printer_role must apply in the same bundle as the printer it references, \
+             proving T4b's flagged FK risk is closed"
+        );
+
+        let versions =
+            repo::list_compliance_versions_for_outlet(db.connection(), "outlet-1").expect("list");
+        assert_eq!(versions.len(), 1);
+
+        let profiles =
+            repo::list_tax_profiles_for_outlet(db.connection(), "outlet-1").expect("list");
+        assert_eq!(profiles.len(), 1);
+
+        let rules = repo::list_tax_rules_for_profile(db.connection(), "tp-1").expect("list");
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].rate_bps, 250);
+
+        let series = repo::list_invoice_series_for_outlet(db.connection(), "outlet-1")
+            .expect("list");
+        assert_eq!(series.len(), 1);
+
+        let discounts =
+            repo::list_discount_definitions_for_outlet(db.connection(), "outlet-1").expect("list");
+        assert_eq!(discounts.len(), 1);
+
+        let fiscal_profiles =
+            repo::list_outlet_fiscal_profiles_for_outlet(db.connection(), "outlet-1")
+                .expect("list");
+        assert_eq!(fiscal_profiles.len(), 1);
+        assert_eq!(fiscal_profiles[0].gstin, "27AAAAA0000A1Z5");
+    }
+
+    /// The common case: an empty `compliance_versions` array on a fresh
+    /// outlet with no invoices must apply cleanly with no warning branch
+    /// firing (the branch itself, and its "outlet already has invoices"
+    /// firing condition, is proven directly against
+    /// `repo::any_invoice_exists_for_outlet` in `edge/database`'s own test
+    /// suite — building a full order-to-invoice fixture inside this crate's
+    /// tests, which have no invoice-issuing API of their own, would only
+    /// re-test that predicate at a distance).
+    #[test]
+    fn empty_compliance_versions_on_a_fresh_outlet_applies_cleanly() {
+        let mut db = Db::open_in_memory_for_tests().expect("open db");
+        seed_outlet(&mut db, "outlet-1");
+
+        let bundle = empty_bundle(2);
+        assert!(bundle.compliance_versions.is_empty());
+
+        let applied = apply_bundle(&mut db, "outlet-1", 0, bundle).expect("apply must succeed");
+        assert!(applied);
+    }
+
+    /// Re-applying the full M2/M3 chain at the same version is idempotent —
+    /// the join-table upserts (`item_stations`, `station_printers`) are the
+    /// ones with the sharpest risk of a duplicate-row regression, since
+    /// they are compound-keyed rather than id-keyed.
+    #[test]
+    fn m2_m3_config_families_reapply_idempotently() {
+        let mut db = Db::open_in_memory_for_tests().expect("open db");
+        seed_outlet(&mut db, "outlet-1");
+
+        let build = || {
+            let mut bundle = empty_bundle(2);
+            bundle.stations = vec![WireStation {
+                id: "station-1".to_string(),
+                outlet_id: "outlet-1".to_string(),
+                code: "MAIN_KITCHEN".to_string(),
+                name: "Main Kitchen".to_string(),
+                sort_order: 1,
+                is_active: true,
+                config_version: 2,
+            }];
+            bundle.printers = vec![WirePrinter {
+                id: "printer-1".to_string(),
+                outlet_id: "outlet-1".to_string(),
+                name: "Kitchen Printer".to_string(),
+                connection_kind: "ESCPOS_NETWORK".to_string(),
+                address: "192.168.1.51:9100".to_string(),
+                paper_width_mm: 80,
+                is_active: true,
+                config_version: 2,
+            }];
+            bundle.station_printers = vec![WireStationPrinter {
+                station_id: "station-1".to_string(),
+                printer_id: "printer-1".to_string(),
+                config_version: 2,
+            }];
+            bundle
+        };
+
+        apply_bundle(&mut db, "outlet-1", 0, build()).expect("first apply must succeed");
+        apply_bundle(&mut db, "outlet-1", 0, build()).expect("second identical apply must succeed");
+
+        let station_printers =
+            repo::list_printers_for_station(db.connection(), "station-1").expect("list");
+        assert_eq!(
+            station_printers.len(),
+            1,
+            "re-applying must not duplicate the compound-keyed join row"
+        );
     }
 }

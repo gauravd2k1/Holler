@@ -1223,6 +1223,8 @@ fn seed(db: &Db, password_hash: &str) -> Result<(), holler_edge_database::DbErro
             menu_item_id: ITEM_CHAI_ID.to_string(),
             name: "Large".to_string(),
             price_delta_paise: 1500,
+            // The only variant this item has — default by construction.
+            is_default: true,
             config_version: CONFIG_VERSION,
         },
     )?;
@@ -1395,7 +1397,7 @@ fn seed_menu(conn: &rusqlite::Connection) -> Result<MenuIds, holler_edge_databas
                 CONFIG_VERSION,
             )?;
 
-            for variant_name in item.variants {
+            for (variant_index, variant_name) in item.variants.iter().enumerate() {
                 variant_seq += 1;
                 let variant_id = menu_variant_id(variant_seq);
                 repo::upsert_menu_item_variant(
@@ -1409,7 +1411,13 @@ fn seed_menu(conn: &rusqlite::Connection) -> Result<MenuIds, holler_edge_databas
                         // always carry an explicit figure) — 0 is the
                         // representative dev value, not a claim that e.g.
                         // Half and Full cost the same at a real outlet.
+                        // is_default: the first listed variant, so every
+                        // seeded multi-variant item satisfies ADR-018 §2.1's
+                        // "every menu item has at least one variant" via an
+                        // explicit default rather than relying on the
+                        // auto-created-Regular fallback this loop never hits.
                         price_delta_paise: 0,
+                        is_default: variant_index == 0,
                         config_version: CONFIG_VERSION,
                     },
                 )?;
@@ -1563,6 +1571,8 @@ fn seed_recipes(
                 menu_item_id: item_id.to_string(),
                 name: "Batch".to_string(),
                 price_delta_paise: 0,
+                // Sole variant for this internal sub-recipe item.
+                is_default: true,
                 config_version: CONFIG_VERSION,
             },
         )?;

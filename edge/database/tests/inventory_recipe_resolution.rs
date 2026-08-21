@@ -89,6 +89,7 @@ fn seed_menu_item_with_variant(db: &Db, item_id: &str, variant_id: &str, name: &
             menu_item_id: item_id.to_string(),
             name: "Regular".to_string(),
             price_delta_paise: 0,
+            is_default: true,
             config_version: 1,
         },
     )
