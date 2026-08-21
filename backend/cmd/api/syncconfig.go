@@ -8,6 +8,7 @@ import (
 	contracts "github.com/holler/contracts"
 
 	"github.com/holler/backend/internal/compliance"
+	"github.com/holler/backend/internal/inventory"
 	"github.com/holler/backend/internal/kitchen"
 	"github.com/holler/backend/internal/menu"
 	"github.com/holler/backend/internal/outlet"
@@ -67,6 +68,16 @@ type kitchenConfigProvider interface {
 // requireOutletInTenant itself, mirroring kitchen.Service.SyncConfigBundle).
 type complianceConfigProvider interface {
 	SyncConfigBundle(ctx context.Context, tenantID, outletID string, sinceVersion int) (compliance.ConfigBundle, error)
+}
+
+// inventoryConfigProvider is the minimal seam onto backend/internal/
+// inventory (T4, ADR-018): inventory_item, item_unit_conversion, recipe,
+// recipe_ingredient and modifier_ingredient_delta, pre-filtered by
+// since_version and pre-scoped to the caller's tenant
+// (inventory.Service.SyncConfigBundle calls requireOutletInTenant itself,
+// mirroring kitchen.Service.SyncConfigBundle).
+type inventoryConfigProvider interface {
+	SyncConfigBundle(ctx context.Context, tenantID, outletID string, sinceVersion int) (inventory.ConfigBundle, error)
 }
 
 // edgeUserCacheProvider is the minimal seam onto backend/internal/auth this
@@ -132,15 +143,25 @@ type itemConfigWire struct {
 // syncConfigResponse is packages/contracts/openapi/openapi.yaml's
 // GET /sync/config 200 response, all nine required fields.
 type syncConfigResponse struct {
-	ConfigVersion       int                              `json:"config_version"`
-	Users               []contracts.EdgeUserCacheEntry   `json:"users"`
-	Tables              []tableConfigWire                `json:"tables"`
-	Categories          []categoryConfigWire             `json:"categories"`
-	Items               []itemConfigWire                 `json:"items"`
-	Stations            []contracts.Station              `json:"stations"`
-	ItemStations        []contracts.MenuItemStation      `json:"item_stations"`
-	Printers            []contracts.Printer              `json:"printers"`
-	StationPrinters     []contracts.StationPrinter       `json:"station_printers"`
+	ConfigVersion int `json:"config_version"`
+	// DayStartTime is the outlet's business-day boundary (ADR-018 §9.2),
+	// local HH:MM. Read at the edge (business_date computation) and, until
+	// this M4 T4 delivery fix, written by nothing: the write path existed as
+	// a bare column with no route and no place in this bundle.
+	DayStartTime    string                         `json:"day_start_time"`
+	Users           []contracts.EdgeUserCacheEntry `json:"users"`
+	Tables          []tableConfigWire              `json:"tables"`
+	Categories      []categoryConfigWire           `json:"categories"`
+	Items           []itemConfigWire               `json:"items"`
+	Stations        []contracts.Station            `json:"stations"`
+	ItemStations    []contracts.MenuItemStation    `json:"item_stations"`
+	Printers        []contracts.Printer            `json:"printers"`
+	StationPrinters []contracts.StationPrinter     `json:"station_printers"`
+	// PrinterRoles closes a shipped gap (M4 T4 delivery-fix task): the
+	// printer_role table has existed since 0.4.7 in both stores and in
+	// Go/TS, but this bundle never carried it, so a cloud-synced outlet had
+	// zero printer roles and print_invoice failed by name at every one.
+	PrinterRoles        []contracts.PrinterRole          `json:"printer_roles"`
 	ComplianceVersions  []contracts.ComplianceVersion    `json:"compliance_versions"`
 	TaxProfiles         []contracts.TaxProfile           `json:"tax_profiles"`
 	TaxRules            []contracts.TaxRule              `json:"tax_rules"`
@@ -148,6 +169,13 @@ type syncConfigResponse struct {
 	DiscountDefinitions []contracts.DiscountDefinition   `json:"discount_definitions"`
 	FiscalProfile       *contracts.OutletFiscalProfile   `json:"fiscal_profile"`
 	DeviceCredentials   []contracts.EdgeDeviceCredential `json:"device_credentials"`
+	// Milestone 4 (ADR-018, T4): inventory items, their unit conversions,
+	// recipes, recipe ingredients and modifier ingredient deltas.
+	InventoryItems           []contracts.InventoryItem           `json:"inventory_items"`
+	ItemUnitConversions      []contracts.ItemUnitConversion      `json:"item_unit_conversions"`
+	Recipes                  []contracts.Recipe                  `json:"recipes"`
+	RecipeIngredients        []contracts.RecipeIngredient        `json:"recipe_ingredients"`
+	ModifierIngredientDeltas []contracts.ModifierIngredientDelta `json:"modifier_ingredient_deltas"`
 }
 
 // syncConfigHandler assembles the composite bundle. It never runs SQL
@@ -159,14 +187,15 @@ type syncConfigHandler struct {
 	tables            tablesConfigProvider
 	kitchen           kitchenConfigProvider
 	compliance        complianceConfigProvider
+	inventory         inventoryConfigProvider
 	users             edgeUserCacheProvider
 	deviceCredentials edgeDeviceCredentialProvider
 }
 
-func newSyncConfigHandler(outlets outletConfigProvider, menuSvc menuConfigProvider, tablesSvc tablesConfigProvider, kitchenSvc kitchenConfigProvider, complianceSvc complianceConfigProvider, usersSvc edgeUserCacheProvider, deviceCredentialsSvc edgeDeviceCredentialProvider) *syncConfigHandler {
+func newSyncConfigHandler(outlets outletConfigProvider, menuSvc menuConfigProvider, tablesSvc tablesConfigProvider, kitchenSvc kitchenConfigProvider, complianceSvc complianceConfigProvider, inventorySvc inventoryConfigProvider, usersSvc edgeUserCacheProvider, deviceCredentialsSvc edgeDeviceCredentialProvider) *syncConfigHandler {
 	return &syncConfigHandler{
 		outlets: outlets, menu: menuSvc, tables: tablesSvc, kitchen: kitchenSvc, compliance: complianceSvc,
-		users: usersSvc, deviceCredentials: deviceCredentialsSvc,
+		inventory: inventorySvc, users: usersSvc, deviceCredentials: deviceCredentialsSvc,
 	}
 }
 
@@ -250,9 +279,15 @@ func (h *syncConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, err)
 		return
 	}
+	inventoryBundle, err := h.inventory.SyncConfigBundle(r.Context(), tenantID, outletID, sinceVersion)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
 
 	resp := syncConfigResponse{
 		ConfigVersion:       o.ConfigVersion,
+		DayStartTime:        o.DayStartTime,
 		Users:               users,
 		Tables:              filterTables(tbls, sinceVersion),
 		Categories:          filterCategories(cats, sinceVersion),
@@ -261,6 +296,7 @@ func (h *syncConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ItemStations:        bundle.ItemStations,
 		Printers:            bundle.Printers,
 		StationPrinters:     bundle.StationPrinters,
+		PrinterRoles:        bundle.PrinterRoles,
 		ComplianceVersions:  complianceBundle.ComplianceVersions,
 		TaxProfiles:         complianceBundle.TaxProfiles,
 		TaxRules:            complianceBundle.TaxRules,
@@ -268,6 +304,12 @@ func (h *syncConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		DiscountDefinitions: complianceBundle.DiscountDefinitions,
 		FiscalProfile:       complianceBundle.FiscalProfile,
 		DeviceCredentials:   deviceCredentials,
+
+		InventoryItems:           inventoryBundle.InventoryItems,
+		ItemUnitConversions:      inventoryBundle.ItemUnitConversions,
+		Recipes:                  inventoryBundle.Recipes,
+		RecipeIngredients:        inventoryBundle.RecipeIngredients,
+		ModifierIngredientDeltas: inventoryBundle.ModifierIngredientDeltas,
 	}
 	if resp.Users == nil {
 		resp.Users = []contracts.EdgeUserCacheEntry{}
@@ -284,8 +326,26 @@ func (h *syncConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if resp.StationPrinters == nil {
 		resp.StationPrinters = []contracts.StationPrinter{}
 	}
+	if resp.PrinterRoles == nil {
+		resp.PrinterRoles = []contracts.PrinterRole{}
+	}
 	if resp.DeviceCredentials == nil {
 		resp.DeviceCredentials = []contracts.EdgeDeviceCredential{}
+	}
+	if resp.InventoryItems == nil {
+		resp.InventoryItems = []contracts.InventoryItem{}
+	}
+	if resp.ItemUnitConversions == nil {
+		resp.ItemUnitConversions = []contracts.ItemUnitConversion{}
+	}
+	if resp.Recipes == nil {
+		resp.Recipes = []contracts.Recipe{}
+	}
+	if resp.RecipeIngredients == nil {
+		resp.RecipeIngredients = []contracts.RecipeIngredient{}
+	}
+	if resp.ModifierIngredientDeltas == nil {
+		resp.ModifierIngredientDeltas = []contracts.ModifierIngredientDelta{}
 	}
 
 	httpx.JSON(w, http.StatusOK, resp)

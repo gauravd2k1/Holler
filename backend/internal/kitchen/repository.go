@@ -71,6 +71,10 @@ type Repository interface {
 	ItemStationsSince(ctx context.Context, outletID string, sinceVersion int) ([]MenuItemStation, error)
 	PrintersSince(ctx context.Context, outletID string, sinceVersion int) ([]Printer, error)
 	StationPrintersSince(ctx context.Context, outletID string, sinceVersion int) ([]StationPrinter, error)
+	// PrinterRolesSince returns printer_role rows for printers belonging to
+	// outletID, newer than sinceVersion — the printer_role/sync-config gap
+	// closed by the M4 T4 delivery-fix task.
+	PrinterRolesSince(ctx context.Context, outletID string, sinceVersion int) ([]PrinterRole, error)
 }
 
 type pgRepository struct {
@@ -518,6 +522,33 @@ func (r *pgRepository) StationPrintersSince(ctx context.Context, outletID string
 		}
 		sp.SchemaVersion = 1
 		out = append(out, sp)
+	}
+	return out, rows.Err()
+}
+
+func (r *pgRepository) PrinterRolesSince(ctx context.Context, outletID string, sinceVersion int) ([]PrinterRole, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT pr.printer_id, pr.role, pr.config_version
+		 FROM printer_role pr
+		 JOIN printer p ON p.id = pr.printer_id
+		 WHERE p.outlet_id = $1 AND pr.config_version > $2
+		 ORDER BY pr.config_version`,
+		outletID, sinceVersion,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("kitchen: listing printer roles since %d: %w", sinceVersion, err)
+	}
+	defer rows.Close()
+	var out []PrinterRole
+	for rows.Next() {
+		var pr PrinterRole
+		var role string
+		if err := rows.Scan(&pr.PrinterID, &role, &pr.ConfigVersion); err != nil {
+			return nil, fmt.Errorf("kitchen: scanning printer role: %w", err)
+		}
+		pr.Role = PrinterRoleKind(role)
+		pr.SchemaVersion = 1
+		out = append(out, pr)
 	}
 	return out, rows.Err()
 }

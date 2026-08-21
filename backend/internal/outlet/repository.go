@@ -26,6 +26,10 @@ type Repository interface {
 	// GetByID returns httpx.ErrNotFound unless outletID's outlet belongs
 	// (via its brand) to tenantID.
 	GetByID(ctx context.Context, tenantID, outletID string) (Outlet, error)
+	// UpdateDayStartTime is the single write path for outlet.day_start_time
+	// (ADR-018 §9.2). It bumps config_version in the same statement, tenant
+	// scoped throughout — the same discipline every other method here holds.
+	UpdateDayStartTime(ctx context.Context, tenantID, outletID, dayStartTime string) (Outlet, error)
 }
 
 // PostgresRepository is the Repository implementation backed by the
@@ -39,11 +43,15 @@ func NewPostgresRepository(pool postgres.Pool) *PostgresRepository {
 }
 
 func (r *PostgresRepository) Insert(ctx context.Context, tenantID string, o Outlet) error {
+	dayStartTime := o.DayStartTime
+	if dayStartTime == "" {
+		dayStartTime = defaultDayStartTime
+	}
 	tag, err := r.pool.Exec(ctx,
-		`INSERT INTO outlet (id, brand_id, name, timezone, config_version, created_at, updated_at)
-		 SELECT $1, $2, $3, $4, $5, $6, $7
-		 WHERE EXISTS (SELECT 1 FROM brand WHERE id = $2 AND tenant_id = $8)`,
-		o.ID, o.BrandID, o.Name, o.Timezone, o.ConfigVersion, o.CreatedAt, o.UpdatedAt, tenantID,
+		`INSERT INTO outlet (id, brand_id, name, timezone, day_start_time, config_version, created_at, updated_at)
+		 SELECT $1, $2, $3, $4, $5, $6, $7, $8
+		 WHERE EXISTS (SELECT 1 FROM brand WHERE id = $2 AND tenant_id = $9)`,
+		o.ID, o.BrandID, o.Name, o.Timezone, dayStartTime, o.ConfigVersion, o.CreatedAt, o.UpdatedAt, tenantID,
 	)
 	if err != nil {
 		return fmt.Errorf("outlet: inserting outlet: %w", err)
@@ -56,7 +64,7 @@ func (r *PostgresRepository) Insert(ctx context.Context, tenantID string, o Outl
 
 func (r *PostgresRepository) ListByTenant(ctx context.Context, tenantID string) ([]Outlet, error) {
 	rows, err := r.pool.Query(ctx,
-		`SELECT o.id, o.brand_id, o.name, o.timezone, o.config_version, o.created_at, o.updated_at
+		`SELECT o.id, o.brand_id, o.name, o.timezone, o.day_start_time, o.config_version, o.created_at, o.updated_at
 		 FROM outlet o
 		 JOIN brand b ON b.id = o.brand_id
 		 WHERE b.tenant_id = $1
@@ -71,7 +79,7 @@ func (r *PostgresRepository) ListByTenant(ctx context.Context, tenantID string) 
 	var outlets []Outlet
 	for rows.Next() {
 		var o Outlet
-		if err := rows.Scan(&o.ID, &o.BrandID, &o.Name, &o.Timezone, &o.ConfigVersion, &o.CreatedAt, &o.UpdatedAt); err != nil {
+		if err := rows.Scan(&o.ID, &o.BrandID, &o.Name, &o.Timezone, &o.DayStartTime, &o.ConfigVersion, &o.CreatedAt, &o.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("outlet: scanning outlet: %w", err)
 		}
 		outlets = append(outlets, o)
@@ -85,17 +93,39 @@ func (r *PostgresRepository) ListByTenant(ctx context.Context, tenantID string) 
 func (r *PostgresRepository) GetByID(ctx context.Context, tenantID, outletID string) (Outlet, error) {
 	var o Outlet
 	err := r.pool.QueryRow(ctx,
-		`SELECT o.id, o.brand_id, o.name, o.timezone, o.config_version, o.created_at, o.updated_at
+		`SELECT o.id, o.brand_id, o.name, o.timezone, o.day_start_time, o.config_version, o.created_at, o.updated_at
 		 FROM outlet o
 		 JOIN brand b ON b.id = o.brand_id
 		 WHERE o.id = $1 AND b.tenant_id = $2`,
 		outletID, tenantID,
-	).Scan(&o.ID, &o.BrandID, &o.Name, &o.Timezone, &o.ConfigVersion, &o.CreatedAt, &o.UpdatedAt)
+	).Scan(&o.ID, &o.BrandID, &o.Name, &o.Timezone, &o.DayStartTime, &o.ConfigVersion, &o.CreatedAt, &o.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return Outlet{}, httpx.ErrNotFound
 		}
 		return Outlet{}, fmt.Errorf("outlet: querying outlet: %w", err)
+	}
+	return o, nil
+}
+
+// UpdateDayStartTime is the single write path for outlet.day_start_time
+// (ADR-018 §9.2), tenant-scoped via the same brand join every other query in
+// this file uses, and bumps config_version in the same statement so the new
+// value is visible to the next GET /sync/config.
+func (r *PostgresRepository) UpdateDayStartTime(ctx context.Context, tenantID, outletID, dayStartTime string) (Outlet, error) {
+	var o Outlet
+	err := r.pool.QueryRow(ctx,
+		`UPDATE outlet o SET day_start_time = $1, config_version = o.config_version + 1, updated_at = now()
+		 FROM brand b
+		 WHERE o.brand_id = b.id AND o.id = $2 AND b.tenant_id = $3
+		 RETURNING o.id, o.brand_id, o.name, o.timezone, o.day_start_time, o.config_version, o.created_at, o.updated_at`,
+		dayStartTime, outletID, tenantID,
+	).Scan(&o.ID, &o.BrandID, &o.Name, &o.Timezone, &o.DayStartTime, &o.ConfigVersion, &o.CreatedAt, &o.UpdatedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Outlet{}, httpx.ErrNotFound
+		}
+		return Outlet{}, fmt.Errorf("outlet: updating day_start_time: %w", err)
 	}
 	return o, nil
 }

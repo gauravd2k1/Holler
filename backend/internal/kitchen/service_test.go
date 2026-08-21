@@ -28,6 +28,7 @@ type fakeRepository struct {
 	stationPrinters map[string][]string
 	orderOutlet     map[string]string // orderID -> outletID
 	kots            map[string]Kot
+	printerRoles    []PrinterRole
 	bumpCalls       int
 }
 
@@ -247,6 +248,18 @@ func (f *fakeRepository) StationPrintersSince(ctx context.Context, outletID stri
 		for _, pid := range printerIDs {
 			out = append(out, StationPrinter{StationID: stationID, PrinterID: pid, ConfigVersion: s.ConfigVersion, SchemaVersion: 1})
 		}
+	}
+	return out, nil
+}
+
+func (f *fakeRepository) PrinterRolesSince(ctx context.Context, outletID string, sinceVersion int) ([]PrinterRole, error) {
+	var out []PrinterRole
+	for _, pr := range f.printerRoles {
+		p, ok := f.printers[pr.PrinterID]
+		if !ok || p.OutletID != outletID || pr.ConfigVersion <= sinceVersion {
+			continue
+		}
+		out = append(out, pr)
 	}
 	return out, nil
 }

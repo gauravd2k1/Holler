@@ -482,11 +482,16 @@ func (s *Service) SyncConfigBundle(ctx context.Context, tenantID, outletID strin
 	if err != nil {
 		return ConfigBundle{}, err
 	}
+	printerRoles, err := s.repo.PrinterRolesSince(ctx, outletID, sinceVersion)
+	if err != nil {
+		return ConfigBundle{}, err
+	}
 	return ConfigBundle{
 		Stations:        emptyIfNilStations(stations),
 		ItemStations:    emptyIfNilItemStations(itemStations),
 		Printers:        emptyIfNilPrinters(printers),
 		StationPrinters: emptyIfNilStationPrinters(stationPrinters),
+		PrinterRoles:    emptyIfNilPrinterRoles(printerRoles),
 	}, nil
 }
 
@@ -514,6 +519,13 @@ func emptyIfNilPrinters(s []Printer) []Printer {
 func emptyIfNilStationPrinters(s []StationPrinter) []StationPrinter {
 	if s == nil {
 		return []StationPrinter{}
+	}
+	return s
+}
+
+func emptyIfNilPrinterRoles(s []PrinterRole) []PrinterRole {
+	if s == nil {
+		return []PrinterRole{}
 	}
 	return s
 }

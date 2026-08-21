@@ -3,12 +3,27 @@ package outlet
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/holler/backend/internal/platform/httpx"
 	"github.com/holler/backend/internal/platform/id"
 )
+
+// dayStartTimePattern matches strict 24-hour HH:MM, the shape
+// packages/contracts/postgres/0013_outlet_day_start.sql stores and the edge
+// parses. The edge treats invalid config as a hard rejection since 0.5.3
+// (task instruction); the cloud write path holds the same line rather than
+// accepting a value the edge would then refuse.
+var dayStartTimePattern = regexp.MustCompile(`^([01][0-9]|2[0-3]):[0-5][0-9]$`)
+
+func validateDayStartTime(v string) error {
+	if !dayStartTimePattern.MatchString(v) {
+		return fmt.Errorf("%w: day_start_time must be HH:MM (24-hour), got %q", httpx.ErrInvalidInput, v)
+	}
+	return nil
+}
 
 // Service implements the outlet business commands. Every method takes the
 // caller's Principal and derives tenantID from it — callers never pass a
@@ -49,6 +64,7 @@ func (s *Service) CreateOutlet(ctx context.Context, principal Principal, brandID
 		BrandID:       brandID,
 		Name:          name,
 		Timezone:      timezone,
+		DayStartTime:  defaultDayStartTime,
 		ConfigVersion: 0,
 		CreatedAt:     now,
 		UpdatedAt:     now,
@@ -57,6 +73,28 @@ func (s *Service) CreateOutlet(ctx context.Context, principal Principal, brandID
 		return Outlet{}, err
 	}
 	return o, nil
+}
+
+// SetDayStartTime is the outlet write path for ADR-018 §9.2's
+// outlet.day_start_time: CONFIG, cloud->edge, bumping config_version like
+// every other cloud-owned config write in this codebase (backend/internal/
+// kitchen and backend/internal/compliance's BumpOutletConfigVersion
+// precedent) so a subsequent GET /sync/config carries the new value.
+// Anything that is not strict HH:MM is a hard rejection, never coerced —
+// the edge has treated invalid config as a hard rejection since 0.5.3.
+func (s *Service) SetDayStartTime(ctx context.Context, principal Principal, outletID, dayStartTime string) (Outlet, error) {
+	if principal.TenantID == "" {
+		return Outlet{}, httpx.ErrUnauthorized
+	}
+	outletID = strings.TrimSpace(outletID)
+	if outletID == "" {
+		return Outlet{}, fmt.Errorf("%w: outlet id is required", httpx.ErrInvalidInput)
+	}
+	dayStartTime = strings.TrimSpace(dayStartTime)
+	if err := validateDayStartTime(dayStartTime); err != nil {
+		return Outlet{}, err
+	}
+	return s.repo.UpdateDayStartTime(ctx, principal.TenantID, outletID, dayStartTime)
 }
 
 // ListOutlets returns every outlet the caller's tenant owns. Milestone 1

@@ -27,6 +27,13 @@ type (
 	Kot                   = contracts.Kot
 	KotStatus             = contracts.KotStatus
 	KotTicketItem         = contracts.KotTicketItem
+	PrinterRole           = contracts.PrinterRole
+	PrinterRoleKind       = contracts.PrinterRoleKind
+)
+
+const (
+	PrinterRoleKitchen = contracts.PrinterRoleKitchen
+	PrinterRoleBill    = contracts.PrinterRoleBill
 )
 
 const (
@@ -45,17 +52,24 @@ const (
 )
 
 // ConfigBundle is the kitchen context's contribution to GET /sync/config
-// (contracts 0.3.0, ADR-014): stations, item→station routing, printers and
-// station→printer routing, all newer than the caller's since_version. The
-// full /sync/config route composes users/tables/categories/items from other
-// bounded contexts too — assembling that composite response is cross-context
-// wiring owned outside backend/internal/kitchen. This type is what kitchen
-// hands to whatever composes the full response.
+// (contracts 0.3.0, ADR-014): stations, item→station routing, printers,
+// station→printer routing and printer roles, all newer than the caller's
+// since_version. The full /sync/config route composes users/tables/
+// categories/items from other bounded contexts too — assembling that
+// composite response is cross-context wiring owned outside
+// backend/internal/kitchen. This type is what kitchen hands to whatever
+// composes the full response.
+//
+// PrinterRoles was added retroactively (M4 T4 delivery-fix task): the
+// printer_role table has existed since 0.4.7 in both stores and in Go/TS,
+// but this bundle never carried it, so a cloud-synced outlet had zero
+// printer roles and print_invoice failed by name at every one.
 type ConfigBundle struct {
 	Stations        []Station
 	ItemStations    []MenuItemStation
 	Printers        []Printer
 	StationPrinters []StationPrinter
+	PrinterRoles    []PrinterRole
 }
 
 // NewStationInput is what a caller supplies to create a station. The id is

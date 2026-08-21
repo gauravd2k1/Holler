@@ -11,6 +11,7 @@ import (
 
 	"github.com/holler/backend/internal/auth"
 	"github.com/holler/backend/internal/compliance"
+	"github.com/holler/backend/internal/inventory"
 	"github.com/holler/backend/internal/kitchen"
 	"github.com/holler/backend/internal/menu"
 	"github.com/holler/backend/internal/outlet"
@@ -72,6 +73,17 @@ type fakeComplianceProvider struct {
 func (f fakeComplianceProvider) SyncConfigBundle(ctx context.Context, tenantID, outletID string, sinceVersion int) (compliance.ConfigBundle, error) {
 	if tenantID != scTenantID || outletID != scOutletID {
 		return compliance.ConfigBundle{}, httpx.ErrNotFound
+	}
+	return f.bundle, nil
+}
+
+type fakeInventoryProvider struct {
+	bundle inventory.ConfigBundle
+}
+
+func (f fakeInventoryProvider) SyncConfigBundle(ctx context.Context, tenantID, outletID string, sinceVersion int) (inventory.ConfigBundle, error) {
+	if tenantID != scTenantID || outletID != scOutletID {
+		return inventory.ConfigBundle{}, httpx.ErrNotFound
 	}
 	return f.bundle, nil
 }
@@ -149,6 +161,15 @@ func newTestSyncConfigHandler() *syncConfigHandler {
 				TaxRules:            []contracts.TaxRule{},
 				InvoiceSeries:       []contracts.InvoiceSeries{},
 				DiscountDefinitions: []contracts.DiscountDefinition{},
+			},
+		},
+		fakeInventoryProvider{
+			bundle: inventory.ConfigBundle{
+				InventoryItems:           []contracts.InventoryItem{},
+				ItemUnitConversions:      []contracts.ItemUnitConversion{},
+				Recipes:                  []contracts.Recipe{},
+				RecipeIngredients:        []contracts.RecipeIngredient{},
+				ModifierIngredientDeltas: []contracts.ModifierIngredientDelta{},
 			},
 		},
 		fakeUsersProvider{

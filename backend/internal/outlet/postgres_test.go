@@ -108,3 +108,63 @@ func TestPostgresRepository_CrossTenantOutletLookupIsNotFound(t *testing.T) {
 		t.Fatalf("owning tenant A should fetch its own outlet: %v", err)
 	}
 }
+
+// TestPostgresRepository_DayStartTime_NonMidnightSurvivesRoundTrip is the M4
+// T4 task's non-negotiable acceptance condition: a non-midnight value must be
+// written and read back, not merely the default '00:00' the column already
+// carries from creation — every existing test in this suite exercises only
+// that default, which is exactly how the write path went unshipped.
+func TestPostgresRepository_DayStartTime_NonMidnightSurvivesRoundTrip(t *testing.T) {
+	pool := setupPool(t)
+	ctx := context.Background()
+
+	tenantSvc := tenant.NewService(tenant.NewPostgresRepository(pool))
+	outletSvc := outlet.NewService(outlet.NewPostgresRepository(pool))
+
+	org, err := tenantSvc.CreateOrganisation(ctx, "Day Start Org")
+	if err != nil {
+		t.Fatalf("CreateOrganisation: %v", err)
+	}
+	brand, err := tenantSvc.CreateBrand(ctx, org.ID, "Day Start Brand")
+	if err != nil {
+		t.Fatalf("CreateBrand: %v", err)
+	}
+	principal := outlet.Principal{TenantID: org.ID}
+
+	o, err := outletSvc.CreateOutlet(ctx, principal, brand.ID, "Day Start Outlet", "")
+	if err != nil {
+		t.Fatalf("CreateOutlet: %v", err)
+	}
+	if o.DayStartTime != "00:00" {
+		t.Fatalf("expected default day_start_time 00:00, got %q", o.DayStartTime)
+	}
+
+	updated, err := outletSvc.SetDayStartTime(ctx, principal, o.ID, "04:00")
+	if err != nil {
+		t.Fatalf("SetDayStartTime: %v", err)
+	}
+	if updated.DayStartTime != "04:00" {
+		t.Fatalf("expected day_start_time 04:00 immediately after the write, got %q", updated.DayStartTime)
+	}
+	if updated.ConfigVersion <= o.ConfigVersion {
+		t.Fatalf("expected config_version to bump: before=%d after=%d", o.ConfigVersion, updated.ConfigVersion)
+	}
+
+	// The non-negotiable assertion: read it back through a fresh GetOutlet,
+	// independent of the value SetDayStartTime itself returned.
+	reread, err := outletSvc.GetOutlet(ctx, principal, o.ID)
+	if err != nil {
+		t.Fatalf("GetOutlet after SetDayStartTime: %v", err)
+	}
+	if reread.DayStartTime != "04:00" {
+		t.Fatalf("day_start_time did not survive the round trip: got %q, want 04:00", reread.DayStartTime)
+	}
+
+	// Invalid input is a hard rejection, never coerced (task instruction).
+	if _, err := outletSvc.SetDayStartTime(ctx, principal, o.ID, "25:99"); !errors.Is(err, httpx.ErrInvalidInput) {
+		t.Fatalf("expected ErrInvalidInput for a malformed day_start_time, got %v", err)
+	}
+	if _, err := outletSvc.SetDayStartTime(ctx, principal, o.ID, "4:00"); !errors.Is(err, httpx.ErrInvalidInput) {
+		t.Fatalf("expected ErrInvalidInput for a non-zero-padded hour, got %v", err)
+	}
+}

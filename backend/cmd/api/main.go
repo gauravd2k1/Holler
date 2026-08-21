@@ -19,6 +19,7 @@ import (
 	"github.com/holler/backend/internal/auth"
 	"github.com/holler/backend/internal/compliance"
 	"github.com/holler/backend/internal/health"
+	"github.com/holler/backend/internal/inventory"
 	"github.com/holler/backend/internal/kitchen"
 	"github.com/holler/backend/internal/menu"
 	"github.com/holler/backend/internal/ordering"
@@ -155,8 +156,18 @@ func buildRouter(pool postgres.Pool, cfg config.Config) *chi.Mux {
 	complianceSvc := compliance.NewService(complianceRepo)
 	complianceHandler := compliance.NewHandler(complianceSvc)
 
+	// --- inventory (ADR-018; T4) ---------------------------------------------
+	// inventory_item and recipe are CLOUD_TO_EDGE config (human-authenticated
+	// write routes below); stock_ledger_entry/stock_deduction_gap/stock_count
+	// are EDGE_TO_CLOUD envelope-wrapped replay, mounted under
+	// outlet.DeviceAuthenticate exactly like kitchen's KOT ingest and
+	// payments' invoice/payment/cash_shift ingest.
+	inventoryRepo := inventory.NewRepository(pool)
+	inventorySvc := inventory.NewService(inventoryRepo)
+	inventoryHandler := inventory.NewHandler(inventorySvc)
+
 	// --- composite GET /sync/config ---------------------------------------
-	syncConfig := newSyncConfigHandler(outletSvc, menuSvc, tablesSvc, kitchenSvc, complianceSvc, authSvc, deviceSvc)
+	syncConfig := newSyncConfigHandler(outletSvc, menuSvc, tablesSvc, kitchenSvc, complianceSvc, inventorySvc, authSvc, deviceSvc)
 
 	router := httpx.NewRouter()
 	router.Get("/health", health.Handler)
@@ -189,6 +200,7 @@ func buildRouter(pool postgres.Pool, cfg config.Config) *chi.Mux {
 		orderingHandler.Mount(r)
 		kitchenHandler.Mount(r)
 		complianceHandler.Mount(r)
+		inventoryHandler.Mount(r)
 
 		// Device enrollment/rotation/revocation are human-privileged
 		// management actions (a technician or manager acting through an
@@ -221,6 +233,7 @@ func buildRouter(pool postgres.Pool, cfg config.Config) *chi.Mux {
 		kitchenHandler.MountIngest(r)
 		tablesHandlers.MountEnvelopeIngest(r)
 		paymentsHandler.Mount(r)
+		inventoryHandler.MountIngest(r)
 	})
 
 	return router

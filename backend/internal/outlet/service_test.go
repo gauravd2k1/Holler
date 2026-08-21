@@ -54,6 +54,17 @@ func (f *fakeRepo) GetByID(_ context.Context, tenantID, outletID string) (Outlet
 	return o, nil
 }
 
+func (f *fakeRepo) UpdateDayStartTime(_ context.Context, tenantID, outletID, dayStartTime string) (Outlet, error) {
+	o, ok := f.outlets[outletID]
+	if !ok || f.brandTenant[o.BrandID] != tenantID {
+		return Outlet{}, httpx.ErrNotFound
+	}
+	o.DayStartTime = dayStartTime
+	o.ConfigVersion++
+	f.outlets[outletID] = o
+	return o, nil
+}
+
 func TestCreateOutlet_RejectsBrandFromAnotherTenant(t *testing.T) {
 	repo := newFakeRepo()
 	repo.brandTenant["brand-a"] = "tenant-a"

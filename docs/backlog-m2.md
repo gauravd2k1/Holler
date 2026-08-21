@@ -76,6 +76,8 @@ M2 ships kitchen features to this same target, so validating the target before a
 
 - **`chrono-tz`: do NOT narrow it with `filter-by-regex`. Decided 2026-08-21, recorded so nobody re-proposes it.** The embedded IANA database costs 1-2MB against a 209MB installer, which is noise. The real objection is behavioural: `filter-by-regex = "Asia/"` makes a **valid IANA name fail to parse because of a build flag**, and since 0.5.3 `OutletTimezone::parse` treats a parse failure as a hard rejection at config apply. A build-time size optimisation would become a runtime config rejection for any outlet outside the filter — silent at build, loud at the outlet, which is the coupling this milestone has spent its time removing.
 
+- **`TestBuildRouter_SyncConfigEndToEnd` uses a fixed user id and fails on any repeat run against a persistent database** (`router_integration_test.go:130`, duplicate key on `app_user_pkey`). The exact fixture class `1cc087c` already fixed across auth/kitchen/ordering — mint ids per run. Found blocking T4's full-suite verification; confirmed pre-existing by diff. **Trigger: next touch of `cmd/api` tests.**
+
 - **Air-gapped build machine.** The WebView2 offline package is downloaded from `go.microsoft.com` at *build* time and embedded into the installer. Install-time is offline, which is what ADR-013 requires and what is proven. **Trigger: a build environment without egress** — a customer-hosted or regulated build. The fix is vendoring the runtime package into the repo or an internal artefact store.
 
 ---
