@@ -197,6 +197,18 @@ export const RecipeIngredientSchema = z
     sub_recipe_id: z.string().uuid().nullable(),
     // Positive: a recipe consumes. Negative deltas are a modifier concept.
     quantity_micro: positiveMicroQuantity(),
+    // THE UNIT THE AUTHOR CHOSE — never derived from the referent.
+    //
+    // If a write path or an authoring UI fills this in by looking up the
+    // referenced item's dimension, the cloud's comparison becomes x == x and
+    // the guard can never fire. It will look correct in review: every row
+    // consistent, every test green, the column decoration. The lazy
+    // implementation is the tautological one.
+    //
+    // Added at 0.5.2 because without it quantity_micro was dimensionless in
+    // storage: reclassify chicken from MASS to COUNT and every recipe silently
+    // reinterprets 220_000_000 as 220 whole birds.
+    quantity_dimension: DimensionSchema,
     yield_factor_ppm: z.number().int().positive(), // DEFERRED M5, inert
     sort_order: z.number().int(),
     config_version: z.number().int(),

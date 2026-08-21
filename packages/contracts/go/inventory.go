@@ -164,11 +164,17 @@ type RecipeIngredient struct {
 	InventoryItemID *string             `json:"inventory_item_id"`
 	SubRecipeID     *string             `json:"sub_recipe_id"`
 	// Positive: a recipe consumes. Negative deltas are a modifier concept.
-	QuantityMicro  int64 `json:"quantity_micro"`
-	YieldFactorPPM int   `json:"yield_factor_ppm"` // DEFERRED M5, inert
-	SortOrder      int   `json:"sort_order"`
-	ConfigVersion  int   `json:"config_version"`
-	SchemaVersion  int   `json:"schema_version"`
+	QuantityMicro int64 `json:"quantity_micro"`
+	// THE UNIT THE AUTHOR CHOSE — never derived from the referent. If a write
+	// path fills this from the referenced item's dimension the comparison
+	// becomes x == x and the guard can never fire, while looking correct in
+	// review. Added at 0.5.2: without it, reclassifying chicken from MASS to
+	// COUNT silently reinterprets every recipe's 220_000_000 as 220 birds.
+	QuantityDimension Dimension `json:"quantity_dimension"`
+	YieldFactorPPM    int       `json:"yield_factor_ppm"` // DEFERRED M5, inert
+	SortOrder         int       `json:"sort_order"`
+	ConfigVersion     int       `json:"config_version"`
+	SchemaVersion     int       `json:"schema_version"`
 }
 
 // ModifierIngredientDelta is a child of MenuItemModifier, itself a child of

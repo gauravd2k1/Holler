@@ -2745,7 +2745,7 @@ components:
         A component is EITHER a raw material OR a sub-recipe — never both, never
         neither. Sub-recipes resolve transitively at deduction time; physical
         batch production is M5.
-      required: [id, recipe_id, component_kind, quantity_micro, yield_factor_ppm, sort_order, config_version, schema_version]
+      required: [id, recipe_id, component_kind, quantity_micro, quantity_dimension, yield_factor_ppm, sort_order, config_version, schema_version]
       properties:
         id: { type: string, format: uuid }
         recipe_id: { type: string, format: uuid }
@@ -2753,6 +2753,23 @@ components:
         inventory_item_id: { type: string, format: uuid, nullable: true }
         sub_recipe_id: { type: string, format: uuid, nullable: true }
         quantity_micro: { type: integer }
+        quantity_dimension:
+          allOf:
+            - $ref: "#/components/schemas/Dimension"
+          description: >
+            THE UNIT THE AUTHOR CHOSE. It must NEVER be auto-filled from the
+            referenced item or recipe: if it is, the server-side comparison
+            becomes x == x and the guard can never fire, while looking correct
+            in review. Take it from the unit the author actually typed.
+
+            The write path rejects a row whose dimension does not match its
+            referent — an ITEM row against the inventory item's dimension, a
+            SUB_RECIPE row against the referenced recipe's output_dimension.
+            There is nothing to convert through in either case.
+
+            Where this genuinely fires is bulk recipe import from a
+            spreadsheet, which has no UI to derive anything from and no human
+            checking each row.
         yield_factor_ppm:
           type: integer
           description: DEFERRED M5, inert.
