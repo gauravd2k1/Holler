@@ -105,6 +105,24 @@ message. Since ADR-017 that parameter carries real authority, and it currently
 lands in every proxy and access log on the path. This is credential material in
 already-shipped code. It is not waiter-app blocked and does not wait for M9.
 
+### 2.7 Stopping rule for further contract bumps before T2
+
+0.5.1 and 0.5.2 both landed between T1 and T2, each correcting a defect the
+previous version could not express. That is the right call twice and a bad
+habit three times, so the test is written down:
+
+> **Does it become impossible, or require rewriting ledger rows, once T2 has
+> run? Yes → it blocks T2. No → it is 0.6.0, and T2 proceeds.**
+
+Both bumps passed it: a quantity's dimension and a recipe's output are baked
+into every `stock_ledger_entry` the moment deduction starts writing, and that
+table is append-only — correcting either afterwards stops being a schema change
+and becomes a data migration across immutable history.
+
+**Better error messages, nicer authoring flows and extra indexes do not pass.**
+They are all still available at 0.6.0, and none of them are harder to add after
+a million ledger rows exist than before.
+
 ### 2.6 `printer_role` delivery — fixed in T4, not filed
 
 `printer_role` has existed in SQLite, PostgreSQL, Go and TypeScript since 0.4.7,
