@@ -97,23 +97,37 @@ v0.5.0 also closed four M2/M3-era defects that shared one shape — structural g
 
 Two cross-cutting rules the 0.4.x line established the hard way: contract-shaped changes cascade across crates that do not share a cargo workspace (see `docs/retro.md` 2026-08-15), so run `make check-seams` after changing any `pub` signature in `edge/` or `apps/pos/src-tauri`; and a migration that exists on disk but is absent from `edge/database/src/migrations.rs`'s `MIGRATIONS` list **never applies** — 0009–0011 sat dead for exactly that reason, and 0005 before them.
 
-## Current milestone: MILESTONE 2 — Kitchen
-Scope: KOT, station routing, printer abstraction, KDS, LAN realtime delivery, order status — all built against the frozen `packages/contracts/` shapes.
+## Current milestone: MILESTONE 4 — Inventory & Recipes
+<!-- MILESTONE-MARKER: 4 -->
+<!-- Checked by scripts/check-milestone-marker.mjs against .claude/current-milestone.
+     This block said "MILESTONE 2 — Kitchen" for the whole of M3: every M3 builder
+     loaded M2's scope and M2's EXCLUDES as primary context and nothing noticed for
+     an entire milestone. The marker exists so that cannot recur silently. -->
 
-Acceptance — every item is an observed behaviour, not an implemented API. None of these count as met by a passing unit suite, and **none may be evidenced by a test harness**: an acceptance run exercises the binaries that ship. If the only thing that starts a component is a test, that component is not wired, whatever its tests say (`docs/retro.md`, 2026-08-11 — this has now happened twice).
-1. ~~POS → kitchen propagation below target latency on LAN~~ **MET 2026-08-12**: 150–183ms across multiple sends, POS on the laptop → KDS on a phone over real WiFi, against the <250ms target (`docs/spec/kitchen.md`). Status round-trip confirmed in the same session.
-   Note the margin honestly: the e2e harness measures P50 13ms / P95 24ms over a real TCP socket on one machine, so **real WiFi adds roughly 140ms** — the pass is genuine but the headroom is ~30%, not an order of magnitude. A busier network, more screens, or weaker hardware could erode it, so this is a criterion to re-measure at an outlet rather than treat as settled.
-2. **Crash mid-order → the cart survives.** Kill the POS with lines in the cart and reopen: the in-progress order is still there. An API capable of preventing the loss does not count; the loss not happening counts (see `docs/retro.md`, 2026-08-10).
-3. Cloud sync round-trip: an order and its KOTs created at the edge reach the cloud and read back correctly.
-4. The `HOLLER_TEST_DATABASE_URL` suites actually execute — including T7's `TestBuildRouter_SyncConfigEndToEnd`. These have never run; a skip is not a pass.
-5. One real KDS↔edge socket session: the Rust server and the TypeScript client connected to each other, a ticket appearing and transitioning. Both ends are currently tested only against their own fakes.
-6. Offline login from synced credentials — a cashier authenticating against users pulled through `/sync/config`, **not** dev-seeded data.
+Scope: raw materials with units and conversions, recipes and sub-recipes, modifier-driven ingredient deltas, an append-only stock ledger, automatic recipe-level consumption on order confirm, wastage recording, physical stock counts, theoretical-vs-actual variance, and low-stock surfacing at the POS. Built against the frozen `packages/contracts/` v0.5.0 shapes (ADR-018). Planning inputs: `docs/m4-planning.md`.
 
-**EXCLUDES:** aggregator KOTs, expo screen polish, label printers, waiter app.
+Track graph: **T0** Windows-10 installer gate + heartbeat output · **T0b** real seed menu (done) · **T1** units, integer conversion, recipe resolution with cycle/depth guards · **T2** ledger + deduction inside the `confirm_order` transaction · **T3** wastage, counts, variance, snapshot sealing · **T4** `backend/internal/inventory` + envelope-wrapped ingest + cross-tenant isolation tests for the three new tables · **T5** POS surfaces · **T6** e2e invariants.
 
-Milestone 1 is complete. Items consciously deferred out of it are in `docs/backlog-m2.md`, including a gate that must clear before M2 ships: nothing has ever been built or run on the bare Windows 10 target ADR-013 specifies.
+Acceptance — every item is an observed behaviour, not an implemented API, and **none may be evidenced by a test harness**: an acceptance run exercises the binaries that ship (`docs/retro.md`, 2026-08-11).
+1. Sell a dish **from the real seed menu** with the network disconnected → `stock_ledger_entry` rows for every ingredient at recipe quantity × line quantity, plus the deltas for modifiers actually chosen, and nothing for modifiers with no delta row.
+2. Kill the POS between confirm and deduction → order and ledger agree on reopen. Judged against the crash, not the API.
+3. A physical count produces a variance report whose arithmetic is checked against an independently computed figure.
+4. An ingredient crossing its reorder level is **visible to a human on the POS**, not merely present in a table.
+5. An item sold with no recipe completes the sale, records a deduction gap, and appears on the "items sold with no recipe" report.
+6. Ledger entries created at the edge replay to the cloud and read back identically.
+7. Stock reads stay bounded after a sealed snapshot — measured, not asserted.
 
-Note: the pre-0.5 placeholder migrations under `backend/migrations/` are gone — `packages/contracts/postgres/` is the sole schema source, and `postgres.Migrate` globs every `*.sql` there, so a new contract migration needs no backend wiring.
+**EXCLUDES:** procurement / PO / GRN / suppliers; central kitchen; `semi_finished_batch` and batch/expiry **alerting** (model the fields, act in M5); aggregator auto-snooze on stock-out; food-cost dashboards; the menu-engineering matrix; the waiter app (M9).
+
+### PARKED — decided, do not re-raise
+
+Both are hardware gates. **Parked 2026-08-20, revisit ~2 September 2026.** A fresh session should read these as settled, not as open questions, and must not re-litigate them:
+- **ESC/POS on paper** — an M3 exit gate. No printer exists in this environment; one is being sourced. The file-sink transport proves the byte stream, not that a device accepts it.
+- **Bare 4GB Windows 10 VM run** — ADR-013. The installer half is done (`bundle.windows`, offline WebView2 embed, static CRT, NSIS-only); the VM run itself needs a machine nobody has provisioned yet. `docs/adr/ADR-013-outlet-deployment-target.md` carries the addendum and the named fallback.
+
+### Completed milestones
+
+**M1 Core POS** and **M2 Kitchen** are complete. M2's acceptance item 5 — one real KDS↔edge socket session — **is met**, re-evidenced 4/4 against a real socket after ADR-017; note honestly that it was recorded as met while silently failing to compile for a period (`docs/RESUME.md` §4). **M3 Billing** is code-complete and functionally exercised, but **not acceptance-complete**: it is untagged and blocked on the two PARKED gates above, and `docs/RESUME.md` §2 carries the correction covering four defects found in it after the fact.
 
 ## Response rules for agents
 Inspect repo first, output a concise plan, then edit real files. If a task touches >15 files, stop and present the plan instead of proceeding. Report per milestone: Implemented / Verified / Performance / Remaining / Next.

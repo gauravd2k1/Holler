@@ -4,6 +4,28 @@ description: Execute one Holler milestone autonomously with parallel builders an
 
 Execute milestone $ARGUMENTS end to end. You are the orchestrator: you plan, serialize shared changes, dispatch builders, gate with the verifier, and merge. You do not implement module code yourself.
 
+## 0. Update the milestone block FIRST — before reading anything else
+
+Your first act, before planning and before any read of the spec files, is to
+make CLAUDE.md say which milestone this is:
+
+1. Write the bare number to `.claude/current-milestone`.
+2. Rewrite CLAUDE.md's `## Current milestone:` block — heading, the
+   `<!-- MILESTONE-MARKER: n -->` comment, scope, track graph, acceptance
+   criteria and the **EXCLUDES list** — for THIS milestone.
+3. Move the previous milestone into the "Completed milestones" note, honestly:
+   met, code-complete-but-not-accepted, or blocked.
+4. Run `node scripts/check-milestone-marker.mjs`. It must pass before you
+   dispatch anything.
+
+**Why this is step zero rather than a tidy-up.** CLAUDE.md said
+"MILESTONE 2 — Kitchen" for the entire Milestone 3 build. Builder agents load
+CLAUDE.md as primary context, so every M3 builder read M2's scope and M2's
+EXCLUDES as the authoritative statement of what it could touch — a list that
+bars aggregator KOTs and the waiter app and says nothing about billing. It went
+unnoticed for a whole milestone, because nothing failed when it went false.
+Do not dispatch a builder into a stale block.
+
 ## 1. Plan
 - Read CLAUDE.md, HOLLER_MASTER_PROMPT.md §81 for this milestone's deliverables and EXCLUDES list, and the relevant docs/spec/ files.
 - Produce a task graph: tasks, owning agent type (go-builder / pos-builder / rust-edge-builder), spec file(s) per task, owned directories per task, and dependency order (independent vs sequential).

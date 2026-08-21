@@ -435,3 +435,53 @@ When writing a name or a comment that asserts a property, ask: *what would fail
 if this were false?* If the answer is "nothing", either write the check or
 weaken the claim to what is actually true. "Truncates to the UTC date" would
 have been correct, ugly, and impossible to misread.
+
+## 2026-08-21 — Every Milestone 3 builder was handed Milestone 2's scope
+
+Found during M4 planning, while updating CLAUDE.md for the new milestone.
+
+`CLAUDE.md` line 100 read `## Current milestone: MILESTONE 2 — Kitchen` — with
+M2's scope, M2's acceptance criteria and M2's EXCLUDES list beneath it —
+throughout the whole of the Milestone 3 build.
+
+Builder agents load CLAUDE.md as their primary context. So every M3 builder
+received, as the authoritative statement of what it was allowed to touch, a
+scope line about KOTs and station routing and an EXCLUDES list barring
+aggregator KOTs, expo polish, label printers and the waiter app. Billing was
+not mentioned in either. The tax engine, the invoice, split payments and the
+cash shift were all built against a block describing a different milestone.
+
+### Why nothing caught it
+
+Nothing was checking. The block is prose in a file nobody diffs for meaning,
+and its wrongness produced no failure: builders were also given their own task
+briefs and spec files, which were correct, so the work landed correctly anyway.
+The stale block was a loaded gun that happened not to go off — an M3 builder
+that consulted EXCLUDES to decide whether something was in scope would have got
+a wrong answer, and we would have no way of knowing whether one did.
+
+This is the same class as the two entries above it: **a claim that nothing
+verifies**. It is the third instance in a week, and the most consequential,
+because this claim is the one every builder reads first.
+
+### The fix is structural, not a careful edit
+
+A careful edit fixes today and guarantees M5 repeats it, because the failure
+mode is forgetting, and being more careful is not a mechanism.
+
+- `.claude/current-milestone` holds the number, authoritatively.
+- `scripts/check-milestone-marker.mjs` fails the build when CLAUDE.md's heading
+  or its `MILESTONE-MARKER` comment disagrees with that file. Falsified before
+  being trusted: set the marker to 5, watched it fail naming both values, set
+  it back.
+- `/milestone <n>` now updates the block as **step 0**, before it reads
+  anything or dispatches anyone.
+
+### The lesson, stated for the next reader
+
+**Context handed to an agent is production input, and it decays like code.**
+We version, review and drift-check the contracts an agent is given. The prose
+that tells it what milestone it is in — what it may build and what it must not
+touch — had no version, no review and no check, and it was wrong for months.
+If a document is load-bearing for a machine, treat it like code: give it a
+single source of truth and something that fails when the copies disagree.

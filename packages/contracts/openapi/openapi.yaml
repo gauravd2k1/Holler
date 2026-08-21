@@ -1397,6 +1397,121 @@ paths:
                     type: array
                     items: { $ref: "#/components/schemas/StationPrinter" }
 
+  /inventory/ledger-entries:
+    post:
+      summary: >
+        Replay a stock movement recorded at the edge. Added at 0.5.0 (ADR-018).
+
+        Accepts TWO aggregate types on one route: stock_ledger_entry and
+        stock_deduction_gap. That is deliberate. A gap is the record that a sale
+        could not be resolved to ingredients, and it belongs beside the
+        movements it failed to produce — the variance report reads both, and a
+        gap that arrived by a different path could not be joined to the ledger
+        it explains.
+
+        The route pins a SET of aggregate types rather than one; anything
+        outside the set is 422, exactly as a single-type route would reject a
+        mismatch. §50.1 pins the direction, and both members are EDGE_TO_CLOUD.
+
+        A deduction gap is a SIGNAL, NEVER A CORRECTION. Ingesting one never
+        causes a deduction to be computed or backfilled: the sale happened
+        without one, and writing it later would retro-alter history.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: "#/components/schemas/StockLedgerEntryEnvelope"
+                - $ref: "#/components/schemas/StockDeductionGapEnvelope"
+      responses:
+        "201":
+          description: Movement or gap recorded
+        "422":
+          $ref: "#/components/responses/EnvelopeRouteMismatch"
+
+  /inventory/counts:
+    post:
+      summary: >
+        Replay a physical stock count taken at the outlet. Added at 0.5.0
+        (ADR-018). Lines travel inside the payload, the invoice_line precedent.
+
+        A completed count posts COUNT_ADJUSTMENT entries to the ledger at the
+        EDGE; the cloud replays both and computes neither. stock_count is
+        immutable once COMPLETED (trigger-enforced in both stores) because it is
+        the evidence behind append-only ledger rows.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StockCountEnvelope"
+      responses:
+        "201":
+          description: Count recorded
+        "422":
+          $ref: "#/components/responses/EnvelopeRouteMismatch"
+
+  /inventory/items:
+    post:
+      summary: >
+        Create or update a raw material. CONFIG, cloud→edge, so this is an
+        ordinary unwrapped cloud write — envelopes are the edge→cloud replay
+        pattern and appear on no config route. Requires inventory.manage.
+
+        Current stock is NOT a field here and never will be: a quantity written
+        by the edge on a cloud-owned row is the half-config/half-transaction row
+        ADR-011 forbids. Stock lives in the ledger; cost lives on a ledger entry.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InventoryItem"
+      responses:
+        "200":
+          description: Item stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InventoryItem"
+
+  /inventory/recipes:
+    post:
+      summary: >
+        Create or update a recipe. CONFIG, cloud→edge. Requires recipe.manage.
+
+        THIS ROUTE IS THE CYCLE GUARD. Before accepting any ingredient with
+        component_kind SUB_RECIPE, the handler runs a recursive-CTE reachability
+        check and rejects the write if the proposed child can reach the parent,
+        naming the offending path; depth is bounded at MAX_RECIPE_DEPTH (8) in
+        the same pass. A row-level CHECK catches only self-reference, and the
+        edge carries an independent backstop — but this is where a cycle is
+        supposed to be stopped, because an unbounded walk inside the edge's
+        confirm_order transaction hangs a till mid-service.
+
+        recipe_version increments on EVERY edit. Past ledger entries keep the
+        old number, so an edit can never retro-alter a past deduction.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [recipe, ingredients]
+              properties:
+                recipe: { $ref: "#/components/schemas/Recipe" }
+                ingredients:
+                  type: array
+                  items: { $ref: "#/components/schemas/RecipeIngredient" }
+      responses:
+        "200":
+          description: Recipe stored
+        "409":
+          description: >
+            The proposed sub-recipe reference would create a cycle, or exceeds
+            MAX_RECIPE_DEPTH. The response names the path.
+
 components:
   responses:
     EnvelopeRouteMismatch:
@@ -2475,3 +2590,343 @@ components:
         schema_version:
           type: integer
           enum: [1]
+
+    PrinterRole:
+      type: object
+      description: >
+        Which paths a printer is eligible for. Added at 0.4.7 (ADR-016
+        addendum) as a JOIN ROW rather than a column on Printer, so one device
+        can be both KITCHEN and BILL without a BOTH enum member that every
+        reader has to special-case.
+
+        A printer with NO row here is a candidate for NEITHER path. Absence is
+        never read as consent: an outlet with no BILL-role printer fails loudly
+        at issue time by name, rather than queueing a bill into nothing.
+
+        This schema was MISSING from this file for two contract versions while
+        the table, the Go struct and the TypeScript type all existed — found by
+        scripts/check-openapi-go-drift.mjs on its first run, which is the third
+        recorded instance of this spec drifting unnoticed.
+      required: [printer_id, role, config_version, schema_version]
+      properties:
+        printer_id: { type: string, format: uuid }
+        role:
+          type: string
+          enum: [KITCHEN, BILL]
+        config_version: { type: integer }
+        schema_version: { type: integer, enum: [1] }
+
+    # ---------------------------------------------------------------------
+    # Milestone 4 — inventory and recipes (0.5.0, ADR-018)
+    # ---------------------------------------------------------------------
+    # Field lists are checked against the Go mirrors by
+    # scripts/check-openapi-go-drift.mjs, which closes the SQL -> Go/TS ->
+    # OpenAPI chain. Before it existed nothing machine-checked this file, and it
+    # drifted on three MenuItem fields for two versions.
+
+    Dimension:
+      type: string
+      description: >
+        Fixes what a micro-quantity means. Every quantity below is an integer
+        count of MICRO-units of the dimension's canonical unit — micro-grams,
+        micro-litres, micro-pieces — the money-is-paise rule generalised. No
+        float appears anywhere in the quantity path. The binding range limit is
+        JavaScript's 2^53, not int64.
+      enum: [MASS, VOLUME, COUNT]
+
+    InventoryItem:
+      type: object
+      description: >
+        A raw material. CONFIG, cloud→edge. Current stock and cost are
+        deliberately absent: a quantity written by the edge on a cloud-owned row
+        is the half-config/half-transaction row ADR-011 forbids.
+      required: [id, outlet_id, sku, name, dimension, is_active, yield_factor_ppm, config_version, schema_version]
+      properties:
+        id: { type: string, format: uuid }
+        outlet_id: { type: string, format: uuid }
+        sku:
+          type: string
+          description: Unique per outlet, never globally.
+        name: { type: string }
+        category: { type: string, nullable: true }
+        dimension: { $ref: "#/components/schemas/Dimension" }
+        reorder_level_micro:
+          type: integer
+          nullable: true
+          description: Crossing it is a SIGNAL, never a block — stock never refuses a sale.
+        par_level_micro: { type: integer, nullable: true }
+        storage_location: { type: string, nullable: true }
+        is_active: { type: boolean }
+        yield_factor_ppm:
+          type: integer
+          description: >
+            DEFERRED to M5 and INERT until then — 1000000 ppm is the identity,
+            nothing reads it, and round-trip tests pin it to exactly that value.
+        config_version: { type: integer }
+        schema_version: { type: integer, enum: [1] }
+
+    ItemUnitConversion:
+      type: object
+      description: >
+        A pack conversion, per item: one packet of paneer is 200 g, and that is
+        a property of that paneer. Tier 1 conversions (kg to g, l to ml, dozen
+        to piece) are physical constants frozen in code, not rows — and a pack
+        label may never collide with one, because two sources of truth for the
+        same conversion need a silent precedence rule between disagreeing
+        numbers.
+
+        Cross-dimension conversion lives HERE and only here: density varies per
+        ingredient, so grams to millilitres is not a physical constant.
+      required: [id, inventory_item_id, pack_unit_label, source_dimension, numerator, denominator, config_version, schema_version]
+      properties:
+        id: { type: string, format: uuid }
+        inventory_item_id: { type: string, format: uuid }
+        pack_unit_label: { type: string }
+        source_dimension: { $ref: "#/components/schemas/Dimension" }
+        numerator: { type: integer }
+        denominator: { type: integer }
+        config_version: { type: integer }
+        schema_version: { type: integer, enum: [1] }
+
+    Recipe:
+      type: object
+      description: >
+        One recipe per SELLABLE UNIT — a recipe binds at the same grain as a
+        price. menu_item_variant_id is required and unique; the nullable
+        "applies to all variants" form was rejected because NULL != NULL
+        defeats the unique index in both stores.
+      required: [id, menu_item_variant_id, name, recipe_version, config_version, schema_version]
+      properties:
+        id: { type: string, format: uuid }
+        menu_item_variant_id: { type: string, format: uuid }
+        name:
+          type: string
+          description: >
+            Snapshotted onto every ledger entry, so a year of ledger reads
+            without this table.
+        recipe_version:
+          type: integer
+          description: Increments on EVERY edit. Past entries keep the old number.
+        config_version: { type: integer }
+        schema_version: { type: integer, enum: [1] }
+
+    RecipeComponentKind:
+      type: string
+      enum: [ITEM, SUB_RECIPE]
+
+    RecipeIngredient:
+      type: object
+      description: >
+        A component is EITHER a raw material OR a sub-recipe — never both, never
+        neither. Sub-recipes resolve transitively at deduction time; physical
+        batch production is M5.
+      required: [id, recipe_id, component_kind, quantity_micro, yield_factor_ppm, sort_order, config_version, schema_version]
+      properties:
+        id: { type: string, format: uuid }
+        recipe_id: { type: string, format: uuid }
+        component_kind: { $ref: "#/components/schemas/RecipeComponentKind" }
+        inventory_item_id: { type: string, format: uuid, nullable: true }
+        sub_recipe_id: { type: string, format: uuid, nullable: true }
+        quantity_micro: { type: integer }
+        yield_factor_ppm:
+          type: integer
+          description: DEFERRED M5, inert.
+        sort_order: { type: integer }
+        config_version: { type: integer }
+        schema_version: { type: integer, enum: [1] }
+
+    ModifierIngredientDelta:
+      type: object
+      description: >
+        Signed ingredient delta for a modifier: extra paneer is positive, no
+        onion is negative. A MODIFIER WITH NO ROW HERE DEDUCTS NOTHING —
+        absence is never read as consent, the printer_role rule applied to
+        ingredients. Travels inside the MenuItem config bundle; it has no route
+        of its own.
+      required: [id, menu_item_modifier_id, inventory_item_id, quantity_micro, config_version, schema_version]
+      properties:
+        id: { type: string, format: uuid }
+        menu_item_modifier_id: { type: string, format: uuid }
+        inventory_item_id: { type: string, format: uuid }
+        quantity_micro: { type: integer }
+        config_version: { type: integer }
+        schema_version: { type: integer, enum: [1] }
+
+    StockEntryType:
+      type: string
+      enum: [PURCHASE, CONSUMPTION, WASTAGE, TRANSFER_IN, TRANSFER_OUT, ADJUSTMENT, RETURN_TO_VENDOR, PRODUCTION_CONSUMPTION, PRODUCTION_OUTPUT]
+
+    StockEntryOrigin:
+      type: string
+      description: >
+        Different information from entry_type: a CONSUMPTION posted by a recipe
+        and one posted by a modifier delta share a type and are different facts.
+      enum: [RECIPE, MODIFIER_DELTA, MANUAL, COUNT_ADJUSTMENT, WASTAGE]
+
+    StockLedgerEntry:
+      type: object
+      description: >
+        EDGE-AUTHORITATIVE and append-only, trigger-enforced in both stores. The
+        entry is readable without any other table: it snapshots its context and
+        holds NO foreign keys, so a recipe edit never retro-alters a past
+        deduction. Exactly one provenance group is populated, keyed on origin.
+      required: [id, outlet_id, entry_seq, inventory_item_id, inventory_item_name, dimension, entry_type, origin, quantity_applied_micro, occurred_at, business_date, schema_version]
+      properties:
+        id: { type: string, format: uuid }
+        outlet_id: { type: string, format: uuid }
+        entry_seq:
+          type: integer
+          description: >
+            THE HIGH-WATER MARK — per-outlet monotonic, assigned by the edge in
+            the same transaction as the insert. A stock read selects entries NOT
+            COVERED BY THE MARK, never entries after a date: an entry arriving
+            after its day is sealed while carrying that day's business_date is
+            absent from the seal and excluded by a date predicate, and would
+            vanish from the balance permanently and silently.
+        inventory_item_id: { type: string, format: uuid }
+        inventory_item_name: { type: string }
+        dimension: { $ref: "#/components/schemas/Dimension" }
+        entry_type: { $ref: "#/components/schemas/StockEntryType" }
+        origin: { $ref: "#/components/schemas/StockEntryOrigin" }
+        quantity_applied_micro:
+          type: integer
+          description: >
+            THE QUANTITY ACTUALLY APPLIED, authoritative. Signed, and
+            deliberately unbounded below — negative stock is permitted and is a
+            variance signal, not an error.
+        recipe_id: { type: string, format: uuid, nullable: true }
+        recipe_version: { type: integer, nullable: true }
+        recipe_name: { type: string, nullable: true }
+        modifier_delta_id: { type: string, format: uuid, nullable: true }
+        modifier_name: { type: string, nullable: true }
+        modifier_delta_version: { type: integer, nullable: true }
+        source_order_id: { type: string, format: uuid, nullable: true }
+        source_order_item_id: { type: string, format: uuid, nullable: true }
+        reason_code: { type: string, nullable: true }
+        note: { type: string, nullable: true }
+        occurred_at: { type: string, format: date-time }
+        business_date:
+          type: string
+          format: date
+          description: >
+            Outlet-local business day, computed ONCE at write time from
+            outlet.timezone and outlet.day_start_time, never recomputed on read.
+        created_by_user_id: { type: string, format: uuid, nullable: true }
+        unit_cost_paise:
+          type: integer
+          nullable: true
+          description: DEFERRED M5.
+        schema_version: { type: integer, enum: [1] }
+
+    StockCountStatus:
+      type: string
+      enum: [OPEN, COMPLETED]
+
+    StockCount:
+      type: object
+      description: >
+        A physical count — the only instrument that can FALSIFY the deduction
+        engine, since theoretical deduction always agrees with itself. Mutable
+        while OPEN, immutable once COMPLETED.
+      required: [id, outlet_id, business_date, status, started_at, schema_version]
+      properties:
+        id: { type: string, format: uuid }
+        outlet_id: { type: string, format: uuid }
+        business_date: { type: string, format: date }
+        status: { $ref: "#/components/schemas/StockCountStatus" }
+        started_at: { type: string, format: date-time }
+        completed_at: { type: string, format: date-time, nullable: true }
+        counted_by_user_id: { type: string, format: uuid, nullable: true }
+        note: { type: string, nullable: true }
+        schema_version: { type: integer, enum: [1] }
+
+    StockCountLine:
+      type: object
+      description: Child row travelling inside its count's payload.
+      required: [id, stock_count_id, inventory_item_id, inventory_item_name, dimension, counted_quantity_micro, expected_quantity_micro, schema_version]
+      properties:
+        id: { type: string, format: uuid }
+        stock_count_id: { type: string, format: uuid }
+        inventory_item_id: { type: string, format: uuid }
+        inventory_item_name: { type: string }
+        dimension: { $ref: "#/components/schemas/Dimension" }
+        counted_quantity_micro: { type: integer }
+        expected_quantity_micro:
+          type: integer
+          description: >
+            The theoretical balance AT THE MOMENT OF COUNTING, snapshotted so
+            variance stays reproducible. Recomputing it later compares today's
+            theory against yesterday's shelf.
+        note: { type: string, nullable: true }
+        schema_version: { type: integer, enum: [1] }
+
+    StockDeductionGapReason:
+      type: string
+      enum: [NO_RECIPE, NO_VARIANT, CYCLE, DEPTH_EXCEEDED, UNKNOWN_UNIT]
+
+    StockDeductionGap:
+      type: object
+      description: >
+        A SIGNAL, NEVER A CORRECTION. Records that a sale could not be resolved
+        to ingredients. Deductions are never backfilled when the recipe is later
+        authored — that would retro-alter history. In the variance report it
+        appears as a named term ("N sales unaccounted"), never folded into
+        shrinkage.
+
+        Cloud-visible because the person who can SEE it and the person who can
+        FIX it are different people in different places: fixing means authoring
+        a recipe, which is cloud config under recipe.manage.
+      required: [id, outlet_id, order_id, order_item_id, menu_item_id, menu_item_name, quantity, reason, occurred_at, business_date, schema_version]
+      properties:
+        id: { type: string, format: uuid }
+        outlet_id: { type: string, format: uuid }
+        order_id: { type: string, format: uuid }
+        order_item_id: { type: string, format: uuid }
+        menu_item_id: { type: string, format: uuid }
+        menu_item_variant_id: { type: string, format: uuid, nullable: true }
+        menu_item_name: { type: string }
+        quantity:
+          type: integer
+          description: >
+            Sellable units sold unaccounted — a plain count, NOT a
+            micro-quantity: nothing was resolved to an ingredient, which is the
+            point of the row.
+        reason: { $ref: "#/components/schemas/StockDeductionGapReason" }
+        occurred_at: { type: string, format: date-time }
+        business_date: { type: string, format: date }
+        schema_version: { type: integer, enum: [1] }
+
+    StockLedgerEntryEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/SyncEnvelope"
+        - type: object
+          properties:
+            aggregate_type: { enum: [stock_ledger_entry] }
+            direction: { enum: [EDGE_TO_CLOUD] }
+            payload: { $ref: "#/components/schemas/StockLedgerEntry" }
+
+    StockDeductionGapEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/SyncEnvelope"
+        - type: object
+          properties:
+            aggregate_type: { enum: [stock_deduction_gap] }
+            direction: { enum: [EDGE_TO_CLOUD] }
+            payload: { $ref: "#/components/schemas/StockDeductionGap" }
+
+    StockCountEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/SyncEnvelope"
+        - type: object
+          properties:
+            aggregate_type: { enum: [stock_count] }
+            direction: { enum: [EDGE_TO_CLOUD] }
+            payload:
+              allOf:
+                - $ref: "#/components/schemas/StockCount"
+                - type: object
+                  required: [lines]
+                  properties:
+                    lines:
+                      type: array
+                      items: { $ref: "#/components/schemas/StockCountLine" }

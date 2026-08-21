@@ -55,6 +55,12 @@ M2 ships kitchen features to this same target, so validating the target before a
 
   Kept here rather than deleted because the fix does not retire the record: this is the finding about how M2/M3 were verified, recorded as one correction in `docs/RESUME.md` §2.
 
+- **P1 — `printer_role` never reaches an edge from the cloud, so no real outlet can print a bill.** Found 2026-08-21 by `scripts/check-openapi-go-drift.mjs` on its first run, which flagged the missing OpenAPI schema; the delivery gap turned up on the next look. Contracts 0.4.7 added `printer_role` to SQLite, PostgreSQL, Go and TypeScript — and `syncConfigResponse` (`backend/cmd/api/syncconfig.go:134`) has sixteen fields and **no `printer_roles`**. A grep for `printer_roles` across `backend/` and `packages/contracts/go` returns nothing; the only writers are `edge/database/src/repo.rs` and `devseed`.
+
+  So an outlet that syncs from the cloud receives **zero** printer roles. Since a printer with no role row is a candidate for neither path — deliberately, so absence is never read as consent — `print_invoice` fails loudly by name at every such outlet. It works in development **only** because `devseed` writes the roles locally.
+
+  Exactly the shape of the `/sync/config` empty-`users` defect already filed above: the contract shape exists, the delivery path does not, and nothing fails until a human tries to use the product. Closing it needs a `printer_roles` field on the bundle, a kitchen-context export to populate it, and the edge applying it — **and the OpenAPI field must land with the implementation, not before it**, or the spec acquires exactly the kind of claim nothing verifies that this week's work has been about removing.
+
 - **Air-gapped build machine.** The WebView2 offline package is downloaded from `go.microsoft.com` at *build* time and embedded into the installer. Install-time is offline, which is what ADR-013 requires and what is proven. **Trigger: a build environment without egress** — a customer-hosted or regulated build. The fix is vendoring the runtime package into the repo or an internal artefact store.
 
 ---
