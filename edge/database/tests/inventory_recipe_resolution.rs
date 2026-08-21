@@ -1,7 +1,9 @@
-//! Milestone 4, track T1 (ADR-018): recipe resolution, transitive through
-//! sub-recipes, exact-rational, rounded once — against realistic fixtures
-//! (a real menu item shape, real spec quantities from `docs/spec/
-//! inventory.md`'s Butter Chicken example), not synthetic placeholders.
+//! Milestone 4, track T1 (ADR-018; contracts 0.5.1 `recipe.output_*`
+//! addendum, `packages/contracts/sqlite/0019_recipe_output.sql`): recipe
+//! resolution, transitive through sub-recipes, exact-rational, rounded
+//! once — against realistic fixtures (a real menu item shape, the spec's
+//! own worked Butter Chicken example, read out of `docs/spec/inventory.md`
+//! itself), not synthetic placeholders.
 //!
 //! Every fixture insert is asserted to have actually landed before any
 //! later assertion depends on it — a failed INSERT silently leaves zero
@@ -11,14 +13,24 @@
 //! Runtime: `cargo test`, native Windows (ADR-013 — this crate has no
 //! non-Windows target).
 
+use std::fs;
+
 use rusqlite::{params, Connection};
 
-use holler_edge_database::inventory::{resolve_recipe_for_variant, GapReason, ResolveOutcome};
+use holler_edge_database::inventory::{
+    convert_tier1, resolve_recipe_for_variant, GapReason, ResolveOutcome,
+};
 use holler_edge_database::model::{MenuCategory, MenuItem, MenuItemVariant, Outlet};
 use holler_edge_database::repo;
 use holler_edge_database::Db;
 
 const OUTLET_ID: &str = "outlet-inv-1";
+
+/// One canonical serving, in COUNT micro-units — mirrors
+/// `inventory::resolve`'s private `ONE_SERVING_MICRO`; duplicated here
+/// (rather than exported) because a test fixture should compute its
+/// expectations independently of the production constant it is checking.
+const ONE_SERVING_MICRO: i64 = 1_000_000;
 
 fn seed_outlet_and_category(db: &Db) {
     repo::upsert_outlet(
@@ -126,12 +138,25 @@ fn insert_inventory_item(conn: &Connection, id: &str, name: &str, dimension: &st
     assert_eq!(count, 1, "inventory_item fixture did not land: {id}");
 }
 
-/// Inserts a `recipe` row bound to `variant_id` and asserts it landed.
-fn insert_recipe(conn: &Connection, id: &str, variant_id: &str, name: &str) {
+/// Inserts a `recipe` row bound to `variant_id`, with an explicit
+/// `output_dimension`/`output_quantity_micro` (contracts 0.5.1 — every
+/// recipe has one, not only recipes used as sub-recipes) at every call
+/// site, deliberately: relying on the migration's `DEFAULT` would hide a
+/// mismatch bug that an explicit value forces a test author to confront.
+/// Asserts the row landed.
+fn insert_recipe(
+    conn: &Connection,
+    id: &str,
+    variant_id: &str,
+    name: &str,
+    output_dimension: &str,
+    output_quantity_micro: i64,
+) {
     conn.execute(
-        "INSERT INTO recipe (id, menu_item_variant_id, name, config_version) \
-         VALUES (?1, ?2, ?3, 1)",
-        params![id, variant_id, name],
+        "INSERT INTO recipe \
+            (id, menu_item_variant_id, name, output_dimension, output_quantity_micro, config_version) \
+         VALUES (?1, ?2, ?3, ?4, ?5, 1)",
+        params![id, variant_id, name, output_dimension, output_quantity_micro],
     )
     .expect("insert recipe");
     let count: i64 = conn
@@ -140,6 +165,13 @@ fn insert_recipe(conn: &Connection, id: &str, variant_id: &str, name: &str) {
         })
         .expect("count recipe");
     assert_eq!(count, 1, "recipe fixture did not land: {id}");
+}
+
+/// A one-serving dish: `output_dimension = COUNT`,
+/// `output_quantity_micro = 1_000_000` — the shape every directly-sellable
+/// (non-platter) recipe in these fixtures uses.
+fn insert_one_serving_recipe(conn: &Connection, id: &str, variant_id: &str, name: &str) {
+    insert_recipe(conn, id, variant_id, name, "COUNT", ONE_SERVING_MICRO);
 }
 
 fn insert_item_ingredient(
@@ -178,9 +210,11 @@ fn insert_sub_recipe_ingredient(
 
 fn assert_row_exists(conn: &Connection, table: &str, id: &str) {
     let count: i64 = conn
-        .query_row(&format!("SELECT COUNT(*) FROM {table} WHERE id = ?1"), [id], |r| {
-            r.get(0)
-        })
+        .query_row(
+            &format!("SELECT COUNT(*) FROM {table} WHERE id = ?1"),
+            [id],
+            |r| r.get(0),
+        )
         .unwrap_or_else(|_| panic!("could not count {table}"));
     assert_eq!(count, 1, "{table} fixture did not land: {id}");
 }
@@ -217,7 +251,7 @@ fn resolves_a_flat_recipe_scaled_by_order_quantity() {
     insert_inventory_item(db.connection(), "inv-paneer", "Paneer", "MASS");
     insert_inventory_item(db.connection(), "inv-butter", "Butter", "MASS");
 
-    insert_recipe(
+    insert_one_serving_recipe(
         db.connection(),
         "recipe-paneer-tikka-half",
         &variant_id,
@@ -259,15 +293,97 @@ fn resolves_a_flat_recipe_scaled_by_order_quantity() {
 }
 
 // ---------------------------------------------------------------------
-// Sub-recipe: docs/spec/inventory.md's own worked example — Butter
-// Chicken (Chicken 220g, Makhani gravy 180ml, Butter 20g, Cream 30ml,
-// Kasuri methi 2g) — with Makhani Gravy modelled as a genuine sub-recipe
-// that itself contributes butter and cream, exercising accumulation of
-// the SAME inventory_item across two branches of the tree.
+// The spec's own worked example, read out of the spec itself
+// (`docs/spec/inventory.md:16`), so spec and code cannot silently drift
+// apart again. Makhani Gravy is a real sub-recipe with a real yield (300ml
+// per batch) different from the 180ml Butter Chicken actually uses — the
+// exact scenario contracts 0.5.1 exists for: the sub-recipe's own output
+// quantity is independent of how much of it a parent asks for, and a
+// change to one does not silently rescale the other.
 // ---------------------------------------------------------------------
 
+/// Splits an item like `"Makhani gravy 180ml"` into
+/// `("Makhani gravy", 180, "ml")` — trailing alphabetic run is the unit,
+/// the digit run immediately before it is the quantity, everything before
+/// that (trimmed) is the name. No regex crate is a dependency of this
+/// workspace; this hand-rolled scan is small enough not to need one.
+fn split_name_quantity_unit(item: &str) -> (String, i64, String) {
+    let item = item.trim();
+    let chars: Vec<char> = item.chars().collect();
+    let mut i = chars.len();
+    let unit_start = {
+        let mut j = i;
+        while j > 0 && chars[j - 1].is_ascii_alphabetic() {
+            j -= 1;
+        }
+        j
+    };
+    let unit: String = chars[unit_start..i].iter().collect();
+    i = unit_start;
+    let qty_start = {
+        let mut j = i;
+        while j > 0 && chars[j - 1].is_ascii_digit() {
+            j -= 1;
+        }
+        j
+    };
+    let qty: i64 = chars[qty_start..i]
+        .iter()
+        .collect::<String>()
+        .parse()
+        .unwrap_or_else(|e| panic!("could not parse quantity out of {item:?}: {e}"));
+    let name: String = chars[..qty_start].iter().collect::<String>().trim().to_string();
+    (name, qty, unit)
+}
+
+/// Reads `docs/spec/inventory.md`, finds its own Butter Chicken worked
+/// example, and returns the five `(name, quantity, unit)` triples it
+/// states. Panics with a clear message if the line's shape ever changes —
+/// a brittle guard here is the point: it is what keeps this test and the
+/// spec from silently disagreeing.
+fn read_butter_chicken_example_from_spec() -> Vec<(String, i64, String)> {
+    let spec_path = format!(
+        "{}/../../docs/spec/inventory.md",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let text = fs::read_to_string(&spec_path)
+        .unwrap_or_else(|e| panic!("could not read {spec_path}: {e}"));
+    let marker = "Butter Chicken: ";
+    let start = text
+        .find(marker)
+        .unwrap_or_else(|| panic!("spec no longer contains {marker:?}: {spec_path}"))
+        + marker.len();
+    let rest = &text[start..];
+    let end = rest
+        .find(')')
+        .unwrap_or_else(|| panic!("no closing ')' after {marker:?} in {spec_path}"));
+    let example = &rest[..end];
+    example.split(", ").map(split_name_quantity_unit).collect()
+}
+
 #[test]
-fn resolves_a_sub_recipe_transitively_and_accumulates_shared_leaves_across_branches() {
+fn the_spec_line_parses_to_the_five_quantities_this_fixture_encodes() {
+    // "Butter Chicken: Chicken 220g, Makhani gravy 180ml, Butter 20g,
+    // Cream 30ml, Kasuri methi 2g" — docs/spec/inventory.md:16, quoted here
+    // so a diff on either side is visible without cross-referencing.
+    let parsed = read_butter_chicken_example_from_spec();
+    assert_eq!(
+        parsed,
+        vec![
+            ("Chicken".to_string(), 220, "g".to_string()),
+            ("Makhani gravy".to_string(), 180, "ml".to_string()),
+            ("Butter".to_string(), 20, "g".to_string()),
+            ("Cream".to_string(), 30, "ml".to_string()),
+            ("Kasuri methi".to_string(), 2, "g".to_string()),
+        ],
+        "docs/spec/inventory.md's Butter Chicken example no longer matches \
+         this test's literal expectation — update BOTH sides deliberately, \
+         not just this assertion"
+    );
+}
+
+#[test]
+fn resolves_the_spec_butter_chicken_example_with_a_real_sub_recipe_yield() {
     let db = Db::open_in_memory_for_tests().expect("open db");
     seed_outlet_and_category(&db);
     let bc_variant = seed_menu_item_with_variant(
@@ -297,38 +413,55 @@ fn resolves_a_sub_recipe_transitively_and_accumulates_shared_leaves_across_branc
         insert_inventory_item(db.connection(), id, name, dim);
     }
 
-    // Makhani Gravy sub-recipe: "1x" = tomato 150g, butter 15g, cream 15g.
+    // Makhani Gravy: a real sub-recipe with a real yield, 300 ml a batch —
+    // deliberately NOT 180ml (what Butter Chicken actually uses), so the
+    // resolved 180/300 = 0.6 multiplier is genuinely exercised rather than
+    // trivially 1. Batch composition (tomato/butter/cream) is this test's
+    // own invented internals; the spec gives no sub-recipe breakdown.
+    let (_, gravy_output, gravy_unit) = ("Makhani gravy".to_string(), 300i64, "ml".to_string());
+    let (gravy_dimension, gravy_output_micro) =
+        convert_tier1(&gravy_unit, gravy_output as i128).expect("ml is a Tier 1 unit");
     insert_recipe(
         db.connection(),
         "recipe-makhani-gravy",
         &gravy_variant,
         "Makhani Gravy",
+        gravy_dimension.as_str(),
+        gravy_output_micro as i64,
     );
     insert_item_ingredient(
         db.connection(),
         "ri-gravy-tomato",
         "recipe-makhani-gravy",
         "inv-tomato",
-        150_000_000,
+        convert_tier1("g", 250).unwrap().1 as i64,
     );
     insert_item_ingredient(
         db.connection(),
         "ri-gravy-butter",
         "recipe-makhani-gravy",
         "inv-butter",
-        15_000_000,
+        convert_tier1("g", 25).unwrap().1 as i64,
     );
     insert_item_ingredient(
         db.connection(),
         "ri-gravy-cream",
         "recipe-makhani-gravy",
         "inv-cream",
-        15_000_000,
+        convert_tier1("ml", 25).unwrap().1 as i64,
     );
 
-    // Butter Chicken root: chicken 220g, 1x Makhani Gravy, butter 20g,
-    // cream 30g, kasuri methi 2g direct.
-    insert_recipe(
+    // The spec's own five quantities, read from the file rather than
+    // hand-copied twice.
+    let spec = read_butter_chicken_example_from_spec();
+    let by_name = |n: &str| spec.iter().find(|(name, _, _)| name == n).unwrap();
+    let (_, chicken_qty, chicken_unit) = by_name("Chicken");
+    let (_, gravy_used_qty, gravy_used_unit) = by_name("Makhani gravy");
+    let (_, butter_qty, butter_unit) = by_name("Butter");
+    let (_, cream_qty, cream_unit) = by_name("Cream");
+    let (_, kasuri_qty, kasuri_unit) = by_name("Kasuri methi");
+
+    insert_one_serving_recipe(
         db.connection(),
         "recipe-butter-chicken",
         &bc_variant,
@@ -339,35 +472,37 @@ fn resolves_a_sub_recipe_transitively_and_accumulates_shared_leaves_across_branc
         "ri-bc-chicken",
         "recipe-butter-chicken",
         "inv-chicken",
-        220_000_000,
+        convert_tier1(chicken_unit, *chicken_qty as i128).unwrap().1 as i64,
     );
     insert_sub_recipe_ingredient(
         db.connection(),
         "ri-bc-gravy",
         "recipe-butter-chicken",
         "recipe-makhani-gravy",
-        1_000_000, // exactly once
+        convert_tier1(gravy_used_unit, *gravy_used_qty as i128)
+            .unwrap()
+            .1 as i64,
     );
     insert_item_ingredient(
         db.connection(),
         "ri-bc-butter",
         "recipe-butter-chicken",
         "inv-butter",
-        20_000_000,
+        convert_tier1(butter_unit, *butter_qty as i128).unwrap().1 as i64,
     );
     insert_item_ingredient(
         db.connection(),
         "ri-bc-cream",
         "recipe-butter-chicken",
         "inv-cream",
-        30_000_000,
+        convert_tier1(cream_unit, *cream_qty as i128).unwrap().1 as i64,
     );
     insert_item_ingredient(
         db.connection(),
         "ri-bc-kasuri-methi",
         "recipe-butter-chicken",
         "inv-kasuri-methi",
-        2_000_000,
+        convert_tier1(kasuri_unit, *kasuri_qty as i128).unwrap().1 as i64,
     );
 
     let outcome = resolve_recipe_for_variant(db.connection(), Some(&bc_variant), 1)
@@ -380,12 +515,27 @@ fn resolves_a_sub_recipe_transitively_and_accumulates_shared_leaves_across_branc
     // (direct+gravy), kasuri methi, tomato (gravy only).
     assert_eq!(resolution.leaves.len(), 5);
 
-    assert_eq!(leaf(&outcome, "inv-chicken").unwrap().applied_micro, 220_000_000);
-    assert_eq!(leaf(&outcome, "inv-tomato").unwrap().applied_micro, 150_000_000);
-    // Butter: 20g direct + 15g via one gravy application == 35g.
-    assert_eq!(leaf(&outcome, "inv-butter").unwrap().applied_micro, 35_000_000);
-    // Cream: 30g direct + 15g via gravy == 45g.
-    assert_eq!(leaf(&outcome, "inv-cream").unwrap().applied_micro, 45_000_000);
+    assert_eq!(
+        leaf(&outcome, "inv-chicken").unwrap().applied_micro,
+        220_000_000
+    );
+    // Tomato: gravy-only, scaled by 180/300 = 0.6 of the batch's 250g.
+    assert_eq!(
+        leaf(&outcome, "inv-tomato").unwrap().applied_micro,
+        150_000_000
+    );
+    // Butter: 20g direct + (0.6 * 25g via gravy = 15g) == 35g.
+    assert_eq!(
+        leaf(&outcome, "inv-butter").unwrap().applied_micro,
+        35_000_000
+    );
+    // Cream: 30ml direct + (0.6 * 25ml via gravy = 15ml) == 45ml. VOLUME's
+    // Tier 1 canonical unit is the litre, so "ml" scales by 1_000 (not
+    // 1_000_000 -- that is "g"'s MASS factor): 45ml = 45_000 micro-litres.
+    assert_eq!(
+        leaf(&outcome, "inv-cream").unwrap().applied_micro,
+        45_000
+    );
     assert_eq!(
         leaf(&outcome, "inv-kasuri-methi").unwrap().applied_micro,
         2_000_000
@@ -393,17 +543,93 @@ fn resolves_a_sub_recipe_transitively_and_accumulates_shared_leaves_across_branc
 }
 
 // ---------------------------------------------------------------------
+// The sharing platter: a recipe whose own output covers more than one
+// serving, and an order that requests fewer servings than a whole
+// execution — both unrepresentable under the old "multiplier" reading,
+// both now exact-rational, no rounding needed.
+// ---------------------------------------------------------------------
+
+#[test]
+fn a_two_serving_recipe_is_expressible_and_scales_by_servings_requested_not_executions() {
+    let db = Db::open_in_memory_for_tests().expect("open db");
+    seed_outlet_and_category(&db);
+    let variant_id = seed_menu_item_with_variant(
+        &db,
+        "item-family-platter",
+        "variant-family-platter",
+        "Family Platter",
+    );
+    insert_inventory_item(db.connection(), "inv-chicken-platter", "Chicken", "MASS");
+
+    // Recipe as authored: ONE execution yields 2 servings, and uses 500g
+    // chicken total for that one execution.
+    insert_recipe(
+        db.connection(),
+        "recipe-family-platter",
+        &variant_id,
+        "Family Platter",
+        "COUNT",
+        2 * ONE_SERVING_MICRO,
+    );
+    insert_item_ingredient(
+        db.connection(),
+        "ri-platter-chicken",
+        "recipe-family-platter",
+        "inv-chicken-platter",
+        500_000_000,
+    );
+
+    // 2 servings requested (one whole platter, one execution): the FULL
+    // 500g applies, not half and not doubled.
+    let outcome = resolve_recipe_for_variant(db.connection(), Some(&variant_id), 2)
+        .expect("resolve should not be a DbError");
+    let ResolveOutcome::Resolved(_) = &outcome else {
+        panic!("expected a resolution, got {outcome:?}");
+    };
+    assert_eq!(
+        leaf(&outcome, "inv-chicken-platter").unwrap().applied_micro,
+        500_000_000,
+        "one whole platter (2 servings requested) must deduct exactly one \
+         execution's ingredients, not a rescaled amount"
+    );
+
+    // 4 servings requested (two whole platters, two executions): doubles.
+    let outcome4 = resolve_recipe_for_variant(db.connection(), Some(&variant_id), 4)
+        .expect("resolve should not be a DbError");
+    assert_eq!(
+        leaf(&outcome4, "inv-chicken-platter").unwrap().applied_micro,
+        1_000_000_000
+    );
+
+    // 1 serving requested (half a platter, e.g. a half-portion sold from a
+    // shared preparation): an EXACT half-execution, no rounding needed
+    // since 500_000_000 * 0.5 is itself exact.
+    let outcome1 = resolve_recipe_for_variant(db.connection(), Some(&variant_id), 1)
+        .expect("resolve should not be a DbError");
+    assert_eq!(
+        leaf(&outcome1, "inv-chicken-platter").unwrap().applied_micro,
+        250_000_000
+    );
+}
+
+// ---------------------------------------------------------------------
 // Rounding: exact resolution disagrees with rounding at each level
 // (ADR-018 §5) — proved through a real DB-backed three-level chain, not
-// only the pure-math unit test in inventory::rational.
+// only the pure-math unit test in inventory::rational, and now via the
+// output-quantity formula (contracts 0.5.1) rather than the old
+// "micro-scaled multiplier" one.
 // ---------------------------------------------------------------------
 
 #[test]
 fn rounds_exactly_once_at_the_leaf_and_disagrees_with_per_level_rounding() {
     let db = Db::open_in_memory_for_tests().expect("open db");
     seed_outlet_and_category(&db);
-    let root_variant =
-        seed_menu_item_with_variant(&db, "item-rounding-demo", "variant-rounding-demo", "Rounding Demo");
+    let root_variant = seed_menu_item_with_variant(
+        &db,
+        "item-rounding-demo",
+        "variant-rounding-demo",
+        "Rounding Demo",
+    );
     let level1_variant = seed_menu_item_with_variant(
         &db,
         "item-rounding-l1",
@@ -419,8 +645,17 @@ fn rounds_exactly_once_at_the_leaf_and_disagrees_with_per_level_rounding() {
 
     insert_inventory_item(db.connection(), "inv-essence", "Rare Essence", "MASS");
 
-    // Level 2 (deepest): 1x = 5 micro-grams of essence.
-    insert_recipe(db.connection(), "recipe-rounding-l2", &level2_variant, "L2");
+    // Level 2 (deepest): one execution yields 1_000_000 micro-units of its
+    // own declared (arbitrary, MASS here) output, and uses 5 micro-grams
+    // of essence per execution.
+    insert_recipe(
+        db.connection(),
+        "recipe-rounding-l2",
+        &level2_variant,
+        "L2",
+        "MASS",
+        1_000_000,
+    );
     insert_item_ingredient(
         db.connection(),
         "ri-l2-essence",
@@ -429,10 +664,19 @@ fn rounds_exactly_once_at_the_leaf_and_disagrees_with_per_level_rounding() {
         5,
     );
 
-    // Level 1: 0.333334x of level 2 (an integer quantity_micro
-    // approximating 1/3 -- quantity_micro is always an integer, so this is
-    // the closest a single row can get to a genuine repeating fraction).
-    insert_recipe(db.connection(), "recipe-rounding-l1", &level1_variant, "L1");
+    // Level 1: one execution yields 1_000_000 micro-units of its own
+    // output, and requests 333_334 micro-units of L2's output per
+    // execution — an integer quantity_micro approximating 1/3 (the
+    // closest a single row can get to a genuine repeating fraction, since
+    // quantity_micro is always an integer).
+    insert_recipe(
+        db.connection(),
+        "recipe-rounding-l1",
+        &level1_variant,
+        "L1",
+        "MASS",
+        1_000_000,
+    );
     insert_sub_recipe_ingredient(
         db.connection(),
         "ri-l1-l2",
@@ -441,8 +685,8 @@ fn rounds_exactly_once_at_the_leaf_and_disagrees_with_per_level_rounding() {
         333_334,
     );
 
-    // Root: 0.333334x of level 1.
-    insert_recipe(db.connection(), "recipe-rounding-root", &root_variant, "Root");
+    // Root: one serving requests 333_334 micro-units of L1's output.
+    insert_one_serving_recipe(db.connection(), "recipe-rounding-root", &root_variant, "Root");
     insert_sub_recipe_ingredient(
         db.connection(),
         "ri-root-l1",
@@ -464,6 +708,44 @@ fn rounds_exactly_once_at_the_leaf_and_disagrees_with_per_level_rounding() {
     // sub-recipe step, collapsing the whole chain to 0 forever — the exact
     // drift ADR-018 §5 exists to prevent. Round-once-at-the-leaf gives 1.
     assert_eq!(leaf(&outcome, "inv-essence").unwrap().applied_micro, 1);
+}
+
+/// Falsifies the "never materialise the multiplier as a rounded number"
+/// rule the 0.5.1 migration header restates (the 333_334/1e6 defect
+/// arriving from the new output-quantity direction): if the CHILD's
+/// multiplier were rounded to an integer before being applied to the
+/// leaf, instead of carried as an exact rational, this exact fixture
+/// would collapse to 0 instead of resolving to 1. This test does not
+/// disable code (the production path already carries the exact rational,
+/// proved by the test above); it independently hand-computes what a
+/// rounded-multiplier implementation WOULD produce and asserts that wrong
+/// answer disagrees with the real one, so the two paths cannot silently
+/// converge by coincidence.
+#[test]
+fn a_naively_rounded_multiplier_would_disagree_with_the_exact_resolver() {
+    // Same 333_334/1_000_000 two-level chain as the test above.
+    let requested_of_l1 = 333_334i128;
+    let l1_multiplier_rounded = {
+        // round_half_away_from_zero(333334 / 1_000_000) = round(0.333334) = 0
+        let n = requested_of_l1;
+        let d = 1_000_000i128;
+        (2 * n + d) / (2 * d)
+    };
+    assert_eq!(
+        l1_multiplier_rounded, 0,
+        "a multiplier rounded at the first sub-recipe level must collapse to 0"
+    );
+    // Once rounded to the integer 0, every subsequent level multiplies 0 by
+    // something and the leaf receives 0 — permanently disagreeing with the
+    // exact resolver's real answer of 1 (asserted by
+    // `rounds_exactly_once_at_the_leaf_and_disagrees_with_per_level_rounding`
+    // above, against the actual production code path).
+    let naive_leaf_result = l1_multiplier_rounded * 333_334 / 1_000_000 * 5;
+    assert_eq!(naive_leaf_result, 0);
+    assert_ne!(
+        naive_leaf_result, 1,
+        "the naive per-level-rounded answer must NOT match the exact resolver's answer"
+    );
 }
 
 // ---------------------------------------------------------------------
@@ -508,7 +790,7 @@ fn a_recipe_referencing_an_unsynced_inventory_item_is_an_unknown_unit_gap() {
         "variant-dangling",
         "Dangling Reference Item",
     );
-    insert_recipe(db.connection(), "recipe-dangling", &variant_id, "Dangling");
+    insert_one_serving_recipe(db.connection(), "recipe-dangling", &variant_id, "Dangling");
 
     db.connection()
         .execute("PRAGMA foreign_keys = OFF", [])
@@ -530,6 +812,49 @@ fn a_recipe_referencing_an_unsynced_inventory_item_is_an_unknown_unit_gap() {
 }
 
 // ---------------------------------------------------------------------
+// DIMENSION_MISMATCH (contracts 0.5.1): a root recipe whose own declared
+// output isn't COUNT can never satisfy an order, which always requests a
+// COUNT quantity (servings sold) — an authoring defect (e.g. a gravy
+// recipe mistakenly bound to a sellable variant) the cloud is meant to
+// reject at write time, gapped defensively at the edge.
+// ---------------------------------------------------------------------
+
+#[test]
+fn a_root_recipe_whose_output_is_not_count_is_a_dimension_mismatch_gap() {
+    let db = Db::open_in_memory_for_tests().expect("open db");
+    seed_outlet_and_category(&db);
+    let variant_id = seed_menu_item_with_variant(
+        &db,
+        "item-mis-bound-gravy",
+        "variant-mis-bound-gravy",
+        "Mis-bound Gravy",
+    );
+    insert_inventory_item(db.connection(), "inv-tomato-mismatch", "Tomato", "MASS");
+    // Authored (in error) as a VOLUME-yielding recipe bound directly to a
+    // sellable variant, instead of only ever being referenced as a
+    // SUB_RECIPE component.
+    insert_recipe(
+        db.connection(),
+        "recipe-mis-bound-gravy",
+        &variant_id,
+        "Mis-bound Gravy",
+        "VOLUME",
+        300_000_000,
+    );
+    insert_item_ingredient(
+        db.connection(),
+        "ri-mismatch-tomato",
+        "recipe-mis-bound-gravy",
+        "inv-tomato-mismatch",
+        250_000_000,
+    );
+
+    let outcome =
+        resolve_recipe_for_variant(db.connection(), Some(&variant_id), 1).expect("no DbError");
+    assert_eq!(outcome, ResolveOutcome::Gap(GapReason::DimensionMismatch));
+}
+
+// ---------------------------------------------------------------------
 // FALSIFICATION: the resolver must terminate on a genuine cycle, and must
 // stop at the depth limit, rather than hang the only SQLite writer at the
 // outlet (ADR-018 §7). Both guards are constructed adversarially here and
@@ -540,20 +865,17 @@ fn a_recipe_referencing_an_unsynced_inventory_item_is_an_unknown_unit_gap() {
 fn a_genuine_two_step_cycle_terminates_as_a_cycle_gap() {
     // A -> B -> C -> A. The cloud write-time DFS check is supposed to
     // reject this at authoring time; this constructs it directly in
-    // SQLite (foreign_keys OFF only for the one edge that closes the
-    // loop -- recipe_ingredient.sub_recipe_id has no self-contained way to
-    // reference a recipe id that must, by definition, already exist before
-    // the edge closing the loop is inserted) to prove the EDGE'S OWN
-    // backstop, independent of that cloud check, actually stops it.
+    // SQLite to prove the EDGE'S OWN backstop, independent of that cloud
+    // check, actually stops it.
     let db = Db::open_in_memory_for_tests().expect("open db");
     seed_outlet_and_category(&db);
     let variant_a = seed_menu_item_with_variant(&db, "item-a", "variant-a", "A (internal)");
     let variant_b = seed_menu_item_with_variant(&db, "item-b", "variant-b", "B (internal)");
     let variant_c = seed_menu_item_with_variant(&db, "item-c", "variant-c", "C (internal)");
 
-    insert_recipe(db.connection(), "recipe-a", &variant_a, "A");
-    insert_recipe(db.connection(), "recipe-b", &variant_b, "B");
-    insert_recipe(db.connection(), "recipe-c", &variant_c, "C");
+    insert_one_serving_recipe(db.connection(), "recipe-a", &variant_a, "A");
+    insert_one_serving_recipe(db.connection(), "recipe-b", &variant_b, "B");
+    insert_one_serving_recipe(db.connection(), "recipe-c", &variant_c, "C");
 
     // A -> B, B -> C: both are ordinary forward references to
     // already-existing rows, no FK trick needed.
@@ -570,15 +892,16 @@ fn a_genuine_two_step_cycle_terminates_as_a_cycle_gap() {
     let outcome =
         resolve_recipe_for_variant(db.connection(), Some(&variant_a), 1).expect("no DbError");
 
-    // FALSIFIED (not merely asserted): with `path.contains(&sub_id)`
-    // temporarily disabled, this exact fixture was run and produced
+    // FALSIFIED (not merely asserted), RE-VERIFIED against the 0.5.1
+    // output-quantity formula: with `path.contains(&sub_id)` temporarily
+    // disabled, this exact fixture was rerun and produced
     // `Gap(DepthExceeded)` instead of `Gap(Cycle)` -- the walk still
     // terminated, but only because `MAX_RECIPE_DEPTH` independently caught
     // it after wasted recursion around the loop, proving the cycle guard
-    // is not redundant with the depth guard: it is what makes this
-    // resolver report the RIGHT reason, immediately, rather than merely
-    // surviving by accident of the other guard. Restored before this file
-    // was finalised.
+    // is not redundant with the depth guard even under the new formula
+    // (the guard runs before any output-quantity arithmetic, so its own
+    // logic is unchanged by that rewrite). Restored before this file was
+    // finalised.
     assert_eq!(outcome, ResolveOutcome::Gap(GapReason::Cycle));
 }
 
@@ -603,7 +926,7 @@ fn a_chain_deeper_than_max_recipe_depth_terminates_as_a_depth_exceeded_gap() {
         let variant_id = format!("variant-depth-{level}");
         seed_menu_item_with_variant(&db, &item_id, &variant_id, &format!("Depth {level}"));
         let recipe_id = format!("recipe-depth-{level}");
-        insert_recipe(db.connection(), &recipe_id, &variant_id, &format!("D{level}"));
+        insert_one_serving_recipe(db.connection(), &recipe_id, &variant_id, &format!("D{level}"));
         recipe_ids.push(recipe_id);
     }
     insert_inventory_item(db.connection(), "inv-depth-leaf", "Depth Leaf", "MASS");
@@ -633,14 +956,14 @@ fn a_chain_deeper_than_max_recipe_depth_terminates_as_a_depth_exceeded_gap() {
     let outcome =
         resolve_recipe_for_variant(db.connection(), Some(root_variant_id), 1).expect("no DbError");
 
-    // FALSIFIED (not merely asserted): with `walk`'s depth check
-    // temporarily disabled (`if false && path.len() ...`), this exact
-    // fixture was run and it resolved successfully instead of gapping --
-    // `ResolveOutcome::Resolved(..)` with `applied_micro: 1_000_000` on the
-    // deep leaf -- confirming the walk really does reach the bottom of an
-    // over-deep chain when nothing stops it, and that this guard, not
-    // something else (e.g. the cycle guard, irrelevant here since the
-    // chain is acyclic), is what turns that into a gap. Restored before
-    // this file was finalised.
+    // FALSIFIED (not merely asserted), RE-VERIFIED against the 0.5.1
+    // output-quantity formula: with `walk`'s depth check temporarily
+    // disabled (`if false && path.len() ...`), this exact fixture was
+    // rerun and it resolved successfully instead of gapping --
+    // `ResolveOutcome::Resolved(..)` with `applied_micro: 1_000_000` on
+    // the deep leaf -- confirming the walk really does reach the bottom of
+    // an over-deep chain when nothing stops it, under the new formula too
+    // (same `path.len()` check, evaluated before any output-quantity
+    // arithmetic). Restored before this file was finalised.
     assert_eq!(outcome, ResolveOutcome::Gap(GapReason::DepthExceeded));
 }

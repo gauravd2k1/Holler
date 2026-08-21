@@ -1,5 +1,27 @@
-//! Recipe resolution (ADR-018 §5, §6, §7): sub-recipes resolved transitively
-//! to their leaves, exact-rational through the tree, rounded exactly once.
+//! Recipe resolution (ADR-018 §5, §6, §7; contracts 0.5.1 `recipe.output_*`
+//! addendum, `packages/contracts/sqlite/0019_recipe_output.sql`):
+//! sub-recipes resolved transitively to their leaves, exact-rational through
+//! the tree, rounded exactly once.
+//!
+//! **One formula, at every level:**
+//! `multiplier = requested_quantity / recipe.output_quantity_micro`.
+//! `requested_quantity` is an ABSOLUTE amount of the recipe's own declared
+//! output (`recipe.output_dimension`), never a dimensionless execution
+//! count. At the root, the order requests `line_qty` SERVINGS — an absolute
+//! COUNT quantity of `line_qty × 1_000_000` micro-pieces — against
+//! whatever `output_quantity_micro` the root recipe itself declares one
+//! execution to produce; for a `SUB_RECIPE` component, the request is the
+//! parent's own `quantity_micro` on that ingredient row, interpreted as an
+//! absolute amount of the CHILD's declared output. There is no special case
+//! for the root and no separate "micro-scaled multiplier" convention for a
+//! sub-recipe row — 0.5.0 had one (`quantity_micro / 1_000_000` on a
+//! `SUB_RECIPE` row meant "execute this many times"), and it was rejected:
+//! under that reading, editing a sub-recipe's own yield silently rescales
+//! every recipe that references it, with no error, until a physical count
+//! catches the variance. `output_quantity_micro` fixes the deduction to the
+//! ABSOLUTE quantity the parent actually asked for; a re-yielded sub-recipe
+//! changes only its own `output_quantity_micro` and the ratio recomputes
+//! correctly the very next resolution.
 //!
 //! **A broken recipe never fails a confirm.** [`resolve_recipe_for_variant`]
 //! reports "this could not be resolved, and why" ([`GapReason`]) as an
@@ -18,6 +40,25 @@
 //! `MAX_RECIPE_DEPTH` bounds nesting depth independently of the cycle check,
 //! so even a long acyclic chain (which a real menu will never produce, but a
 //! restored backup or an older writer might) cannot recurse unboundedly.
+//!
+//! **`DIMENSION_MISMATCH` — what this resolver can and cannot detect.** A
+//! parent asking for a quantity of a sub-recipe's output implicitly asks in
+//! whatever dimension that sub-recipe currently declares
+//! (`recipe_ingredient` carries no independent dimension tag of its own —
+//! `quantity_micro` is a bare integer, and MASS/VOLUME/COUNT all share the
+//! same micro-scale, so the stored number alone cannot reveal whether an
+//! author typed "180 g" or "180 ml"). That makes a `SUB_RECIPE` reference
+//! tautologically dimension-consistent with whatever the child currently
+//! declares — a real drift (the child's own dimension changed *after* the
+//! parent referenced it) is a cloud write-time concern (ADR-018 addendum),
+//! not something this row's stored data lets the edge detect after the
+//! fact. The one place a mismatch **is** independently checkable from data
+//! alone is the root: an order always requests a COUNT quantity (servings
+//! sold), regardless of what the resolved recipe declares, so a root
+//! recipe whose `output_dimension` is not `COUNT` is a genuine, detectable
+//! authoring defect — e.g. a recipe meant only as a sub-recipe component
+//! (a gravy, `VOLUME`) mistakenly bound to a sellable `menu_item_variant`.
+//! That is the one case this resolver checks and gaps on.
 
 use std::collections::HashMap;
 
@@ -32,6 +73,11 @@ use super::units::Dimension;
 /// at write time (ADR-018 §7). Mirrors `MaxRecipeDepth` in
 /// `packages/contracts/go/inventory.go`.
 pub const MAX_RECIPE_DEPTH: u32 = 8;
+
+/// One canonical serving, in COUNT micro-units — what an order line's plain
+/// integer `quantity` is scaled by to become the root's `requested_quantity`
+/// (ADR-018 addendum: "the request is line_qty × 1 serving").
+const ONE_SERVING_MICRO: i128 = 1_000_000;
 
 /// Every reason a recipe resolution can fail to produce a deduction,
 /// reported rather than raised. `T2` turns this into a `stock_deduction_gap`
@@ -61,12 +107,23 @@ pub enum GapReason {
     /// requires (defensively — the schema's own `CHECK` should prevent
     /// this), or names an `inventory_item_id` this database has no row
     /// for: config arriving out of order, or a partially-synced catalogue.
+    /// Also covers a recipe whose own `output_quantity_micro` is not
+    /// positive — the schema's own `CHECK` should prevent this too, but
+    /// this resolver never trusts a constraint that may have been written
+    /// by an older schema version.
     UnknownUnit,
+    /// The order's implicit request (a COUNT quantity — servings sold) does
+    /// not match the resolved root recipe's own `output_dimension`. No
+    /// cross-dimension conversion exists for a recipe (unlike an
+    /// `inventory_item`, it has no `item_unit_conversion` density row to
+    /// convert through) — contracts 0.5.1.
+    DimensionMismatch,
 }
 
 impl GapReason {
     /// The exact string `stock_deduction_gap.reason` stores (ADR-018 §10.1
-    /// / the task brief's naming, verbatim).
+    /// / the task brief's naming, verbatim; `DIMENSION_MISMATCH` per the
+    /// contracts 0.5.1 `StockDeductionGapReason` enum member).
     pub fn as_str(self) -> &'static str {
         match self {
             GapReason::NoVariant => "NO_VARIANT",
@@ -74,6 +131,7 @@ impl GapReason {
             GapReason::Cycle => "CYCLE",
             GapReason::DepthExceeded => "DEPTH_EXCEEDED",
             GapReason::UnknownUnit => "UNKNOWN_UNIT",
+            GapReason::DimensionMismatch => "DIMENSION_MISMATCH",
         }
     }
 }
@@ -122,6 +180,13 @@ struct RecipeRow {
     id: String,
     name: String,
     version: i64,
+    /// `recipe.output_dimension` (contracts 0.5.1) — what ONE row's
+    /// `output_quantity_micro` is denominated in.
+    output_dimension: String,
+    /// `recipe.output_quantity_micro` (contracts 0.5.1) — what one
+    /// execution of this recipe's own ingredient list produces, in
+    /// `output_dimension`'s canonical micro-units. `CHECK (> 0)`.
+    output_quantity_micro: i64,
 }
 
 struct IngredientRow {
@@ -141,13 +206,16 @@ fn fetch_recipe_by_variant(
     variant_id: &str,
 ) -> Result<Option<RecipeRow>, DbError> {
     conn.query_row(
-        "SELECT id, name, recipe_version FROM recipe WHERE menu_item_variant_id = ?1",
+        "SELECT id, name, recipe_version, output_dimension, output_quantity_micro \
+         FROM recipe WHERE menu_item_variant_id = ?1",
         [variant_id],
         |row| {
             Ok(RecipeRow {
                 id: row.get(0)?,
                 name: row.get(1)?,
                 version: row.get(2)?,
+                output_dimension: row.get(3)?,
+                output_quantity_micro: row.get(4)?,
             })
         },
     )
@@ -157,13 +225,16 @@ fn fetch_recipe_by_variant(
 
 fn fetch_recipe_by_id(conn: &Connection, recipe_id: &str) -> Result<Option<RecipeRow>, DbError> {
     conn.query_row(
-        "SELECT id, name, recipe_version FROM recipe WHERE id = ?1",
+        "SELECT id, name, recipe_version, output_dimension, output_quantity_micro \
+         FROM recipe WHERE id = ?1",
         [recipe_id],
         |row| {
             Ok(RecipeRow {
                 id: row.get(0)?,
                 name: row.get(1)?,
                 version: row.get(2)?,
+                output_dimension: row.get(3)?,
+                output_quantity_micro: row.get(4)?,
             })
         },
     )
@@ -197,7 +268,9 @@ fn fetch_item(conn: &Connection, item_id: &str) -> Result<Option<ItemRow>, DbErr
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?;
-    Ok(row.and_then(|(name, dim_str)| Dimension::parse(&dim_str).map(|dimension| ItemRow { name, dimension })))
+    Ok(row.and_then(|(name, dim_str)| {
+        Dimension::parse(&dim_str).map(|dimension| ItemRow { name, dimension })
+    }))
 }
 
 /// Resolves a sold quantity of a menu item variant to its leaf-level
@@ -205,9 +278,12 @@ fn fetch_item(conn: &Connection, item_id: &str) -> Result<Option<ItemRow>, DbErr
 ///
 /// `menu_item_variant_id` is `Option` because the caller's order line may
 /// genuinely have none (§2.1's soft spot) — that is `GapReason::NoVariant`,
-/// not a panic and not a `DbError`. `quantity` is the count of that variant
-/// sold on the line (a plain integer, e.g. `2` for two plates), not a
-/// micro-quantity itself.
+/// not a panic and not a `DbError`. `quantity` is the count of SERVINGS
+/// requested on the line (e.g. `2` for two plates of a normal 1-serving
+/// dish; for a menu item whose recipe declares `output_quantity_micro`
+/// covering more than one serving — a sharing platter — `quantity` is still
+/// a serving count, not a count of platters: see the module doc comment's
+/// "one formula, every level").
 pub fn resolve_recipe_for_variant(
     conn: &Connection,
     menu_item_variant_id: Option<&str>,
@@ -221,9 +297,21 @@ pub fn resolve_recipe_for_variant(
         return Ok(ResolveOutcome::Gap(GapReason::NoRecipe));
     };
 
+    // THE ONE INDEPENDENTLY-CHECKABLE DIMENSION MISMATCH (module doc
+    // comment): an order always requests a COUNT quantity (servings sold),
+    // regardless of what the resolved recipe declares.
+    if Dimension::parse(&root.output_dimension) != Some(Dimension::Count) {
+        return Ok(ResolveOutcome::Gap(GapReason::DimensionMismatch));
+    }
+    let Some(root_multiplier) = safe_multiplier(
+        Rational::from_int(quantity as i128 * ONE_SERVING_MICRO),
+        root.output_quantity_micro,
+    ) else {
+        return Ok(ResolveOutcome::Gap(GapReason::UnknownUnit));
+    };
+
     let mut accum: HashMap<String, (Rational, String, Dimension)> = HashMap::new();
     let mut path: Vec<String> = vec![root.id.clone()];
-    let root_multiplier = Rational::from_int(quantity as i128);
 
     if let Some(gap) = walk(conn, &root.id, root_multiplier, &mut path, &mut accum)? {
         return Ok(ResolveOutcome::Gap(gap));
@@ -260,17 +348,33 @@ pub fn resolve_recipe_for_variant(
     }))
 }
 
+/// `requested / output_quantity_micro`, as an exact rational — the ONE
+/// formula this module applies at every level (module doc comment).
+/// `None` if `output_quantity_micro` is not positive (defensive: the
+/// schema's own `CHECK (output_quantity_micro > 0)` should make this
+/// impossible, but this resolver never trusts a constraint that may have
+/// been written by an older schema version) or on `i128` overflow.
+fn safe_multiplier(requested: Rational, output_quantity_micro: i64) -> Option<Rational> {
+    if output_quantity_micro <= 0 {
+        return None;
+    }
+    requested.checked_mul_ratio(1, output_quantity_micro as i128)
+}
+
 /// Depth-first walk of one recipe's ingredient list, accumulating exact
 /// leaf contributions into `accum` and recursing into sub-recipes.
-/// `multiplier` is the exact-rational "how many times does this recipe
-/// execute" factor accumulated from the root: at the root it is the order
-/// line's plain integer quantity; a `SUB_RECIPE` component's own
-/// `quantity_micro` (a micro-scaled multiplier — `1_000_000` means "once",
-/// matching the micro-unit convention every other quantity in this schema
-/// uses) further scales it on the way down, so
-/// `applied_micro = round_half_away_from_zero(recipe_qty × line_qty × pack_ratio × …)`
-/// (ADR-018 §5) falls out of repeated exact multiplication with no
-/// intermediate rounding.
+/// `multiplier` is the exact-rational "how many times does this recipe's
+/// own ingredient list apply" factor for THIS recipe — already computed by
+/// the caller as `requested_quantity / this_recipe.output_quantity_micro`
+/// (the module doc comment's "one formula, every level"; see
+/// [`resolve_recipe_for_variant`] for the root and the `SUB_RECIPE` arm
+/// below for every subsequent level). Every ingredient row's own
+/// `quantity_micro` is an amount **per one execution's worth of THIS
+/// recipe's output** — for an `ITEM` component, an absolute amount of the
+/// leaf item's own dimension; for a `SUB_RECIPE` component, an absolute
+/// amount of the CHILD's own declared output — so `multiplier ×
+/// quantity_micro` is always a well-formed absolute quantity, chained
+/// through the tree as an exact rational with no intermediate rounding.
 ///
 /// Returns `Ok(Some(gap))` the instant any gap condition is found —
 /// short-circuiting the walk rather than continuing to accumulate against a
@@ -326,18 +430,29 @@ fn walk(
                     // Dangling reference: config gap, not a cycle.
                     return Ok(Some(GapReason::NoRecipe));
                 };
-                // quantity_micro is a MICRO-SCALED MULTIPLIER for a
-                // sub-recipe component (1_000_000 == execute the sub-recipe
-                // exactly once), not an absolute leaf quantity — dividing
-                // by 1_000_000 turns it back into a plain rational factor
-                // before it chains onto the running multiplier.
-                let Some(sub_multiplier) =
-                    multiplier.checked_mul_ratio(ingredient.quantity_micro as i128, 1_000_000)
+                // `ingredient.quantity_micro` is an ABSOLUTE quantity of the
+                // CHILD's own declared output (contracts 0.5.1) — "180 ml of
+                // Makhani Gravy" — never a dimensionless execution count.
+                // Scaled by this recipe's own multiplier first (still an
+                // absolute request, in the child's canonical unit — module
+                // doc comment on why no per-row dimension tag is needed:
+                // the request is tautologically in the child's own
+                // currently-declared dimension), THEN divided by the
+                // child's own `output_quantity_micro` to become the
+                // child's multiplier. Same formula as the root, no special
+                // case.
+                let Some(requested_of_child) =
+                    multiplier.checked_mul_ratio(ingredient.quantity_micro as i128, 1)
                 else {
                     return Ok(Some(GapReason::DepthExceeded));
                 };
+                let Some(child_multiplier) =
+                    safe_multiplier(requested_of_child, sub_recipe.output_quantity_micro)
+                else {
+                    return Ok(Some(GapReason::UnknownUnit));
+                };
                 path.push(sub_recipe.id.clone());
-                let gap = walk(conn, &sub_recipe.id, sub_multiplier, path, accum)?;
+                let gap = walk(conn, &sub_recipe.id, child_multiplier, path, accum)?;
                 path.pop();
                 if let Some(gap) = gap {
                     return Ok(Some(gap));
