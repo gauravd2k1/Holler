@@ -21,6 +21,15 @@ Notes:
   the tax component from the inclusive price. This exercises the inclusive-mode path.
 - HSN codes below are realistic representative codes for seed purposes; a production
   outlet sets its own per its CA. Good enough to prove the field flows end-to-end.
+- **Six items below carry a "Regular" variant instead of "—"** (Masala Chai, Bottled
+  Water 1L, Coca-Cola, Thums Up, Butter Naan, Garlic Naan): ADR-018 §2.1 binds a
+  `recipe` to a `menu_item_variant_id`, never directly to a `menu_item`, because
+  costing is scoped to a sellable UNIT — an item with no variant row has nothing a
+  recipe can bind to and can never be costed. Every item this seed gives a recipe to
+  (the M4 devseed, `edge/database/src/bin/devseed.rs`) therefore needs at least one
+  variant, even where the dish itself has no real half/full or size distinction. This
+  is a devseed correction, not a menu-management feature: a production outlet's own
+  catalogue makes its own variant/costing decisions.
 
 ## Stations (seed if missing)
 TANDOOR, MAIN (main kitchen / curries), CHAT (cold/snacks), BAR (drinks/beverages), DESSERT
@@ -80,8 +89,8 @@ TANDOOR, MAIN (main kitchen / curries), CHAT (cold/snacks), BAR (drinks/beverage
 
 | item                     | price(paise) | tax_profile | HSN/SAC | station | variants | modifiers |
 |--------------------------|--------------|-------------|---------|---------|----------|-----------|
-| Butter Naan              | 6000         | GST_FOOD_5  | 9963    | TANDOOR | —        | Extra butter (+1500) |
-| Garlic Naan              | 7000         | GST_FOOD_5  | 9963    | TANDOOR | —        | — |
+| Butter Naan              | 6000         | GST_FOOD_5  | 9963    | TANDOOR | Regular  | Extra butter (+1500) |
+| Garlic Naan              | 7000         | GST_FOOD_5  | 9963    | TANDOOR | Regular  | — |
 | Tandoori Roti            | 4000         | GST_FOOD_5  | 9963    | TANDOOR | Plain/Butter | — |
 | Laccha Paratha           | 7000         | GST_FOOD_5  | 9963    | TANDOOR | —        | — |
 
@@ -90,14 +99,14 @@ TANDOOR, MAIN (main kitchen / curries), CHAT (cold/snacks), BAR (drinks/beverage
 
 | item                     | price(paise) | tax_profile     | HSN/SAC | station | variants        | modifiers |
 |--------------------------|--------------|-----------------|---------|---------|-----------------|-----------|
-| Masala Chai              | 4000         | GST_FOOD_5      | 9963    | BAR     | —               | Extra strong |
+| Masala Chai              | 4000         | GST_FOOD_5      | 9963    | BAR     | Regular         | Extra strong |
 | Filter Coffee            | 5000         | GST_FOOD_5      | 9963    | BAR     | —               | — |
 | Fresh Lime Soda          | 8000         | GST_FOOD_5      | 9963    | BAR     | Sweet/Salted    | — |
 | Sweet Lassi              | 9000         | GST_FOOD_5      | 9963    | BAR     | Sweet/Mango     | — |
-| Bottled Water 1L         | 2000         | GST_PACKAGED_18 | 2201    | BAR     | —               | — |
+| Bottled Water 1L         | 2000         | GST_PACKAGED_18 | 2201    | BAR     | Regular         | — |
 | Packaged Fruit Juice     | 6000         | GST_PACKAGED_18 | 2202    | BAR     | Mango/Mixed     | — |
-| Coca-Cola (can)          | 5000         | GST_AERATED_40  | 2202    | BAR     | —               | — |
-| Thums Up (can)           | 5000         | GST_AERATED_40  | 2202    | BAR     | —               | — |
+| Coca-Cola (can)          | 5000         | GST_AERATED_40  | 2202    | BAR     | Regular         | — |
+| Thums Up (can)           | 5000         | GST_AERATED_40  | 2202    | BAR     | Regular         | — |
 
 ## Category: Desserts  → station DESSERT
 

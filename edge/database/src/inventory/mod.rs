@@ -33,8 +33,9 @@ pub use resolve::{
     MAX_RECIPE_DEPTH,
 };
 pub use units::{
-    convert_tier1, convert_tier2, round_ratio_half_away_from_zero, Dimension,
-    DimensionalConversion, UnknownUnit, DIMENSIONAL_CONVERSIONS,
+    convert_tier1, convert_tier2, dozens, grams, kilograms, litres, milligrams, millilitres,
+    pieces, round_ratio_half_away_from_zero, Dimension, DimensionalConversion, UnknownUnit,
+    DIMENSIONAL_CONVERSIONS,
 };
 
 // `rational::Rational` itself is deliberately NOT re-exported: it is an

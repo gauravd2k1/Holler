@@ -115,6 +115,63 @@ pub const DIMENSIONAL_CONVERSIONS: &[(&str, DimensionalConversion)] = &[
     ),
 ];
 
+// ---- Typed constructors (the only sanctioned way to write a micro-unit
+// literal outside this module) ----
+//
+// The asymmetry that makes a raw micro literal dangerous: `1 g = 1_000_000`
+// but `1 ml = 1_000` — a millilitre is a thousandth of the canonical
+// LITRE, not of itself, because `ml`/`mg` are already sub-units of their
+// dimension's canonical unit while `g`/`piece`/`l` in effect are the
+// canonical unit's own ×1_000_000 fixed-point scale. Getting that backwards
+// silently mis-scales a quantity by 1000× — no CHECK can catch it, because
+// both the right and the wrong answer are just integers. These constructors
+// exist so no call site ever has to reproduce the multiplier by hand: write
+// `millilitres(180)`, never `180_000`.
+//
+// Each constant here is asserted against `DIMENSIONAL_CONVERSIONS` by
+// `constructors_match_the_frozen_tier1_map` below, so the two cannot drift
+// silently — a change to the frozen map without a matching change here
+// fails that test, not a seed file three modules away.
+
+/// `1 mg` in micro-units of the canonical gram (MASS).
+pub const fn milligrams(n: i64) -> i64 {
+    n * 1_000
+}
+
+/// `1 g` in micro-units of the canonical gram (MASS) — the canonical unit
+/// itself, hence the same ×1_000_000 fixed-point scale every canonical unit
+/// uses.
+pub const fn grams(n: i64) -> i64 {
+    n * 1_000_000
+}
+
+/// `1 kg` in micro-units of the canonical gram (MASS).
+pub const fn kilograms(n: i64) -> i64 {
+    n * 1_000_000_000
+}
+
+/// `1 ml` in micro-units of the canonical litre (VOLUME).
+pub const fn millilitres(n: i64) -> i64 {
+    n * 1_000
+}
+
+/// `1 l` in micro-units of the canonical litre (VOLUME) — the canonical
+/// unit itself.
+pub const fn litres(n: i64) -> i64 {
+    n * 1_000_000
+}
+
+/// `1 piece` in micro-units of the canonical piece (COUNT) — the canonical
+/// unit itself.
+pub const fn pieces(n: i64) -> i64 {
+    n * 1_000_000
+}
+
+/// `1 dozen` (= 12 pieces) in micro-units of the canonical piece (COUNT).
+pub const fn dozens(n: i64) -> i64 {
+    n * 12_000_000
+}
+
 /// The `UNKNOWN_UNIT` resolver outcome's building block: a label that is
 /// neither a Tier 1 physical constant nor a Tier 2 per-item conversion the
 /// caller supplied.
@@ -220,6 +277,34 @@ mod tests {
         let (num, den) = convert_tier2(3, 200_000_000, 1).unwrap();
         // 3 packets * 200_000_000 micro-grams/packet
         assert_eq!(round_ratio_half_away_from_zero(num, den), 600_000_000);
+    }
+
+    #[test]
+    fn constructors_match_the_frozen_tier1_map() {
+        // Every typed constructor must reproduce exactly what convert_tier1
+        // computes from the frozen map — this is the guard that keeps
+        // `units.rs`'s two representations (the table and the constructors)
+        // from drifting apart silently.
+        assert_eq!(milligrams(7), convert_tier1("mg", 7).unwrap().1 as i64);
+        assert_eq!(grams(300), convert_tier1("g", 300).unwrap().1 as i64);
+        assert_eq!(kilograms(25), convert_tier1("kg", 25).unwrap().1 as i64);
+        assert_eq!(
+            millilitres(180),
+            convert_tier1("ml", 180).unwrap().1 as i64
+        );
+        assert_eq!(litres(1), convert_tier1("l", 1).unwrap().1 as i64);
+        assert_eq!(pieces(2), convert_tier1("piece", 2).unwrap().1 as i64);
+        assert_eq!(dozens(3), convert_tier1("dozen", 3).unwrap().1 as i64);
+    }
+
+    #[test]
+    fn constructors_disagree_on_the_ml_vs_g_asymmetry() {
+        // The exact trap the task brief names: 300 ml is NOT the same
+        // micro-count as 300 g, because ml is a sub-unit of the canonical
+        // litre while g effectively IS the canonical mass unit's own scale.
+        assert_ne!(millilitres(300), grams(300));
+        assert_eq!(millilitres(300), 300_000);
+        assert_eq!(grams(300), 300_000_000);
     }
 
     #[test]

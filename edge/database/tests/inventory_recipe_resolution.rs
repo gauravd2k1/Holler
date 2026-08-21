@@ -18,7 +18,8 @@ use std::fs;
 use rusqlite::{params, Connection};
 
 use holler_edge_database::inventory::{
-    convert_tier1, resolve_recipe_for_variant, GapReason, ResolveOutcome,
+    convert_tier1, grams, litres, millilitres, pieces, resolve_recipe_for_variant, GapReason,
+    ResolveOutcome,
 };
 use holler_edge_database::model::{MenuCategory, MenuItem, MenuItemVariant, Outlet};
 use holler_edge_database::repo;
@@ -30,7 +31,7 @@ const OUTLET_ID: &str = "outlet-inv-1";
 /// `inventory::resolve`'s private `ONE_SERVING_MICRO`; duplicated here
 /// (rather than exported) because a test fixture should compute its
 /// expectations independently of the production constant it is checking.
-const ONE_SERVING_MICRO: i64 = 1_000_000;
+const ONE_SERVING_MICRO: i64 = pieces(1);
 
 fn seed_outlet_and_category(db: &Db) {
     repo::upsert_outlet(
@@ -274,7 +275,7 @@ fn resolves_a_flat_recipe_scaled_by_order_quantity() {
         "ri-paneer",
         "recipe-paneer-tikka-half",
         "inv-paneer",
-        200_000_000,
+        grams(200),
         "MASS",
     );
     insert_item_ingredient(
@@ -282,7 +283,7 @@ fn resolves_a_flat_recipe_scaled_by_order_quantity() {
         "ri-butter",
         "recipe-paneer-tikka-half",
         "inv-butter",
-        20_000_000,
+        grams(20),
         "MASS",
     );
 
@@ -297,11 +298,11 @@ fn resolves_a_flat_recipe_scaled_by_order_quantity() {
     assert_eq!(resolution.leaves.len(), 2);
     assert_eq!(
         leaf(&outcome, "inv-paneer").unwrap().applied_micro,
-        400_000_000
+        grams(400)
     );
     assert_eq!(
         leaf(&outcome, "inv-butter").unwrap().applied_micro,
-        40_000_000
+        grams(40)
     );
 }
 
@@ -538,28 +539,28 @@ fn resolves_the_spec_butter_chicken_example_with_a_real_sub_recipe_yield() {
 
     assert_eq!(
         leaf(&outcome, "inv-chicken").unwrap().applied_micro,
-        220_000_000
+        grams(220)
     );
     // Tomato: gravy-only, scaled by 180/300 = 0.6 of the batch's 250g.
     assert_eq!(
         leaf(&outcome, "inv-tomato").unwrap().applied_micro,
-        150_000_000
+        grams(150)
     );
     // Butter: 20g direct + (0.6 * 25g via gravy = 15g) == 35g.
     assert_eq!(
         leaf(&outcome, "inv-butter").unwrap().applied_micro,
-        35_000_000
+        grams(35)
     );
     // Cream: 30ml direct + (0.6 * 25ml via gravy = 15ml) == 45ml. VOLUME's
     // Tier 1 canonical unit is the litre, so "ml" scales by 1_000 (not
     // 1_000_000 -- that is "g"'s MASS factor): 45ml = 45_000 micro-litres.
     assert_eq!(
         leaf(&outcome, "inv-cream").unwrap().applied_micro,
-        45_000
+        millilitres(45)
     );
     assert_eq!(
         leaf(&outcome, "inv-kasuri-methi").unwrap().applied_micro,
-        2_000_000
+        grams(2)
     );
 }
 
@@ -597,7 +598,7 @@ fn a_two_serving_recipe_is_expressible_and_scales_by_servings_requested_not_exec
         "ri-platter-chicken",
         "recipe-family-platter",
         "inv-chicken-platter",
-        500_000_000,
+        grams(500),
         "MASS",
     );
 
@@ -610,7 +611,7 @@ fn a_two_serving_recipe_is_expressible_and_scales_by_servings_requested_not_exec
     };
     assert_eq!(
         leaf(&outcome, "inv-chicken-platter").unwrap().applied_micro,
-        500_000_000,
+        grams(500),
         "one whole platter (2 servings requested) must deduct exactly one \
          execution's ingredients, not a rescaled amount"
     );
@@ -620,17 +621,17 @@ fn a_two_serving_recipe_is_expressible_and_scales_by_servings_requested_not_exec
         .expect("resolve should not be a DbError");
     assert_eq!(
         leaf(&outcome4, "inv-chicken-platter").unwrap().applied_micro,
-        1_000_000_000
+        grams(1000)
     );
 
     // 1 serving requested (half a platter, e.g. a half-portion sold from a
     // shared preparation): an EXACT half-execution, no rounding needed
-    // since 500_000_000 * 0.5 is itself exact.
+    // since 500g * 0.5 is itself exact.
     let outcome1 = resolve_recipe_for_variant(db.connection(), Some(&variant_id), 1)
         .expect("resolve should not be a DbError");
     assert_eq!(
         leaf(&outcome1, "inv-chicken-platter").unwrap().applied_micro,
-        250_000_000
+        grams(250)
     );
 }
 
@@ -676,7 +677,7 @@ fn rounds_exactly_once_at_the_leaf_and_disagrees_with_per_level_rounding() {
         &level2_variant,
         "L2",
         "MASS",
-        1_000_000,
+        grams(1),
     );
     insert_item_ingredient(
         db.connection(),
@@ -698,7 +699,7 @@ fn rounds_exactly_once_at_the_leaf_and_disagrees_with_per_level_rounding() {
         &level1_variant,
         "L1",
         "MASS",
-        1_000_000,
+        grams(1),
     );
     insert_sub_recipe_ingredient(
         db.connection(),
@@ -825,7 +826,7 @@ fn a_recipe_referencing_an_unsynced_inventory_item_is_an_unresolvable_reference_
         "ri-dangling",
         "recipe-dangling",
         "inv-does-not-exist",
-        1_000_000,
+        grams(1),
         "MASS",
     );
     db.connection()
@@ -865,14 +866,14 @@ fn a_root_recipe_whose_output_is_not_count_is_a_dimension_mismatch_gap() {
         &variant_id,
         "Mis-bound Gravy",
         "VOLUME",
-        300_000_000,
+        litres(300),
     );
     insert_item_ingredient(
         db.connection(),
         "ri-mismatch-tomato",
         "recipe-mis-bound-gravy",
         "inv-tomato-mismatch",
-        250_000_000,
+        grams(250),
         "MASS",
     );
 
@@ -908,7 +909,7 @@ fn an_item_row_whose_quantity_dimension_disagrees_with_the_item_is_a_dimension_m
         "ri-dim-mismatch",
         "recipe-dim-mismatch",
         "inv-dim-mismatch",
-        220_000_000,
+        grams(220),
         "MASS", // disagrees with the item's own VOLUME
     );
 
@@ -940,7 +941,7 @@ fn a_sub_recipe_row_whose_quantity_dimension_disagrees_with_the_childs_output_is
         &child_variant,
         "Child Gravy",
         "VOLUME",
-        300_000_000,
+        litres(300),
     );
     insert_one_serving_recipe(
         db.connection(),
@@ -954,7 +955,7 @@ fn a_sub_recipe_row_whose_quantity_dimension_disagrees_with_the_childs_output_is
         "ri-dim-mismatch-parent-child",
         "recipe-dim-mismatch-parent",
         "recipe-dim-mismatch-child",
-        180_000_000,
+        grams(180),
         "MASS", // disagrees with the child recipe's own VOLUME output
     );
 
@@ -989,14 +990,14 @@ fn a_genuine_two_step_cycle_terminates_as_a_cycle_gap() {
     // A -> B, B -> C: both are ordinary forward references to
     // already-existing rows, no FK trick needed.
     insert_sub_recipe_ingredient(
-        db.connection(), "ri-a-b", "recipe-a", "recipe-b", 1_000_000, "COUNT",
+        db.connection(), "ri-a-b", "recipe-a", "recipe-b", pieces(1), "COUNT",
     );
     insert_sub_recipe_ingredient(
-        db.connection(), "ri-b-c", "recipe-b", "recipe-c", 1_000_000, "COUNT",
+        db.connection(), "ri-b-c", "recipe-b", "recipe-c", pieces(1), "COUNT",
     );
     // C -> A closes the cycle.
     insert_sub_recipe_ingredient(
-        db.connection(), "ri-c-a", "recipe-c", "recipe-a", 1_000_000, "COUNT",
+        db.connection(), "ri-c-a", "recipe-c", "recipe-a", pieces(1), "COUNT",
     );
 
     // Prerequisite: the loop-closing row must actually exist, or the
@@ -1052,7 +1053,7 @@ fn a_chain_deeper_than_max_recipe_depth_terminates_as_a_depth_exceeded_gap() {
             &format!("ri-depth-{level}"),
             &recipe_ids[level],
             &recipe_ids[level + 1],
-            1_000_000,
+            pieces(1),
             "COUNT",
         );
     }
@@ -1065,7 +1066,7 @@ fn a_chain_deeper_than_max_recipe_depth_terminates_as_a_depth_exceeded_gap() {
         "ri-depth-leaf",
         recipe_ids.last().unwrap(),
         "inv-depth-leaf",
-        1_000_000,
+        grams(1),
         "MASS",
     );
 

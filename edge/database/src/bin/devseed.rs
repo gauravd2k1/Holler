@@ -20,6 +20,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use holler_edge_database::crypto::EncryptionKey;
+use holler_edge_database::inventory::{grams, kilograms, litres, millilitres, pieces};
 use holler_edge_database::model::{
     AppUser, ComplianceVersion, Device, DiscountDefinition, InventoryItem, InvoiceSeries,
     ItemUnitConversion, MenuCategory, MenuItem, MenuItemModifier, MenuItemVariant,
@@ -226,38 +227,38 @@ struct SeedInventoryItem {
 }
 
 const SEED_INVENTORY_ITEMS: &[SeedInventoryItem] = &[
-    SeedInventoryItem { sku: "INV-PANEER", name: "Paneer", category: "Dairy", dimension: "MASS", reorder_level_micro: Some(5_000_000_000) },
-    SeedInventoryItem { sku: "INV-CHICKEN", name: "Chicken (Curry Cut, Bone-In)", category: "Meat & Poultry", dimension: "MASS", reorder_level_micro: Some(15_000_000_000) },
-    SeedInventoryItem { sku: "INV-MUTTON", name: "Mutton (Curry Cut)", category: "Meat & Poultry", dimension: "MASS", reorder_level_micro: Some(8_000_000_000) },
-    SeedInventoryItem { sku: "INV-FISH", name: "Fish Fillet (Basa)", category: "Meat & Poultry", dimension: "MASS", reorder_level_micro: Some(6_000_000_000) },
-    SeedInventoryItem { sku: "INV-EGGS", name: "Eggs", category: "Dairy", dimension: "COUNT", reorder_level_micro: Some(60_000_000) },
-    SeedInventoryItem { sku: "INV-TOMATO", name: "Tomato", category: "Produce", dimension: "MASS", reorder_level_micro: Some(20_000_000_000) },
-    SeedInventoryItem { sku: "INV-ONION", name: "Onion", category: "Produce", dimension: "MASS", reorder_level_micro: Some(25_000_000_000) },
-    SeedInventoryItem { sku: "INV-GINGARLIC", name: "Ginger-Garlic Paste", category: "Produce", dimension: "MASS", reorder_level_micro: Some(3_000_000_000) },
-    SeedInventoryItem { sku: "INV-SPINACH", name: "Spinach", category: "Produce", dimension: "MASS", reorder_level_micro: Some(10_000_000_000) },
-    SeedInventoryItem { sku: "INV-LIME", name: "Lime", category: "Produce", dimension: "COUNT", reorder_level_micro: Some(50_000_000) },
-    SeedInventoryItem { sku: "INV-CREAM", name: "Fresh Cream", category: "Dairy", dimension: "VOLUME", reorder_level_micro: Some(5_000_000) },
-    SeedInventoryItem { sku: "INV-BUTTER", name: "Butter", category: "Dairy", dimension: "MASS", reorder_level_micro: Some(4_000_000_000) },
-    SeedInventoryItem { sku: "INV-GHEE", name: "Ghee", category: "Dairy", dimension: "MASS", reorder_level_micro: Some(4_000_000_000) },
-    SeedInventoryItem { sku: "INV-MILK", name: "Milk", category: "Dairy", dimension: "VOLUME", reorder_level_micro: Some(10_000_000) },
-    SeedInventoryItem { sku: "INV-CURD", name: "Curd (Yogurt)", category: "Dairy", dimension: "MASS", reorder_level_micro: Some(5_000_000_000) },
-    SeedInventoryItem { sku: "INV-ATTA", name: "Atta (Wheat Flour)", category: "Grains", dimension: "MASS", reorder_level_micro: Some(20_000_000_000) },
-    SeedInventoryItem { sku: "INV-BASMATI", name: "Basmati Rice", category: "Grains", dimension: "MASS", reorder_level_micro: Some(20_000_000_000) },
-    SeedInventoryItem { sku: "INV-URADDAL", name: "Urad Dal (Whole Black Lentil)", category: "Grains", dimension: "MASS", reorder_level_micro: Some(10_000_000_000) },
+    SeedInventoryItem { sku: "INV-PANEER", name: "Paneer", category: "Dairy", dimension: "MASS", reorder_level_micro: Some(kilograms(5)) },
+    SeedInventoryItem { sku: "INV-CHICKEN", name: "Chicken (Curry Cut, Bone-In)", category: "Meat & Poultry", dimension: "MASS", reorder_level_micro: Some(kilograms(15)) },
+    SeedInventoryItem { sku: "INV-MUTTON", name: "Mutton (Curry Cut)", category: "Meat & Poultry", dimension: "MASS", reorder_level_micro: Some(kilograms(8)) },
+    SeedInventoryItem { sku: "INV-FISH", name: "Fish Fillet (Basa)", category: "Meat & Poultry", dimension: "MASS", reorder_level_micro: Some(kilograms(6)) },
+    SeedInventoryItem { sku: "INV-EGGS", name: "Eggs", category: "Dairy", dimension: "COUNT", reorder_level_micro: Some(pieces(60)) },
+    SeedInventoryItem { sku: "INV-TOMATO", name: "Tomato", category: "Produce", dimension: "MASS", reorder_level_micro: Some(kilograms(20)) },
+    SeedInventoryItem { sku: "INV-ONION", name: "Onion", category: "Produce", dimension: "MASS", reorder_level_micro: Some(kilograms(25)) },
+    SeedInventoryItem { sku: "INV-GINGARLIC", name: "Ginger-Garlic Paste", category: "Produce", dimension: "MASS", reorder_level_micro: Some(kilograms(3)) },
+    SeedInventoryItem { sku: "INV-SPINACH", name: "Spinach", category: "Produce", dimension: "MASS", reorder_level_micro: Some(kilograms(10)) },
+    SeedInventoryItem { sku: "INV-LIME", name: "Lime", category: "Produce", dimension: "COUNT", reorder_level_micro: Some(pieces(50)) },
+    SeedInventoryItem { sku: "INV-CREAM", name: "Fresh Cream", category: "Dairy", dimension: "VOLUME", reorder_level_micro: Some(litres(5)) },
+    SeedInventoryItem { sku: "INV-BUTTER", name: "Butter", category: "Dairy", dimension: "MASS", reorder_level_micro: Some(kilograms(4)) },
+    SeedInventoryItem { sku: "INV-GHEE", name: "Ghee", category: "Dairy", dimension: "MASS", reorder_level_micro: Some(kilograms(4)) },
+    SeedInventoryItem { sku: "INV-MILK", name: "Milk", category: "Dairy", dimension: "VOLUME", reorder_level_micro: Some(litres(10)) },
+    SeedInventoryItem { sku: "INV-CURD", name: "Curd (Yogurt)", category: "Dairy", dimension: "MASS", reorder_level_micro: Some(kilograms(5)) },
+    SeedInventoryItem { sku: "INV-ATTA", name: "Atta (Wheat Flour)", category: "Grains", dimension: "MASS", reorder_level_micro: Some(kilograms(20)) },
+    SeedInventoryItem { sku: "INV-BASMATI", name: "Basmati Rice", category: "Grains", dimension: "MASS", reorder_level_micro: Some(kilograms(20)) },
+    SeedInventoryItem { sku: "INV-URADDAL", name: "Urad Dal (Whole Black Lentil)", category: "Grains", dimension: "MASS", reorder_level_micro: Some(kilograms(10)) },
     SeedInventoryItem { sku: "INV-SUGAR", name: "Sugar", category: "Grains", dimension: "MASS", reorder_level_micro: None },
-    SeedInventoryItem { sku: "INV-OIL", name: "Sunflower Oil", category: "Oils", dimension: "VOLUME", reorder_level_micro: Some(10_000_000) },
-    SeedInventoryItem { sku: "INV-GARAMMASALA", name: "Garam Masala", category: "Spices", dimension: "MASS", reorder_level_micro: Some(1_000_000_000) },
-    SeedInventoryItem { sku: "INV-CHILLIPOWDER", name: "Red Chilli Powder", category: "Spices", dimension: "MASS", reorder_level_micro: Some(1_000_000_000) },
-    SeedInventoryItem { sku: "INV-TURMERIC", name: "Turmeric Powder", category: "Spices", dimension: "MASS", reorder_level_micro: Some(1_000_000_000) },
-    SeedInventoryItem { sku: "INV-CUMIN", name: "Cumin Seeds", category: "Spices", dimension: "MASS", reorder_level_micro: Some(500_000_000) },
-    SeedInventoryItem { sku: "INV-CORIANDER", name: "Coriander Powder", category: "Spices", dimension: "MASS", reorder_level_micro: Some(1_000_000_000) },
+    SeedInventoryItem { sku: "INV-OIL", name: "Sunflower Oil", category: "Oils", dimension: "VOLUME", reorder_level_micro: Some(litres(10)) },
+    SeedInventoryItem { sku: "INV-GARAMMASALA", name: "Garam Masala", category: "Spices", dimension: "MASS", reorder_level_micro: Some(kilograms(1)) },
+    SeedInventoryItem { sku: "INV-CHILLIPOWDER", name: "Red Chilli Powder", category: "Spices", dimension: "MASS", reorder_level_micro: Some(kilograms(1)) },
+    SeedInventoryItem { sku: "INV-TURMERIC", name: "Turmeric Powder", category: "Spices", dimension: "MASS", reorder_level_micro: Some(kilograms(1)) },
+    SeedInventoryItem { sku: "INV-CUMIN", name: "Cumin Seeds", category: "Spices", dimension: "MASS", reorder_level_micro: Some(grams(500)) },
+    SeedInventoryItem { sku: "INV-CORIANDER", name: "Coriander Powder", category: "Spices", dimension: "MASS", reorder_level_micro: Some(kilograms(1)) },
     SeedInventoryItem { sku: "INV-KASURIMETHI", name: "Kasuri Methi", category: "Spices", dimension: "MASS", reorder_level_micro: None },
     SeedInventoryItem { sku: "INV-SALT", name: "Salt", category: "Spices", dimension: "MASS", reorder_level_micro: None },
-    SeedInventoryItem { sku: "INV-TEALEAVES", name: "Tea Leaves", category: "Beverages", dimension: "MASS", reorder_level_micro: Some(1_000_000_000) },
-    SeedInventoryItem { sku: "INV-SODAWATER", name: "Soda Water (Carbonated)", category: "Beverages", dimension: "VOLUME", reorder_level_micro: Some(5_000_000) },
-    SeedInventoryItem { sku: "INV-BOTTLEDWATER", name: "Bottled Water 1L", category: "Beverages", dimension: "COUNT", reorder_level_micro: Some(24_000_000) },
-    SeedInventoryItem { sku: "INV-COKECAN", name: "Coca-Cola Can", category: "Beverages", dimension: "COUNT", reorder_level_micro: Some(24_000_000) },
-    SeedInventoryItem { sku: "INV-THUMSUPCAN", name: "Thums Up Can", category: "Beverages", dimension: "COUNT", reorder_level_micro: Some(24_000_000) },
+    SeedInventoryItem { sku: "INV-TEALEAVES", name: "Tea Leaves", category: "Beverages", dimension: "MASS", reorder_level_micro: Some(kilograms(1)) },
+    SeedInventoryItem { sku: "INV-SODAWATER", name: "Soda Water (Carbonated)", category: "Beverages", dimension: "VOLUME", reorder_level_micro: Some(litres(5)) },
+    SeedInventoryItem { sku: "INV-BOTTLEDWATER", name: "Bottled Water 1L", category: "Beverages", dimension: "COUNT", reorder_level_micro: Some(pieces(24)) },
+    SeedInventoryItem { sku: "INV-COKECAN", name: "Coca-Cola Can", category: "Beverages", dimension: "COUNT", reorder_level_micro: Some(pieces(24)) },
+    SeedInventoryItem { sku: "INV-THUMSUPCAN", name: "Thums Up Can", category: "Beverages", dimension: "COUNT", reorder_level_micro: Some(pieces(24)) },
 ];
 
 /// A pack-size or cross-dimension conversion, scoped to one item's own SKU.
@@ -278,20 +279,32 @@ struct SeedItemUnitConversion {
 const SEED_ITEM_UNIT_CONVERSIONS: &[SeedItemUnitConversion] = &[
     // "1 packet Paneer = 200 g" — the exact worked example in
     // `crate::inventory::units`'s own doc tests.
-    SeedItemUnitConversion { sku: "INV-PANEER", pack_unit_label: "packet", source_dimension: "MASS", numerator: 200_000_000, denominator: 1 },
+    SeedItemUnitConversion { sku: "INV-PANEER", pack_unit_label: "packet", source_dimension: "MASS", numerator: grams(200), denominator: 1 },
     // "1 sack Atta = 25 kg".
-    SeedItemUnitConversion { sku: "INV-ATTA", pack_unit_label: "sack", source_dimension: "MASS", numerator: 25_000_000_000, denominator: 1 },
+    SeedItemUnitConversion { sku: "INV-ATTA", pack_unit_label: "sack", source_dimension: "MASS", numerator: kilograms(25), denominator: 1 },
     // "1 sack Basmati Rice = 25 kg".
-    SeedItemUnitConversion { sku: "INV-BASMATI", pack_unit_label: "sack", source_dimension: "MASS", numerator: 25_000_000_000, denominator: 1 },
+    SeedItemUnitConversion { sku: "INV-BASMATI", pack_unit_label: "sack", source_dimension: "MASS", numerator: kilograms(25), denominator: 1 },
     // CROSS-DIMENSION: Sunflower Oil is stocked as VOLUME (it is measured
     // in ml at the cook-line), but a tin is sold and labelled by WEIGHT.
     // "1 tin (nominally 15 kg) ~= 15 L at this oil's density" — a
     // representative dev density, not a physical claim; a real outlet's
     // actual tin size and density are its own procurement data.
-    SeedItemUnitConversion { sku: "INV-OIL", pack_unit_label: "tin", source_dimension: "MASS", numerator: 15_000_000, denominator: 1 },
+    // CORRECTED after the T2c sweep flagged it. The stored value was
+    // `grams(15)` — 15 g of oil per tin, a thousandth of the 15 kg the
+    // comment claimed, and in the wrong dimension besides: this item is
+    // measured in VOLUME, so the numerator must be micro-LITRES however the
+    // pack is labelled. Two independent scale errors in one seed row, which
+    // is precisely why the constructors above now exist.
+    //
+    // The correct value is a rational, and this row is the schema's
+    // cross-dimension case working as designed: one tin is 15 kg of oil, and
+    // sunflower oil is ~0.92 kg per litre, so the volume is 15/0.92 litres =
+    // 1500/92 litres exactly. Integer numerator over integer denominator, no
+    // float and no pre-rounded decimal — the density lives in the ratio.
+    SeedItemUnitConversion { sku: "INV-OIL", pack_unit_label: "tin", source_dimension: "MASS", numerator: litres(1500), denominator: 92 },
     // "1 crate Coca-Cola = 24 cans" — a same-dimension (COUNT) pack, unlike
     // the oil tin above.
-    SeedItemUnitConversion { sku: "INV-COKECAN", pack_unit_label: "crate", source_dimension: "COUNT", numerator: 24_000_000, denominator: 1 },
+    SeedItemUnitConversion { sku: "INV-COKECAN", pack_unit_label: "crate", source_dimension: "COUNT", numerator: pieces(24), denominator: 1 },
 ];
 
 /// One component of a recipe: either a raw inventory item (by SKU) or a
@@ -314,31 +327,30 @@ enum Comp {
 /// header on why a multiplier-only encoding silently corrupts every parent
 /// when the sub-recipe's own yield changes).
 const MAKHANI_GRAVY_OUTPUT_DIMENSION: &str = "VOLUME";
-/// 300 ml batch = 300 * 1_000 micro-litres (`ml` scales ×1_000 — see this
-/// block's header).
-const MAKHANI_GRAVY_OUTPUT_MICRO: i64 = 300_000;
+/// 300 ml batch (`ml` scales ×1_000 — see this block's header).
+const MAKHANI_GRAVY_OUTPUT_MICRO: i64 = millilitres(300);
 const MAKHANI_GRAVY_INGREDIENTS: &[Comp] = &[
-    Comp::Item("INV-TOMATO", 250_000_000, "MASS"), // 250 g
-    Comp::Item("INV-BUTTER", 40_000_000, "MASS"),  // 40 g
-    Comp::Item("INV-CREAM", 60_000, "VOLUME"),      // 60 ml
-    Comp::Item("INV-GINGARLIC", 15_000_000, "MASS"), // 15 g
-    Comp::Item("INV-GARAMMASALA", 5_000_000, "MASS"), // 5 g
-    Comp::Item("INV-KASURIMETHI", 2_000_000, "MASS"), // 2 g
-    Comp::Item("INV-CHILLIPOWDER", 5_000_000, "MASS"), // 5 g
+    Comp::Item("INV-TOMATO", grams(250), "MASS"), // 250 g
+    Comp::Item("INV-BUTTER", grams(40), "MASS"),  // 40 g
+    Comp::Item("INV-CREAM", millilitres(60), "VOLUME"),      // 60 ml
+    Comp::Item("INV-GINGARLIC", grams(15), "MASS"), // 15 g
+    Comp::Item("INV-GARAMMASALA", grams(5), "MASS"), // 5 g
+    Comp::Item("INV-KASURIMETHI", grams(2), "MASS"), // 2 g
+    Comp::Item("INV-CHILLIPOWDER", grams(5), "MASS"), // 5 g
 ];
 
 const ONION_TOMATO_BASE_OUTPUT_DIMENSION: &str = "MASS";
-/// 500 g batch = 500 * 1_000_000 micro-grams (`g` scales ×1_000_000).
-const ONION_TOMATO_BASE_OUTPUT_MICRO: i64 = 500_000_000;
+/// 500 g batch (`g` scales ×1_000_000).
+const ONION_TOMATO_BASE_OUTPUT_MICRO: i64 = grams(500);
 const ONION_TOMATO_BASE_INGREDIENTS: &[Comp] = &[
-    Comp::Item("INV-ONION", 300_000_000, "MASS"), // 300 g
-    Comp::Item("INV-TOMATO", 200_000_000, "MASS"), // 200 g
-    Comp::Item("INV-GINGARLIC", 20_000_000, "MASS"), // 20 g
-    Comp::Item("INV-OIL", 50_000, "VOLUME"),        // 50 ml
-    Comp::Item("INV-TURMERIC", 5_000_000, "MASS"), // 5 g
-    Comp::Item("INV-CHILLIPOWDER", 8_000_000, "MASS"), // 8 g
-    Comp::Item("INV-CORIANDER", 8_000_000, "MASS"), // 8 g
-    Comp::Item("INV-SALT", 6_000_000, "MASS"),     // 6 g
+    Comp::Item("INV-ONION", grams(300), "MASS"), // 300 g
+    Comp::Item("INV-TOMATO", grams(200), "MASS"), // 200 g
+    Comp::Item("INV-GINGARLIC", grams(20), "MASS"), // 20 g
+    Comp::Item("INV-OIL", millilitres(50), "VOLUME"),        // 50 ml
+    Comp::Item("INV-TURMERIC", grams(5), "MASS"), // 5 g
+    Comp::Item("INV-CHILLIPOWDER", grams(8), "MASS"), // 8 g
+    Comp::Item("INV-CORIANDER", grams(8), "MASS"), // 8 g
+    Comp::Item("INV-SALT", grams(6), "MASS"),     // 6 g
 ];
 
 /// One root recipe: binds to a real sellable `(item_name, variant_name)`
@@ -370,131 +382,131 @@ struct SeedRecipe {
 ///     kitchen costs its signature dishes first and gets to the rest later.
 const SEED_RECIPES: &[SeedRecipe] = &[
     SeedRecipe { item_name: "Paneer Tikka", variant_name: "Full", ingredients: &[
-        Comp::Item("INV-PANEER", 180_000_000, "MASS"),   // 180 g
-        Comp::Item("INV-OIL", 15_000, "VOLUME"),          // 15 ml
-        Comp::Item("INV-CURD", 40_000_000, "MASS"),       // 40 g
-        Comp::Item("INV-GARAMMASALA", 3_000_000, "MASS"), // 3 g
-        Comp::Item("INV-CHILLIPOWDER", 3_000_000, "MASS"),// 3 g
+        Comp::Item("INV-PANEER", grams(180), "MASS"),   // 180 g
+        Comp::Item("INV-OIL", millilitres(15), "VOLUME"),          // 15 ml
+        Comp::Item("INV-CURD", grams(40), "MASS"),       // 40 g
+        Comp::Item("INV-GARAMMASALA", grams(3), "MASS"), // 3 g
+        Comp::Item("INV-CHILLIPOWDER", grams(3), "MASS"),// 3 g
     ]},
     SeedRecipe { item_name: "Veg Manchurian", variant_name: "Gravy", ingredients: &[
-        Comp::Item("INV-ONION", 40_000_000, "MASS"),      // 40 g
-        Comp::Item("INV-OIL", 20_000, "VOLUME"),          // 20 ml
-        Comp::Item("INV-GINGARLIC", 10_000_000, "MASS"),  // 10 g
-        Comp::Item("INV-CHILLIPOWDER", 3_000_000, "MASS"),// 3 g
+        Comp::Item("INV-ONION", grams(40), "MASS"),      // 40 g
+        Comp::Item("INV-OIL", millilitres(20), "VOLUME"),          // 20 ml
+        Comp::Item("INV-GINGARLIC", grams(10), "MASS"),  // 10 g
+        Comp::Item("INV-CHILLIPOWDER", grams(3), "MASS"),// 3 g
     ]},
     SeedRecipe { item_name: "Chicken 65", variant_name: "Full", ingredients: &[
-        Comp::Item("INV-CHICKEN", 220_000_000, "MASS"),   // 220 g
-        Comp::Item("INV-OIL", 30_000, "VOLUME"),          // 30 ml
-        Comp::Item("INV-GINGARLIC", 12_000_000, "MASS"),  // 12 g
-        Comp::Item("INV-CHILLIPOWDER", 5_000_000, "MASS"),// 5 g
-        Comp::Item("INV-CURD", 20_000_000, "MASS"),       // 20 g
+        Comp::Item("INV-CHICKEN", grams(220), "MASS"),   // 220 g
+        Comp::Item("INV-OIL", millilitres(30), "VOLUME"),          // 30 ml
+        Comp::Item("INV-GINGARLIC", grams(12), "MASS"),  // 12 g
+        Comp::Item("INV-CHILLIPOWDER", grams(5), "MASS"),// 5 g
+        Comp::Item("INV-CURD", grams(20), "MASS"),       // 20 g
     ]},
     SeedRecipe { item_name: "Tandoori Chicken", variant_name: "Full", ingredients: &[
-        Comp::Item("INV-CHICKEN", 400_000_000, "MASS"),   // 400 g
-        Comp::Item("INV-CURD", 100_000_000, "MASS"),      // 100 g
-        Comp::Item("INV-GARAMMASALA", 6_000_000, "MASS"), // 6 g
-        Comp::Item("INV-CHILLIPOWDER", 6_000_000, "MASS"),// 6 g
-        Comp::Item("INV-GHEE", 15_000_000, "MASS"),       // 15 g
+        Comp::Item("INV-CHICKEN", grams(400), "MASS"),   // 400 g
+        Comp::Item("INV-CURD", grams(100), "MASS"),      // 100 g
+        Comp::Item("INV-GARAMMASALA", grams(6), "MASS"), // 6 g
+        Comp::Item("INV-CHILLIPOWDER", grams(6), "MASS"),// 6 g
+        Comp::Item("INV-GHEE", grams(15), "MASS"),       // 15 g
     ]},
     SeedRecipe { item_name: "Malai Tikka", variant_name: "Full", ingredients: &[
-        Comp::Item("INV-CHICKEN", 220_000_000, "MASS"),   // 220 g
-        Comp::Item("INV-CREAM", 40_000, "VOLUME"),        // 40 ml
-        Comp::Item("INV-GINGARLIC", 10_000_000, "MASS"),  // 10 g
-        Comp::Item("INV-CUMIN", 3_000_000, "MASS"),       // 3 g
+        Comp::Item("INV-CHICKEN", grams(220), "MASS"),   // 220 g
+        Comp::Item("INV-CREAM", millilitres(40), "VOLUME"),        // 40 ml
+        Comp::Item("INV-GINGARLIC", grams(10), "MASS"),  // 10 g
+        Comp::Item("INV-CUMIN", grams(3), "MASS"),       // 3 g
     ]},
     // Paneer Butter Masala: the same Makhani Gravy sub-recipe as Butter
     // Chicken below, referenced at a DIFFERENT fractional amount (150 ml of
     // the same 300 ml batch) — proof the resolver re-derives each parent's
     // own multiplier independently rather than sharing one.
     SeedRecipe { item_name: "Paneer Butter Masala", variant_name: "Full", ingredients: &[
-        Comp::Item("INV-PANEER", 180_000_000, "MASS"),    // 180 g
-        Comp::Sub("MAKHANI_GRAVY", 150_000, "VOLUME"),    // 150 ml of a 300 ml batch
-        Comp::Item("INV-BUTTER", 20_000_000, "MASS"),     // 20 g
-        Comp::Item("INV-CREAM", 20_000, "VOLUME"),        // 20 ml
+        Comp::Item("INV-PANEER", grams(180), "MASS"),    // 180 g
+        Comp::Sub("MAKHANI_GRAVY", millilitres(150), "VOLUME"),    // 150 ml of a 300 ml batch
+        Comp::Item("INV-BUTTER", grams(20), "MASS"),     // 20 g
+        Comp::Item("INV-CREAM", millilitres(20), "VOLUME"),        // 20 ml
     ]},
     SeedRecipe { item_name: "Dal Makhani", variant_name: "Full", ingredients: &[
-        Comp::Item("INV-URADDAL", 100_000_000, "MASS"),   // 100 g
-        Comp::Item("INV-BUTTER", 30_000_000, "MASS"),     // 30 g
-        Comp::Item("INV-CREAM", 30_000, "VOLUME"),        // 30 ml
-        Comp::Item("INV-GINGARLIC", 8_000_000, "MASS"),   // 8 g
-        Comp::Item("INV-TOMATO", 40_000_000, "MASS"),     // 40 g
+        Comp::Item("INV-URADDAL", grams(100), "MASS"),   // 100 g
+        Comp::Item("INV-BUTTER", grams(30), "MASS"),     // 30 g
+        Comp::Item("INV-CREAM", millilitres(30), "VOLUME"),        // 30 ml
+        Comp::Item("INV-GINGARLIC", grams(8), "MASS"),   // 8 g
+        Comp::Item("INV-TOMATO", grams(40), "MASS"),     // 40 g
     ]},
     // Palak Paneer: the Onion-Tomato Masala Base sub-recipe at 100 g of its
     // 500 g batch (0.2x) — the MASS-dimension sub-recipe counterpart to
     // Butter Chicken's VOLUME one.
     SeedRecipe { item_name: "Palak Paneer", variant_name: "Full", ingredients: &[
-        Comp::Item("INV-PANEER", 150_000_000, "MASS"),    // 150 g
-        Comp::Item("INV-SPINACH", 200_000_000, "MASS"),   // 200 g
-        Comp::Sub("ONION_TOMATO_BASE", 100_000_000, "MASS"), // 100 g of a 500 g batch
-        Comp::Item("INV-CREAM", 20_000, "VOLUME"),        // 20 ml
+        Comp::Item("INV-PANEER", grams(150), "MASS"),    // 150 g
+        Comp::Item("INV-SPINACH", grams(200), "MASS"),   // 200 g
+        Comp::Sub("ONION_TOMATO_BASE", grams(100), "MASS"), // 100 g of a 500 g batch
+        Comp::Item("INV-CREAM", millilitres(20), "VOLUME"),        // 20 ml
     ]},
     // Butter Chicken: docs/spec/inventory.md's own worked example (Chicken
     // 220g, Makhani gravy 180ml, Butter 20g, Cream 30ml, Kasuri methi 2g) —
     // the exact 180/300 = 0.6 fractional sub-recipe reference contracts
     // 0.5.1 was written to make correct.
     SeedRecipe { item_name: "Butter Chicken", variant_name: "Full", ingredients: &[
-        Comp::Item("INV-CHICKEN", 220_000_000, "MASS"),   // 220 g
-        Comp::Sub("MAKHANI_GRAVY", 180_000, "VOLUME"),    // 180 ml of a 300 ml batch
-        Comp::Item("INV-BUTTER", 20_000_000, "MASS"),     // 20 g
-        Comp::Item("INV-CREAM", 30_000, "VOLUME"),        // 30 ml
-        Comp::Item("INV-KASURIMETHI", 2_000_000, "MASS"), // 2 g
+        Comp::Item("INV-CHICKEN", grams(220), "MASS"),   // 220 g
+        Comp::Sub("MAKHANI_GRAVY", millilitres(180), "VOLUME"),    // 180 ml of a 300 ml batch
+        Comp::Item("INV-BUTTER", grams(20), "MASS"),     // 20 g
+        Comp::Item("INV-CREAM", millilitres(30), "VOLUME"),        // 30 ml
+        Comp::Item("INV-KASURIMETHI", grams(2), "MASS"), // 2 g
     ]},
     SeedRecipe { item_name: "Chicken Curry", variant_name: "Full", ingredients: &[
-        Comp::Item("INV-CHICKEN", 250_000_000, "MASS"),   // 250 g
-        Comp::Sub("ONION_TOMATO_BASE", 120_000_000, "MASS"), // 120 g of a 500 g batch
-        Comp::Item("INV-OIL", 15_000, "VOLUME"),          // 15 ml
-        Comp::Item("INV-CORIANDER", 3_000_000, "MASS"),   // 3 g
+        Comp::Item("INV-CHICKEN", grams(250), "MASS"),   // 250 g
+        Comp::Sub("ONION_TOMATO_BASE", grams(120), "MASS"), // 120 g of a 500 g batch
+        Comp::Item("INV-OIL", millilitres(15), "VOLUME"),          // 15 ml
+        Comp::Item("INV-CORIANDER", grams(3), "MASS"),   // 3 g
     ]},
     SeedRecipe { item_name: "Mutton Rogan Josh", variant_name: "Full", ingredients: &[
-        Comp::Item("INV-MUTTON", 280_000_000, "MASS"),    // 280 g
-        Comp::Item("INV-ONION", 60_000_000, "MASS"),      // 60 g
-        Comp::Item("INV-CURD", 50_000_000, "MASS"),       // 50 g
-        Comp::Item("INV-CHILLIPOWDER", 8_000_000, "MASS"),// 8 g
-        Comp::Item("INV-GARAMMASALA", 5_000_000, "MASS"), // 5 g
-        Comp::Item("INV-GHEE", 15_000_000, "MASS"),       // 15 g
+        Comp::Item("INV-MUTTON", grams(280), "MASS"),    // 280 g
+        Comp::Item("INV-ONION", grams(60), "MASS"),      // 60 g
+        Comp::Item("INV-CURD", grams(50), "MASS"),       // 50 g
+        Comp::Item("INV-CHILLIPOWDER", grams(8), "MASS"),// 8 g
+        Comp::Item("INV-GARAMMASALA", grams(5), "MASS"), // 5 g
+        Comp::Item("INV-GHEE", grams(15), "MASS"),       // 15 g
     ]},
     SeedRecipe { item_name: "Chicken Biryani", variant_name: "Full", ingredients: &[
-        Comp::Item("INV-BASMATI", 200_000_000, "MASS"),   // 200 g
-        Comp::Item("INV-CHICKEN", 180_000_000, "MASS"),   // 180 g
-        Comp::Item("INV-CURD", 40_000_000, "MASS"),       // 40 g
-        Comp::Item("INV-GHEE", 20_000_000, "MASS"),       // 20 g
-        Comp::Item("INV-GARAMMASALA", 4_000_000, "MASS"), // 4 g
+        Comp::Item("INV-BASMATI", grams(200), "MASS"),   // 200 g
+        Comp::Item("INV-CHICKEN", grams(180), "MASS"),   // 180 g
+        Comp::Item("INV-CURD", grams(40), "MASS"),       // 40 g
+        Comp::Item("INV-GHEE", grams(20), "MASS"),       // 20 g
+        Comp::Item("INV-GARAMMASALA", grams(4), "MASS"), // 4 g
     ]},
     SeedRecipe { item_name: "Veg Biryani", variant_name: "Full", ingredients: &[
-        Comp::Item("INV-BASMATI", 200_000_000, "MASS"),   // 200 g
-        Comp::Item("INV-ONION", 50_000_000, "MASS"),      // 50 g
-        Comp::Item("INV-GHEE", 15_000_000, "MASS"),       // 15 g
-        Comp::Item("INV-GARAMMASALA", 3_000_000, "MASS"), // 3 g
+        Comp::Item("INV-BASMATI", grams(200), "MASS"),   // 200 g
+        Comp::Item("INV-ONION", grams(50), "MASS"),      // 50 g
+        Comp::Item("INV-GHEE", grams(15), "MASS"),       // 15 g
+        Comp::Item("INV-GARAMMASALA", grams(3), "MASS"), // 3 g
     ]},
     SeedRecipe { item_name: "Tandoori Roti", variant_name: "Plain", ingredients: &[
-        Comp::Item("INV-ATTA", 60_000_000, "MASS"),       // 60 g
-        Comp::Item("INV-GHEE", 5_000_000, "MASS"),        // 5 g
+        Comp::Item("INV-ATTA", grams(60), "MASS"),       // 60 g
+        Comp::Item("INV-GHEE", grams(5), "MASS"),        // 5 g
     ]},
     SeedRecipe { item_name: "Fresh Lime Soda", variant_name: "Sweet", ingredients: &[
-        Comp::Item("INV-LIME", 1_000_000, "COUNT"),       // 1 piece
-        Comp::Item("INV-SODAWATER", 200_000, "VOLUME"),   // 200 ml
-        Comp::Item("INV-SUGAR", 15_000_000, "MASS"),      // 15 g
+        Comp::Item("INV-LIME", pieces(1), "COUNT"),       // 1 piece
+        Comp::Item("INV-SODAWATER", millilitres(200), "VOLUME"),   // 200 ml
+        Comp::Item("INV-SUGAR", grams(15), "MASS"),      // 15 g
     ]},
     SeedRecipe { item_name: "Kulfi", variant_name: "Malai", ingredients: &[
-        Comp::Item("INV-MILK", 120_000, "VOLUME"),        // 120 ml
-        Comp::Item("INV-SUGAR", 20_000_000, "MASS"),      // 20 g
-        Comp::Item("INV-CREAM", 20_000, "VOLUME"),        // 20 ml
+        Comp::Item("INV-MILK", millilitres(120), "VOLUME"),        // 120 ml
+        Comp::Item("INV-SUGAR", grams(20), "MASS"),      // 20 g
+        Comp::Item("INV-CREAM", millilitres(20), "VOLUME"),        // 20 ml
     ]},
     // The following six items got a "Regular" variant added ABOVE
     // specifically so they could carry a recipe at all (the spec itself
     // lists them with no variant) — see the comment on each `SeedItem`.
     SeedRecipe { item_name: "Masala Chai", variant_name: "Regular", ingredients: &[
-        Comp::Item("INV-TEALEAVES", 4_000_000, "MASS"),   // 4 g
-        Comp::Item("INV-MILK", 100_000, "VOLUME"),        // 100 ml
-        Comp::Item("INV-SUGAR", 10_000_000, "MASS"),      // 10 g
+        Comp::Item("INV-TEALEAVES", grams(4), "MASS"),   // 4 g
+        Comp::Item("INV-MILK", millilitres(100), "VOLUME"),        // 100 ml
+        Comp::Item("INV-SUGAR", grams(10), "MASS"),      // 10 g
     ]},
     SeedRecipe { item_name: "Butter Naan", variant_name: "Regular", ingredients: &[
-        Comp::Item("INV-ATTA", 70_000_000, "MASS"),       // 70 g
-        Comp::Item("INV-BUTTER", 10_000_000, "MASS"),     // 10 g
+        Comp::Item("INV-ATTA", grams(70), "MASS"),       // 70 g
+        Comp::Item("INV-BUTTER", grams(10), "MASS"),     // 10 g
     ]},
     SeedRecipe { item_name: "Garlic Naan", variant_name: "Regular", ingredients: &[
-        Comp::Item("INV-ATTA", 70_000_000, "MASS"),       // 70 g
-        Comp::Item("INV-GHEE", 5_000_000, "MASS"),        // 5 g
+        Comp::Item("INV-ATTA", grams(70), "MASS"),       // 70 g
+        Comp::Item("INV-GHEE", grams(5), "MASS"),        // 5 g
     ]},
     // Bottled Water / Coca-Cola / Thums Up: the simplest possible recipe —
     // one COUNT dish deducting exactly one COUNT stock unit, straight
@@ -502,13 +514,13 @@ const SEED_RECIPES: &[SeedRecipe] = &[
     // "recipe" is a multi-ingredient dish, and the resolver's arithmetic
     // must be exercised at this trivial end of the range too.
     SeedRecipe { item_name: "Bottled Water 1L", variant_name: "Regular", ingredients: &[
-        Comp::Item("INV-BOTTLEDWATER", 1_000_000, "COUNT"), // 1 piece
+        Comp::Item("INV-BOTTLEDWATER", pieces(1), "COUNT"), // 1 piece
     ]},
     SeedRecipe { item_name: "Coca-Cola (can)", variant_name: "Regular", ingredients: &[
-        Comp::Item("INV-COKECAN", 1_000_000, "COUNT"),    // 1 piece
+        Comp::Item("INV-COKECAN", pieces(1), "COUNT"),    // 1 piece
     ]},
     SeedRecipe { item_name: "Thums Up (can)", variant_name: "Regular", ingredients: &[
-        Comp::Item("INV-THUMSUPCAN", 1_000_000, "COUNT"), // 1 piece
+        Comp::Item("INV-THUMSUPCAN", pieces(1), "COUNT"), // 1 piece
     ]},
 ];
 
@@ -537,19 +549,19 @@ const SEED_MODIFIER_DELTAS: &[SeedModifierDelta] = &[
     // the SIGNED pair this table exists to prove: "Extra Sugar" consumes
     // MORE stock, "Less Sugar" consumes LESS (a negative delta), same item,
     // same inventory SKU.
-    SeedModifierDelta { lookup: ModifierLookup::LegacyExtraSugar, sku: "INV-SUGAR", quantity_micro: 8_000_000 }, // +8 g
-    SeedModifierDelta { lookup: ModifierLookup::LegacyLessSugar, sku: "INV-SUGAR", quantity_micro: -8_000_000 }, // -8 g
-    SeedModifierDelta { lookup: ModifierLookup::Named("Butter Naan", "Extras", "Extra butter"), sku: "INV-BUTTER", quantity_micro: 10_000_000 }, // +10 g
-    SeedModifierDelta { lookup: ModifierLookup::Named("Dal Makhani", "Extras", "Butter"), sku: "INV-BUTTER", quantity_micro: 15_000_000 }, // +15 g
-    SeedModifierDelta { lookup: ModifierLookup::Named("Aloo Tikki Chaat", "Extras", "Extra dahi"), sku: "INV-CURD", quantity_micro: 30_000_000 }, // +30 g
+    SeedModifierDelta { lookup: ModifierLookup::LegacyExtraSugar, sku: "INV-SUGAR", quantity_micro: grams(8) }, // +8 g
+    SeedModifierDelta { lookup: ModifierLookup::LegacyLessSugar, sku: "INV-SUGAR", quantity_micro: -grams(8) }, // -8 g
+    SeedModifierDelta { lookup: ModifierLookup::Named("Butter Naan", "Extras", "Extra butter"), sku: "INV-BUTTER", quantity_micro: grams(10) }, // +10 g
+    SeedModifierDelta { lookup: ModifierLookup::Named("Dal Makhani", "Extras", "Butter"), sku: "INV-BUTTER", quantity_micro: grams(15) }, // +15 g
+    SeedModifierDelta { lookup: ModifierLookup::Named("Aloo Tikki Chaat", "Extras", "Extra dahi"), sku: "INV-CURD", quantity_micro: grams(30) }, // +30 g
     // Priced at +0 paise (see its SeedItem above) but NOT free in stock —
     // the deliberate example that a modifier's price and its stock cost are
     // two independent numbers.
-    SeedModifierDelta { lookup: ModifierLookup::Named("Masala Chai", "Extras", "Extra strong"), sku: "INV-TEALEAVES", quantity_micro: 2_000_000 }, // +2 g
-    SeedModifierDelta { lookup: ModifierLookup::Named("Chicken Biryani", "Extras", "Extra raita"), sku: "INV-CURD", quantity_micro: 40_000_000 }, // +40 g
-    SeedModifierDelta { lookup: ModifierLookup::Named("Veg Biryani", "Extras", "Extra raita"), sku: "INV-CURD", quantity_micro: 40_000_000 }, // +40 g
-    SeedModifierDelta { lookup: ModifierLookup::Named("Butter Chicken", "Extras", "Extra gravy"), sku: "INV-CREAM", quantity_micro: 20_000 }, // +20 ml
-    SeedModifierDelta { lookup: ModifierLookup::Named("Paneer Butter Masala", "Extras", "Extra gravy"), sku: "INV-CREAM", quantity_micro: 20_000 }, // +20 ml
+    SeedModifierDelta { lookup: ModifierLookup::Named("Masala Chai", "Extras", "Extra strong"), sku: "INV-TEALEAVES", quantity_micro: grams(2) }, // +2 g
+    SeedModifierDelta { lookup: ModifierLookup::Named("Chicken Biryani", "Extras", "Extra raita"), sku: "INV-CURD", quantity_micro: grams(40) }, // +40 g
+    SeedModifierDelta { lookup: ModifierLookup::Named("Veg Biryani", "Extras", "Extra raita"), sku: "INV-CURD", quantity_micro: grams(40) }, // +40 g
+    SeedModifierDelta { lookup: ModifierLookup::Named("Butter Chicken", "Extras", "Extra gravy"), sku: "INV-CREAM", quantity_micro: millilitres(20) }, // +20 ml
+    SeedModifierDelta { lookup: ModifierLookup::Named("Paneer Butter Masala", "Extras", "Extra gravy"), sku: "INV-CREAM", quantity_micro: millilitres(20) }, // +20 ml
 ];
 
 /// (category name, sort_order, items) — sort_order continues on from the
@@ -1690,7 +1702,7 @@ fn seed_recipes(
                 name: r.item_name.to_string(),
                 recipe_version: 1,
                 output_dimension: "COUNT".to_string(),
-                output_quantity_micro: 1_000_000, // one serving
+                output_quantity_micro: pieces(1), // one serving
                 config_version: CONFIG_VERSION,
             },
         )?;
@@ -2065,7 +2077,7 @@ mod t1b_seed_resolves_tests {
             .iter()
             .find(|l| l.inventory_item_name == "Chicken (Curry Cut, Bone-In)")
             .expect("chicken leaf present");
-        assert_eq!(chicken.applied_micro, 220_000_000);
+        assert_eq!(chicken.applied_micro, grams(220));
 
         // Tomato: ONLY reachable through the Makhani Gravy sub-recipe,
         // scaled by 180/300 of the batch's 250 g -> 150 g exactly.
@@ -2075,7 +2087,7 @@ mod t1b_seed_resolves_tests {
             .find(|l| l.inventory_item_name == "Tomato")
             .expect("tomato leaf present (via the sub-recipe)");
         assert_eq!(
-            tomato.applied_micro, 150_000_000,
+            tomato.applied_micro, grams(150),
             "180/300 of the gravy batch's 250 g tomato must be exactly 150 g, not a rounded approximation"
         );
 
@@ -2086,7 +2098,7 @@ mod t1b_seed_resolves_tests {
             .iter()
             .find(|l| l.inventory_item_name == "Fresh Cream")
             .expect("cream leaf present");
-        assert_eq!(cream.applied_micro, 30_000 + 36_000);
+        assert_eq!(cream.applied_micro, millilitres(30) + millilitres(36));
     }
 
     /// A 2x order quantity scales every leaf by 2, including through the
@@ -2113,7 +2125,7 @@ mod t1b_seed_resolves_tests {
             .iter()
             .find(|l| l.inventory_item_name == "Chicken (Curry Cut, Bone-In)")
             .unwrap();
-        assert_eq!(chicken.applied_micro, 440_000_000);
+        assert_eq!(chicken.applied_micro, grams(440));
     }
 
     /// Bottled Water: the simplest recipe in the seed, a straight COUNT ->
@@ -2137,7 +2149,7 @@ mod t1b_seed_resolves_tests {
         };
         assert_eq!(resolution.leaves.len(), 1);
         assert_eq!(resolution.leaves[0].inventory_item_name, "Bottled Water 1L");
-        assert_eq!(resolution.leaves[0].applied_micro, 3_000_000);
+        assert_eq!(resolution.leaves[0].applied_micro, pieces(3));
     }
 
     /// Chana Masala has a variant (0.5.0's own requirement) but was
@@ -2201,8 +2213,8 @@ mod t1b_seed_resolves_tests {
                 )
                 .expect("less sugar delta row exists"),
         );
-        assert_eq!(extra, 8_000_000);
-        assert_eq!(less, -8_000_000);
+        assert_eq!(extra, grams(8));
+        assert_eq!(less, -grams(8));
     }
 
     /// Every seeded `recipe_ingredient.quantity_dimension` must agree with
@@ -2247,5 +2259,112 @@ mod t1b_seed_resolves_tests {
                 );
             }
         }
+    }
+
+    /// Counts `(item rows, variant instances)` out of `HOLLER_DEV_MENU_SPEC.md`'s
+    /// own category tables — the same "read the spec, don't hand-copy it"
+    /// discipline `tests/inventory_recipe_resolution.rs` already applies to
+    /// the Butter Chicken worked example. A table row's "variants" column
+    /// is either an em-dash (no variant) or a `/`-joined list (`Half/Full`
+    /// counts as 2) — mirroring exactly how `SEED_CATEGORIES` below reads.
+    fn count_spec_items_and_variants() -> (usize, usize) {
+        let spec_path = format!(
+            "{}/../../HOLLER_DEV_MENU_SPEC.md",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let text = std::fs::read_to_string(&spec_path)
+            .unwrap_or_else(|e| panic!("could not read {spec_path}: {e}"));
+
+        let mut item_count = 0usize;
+        let mut variant_count = 0usize;
+        let mut in_table = false;
+        for line in text.lines() {
+            if line.starts_with("| item ") {
+                in_table = true;
+                continue;
+            }
+            if !in_table {
+                continue;
+            }
+            let trimmed = line.trim();
+            if trimmed.is_empty() || !trimmed.starts_with('|') {
+                in_table = false;
+                continue;
+            }
+            // The header/body separator row: only '|', '-' and whitespace.
+            if trimmed.chars().all(|c| c == '|' || c == '-' || c.is_whitespace()) {
+                continue;
+            }
+            let cols: Vec<&str> = trimmed
+                .trim_matches('|')
+                .split('|')
+                .map(str::trim)
+                .collect();
+            item_count += 1;
+            if let Some(variants_field) = cols.get(5) {
+                if *variants_field != "—" && !variants_field.is_empty() {
+                    variant_count += variants_field.split('/').count();
+                }
+            }
+        }
+        (item_count, variant_count)
+    }
+
+    /// Falsification target for spec/seed drift: `HOLLER_DEV_MENU_SPEC.md`
+    /// and `SEED_CATEGORIES` below are two independently hand-maintained
+    /// copies of the same 39-item menu, and nothing but this test would
+    /// notice if someone edited one without the other — exactly the
+    /// silent-drift failure mode CLAUDE.md's spec/seed rule exists to catch.
+    /// The 39/28/50 literals are a snapshot of both sides AT THE TIME this
+    /// guard was written (quoted here so a future diff on either side is
+    /// visible without cross-referencing); a deliberate change to the menu
+    /// updates all four numbers together, never just one.
+    #[test]
+    fn spec_and_seed_agree_on_item_and_variant_counts() {
+        let (spec_items, spec_variants) = count_spec_items_and_variants();
+        assert_eq!(
+            spec_items, 39,
+            "HOLLER_DEV_MENU_SPEC.md's item-row count changed — if deliberate, \
+             update this guard's literals together with SEED_CATEGORIES"
+        );
+        assert_eq!(
+            spec_variants, 50,
+            "HOLLER_DEV_MENU_SPEC.md's variant-instance count changed — if \
+             deliberate, update this guard's literals together with SEED_CATEGORIES"
+        );
+
+        let db = seeded_db();
+        let seeded_items: i64 = db
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM menu_item WHERE category_id NOT IN (?1, ?2)",
+                [CATEGORY_ID, INTERNAL_CATEGORY_ID],
+                |r| r.get(0),
+            )
+            .expect("count spec-seeded menu_item rows");
+        assert!(seeded_items > 0, "spec-seeded menu_item fixture did not land");
+        let seeded_variants: i64 = db
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM menu_item_variant v \
+                 JOIN menu_item m ON m.id = v.menu_item_id \
+                 WHERE m.category_id NOT IN (?1, ?2)",
+                [CATEGORY_ID, INTERNAL_CATEGORY_ID],
+                |r| r.get(0),
+            )
+            .expect("count spec-seeded menu_item_variant rows");
+        assert!(
+            seeded_variants > 0,
+            "spec-seeded menu_item_variant fixture did not land"
+        );
+
+        assert_eq!(
+            seeded_items as usize, spec_items,
+            "devseed's SEED_CATEGORIES item count must match HOLLER_DEV_MENU_SPEC.md exactly"
+        );
+        assert_eq!(
+            seeded_variants as usize, spec_variants,
+            "devseed's SEED_CATEGORIES variant count must match HOLLER_DEV_MENU_SPEC.md exactly"
+        );
     }
 }

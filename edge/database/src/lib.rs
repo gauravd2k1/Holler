@@ -1387,6 +1387,7 @@ impl Drop for Db {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inventory::grams;
     use crate::model::{NewOrder, NewOrderItem, NewOutboxEntry};
     use rusqlite::params;
     use tempfile::tempdir;
@@ -3185,7 +3186,7 @@ mod tests {
             "recipe-1",
             &variant_id,
             "inv-flour",
-            250_000_000, // 250g per serving
+            grams(250), // 250g per serving
             "MASS",
         );
 
@@ -3209,7 +3210,7 @@ mod tests {
         assert_eq!(e.inventory_item_id, "inv-flour");
         assert_eq!(e.origin, "RECIPE");
         assert_eq!(
-            e.quantity_applied_micro, -750_000_000,
+            e.quantity_applied_micro, -grams(750),
             "250g * 3 servings, NEGATIVE (consumption)"
         );
         assert_eq!(e.recipe_id.as_deref(), Some("recipe-1"));
@@ -3285,7 +3286,7 @@ mod tests {
             "delta-1",
             "modifier-1",
             "inv-paneer",
-            50_000_000, // 50g per serving
+            grams(50), // 50g per serving
         );
 
         let order = sample_order("order-mod-1", "outlet-1", "device-1");
@@ -3311,7 +3312,7 @@ mod tests {
         let m = modifier_entries[0];
         assert_eq!(m.inventory_item_id, "inv-paneer");
         assert_eq!(
-            m.quantity_applied_micro, -100_000_000,
+            m.quantity_applied_micro, -grams(100),
             "50g * 2 servings, NEGATIVE (consumption)"
         );
         assert_eq!(m.modifier_delta_id.as_deref(), Some("delta-1"));
@@ -3437,7 +3438,7 @@ mod tests {
             "recipe-1",
             &variant_id,
             "inv-flour",
-            250_000_000,
+            grams(250),
             "MASS",
         );
 
@@ -3569,7 +3570,7 @@ mod tests {
                 "recipe-1",
                 &variant_id,
                 "inv-flour",
-                250_000_000,
+                grams(250),
                 "MASS",
             );
 
@@ -3611,7 +3612,7 @@ mod tests {
             1,
             "the committed pre-crash ledger entry must survive recovery"
         );
-        assert_eq!(entries[0].quantity_applied_micro, -1_000_000_000); // 250g * 4
+        assert_eq!(entries[0].quantity_applied_micro, -grams(1000)); // 250g * 4
         assert_eq!(entries[0].entry_seq, 1);
     }
 
@@ -3634,7 +3635,7 @@ mod tests {
             "recipe-1",
             &variant_id,
             "inv-flour",
-            250_000_000,
+            grams(250),
             "MASS",
         );
 
@@ -3726,7 +3727,7 @@ mod tests {
             "delta-dangling-1",
             "modifier-1",
             "inv-does-not-exist",
-            50_000_000,
+            grams(50),
         );
         db.connection()
             .execute("PRAGMA foreign_keys = ON", [])
@@ -3796,7 +3797,7 @@ mod tests {
             "recipe-1",
             &variant_id,
             "inv-flour",
-            250_000_000,
+            grams(250),
             "MASS",
         );
 
