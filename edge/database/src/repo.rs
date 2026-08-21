@@ -28,7 +28,17 @@ fn i64_to_bool(v: i64) -> bool {
 
 // ---------------------------------------------------------------- outlet --
 
+/// **Validates `o.timezone` before writing anything.** This is the real
+/// config-apply boundary for `outlet.timezone` — the sync worker's only
+/// path for landing a cloud-authored outlet row — so an unparseable IANA
+/// identifier is rejected HERE, as a whole-write config defect, rather than
+/// being absorbed later where `business_date` is computed
+/// (`crate::deduction::business_date`'s doc comment states the rule this
+/// enforces: a silent fallback to a different valid value is worse than a
+/// rejection, because a rejection is visible and a plausible-but-wrong
+/// stored date is not).
 pub fn upsert_outlet(conn: &Connection, o: &Outlet) -> DbResult<()> {
+    crate::deduction::business_date::OutletTimezone::parse(&o.timezone)?;
     conn.execute(
         "INSERT INTO outlet (id, brand_id, name, timezone, config_version, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
@@ -73,14 +83,25 @@ pub fn get_outlet(conn: &Connection, id: &str) -> DbResult<Option<Outlet>> {
     .map_err(Into::into)
 }
 
-/// `(timezone, day_start_time)` for one outlet — the two `business_date`
-/// inputs (ADR-018 §9.2, 0013), read directly rather than through the
-/// [`Outlet`] struct/[`get_outlet`] deliberately: `Outlet` is a public type
-/// constructed by name at several call sites outside this crate (`edge/sync`
-/// config-bundle tests), and this crate's contract with them is additive-
-/// only — adding a field to a struct they build as an exhaustive literal
-/// would be a breaking change to a workspace this task does not own. A
-/// narrow, transaction-scoped read avoids that cascade entirely.
+/// The two `business_date` inputs (ADR-018 §9.2, 0013) for one outlet, read
+/// directly rather than through the [`Outlet`] struct/[`get_outlet`]
+/// deliberately: `Outlet` is a public type constructed by name at several
+/// call sites outside this crate (`edge/sync` config-bundle tests), and this
+/// crate's contract with them is additive-only — adding a field to a struct
+/// they build as an exhaustive literal would be a breaking change to a
+/// workspace this task does not own. A narrow, transaction-scoped read
+/// avoids that cascade entirely.
+///
+/// Returns the ALREADY-VALIDATED types, never the raw strings — see
+/// `crate::deduction::business_date`'s doc comment for why a bare `String`
+/// here would put the failure mode back one call away from where it was
+/// removed. `timezone` should never actually fail to parse here (`upsert_
+/// outlet` rejects a bad one before it can be stored); `day_start_time` has
+/// no equivalent config-apply gate yet (see [`crate::deduction::business_date
+/// ::DayStartTime`]'s doc comment for that residual gap), so this is its
+/// real validation boundary today. Either failing is a typed, propagated
+/// `DbError::InvalidInput`, never a silent substitution.
+///
 /// `DbError::NotFound("outlet")` if the outlet row is missing, which should
 /// be unreachable for a `confirm_order` call (the order's own `outlet_id`
 /// FK already guarantees the row exists) but is still a typed, propagated
@@ -90,14 +111,21 @@ pub fn get_outlet(conn: &Connection, id: &str) -> DbResult<Option<Outlet>> {
 pub(crate) fn get_outlet_business_date_config(
     tx: &Transaction,
     outlet_id: &str,
-) -> DbResult<(String, String)> {
-    tx.query_row(
-        "SELECT timezone, day_start_time FROM outlet WHERE id = ?1",
-        params![outlet_id],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    )
-    .optional()?
-    .ok_or(crate::error::DbError::NotFound("outlet"))
+) -> DbResult<(
+    crate::deduction::business_date::OutletTimezone,
+    crate::deduction::business_date::DayStartTime,
+)> {
+    let (timezone_str, day_start_str): (String, String) = tx
+        .query_row(
+            "SELECT timezone, day_start_time FROM outlet WHERE id = ?1",
+            params![outlet_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?
+        .ok_or(crate::error::DbError::NotFound("outlet"))?;
+    let timezone = crate::deduction::business_date::OutletTimezone::parse(&timezone_str)?;
+    let day_start_time = crate::deduction::business_date::DayStartTime::parse(&day_start_str)?;
+    Ok((timezone, day_start_time))
 }
 
 // ----------------------------------------------------------------- device --
@@ -487,6 +515,147 @@ pub fn list_menu_item_modifiers_for_outlet(
         })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
+}
+
+// ----------------------------------- inventory_item / recipe config (M4) --
+// CONFIG, cloud->edge (ADR-018). Same upsert-by-id, config_version-gated
+// shape as every other config row in this file. No `list_*` reader is added
+// here beyond what `crate::inventory::resolve` already queries directly —
+// these five functions exist because `devseed` (and, later, the real config
+// sync worker) needs a write path for tables that had none.
+
+pub fn upsert_inventory_item(conn: &Connection, item: &InventoryItem) -> DbResult<()> {
+    conn.execute(
+        "INSERT INTO inventory_item
+            (id, outlet_id, sku, name, category, dimension, reorder_level_micro,
+             par_level_micro, storage_location, is_active, yield_factor_ppm, config_version)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+         ON CONFLICT(id) DO UPDATE SET
+            outlet_id = excluded.outlet_id, sku = excluded.sku, name = excluded.name,
+            category = excluded.category, dimension = excluded.dimension,
+            reorder_level_micro = excluded.reorder_level_micro,
+            par_level_micro = excluded.par_level_micro,
+            storage_location = excluded.storage_location, is_active = excluded.is_active,
+            yield_factor_ppm = excluded.yield_factor_ppm, config_version = excluded.config_version
+         WHERE excluded.config_version >= inventory_item.config_version",
+        params![
+            item.id,
+            item.outlet_id,
+            item.sku,
+            item.name,
+            item.category,
+            item.dimension,
+            item.reorder_level_micro,
+            item.par_level_micro,
+            item.storage_location,
+            bool_to_i64(item.is_active),
+            item.yield_factor_ppm,
+            item.config_version,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn upsert_item_unit_conversion(conn: &Connection, c: &ItemUnitConversion) -> DbResult<()> {
+    conn.execute(
+        "INSERT INTO item_unit_conversion
+            (id, inventory_item_id, pack_unit_label, source_dimension, numerator, denominator, config_version)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(id) DO UPDATE SET
+            inventory_item_id = excluded.inventory_item_id,
+            pack_unit_label = excluded.pack_unit_label,
+            source_dimension = excluded.source_dimension,
+            numerator = excluded.numerator, denominator = excluded.denominator,
+            config_version = excluded.config_version
+         WHERE excluded.config_version >= item_unit_conversion.config_version",
+        params![
+            c.id,
+            c.inventory_item_id,
+            c.pack_unit_label,
+            c.source_dimension,
+            c.numerator,
+            c.denominator,
+            c.config_version,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn upsert_recipe(conn: &Connection, r: &Recipe) -> DbResult<()> {
+    conn.execute(
+        "INSERT INTO recipe
+            (id, menu_item_variant_id, name, recipe_version, output_dimension, output_quantity_micro, config_version)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(id) DO UPDATE SET
+            menu_item_variant_id = excluded.menu_item_variant_id, name = excluded.name,
+            recipe_version = excluded.recipe_version, output_dimension = excluded.output_dimension,
+            output_quantity_micro = excluded.output_quantity_micro,
+            config_version = excluded.config_version
+         WHERE excluded.config_version >= recipe.config_version",
+        params![
+            r.id,
+            r.menu_item_variant_id,
+            r.name,
+            r.recipe_version,
+            r.output_dimension,
+            r.output_quantity_micro,
+            r.config_version,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn upsert_recipe_ingredient(conn: &Connection, i: &RecipeIngredient) -> DbResult<()> {
+    conn.execute(
+        "INSERT INTO recipe_ingredient
+            (id, recipe_id, component_kind, inventory_item_id, sub_recipe_id, quantity_micro,
+             quantity_dimension, yield_factor_ppm, sort_order, config_version)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+         ON CONFLICT(id) DO UPDATE SET
+            recipe_id = excluded.recipe_id, component_kind = excluded.component_kind,
+            inventory_item_id = excluded.inventory_item_id, sub_recipe_id = excluded.sub_recipe_id,
+            quantity_micro = excluded.quantity_micro, quantity_dimension = excluded.quantity_dimension,
+            yield_factor_ppm = excluded.yield_factor_ppm, sort_order = excluded.sort_order,
+            config_version = excluded.config_version
+         WHERE excluded.config_version >= recipe_ingredient.config_version",
+        params![
+            i.id,
+            i.recipe_id,
+            i.component_kind,
+            i.inventory_item_id,
+            i.sub_recipe_id,
+            i.quantity_micro,
+            i.quantity_dimension,
+            i.yield_factor_ppm,
+            i.sort_order,
+            i.config_version,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn upsert_modifier_ingredient_delta(
+    conn: &Connection,
+    d: &ModifierIngredientDelta,
+) -> DbResult<()> {
+    conn.execute(
+        "INSERT INTO modifier_ingredient_delta
+            (id, menu_item_modifier_id, inventory_item_id, quantity_micro, config_version)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(id) DO UPDATE SET
+            menu_item_modifier_id = excluded.menu_item_modifier_id,
+            inventory_item_id = excluded.inventory_item_id,
+            quantity_micro = excluded.quantity_micro, config_version = excluded.config_version
+         WHERE excluded.config_version >= modifier_ingredient_delta.config_version",
+        params![
+            d.id,
+            d.menu_item_modifier_id,
+            d.inventory_item_id,
+            d.quantity_micro,
+            d.config_version,
+        ],
+    )?;
+    Ok(())
 }
 
 // ------------------------------------------------------------- "order" -----
@@ -3464,6 +3633,48 @@ pub(crate) fn next_invoice_sequence_value(
             updated_at = excluded.updated_at
          RETURNING last_value",
         params![series_id, period_key, updated_at],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
+// ------------------------------------------------ Milestone 4: inventory (T2) --
+// stock_ledger_sequence is EDGE-LOCAL (ADR-018 0.5.3 addendum,
+// sqlite/0021_stock_ledger_sequence.sql) — the `invoice_sequence` shape minus
+// the period bucket: a durable, per-outlet, monotonic-forever counter, never
+// mirrored, never given an AggregateType or sync direction.
+//
+// WHY THIS REPLACED MAX(entry_seq) + 1. That derivation was correct only
+// because `stock_ledger_entry` carries a no-delete trigger, and ADR-018 §9's
+// retention design requires removing exactly that trigger once archival
+// ships. A derived counter that restarts after rows are removed is the same
+// defect class as 0.5.1's rescaled sub-recipe and 0.5.2's reclassified
+// ingredient: a stored value silently meaning something different after an
+// unrelated operation. This table is the fix, one operation earlier.
+
+/// Atomically advances the durable per-outlet `entry_seq` counter and
+/// returns the NEW value, inside the SAME transaction as the
+/// `stock_ledger_entry` insert that will use it — the exact atomicity
+/// argument [`next_invoice_sequence_value`]'s doc comment makes for invoice
+/// numbers, unchanged: a crash before this statement leaves the counter
+/// untouched; a crash after it but before the enclosing `COMMIT` reverts it
+/// along with the row that would have used it (WAL rollback); a crash after
+/// `COMMIT` returns makes both durable together. There is no window in
+/// which the mark advances without the row it belongs to also landing, or
+/// vice versa.
+pub(crate) fn next_stock_ledger_sequence_value(
+    tx: &Transaction,
+    outlet_id: &str,
+    updated_at: &str,
+) -> DbResult<i64> {
+    tx.query_row(
+        "INSERT INTO stock_ledger_sequence (outlet_id, last_value, updated_at)
+         VALUES (?1, 1, ?2)
+         ON CONFLICT(outlet_id) DO UPDATE SET
+            last_value = stock_ledger_sequence.last_value + 1,
+            updated_at = excluded.updated_at
+         RETURNING last_value",
+        params![outlet_id, updated_at],
         |row| row.get(0),
     )
     .map_err(Into::into)

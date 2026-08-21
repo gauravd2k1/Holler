@@ -798,7 +798,7 @@ fn missing_recipe_for_a_real_variant_is_a_gap_not_an_error() {
 }
 
 #[test]
-fn a_recipe_referencing_an_unsynced_inventory_item_is_an_unknown_unit_gap() {
+fn a_recipe_referencing_an_unsynced_inventory_item_is_an_unresolvable_reference_gap() {
     // Simulates config arriving out of order — recipe_ingredient synced
     // before the inventory_item it names — which the resolver must survive
     // defensively even though ordinary sync ingestion, with foreign_keys
@@ -834,7 +834,7 @@ fn a_recipe_referencing_an_unsynced_inventory_item_is_an_unknown_unit_gap() {
 
     let outcome =
         resolve_recipe_for_variant(db.connection(), Some(&variant_id), 1).expect("no DbError");
-    assert_eq!(outcome, ResolveOutcome::Gap(GapReason::UnknownUnit));
+    assert_eq!(outcome, ResolveOutcome::Gap(GapReason::UnresolvableReference));
 }
 
 // ---------------------------------------------------------------------

@@ -61,6 +61,17 @@ M2 ships kitchen features to this same target, so validating the target before a
 
   Exactly the shape of the `/sync/config` empty-`users` defect already filed above: the contract shape exists, the delivery path does not, and nothing fails until a human tries to use the product. Closing it needs a `printer_roles` field on the bundle, a kitchen-context export to populate it, and the edge applying it — **and the OpenAPI field must land with the implementation, not before it**, or the spec acquires exactly the kind of claim nothing verifies that this week's work has been about removing.
 
+- **P1 — `outlet.day_start_time` is read and never written, by anything.** Contracts 0.5.1 added the column and defined `business_date` in terms of it; `repo::upsert_outlet`'s column list never included it, `edge/sync`'s config apply does not set it, and `syncConfigResponse` does not carry it. So **every outlet is pinned to the schema default `'00:00'` forever, whatever the cloud says** — and an outlet trading past midnight still mis-buckets its business day, which is the defect 0.5.1 existed to fix. Found by T2 while making the timezone infallible; it declared the gap in `DayStartTime`'s doc comment rather than leaving it unstated.
+
+  **Third instance of "the contract shape exists, the delivery path does not"**, after empty `users` and `printer_role` — and the *second* instance of the additive-consumer-list rule, landed one version before the change that prompted the rule. Note this one would slip past T4's planned guard as specified: `day_start_time` is a **column on `outlet`**, not an aggregate, so "every config aggregate the edge needs appears in `syncConfigResponse`" does not reach it. **The guard must cover config fields the edge reads, not only aggregates.**
+
+- **Three `unwrap_or`-on-a-parse defects in `edge/`, found by a directed sweep.** Each substitutes a plausible valid value for an invalid stored one, silently — the shape ruled worse than a panic, because a panic is visible and plausible-but-wrong data is not.
+  - `edge/printer/src/adapter.rs:314` — a malformed `printer.connection_kind` silently becomes `Network`, which can **misroute a print job to the wrong transport**. The most serious of the three.
+  - `edge/device/src/server.rs:461` — an unparseable KOT status is silently treated as not-terminal, so a malformed ticket stays in the live KDS snapshot instead of being flagged.
+  - `edge/database/src/invoice/numbering.rs:145` — a negative stored `padding_width` silently becomes 6. A numeric conversion rather than a parse, but the same invalid-config-to-silently-substituted-valid-value shape.
+
+  Reported by T2 under instruction to report and not fix, so each stays a one-line change with a test rather than an unreviewed drive-by. **Trigger: the next task that touches each crate.**
+
 - **Air-gapped build machine.** The WebView2 offline package is downloaded from `go.microsoft.com` at *build* time and embedded into the installer. Install-time is offline, which is what ADR-013 requires and what is proven. **Trigger: a build environment without egress** — a customer-hosted or regulated build. The fix is vendoring the runtime package into the repo or an internal artefact store.
 
 ---

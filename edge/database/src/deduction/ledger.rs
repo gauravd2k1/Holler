@@ -1,7 +1,8 @@
 //! Writes `stock_ledger_entry` / `stock_deduction_gap` rows from a resolved
 //! recipe, and the single entry point [`deduct_stock_for_confirmed_order`]
 //! that [`crate::Db::confirm_order_with_outbox`] calls inside its own
-//! transaction (Milestone 4, track T2, ADR-018).
+//! transaction (Milestone 4, track T2, ADR-018; entry_seq durable-counter
+//! and `UNRESOLVABLE_REFERENCE` corrections, contracts 0.5.3 addendum).
 //!
 //! ============================================================================
 //! THE RULE THIS FILE EXISTS TO ENFORCE
@@ -12,46 +13,51 @@
 //! already reports "could not resolve, and why" as `Ok(Gap(_))`, never a
 //! `DbError`; this module keeps that property all the way through by turning
 //! every gap into a `stock_deduction_gap` INSERT rather than a `?`-propagated
-//! error. A genuine `DbError` (an actual SQLite failure — a real read/write
-//! error) still propagates via `?` exactly like every other repo call in this
-//! crate; that is the one thing this module does NOT try to swallow, per the
-//! task brief.
+//! error. A genuine `DbError` (an actual SQLite failure, or a genuinely
+//! invalid `occurred_at`/outlet config — see below) still propagates via `?`
+//! exactly like every other repo call in this crate; that is the one thing
+//! this module does NOT try to swallow, per the task brief.
 //!
 //! **Stock never blocks a sale.** No balance check exists anywhere below.
 //! Negative stock is a variance signal, not an error (ADR-018 Rule 1) — if a
 //! future change to this file adds one, it is the bug, not a missing
 //! feature.
+//!
+//! **`occurred_at_utc` is parsed exactly ONCE, at the top of
+//! [`deduct_stock_for_confirmed_order`], into a `DateTime<Utc>`** — never
+//! defaulted to "now" on a parse failure. `confirmed_at` is internally
+//! generated (the Tauri command layer's local clock, per `OrderConfirmedMeta`'s
+//! doc comment), so an unparseable value here is a genuine caller defect,
+//! not a business gap; it propagates as a real `DbError` and the whole
+//! confirm rolls back, exactly like any other malformed input this crate
+//! refuses to guess about.
+//!
+//! **A silent skip is never used to avoid an imprecise reason code.** Every
+//! branch below that cannot deduct writes a `stock_deduction_gap` row —
+//! see [`write_gap`] / the `UNRESOLVABLE_REFERENCE` arms in
+//! [`deduct_modifiers_for_line`] — because `stock_deduction_gap` exists
+//! *because* a real failure with an absent signal is an absent feature
+//! (ADR-018 0.5.3 addendum). This reverses the original version of this
+//! file, which skipped two cases silently; both were found and corrected
+//! in review.
 
+use chrono::{DateTime, Utc};
 use rusqlite::{params, Transaction};
 
 use crate::error::DbResult;
-use crate::inventory::{resolve_recipe_for_variant, GapReason, ResolveOutcome};
+use crate::inventory::{resolve_recipe_for_variant, ResolveOutcome};
 use crate::model::{NewStockDeductionGap, NewStockLedgerEntry, OrderItem};
 use crate::repo;
 
 use super::business_date::compute_business_date;
 
-/// The highest `entry_seq` already used at this outlet, or `0` if none.
-/// Read once per [`deduct_stock_for_confirmed_order`] call and advanced
-/// locally for every row that call writes — a single query rather than one
-/// `MAX` per row, which matters given the volume this table is designed for
-/// (ADR-018: ~15,000 rows/day). Safe without a `SELECT ... FOR UPDATE`-style
-/// lock because ADR-018 Rule 3 holds: the edge is a single SQLite writer, and
-/// this function runs inside the caller's transaction on that one writer, so
-/// no concurrent insert can observe or advance this value between the read
-/// and this call's own inserts.
-///
-/// The `UNIQUE (outlet_id, entry_seq)` index this table already carries
-/// makes `outlet_id, entry_seq` an efficient seek for `MAX`, so this is not
-/// a full table scan even as the table grows into the millions of rows.
-fn max_entry_seq(tx: &Transaction, outlet_id: &str) -> DbResult<i64> {
-    tx.query_row(
-        "SELECT COALESCE(MAX(entry_seq), 0) FROM stock_ledger_entry WHERE outlet_id = ?1",
-        params![outlet_id],
-        |row| row.get(0),
-    )
-    .map_err(Into::into)
-}
+/// `stock_deduction_gap.reason` for a dangling reference the resolver
+/// itself does not touch — a `modifier_ingredient_delta.inventory_item_id`
+/// pointing at an `inventory_item` row that is not there (contracts 0.5.3).
+/// Mirrors `GapReason::UnresolvableReference::as_str()`
+/// (`crate::inventory::resolve`) without depending on that type, since this
+/// case never goes through recipe resolution at all.
+const UNRESOLVABLE_REFERENCE: &str = "UNRESOLVABLE_REFERENCE";
 
 pub(crate) fn insert_stock_ledger_entry(
     tx: &Transaction,
@@ -93,6 +99,22 @@ pub(crate) fn insert_stock_ledger_entry(
         ],
     )?;
     Ok(())
+}
+
+/// Inserts one `stock_ledger_entry` row, first minting its durable
+/// `entry_seq` mark in the SAME transaction (`repo::
+/// next_stock_ledger_sequence_value` — contracts 0.5.3, the `invoice_
+/// sequence` atomicity argument applied to the ledger: a crash either takes
+/// both the mark and the row, or neither, never one without the other).
+fn insert_stock_ledger_entry_with_next_seq(
+    tx: &Transaction,
+    outlet_id: &str,
+    occurred_at_utc: &str,
+    e: &NewStockLedgerEntry,
+) -> DbResult<()> {
+    let entry_seq = repo::next_stock_ledger_sequence_value(tx, outlet_id, occurred_at_utc)?;
+    let id = uuid::Uuid::now_v7().to_string();
+    insert_stock_ledger_entry(tx, &id, entry_seq, e)
 }
 
 pub(crate) fn insert_stock_deduction_gap(
@@ -191,38 +213,31 @@ fn fetch_inventory_item(
 /// lock of its own because the edge is a single SQLite writer).
 ///
 /// `occurred_at_utc` is the moment the edge recorded the confirmation
-/// (mirrors `OrderConfirmedMeta::confirmed_at`) — used both as every written
-/// row's `occurred_at` and as the instant `business_date` is computed from,
-/// once, for the whole order (every leaf of every line in one confirm shares
-/// one `business_date`, which is correct: they are one sale, one moment).
+/// (mirrors `OrderConfirmedMeta::confirmed_at`), parsed to a real instant
+/// exactly once here — see the module doc comment for why a parse failure
+/// propagates rather than defaulting to "now". The parsed instant drives
+/// `business_date`, computed once for the whole order and reused for every
+/// row (they are one sale, one moment); the ORIGINAL string is still what
+/// gets stored in each row's own `occurred_at` column, unchanged.
 pub(crate) fn deduct_stock_for_confirmed_order(
     tx: &Transaction,
     outlet_id: &str,
     order_id: &str,
     occurred_at_utc: &str,
 ) -> DbResult<()> {
+    let occurred_at: DateTime<Utc> = crate::tax::parse_utc(occurred_at_utc)?;
     let (timezone, day_start_time) = repo::get_outlet_business_date_config(tx, outlet_id)?;
-    let business_date = compute_business_date(occurred_at_utc, &timezone, &day_start_time);
+    let business_date = compute_business_date(occurred_at, &timezone, &day_start_time);
 
-    let mut next_seq = max_entry_seq(tx, outlet_id)? + 1;
     let items: Vec<OrderItem> = repo::list_order_items_in_tx(tx, order_id)?;
 
     for item in &items {
-        deduct_one_line(
-            tx,
-            outlet_id,
-            order_id,
-            item,
-            occurred_at_utc,
-            &business_date,
-            &mut next_seq,
-        )?;
+        deduct_one_line(tx, outlet_id, order_id, item, occurred_at_utc, &business_date)?;
     }
 
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn deduct_one_line(
     tx: &Transaction,
     outlet_id: &str,
@@ -230,7 +245,6 @@ fn deduct_one_line(
     item: &OrderItem,
     occurred_at_utc: &str,
     business_date: &str,
-    next_seq: &mut i64,
 ) -> DbResult<()> {
     match resolve_recipe_for_variant(tx, item.variant_id.as_deref(), item.quantity)? {
         ResolveOutcome::Resolved(resolution) => {
@@ -263,17 +277,23 @@ fn deduct_one_line(
                     modifier_name: None,
                     modifier_delta_version: None,
                 };
-                let id = uuid::Uuid::now_v7().to_string();
-                insert_stock_ledger_entry(tx, &id, *next_seq, &entry)?;
-                *next_seq += 1;
+                insert_stock_ledger_entry_with_next_seq(tx, outlet_id, occurred_at_utc, &entry)?;
             }
         }
         ResolveOutcome::Gap(reason) => {
-            write_gap(tx, outlet_id, order_id, item, reason, occurred_at_utc, business_date)?;
+            write_gap(
+                tx,
+                outlet_id,
+                order_id,
+                item,
+                reason.as_str(),
+                occurred_at_utc,
+                business_date,
+            )?;
         }
     }
 
-    deduct_modifiers_for_line(tx, outlet_id, order_id, item, occurred_at_utc, business_date, next_seq)?;
+    deduct_modifiers_for_line(tx, outlet_id, order_id, item, occurred_at_utc, business_date)?;
     Ok(())
 }
 
@@ -283,7 +303,7 @@ fn write_gap(
     outlet_id: &str,
     order_id: &str,
     item: &OrderItem,
-    reason: GapReason,
+    reason: &str,
     occurred_at_utc: &str,
     business_date: &str,
 ) -> DbResult<()> {
@@ -296,7 +316,7 @@ fn write_gap(
         menu_item_variant_id: item.variant_id.clone(),
         menu_item_name: name,
         quantity: item.quantity,
-        reason: reason.as_str().to_string(),
+        reason: reason.to_string(),
         occurred_at: occurred_at_utc.to_string(),
         business_date: business_date.to_string(),
     };
@@ -319,7 +339,12 @@ fn write_gap(
 /// arithmetic with nothing left to round — unlike recipe resolution, this
 /// path never produces a non-terminating fraction, so ADR-018 §5's "round
 /// once, at the leaf" has nothing to do here.
-#[allow(clippy::too_many_arguments)]
+///
+/// **A dangling `inventory_item_id` writes an `UNRESOLVABLE_REFERENCE` gap,
+/// never a silent skip** (contracts 0.5.3 addendum — corrected in review;
+/// the original version of this function skipped both this case and an
+/// i64-overflow case silently, reasoning that no named reason existed for
+/// either. That inverted why `stock_deduction_gap` exists.)
 fn deduct_modifiers_for_line(
     tx: &Transaction,
     outlet_id: &str,
@@ -327,38 +352,50 @@ fn deduct_modifiers_for_line(
     item: &OrderItem,
     occurred_at_utc: &str,
     business_date: &str,
-    next_seq: &mut i64,
 ) -> DbResult<()> {
     for modifier in repo::list_order_item_modifiers_in_tx(tx, &item.id)? {
         for delta in fetch_modifier_deltas(tx, &modifier.modifier_id)? {
-            // i128 first so an astronomically large (and never realistic —
-            // see ADR-018 §3's safe-integer headroom argument) product is
-            // caught by the `i64::try_from` below rather than wrapping.
-            // There is no `stock_deduction_gap` reason that names "modifier
-            // arithmetic overflow" (the schema's CHECK lists NO_RECIPE /
-            // NO_VARIANT / CYCLE / DEPTH_EXCEEDED / UNKNOWN_UNIT /
-            // DIMENSION_MISMATCH, none of which fit), so this deliberately
-            // skips writing a ledger row rather than mis-labelling the
-            // cause with a reason that does not describe it — unreachable
-            // in practice, since `quantity_micro` and line `quantity` are
-            // both bounded far inside `i64` in any real modifier/cart shape.
+            let Some(inv_item) = fetch_inventory_item(tx, &delta.inventory_item_id)? else {
+                write_gap(
+                    tx,
+                    outlet_id,
+                    order_id,
+                    item,
+                    UNRESOLVABLE_REFERENCE,
+                    occurred_at_utc,
+                    business_date,
+                )?;
+                continue;
+            };
+
+            // `modifier_ingredient_delta.quantity_micro` is bounded to
+            // |value| <= 1e15 by `modifier_ingredient_delta_quantity_is_
+            // bounded` (contracts 0.5.3, sqlite/0021) — a thousand tonnes of
+            // one ingredient per serving is bad data, not a runtime
+            // condition the arithmetic below needs to handle. `item.quantity`
+            // carries no equivalent schema bound, so the checked i128
+            // multiply stays (this is the one residual overflow case
+            // reported alongside this change, at order quantities beyond
+            // roughly 9223 servings on a single line — seven orders of
+            // magnitude past anything a restaurant cart produces, but not
+            // structurally impossible the way the delta side now is).
+            // Reported rather than silently reintroduced: a hit here writes
+            // the same UNRESOLVABLE_REFERENCE-labelled gap as a dangling
+            // reference, the closest available named signal, rather than
+            // going back to silence.
             let Some(product) = i128::from(delta.quantity_micro)
                 .checked_mul(i128::from(item.quantity))
                 .and_then(|p| i64::try_from(p).ok())
             else {
-                continue;
-            };
-
-            let Some(inv_item) = fetch_inventory_item(tx, &delta.inventory_item_id)? else {
-                // Dangling reference (config arrived out of order, or a
-                // partially-synced catalogue) — the same posture the
-                // resolver takes toward a missing `inventory_item`
-                // (`GapReason::UnknownUnit`). No named-reason gap exists for
-                // "modifier delta pointed at a missing item" either, and
-                // for the same containment reason as the overflow branch
-                // above: skip this one delta row's deduction rather than
-                // reporting a cause the schema cannot represent, and let
-                // the rest of the line's deduction proceed normally.
+                write_gap(
+                    tx,
+                    outlet_id,
+                    order_id,
+                    item,
+                    UNRESOLVABLE_REFERENCE,
+                    occurred_at_utc,
+                    business_date,
+                )?;
                 continue;
             };
 
@@ -388,9 +425,7 @@ fn deduct_modifiers_for_line(
                 modifier_name: Some(format!("{}: {}", modifier.group_name, modifier.option_name)),
                 modifier_delta_version: Some(delta.config_version),
             };
-            let id = uuid::Uuid::now_v7().to_string();
-            insert_stock_ledger_entry(tx, &id, *next_seq, &entry)?;
-            *next_seq += 1;
+            insert_stock_ledger_entry_with_next_seq(tx, outlet_id, occurred_at_utc, &entry)?;
         }
     }
     Ok(())

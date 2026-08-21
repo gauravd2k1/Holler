@@ -119,12 +119,11 @@ pub enum GapReason {
     DepthExceeded,
     /// A component row is missing the reference its `component_kind`
     /// requires (defensively — the schema's own `CHECK` should prevent
-    /// this), or names an `inventory_item_id` this database has no row
-    /// for: config arriving out of order, or a partially-synced catalogue.
-    /// Also covers a recipe whose own `output_quantity_micro` is not
+    /// this). Also covers a recipe whose own `output_quantity_micro` is not
     /// positive — the schema's own `CHECK` should prevent this too, but
     /// this resolver never trusts a constraint that may have been written
-    /// by an older schema version.
+    /// by an older schema version. **Not** used for a dangling reference —
+    /// see [`GapReason::UnresolvableReference`] (contracts 0.5.3).
     UnknownUnit,
     /// The order's implicit request (a COUNT quantity — servings sold) does
     /// not match the resolved root recipe's own `output_dimension`. No
@@ -132,6 +131,17 @@ pub enum GapReason {
     /// `inventory_item`, it has no `item_unit_conversion` density row to
     /// convert through) — contracts 0.5.1.
     DimensionMismatch,
+    /// An `ITEM` component names an `inventory_item_id` this database has no
+    /// row for: config arriving out of order, or a partially-synced
+    /// catalogue. Contracts 0.5.3 — added because the prior classification
+    /// (`UnknownUnit`) approximated a dangling reference instead of naming
+    /// it, and "a wrong reason code in an append-only table is as unfixable
+    /// as a wrong quantity" (ADR-018 0.5.3 addendum). Deliberately distinct
+    /// from `NoRecipe`, which is a dangling reference to a `recipe` row
+    /// rather than an `inventory_item` row — the Go/TS enum comment reads
+    /// "a delta OR INGREDIENT referencing an item that is not there",
+    /// naming both siblings this variant now covers on the edge side.
+    UnresolvableReference,
 }
 
 impl GapReason {
@@ -146,6 +156,7 @@ impl GapReason {
             GapReason::DepthExceeded => "DEPTH_EXCEEDED",
             GapReason::UnknownUnit => "UNKNOWN_UNIT",
             GapReason::DimensionMismatch => "DIMENSION_MISMATCH",
+            GapReason::UnresolvableReference => "UNRESOLVABLE_REFERENCE",
         }
     }
 }
@@ -423,7 +434,10 @@ fn walk(
                     return Ok(Some(GapReason::UnknownUnit));
                 };
                 let Some(item) = fetch_item(conn, &item_id)? else {
-                    return Ok(Some(GapReason::UnknownUnit));
+                    // Dangling reference: contracts 0.5.3, UnresolvableReference
+                    // — not UnknownUnit. A wrong reason code in an append-only
+                    // table is as unfixable as a wrong quantity.
+                    return Ok(Some(GapReason::UnresolvableReference));
                 };
                 // contracts 0.5.2: the AUTHOR's recorded unit must still
                 // match what this row actually points at. Never derived

@@ -1105,6 +1105,112 @@ pub struct DeviceCredentialCache {
     pub config_version: i64,
 }
 
+// ------------------------ inventory_item / recipe config (M4, ADR-018) -----
+// CONFIG, cloud->edge (`packages/contracts/sqlite/0015_m4_inventory_config.sql`,
+// `0019_recipe_output.sql`, `0020_recipe_ingredient_dimension.sql`).
+// `inventory_item` and `recipe` are aggregates; the other three are CHILD
+// ROWS that ride inside their parent's config bundle and carry no sync
+// direction of their own — the menu_item_variant/station_printer precedent.
+
+/// A raw material or purchasable unit. `dimension` fixes which canonical
+/// unit every `*_micro` value referencing this item means, and is frozen
+/// once any `recipe_ingredient` references the item (the edge-side trigger
+/// in 0020). `yield_factor_ppm` is DEFERRED to M5 — always the identity
+/// (1_000_000) here; see the column's own doc comment in 0015.
+#[derive(Debug, Clone)]
+pub struct InventoryItem {
+    pub id: String,
+    pub outlet_id: String,
+    pub sku: String,
+    pub name: String,
+    pub category: Option<String>,
+    /// `"MASS" | "VOLUME" | "COUNT"` — [`crate::inventory::Dimension`].
+    pub dimension: String,
+    pub reorder_level_micro: Option<i64>,
+    pub par_level_micro: Option<i64>,
+    pub storage_location: Option<String>,
+    pub is_active: bool,
+    pub yield_factor_ppm: i64,
+    pub config_version: i64,
+}
+
+/// A pack-size or cross-dimension (density) conversion, scoped to one
+/// `inventory_item` — never a global unit, because a packet size or a
+/// density is a property of the substance, not a physical constant
+/// (0015's header). `pack_unit_label` must never collide with the frozen
+/// dimensional map (kg/g/ml/l/piece/dozen/...) — the edge CHECK this
+/// crate's schema carries rejects that at write time.
+#[derive(Debug, Clone)]
+pub struct ItemUnitConversion {
+    pub id: String,
+    pub inventory_item_id: String,
+    pub pack_unit_label: String,
+    /// `"MASS" | "VOLUME" | "COUNT"` — the dimension the pack label is
+    /// measured IN, which need not equal the item's own `dimension`
+    /// (oil bought in kg, cooked in ml).
+    pub source_dimension: String,
+    pub numerator: i64,
+    pub denominator: i64,
+    pub config_version: i64,
+}
+
+/// One recipe per sellable `menu_item_variant`. `output_dimension`/
+/// `output_quantity_micro` (0.5.1) are what a `SUB_RECIPE` reference into
+/// this recipe is measured against — never a dimensionless multiplier; see
+/// `crate::inventory::resolve`'s module doc comment for the formula this
+/// unlocks.
+#[derive(Debug, Clone)]
+pub struct Recipe {
+    pub id: String,
+    pub menu_item_variant_id: String,
+    pub name: String,
+    pub recipe_version: i64,
+    /// `"MASS" | "VOLUME" | "COUNT"`.
+    pub output_dimension: String,
+    pub output_quantity_micro: i64,
+    pub config_version: i64,
+}
+
+/// One component of a recipe — either a raw material or a sub-recipe,
+/// never both (the table's own CHECK). `quantity_dimension` is the unit the
+/// AUTHOR chose when writing this row and must NEVER be derived from the
+/// referenced item's/recipe's own dimension — see 0020's header and
+/// `crate::inventory::resolve`'s module doc comment for why deriving it
+/// makes the drift guard tautological and unable to ever fire.
+#[derive(Debug, Clone)]
+pub struct RecipeIngredient {
+    pub id: String,
+    pub recipe_id: String,
+    /// `"ITEM" | "SUB_RECIPE"`.
+    pub component_kind: String,
+    pub inventory_item_id: Option<String>,
+    pub sub_recipe_id: Option<String>,
+    /// Positive: a recipe consumes. `CHECK (> 0)` at the schema — negative
+    /// deltas are a `modifier_ingredient_delta` concept, not this table's.
+    pub quantity_micro: i64,
+    /// The unit the author actually wrote the quantity in — see the struct
+    /// doc comment. Compared against the referent's live dimension only at
+    /// resolution time, never here.
+    pub quantity_dimension: String,
+    pub yield_factor_ppm: i64,
+    pub sort_order: i64,
+    pub config_version: i64,
+}
+
+/// A modifier's effect on stock — SIGNED: "Extra Paneer" is positive, "No
+/// Onion" is negative. Absence of a row for a given modifier is not zero,
+/// it is "uncosted" — the deduction path must never fabricate one, per the
+/// table's own header (the 0.4.7 `printer_role` precedent applied to
+/// ingredients).
+#[derive(Debug, Clone)]
+pub struct ModifierIngredientDelta {
+    pub id: String,
+    pub menu_item_modifier_id: String,
+    pub inventory_item_id: String,
+    pub quantity_micro: i64,
+    pub config_version: i64,
+}
+
 // -------------------------------------- stock_ledger_entry / gap (M4, T2) --
 // EDGE-AUTHORITATIVE (edge->cloud), ADR-018 §6/§10.1. See
 // `packages/contracts/sqlite/0016_m4_stock_ledger.sql`'s header for the four

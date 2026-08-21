@@ -8,7 +8,7 @@
 
 pub mod auth;
 pub mod crypto;
-mod deduction;
+pub(crate) mod deduction;
 mod error;
 mod invoice;
 pub mod inventory;
@@ -3318,6 +3318,67 @@ mod tests {
         assert_eq!(m.modifier_name.as_deref(), Some("Cheese: Extra Paneer"));
     }
 
+    /// THE RESIDUAL OVERFLOW FINDING (reported per the contracts 0.5.3
+    /// addendum's own invitation: "if you can still construct a case that
+    /// overflows, that is a finding"). `modifier_ingredient_delta
+    /// .quantity_micro` is bounded to <= 1e15 by the 0.5.3 trigger, but
+    /// `order_item.quantity` carries NO equivalent schema bound. At exactly
+    /// the bound (1e15) and a line quantity of 9224 (one past
+    /// i64::MAX / 1e15 ~= 9223.37), the product genuinely overflows `i64` --
+    /// seven orders of magnitude past any real cart, but not structurally
+    /// impossible. This test proves the residual case degrades to a NAMED
+    /// gap (never a panic, never silence) rather than asserting it cannot
+    /// happen.
+    #[test]
+    fn an_order_quantity_beyond_i64_max_over_1e15_degrades_to_a_gap_not_a_panic() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+        let (_, item_id, variant_id) = seed_menu(&db, "outlet-1");
+
+        insert_inventory_item(db.connection(), "inv-overflow", "outlet-1", "Overflow Item", "MASS");
+        insert_modifier_ingredient_delta(
+            db.connection(),
+            "delta-overflow-1",
+            "modifier-1",
+            "inv-overflow",
+            1_000_000_000_000_000, // exactly the 0.5.3 bound, 1e15
+        );
+
+        let order = sample_order("order-overflow-1", "outlet-1", "device-1");
+        let mut item = sample_order_item("order-item-overflow-1", "order-overflow-1", &item_id, 30_000);
+        item.variant_id = Some(variant_id);
+        // i64::MAX / 1e15 ~= 9223.37 -- one past that safe threshold.
+        item.quantity = 9224;
+        let modifier = sample_modifier("mod-sel-overflow-1", "order-item-overflow-1", 3000);
+        db.create_order_with_outbox_and_modifiers(
+            &order,
+            &[item],
+            &[vec![modifier]],
+            &sample_outbox("order-overflow-1"),
+        )
+        .expect("create draft order with modifier");
+
+        let result = db.confirm_order_with_outbox(
+            "order-overflow-1",
+            &order_confirmed_meta("order-overflow-1"),
+        );
+        assert!(
+            result.is_ok(),
+            "an arithmetic edge case must never fail confirm_order or panic: {result:?}"
+        );
+
+        let entries = list_stock_ledger_entries(db.connection(), "outlet-1");
+        assert!(
+            entries.iter().all(|e| e.origin != "MODIFIER_DELTA"),
+            "the overflowing product must not be silently truncated into a wrong ledger row"
+        );
+        let gaps = list_stock_deduction_gaps(db.connection(), "outlet-1");
+        assert!(
+            gaps.iter().any(|g| g.reason == "UNRESOLVABLE_REFERENCE"),
+            "the overflow must still surface as a named gap, not silence"
+        );
+    }
+
     /// FALSIFICATION target for "a modifier with no delta row deducts
     /// nothing": the modifier is selected on the order, but no
     /// `modifier_ingredient_delta` row was ever authored for it. Absence
@@ -3552,6 +3613,249 @@ mod tests {
         );
         assert_eq!(entries[0].quantity_applied_micro, -1_000_000_000); // 250g * 4
         assert_eq!(entries[0].entry_seq, 1);
+    }
+
+    /// FALSIFICATION target for contracts 0.5.3's entry_seq correction: the
+    /// counter must be DURABLE, never derived from `MAX(entry_seq)` over
+    /// surviving rows. ADR-018 §9's retention design requires removing the
+    /// no-delete trigger `stock_ledger_entry` carries today; this test
+    /// simulates that future by dropping the trigger, deleting the row, and
+    /// advancing the durable `stock_ledger_sequence` counter exactly as
+    /// archival would have -- then proves a fresh confirm continues the
+    /// counter rather than reusing a mark already issued once.
+    #[test]
+    fn entry_seq_does_not_rewind_when_rows_are_archived_and_the_counter_stays_ahead() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+        let (_, item_id, variant_id) = seed_menu(&db, "outlet-1");
+        insert_inventory_item(db.connection(), "inv-flour", "outlet-1", "Flour", "MASS");
+        insert_one_serving_recipe_with_item_ingredient(
+            db.connection(),
+            "recipe-1",
+            &variant_id,
+            "inv-flour",
+            250_000_000,
+            "MASS",
+        );
+
+        let order = sample_order("order-archival-1", "outlet-1", "device-1");
+        let mut item =
+            sample_order_item("order-item-archival-1", "order-archival-1", &item_id, 30_000);
+        item.variant_id = Some(variant_id.clone());
+        item.quantity = 1;
+        db.create_order_with_outbox(&order, &[item], &sample_outbox("order-archival-1"))
+            .expect("create draft order");
+        db.confirm_order_with_outbox(
+            "order-archival-1",
+            &order_confirmed_meta("order-archival-1"),
+        )
+        .expect("confirm order");
+
+        let before = list_stock_ledger_entries(db.connection(), "outlet-1");
+        assert_eq!(before.len(), 1, "precondition: the row landed");
+        assert_eq!(before[0].entry_seq, 1);
+
+        // Simulate archival: the row is physically deleted (bypassing the
+        // append-only trigger -- real archival will have to replace this
+        // trigger too, which is the exact tension the 0.5.3 addendum
+        // documents), and the durable counter is advanced as if 99 more
+        // entries had existed and been archived after it.
+        db.connection()
+            .execute("DROP TRIGGER stock_ledger_entry_is_append_only_no_delete", [])
+            .expect("drop the append-only trigger for this archival simulation");
+        db.connection()
+            .execute("DELETE FROM stock_ledger_entry WHERE outlet_id = 'outlet-1'", [])
+            .expect("delete the archived row");
+        db.connection()
+            .execute(
+                "UPDATE stock_ledger_sequence SET last_value = 100 WHERE outlet_id = 'outlet-1'",
+                [],
+            )
+            .expect("advance the durable counter as archival would have");
+        assert!(
+            list_stock_ledger_entries(db.connection(), "outlet-1").is_empty(),
+            "precondition: the archived row is really gone"
+        );
+
+        let order2 = sample_order("order-archival-2", "outlet-1", "device-1");
+        let mut item2 =
+            sample_order_item("order-item-archival-2", "order-archival-2", &item_id, 30_000);
+        item2.variant_id = Some(variant_id);
+        item2.quantity = 1;
+        db.create_order_with_outbox(
+            &order2,
+            &[item2],
+            &NewOutboxEntry {
+                id: "outbox-archival-2".to_string(),
+                ..sample_outbox("order-archival-2")
+            },
+        )
+        .expect("create second draft order");
+        db.confirm_order_with_outbox(
+            "order-archival-2",
+            &order_confirmed_meta("order-archival-2"),
+        )
+        .expect("confirm second order");
+
+        let after = list_stock_ledger_entries(db.connection(), "outlet-1");
+        assert_eq!(after.len(), 1);
+        assert_eq!(
+            after[0].entry_seq, 101,
+            "the durable counter must continue past 100, not rewind to a mark \
+             already used before the simulated archival (MAX(entry_seq)+1 over \
+             the now-empty table would wrongly give 1 again)"
+        );
+    }
+
+    /// FALSIFICATION target for contracts 0.5.3's `UNRESOLVABLE_REFERENCE`
+    /// correction: a `modifier_ingredient_delta.inventory_item_id` pointing
+    /// at an `inventory_item` row that is not there must write a NAMED gap,
+    /// never a silent skip -- and the sale must still complete.
+    #[test]
+    fn a_dangling_modifier_delta_reference_writes_an_unresolvable_reference_gap_and_completes_the_sale(
+    ) {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+        let (_, item_id, variant_id) = seed_menu(&db, "outlet-1"); // seeds modifier-1
+
+        db.connection()
+            .execute("PRAGMA foreign_keys = OFF", [])
+            .expect("disable foreign_keys for the dangling-fixture insert");
+        insert_modifier_ingredient_delta(
+            db.connection(),
+            "delta-dangling-1",
+            "modifier-1",
+            "inv-does-not-exist",
+            50_000_000,
+        );
+        db.connection()
+            .execute("PRAGMA foreign_keys = ON", [])
+            .expect("restore foreign_keys");
+
+        let order = sample_order("order-dangling-mod-1", "outlet-1", "device-1");
+        let mut item = sample_order_item(
+            "order-item-dangling-mod-1",
+            "order-dangling-mod-1",
+            &item_id,
+            30_000,
+        );
+        item.variant_id = Some(variant_id);
+        item.quantity = 1;
+        let modifier = sample_modifier("mod-sel-dangling-1", "order-item-dangling-mod-1", 3000);
+        db.create_order_with_outbox_and_modifiers(
+            &order,
+            &[item],
+            &[vec![modifier]],
+            &sample_outbox("order-dangling-mod-1"),
+        )
+        .expect("create draft order with modifier");
+
+        let result = db.confirm_order_with_outbox(
+            "order-dangling-mod-1",
+            &order_confirmed_meta("order-dangling-mod-1"),
+        );
+        assert!(
+            result.is_ok(),
+            "a dangling modifier reference must never fail confirm_order: {result:?}"
+        );
+        let stored = db
+            .get_order("order-dangling-mod-1")
+            .unwrap()
+            .expect("order exists");
+        assert_eq!(stored.status, "CONFIRMED");
+
+        let gaps = list_stock_deduction_gaps(db.connection(), "outlet-1");
+        let unresolved: Vec<&GapRow> =
+            gaps.iter().filter(|g| g.reason == "UNRESOLVABLE_REFERENCE").collect();
+        assert_eq!(
+            unresolved.len(),
+            1,
+            "the dangling modifier delta must produce a NAMED gap, never silence"
+        );
+
+        let entries = list_stock_ledger_entries(db.connection(), "outlet-1");
+        assert!(
+            entries.iter().all(|e| e.origin != "MODIFIER_DELTA"),
+            "nothing resolved for the dangling delta, so no MODIFIER_DELTA ledger entry may exist"
+        );
+    }
+
+    /// FALSIFICATION target for the typed-`occurred_at` correction: a
+    /// malformed `confirmed_at` must fail the WHOLE confirm (a genuine
+    /// caller defect propagating as a real `DbError`), never silently
+    /// default to `Utc::now()` and stamp a ledger row dated by when it was
+    /// PROCESSED rather than when the sale actually happened.
+    #[test]
+    fn a_malformed_confirmed_at_fails_the_whole_confirm_rather_than_defaulting_to_now() {
+        let mut db = Db::open_in_memory_for_tests().expect("open");
+        seed_outlet_and_device(&db, "outlet-1", "device-1");
+        let (_, item_id, variant_id) = seed_menu(&db, "outlet-1");
+        insert_inventory_item(db.connection(), "inv-flour", "outlet-1", "Flour", "MASS");
+        insert_one_serving_recipe_with_item_ingredient(
+            db.connection(),
+            "recipe-1",
+            &variant_id,
+            "inv-flour",
+            250_000_000,
+            "MASS",
+        );
+
+        let order = sample_order("order-bad-ts-1", "outlet-1", "device-1");
+        let mut item = sample_order_item("order-item-bad-ts-1", "order-bad-ts-1", &item_id, 30_000);
+        item.variant_id = Some(variant_id);
+        item.quantity = 1;
+        db.create_order_with_outbox(&order, &[item], &sample_outbox("order-bad-ts-1"))
+            .expect("create draft order");
+
+        let bad_meta = OrderConfirmedMeta {
+            outbox_id: "outbox-confirm-bad-ts".to_string(),
+            occurred_at: "2026-08-08T12:00:00Z".to_string(),
+            confirmed_at: "not-a-timestamp".to_string(),
+        };
+        let result = db.confirm_order_with_outbox("order-bad-ts-1", &bad_meta);
+        assert!(
+            result.is_err(),
+            "a malformed confirmed_at must be REJECTED, not silently defaulted to Utc::now()"
+        );
+
+        let stored = db.get_order("order-bad-ts-1").unwrap().expect("order exists");
+        assert_eq!(
+            stored.status, "DRAFT",
+            "the whole confirm, including the order's own status stamp, must roll back"
+        );
+        assert!(
+            list_stock_ledger_entries(db.connection(), "outlet-1").is_empty(),
+            "no ledger row may exist for a confirm that never durably happened"
+        );
+    }
+
+    /// FALSIFICATION target for the structural timezone fix: an unparseable
+    /// `outlet.timezone` must be REJECTED at `upsert_outlet` — the real
+    /// config-apply boundary — never silently written and left to be
+    /// discovered later where `business_date` is computed.
+    #[test]
+    fn upsert_outlet_rejects_an_unparseable_timezone_and_writes_nothing() {
+        let db = Db::open_in_memory_for_tests().expect("open");
+        let bad_outlet = model::Outlet {
+            id: "outlet-bad-tz".to_string(),
+            brand_id: "brand-1".to_string(),
+            name: "Bad TZ Outlet".to_string(),
+            timezone: "Not/AZone".to_string(),
+            config_version: 1,
+            created_at: "2026-08-21T00:00:00Z".to_string(),
+            updated_at: "2026-08-21T00:00:00Z".to_string(),
+        };
+        let result = repo::upsert_outlet(db.connection(), &bad_outlet);
+        assert!(
+            matches!(result, Err(DbError::InvalidInput(_))),
+            "an unparseable IANA timezone must be a typed, propagated error: {result:?}"
+        );
+
+        let stored = repo::get_outlet(db.connection(), "outlet-bad-tz").expect("read outlet");
+        assert!(
+            stored.is_none(),
+            "a rejected outlet write must leave nothing behind, not a half-written row"
+        );
     }
 
     /// The regression this crate exists to fix (task T14, docs/retro.md P0):
