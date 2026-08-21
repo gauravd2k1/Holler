@@ -135,6 +135,7 @@ Both are hardware gates. **Parked 2026-08-20, revisit ~2 September 2026.** A fre
 Inspect repo first, output a concise plan, then edit real files. If a task touches >15 files, stop and present the plan instead of proceeding. Report per milestone: Implemented / Verified / Performance / Remaining / Next.
 
 ## Commit rules
+- **Stage only the paths you claim to have changed.** `git add -A` and `git add .` sweep in whatever else is loose — a commit once swallowed fourteen unrelated untracked files, and the amend that removed them staged deletions of files that were already tracked. Name the paths, then check `git show --stat` before you move on. This rule came from the worktree data-loss incident and was written for builders; it applies to the orchestrator identically.
 - Always commit with `git commit -s`. This appends a `Signed-off-by:` trailer taken from the repo's `user.name`/`user.email`.
 - Never add a `Co-Authored-By: Claude ...` trailer or a "Generated with Claude Code" footer. These were stripped from history and are disabled via `includeCoAuthoredBy: false`; sign-off replaces them rather than sitting alongside them.
 
