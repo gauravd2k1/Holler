@@ -1,7 +1,7 @@
 {
   "name": "@holler/contracts",
   "private": true,
-  "version": "0.5.6",
+  "version": "0.5.7",
   "description": "Frozen (Milestone 0.5) source of truth for cross-boundary shapes. Read-only to builder agents — see ADR-008.",
   "type": "module",
   "main": "src/index.ts",

@@ -58,8 +58,13 @@ type MenuItemVariant struct {
 	MenuItemID      string `json:"menu_item_id"`
 	Name            string `json:"name"`
 	PriceDeltaPaise int64  `json:"price_delta_paise"`
-	ConfigVersion   int    `json:"config_version"`
-	SchemaVersion   int    `json:"schema_version"`
+	// 0.5.7. The column landed at 0.5.0 (sqlite/0014, ADR-018 §2.1) and the
+	// wire types never got it -- the additive-consumer-list rule's failure
+	// mode, predating the rule. Without it a default variant cannot sync, and
+	// order lines at a cloud-synced outlet cannot stamp one.
+	IsDefault     bool `json:"is_default"`
+	ConfigVersion int  `json:"config_version"`
+	SchemaVersion int  `json:"schema_version"`
 }
 
 type MenuItemModifier struct {

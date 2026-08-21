@@ -71,6 +71,8 @@ export const MenuItemVariantSchema = z.object({
   menu_item_id: z.string().uuid(),
   name: z.string(),
   price_delta_paise: z.number().int(),
+  // 0.5.7 — landed at 0.5.0 in the store (sqlite/0014) and never on the wire.
+  is_default: z.boolean(),
   config_version: z.number().int(),
   schema_version: z.literal(1),
 });

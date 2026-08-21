@@ -128,6 +128,48 @@ pub(crate) fn get_outlet_business_date_config(
     Ok((timezone, day_start_time))
 }
 
+/// Applies `outlet.day_start_time` from a config bundle (ADR-018 §9.2,
+/// M4 T4b). This is the config-apply write path the field's own type
+/// ([`crate::deduction::business_date::DayStartTime`]) documented as
+/// missing — closing it here rather than leaving the residual gap that
+/// doc comment named.
+///
+/// **Validates before writing anything**, the same posture [`upsert_outlet`]
+/// already takes for `timezone`: an unparseable `HH:MM` is rejected as a
+/// whole-bundle-apply defect (the caller's transaction rolls back), never
+/// silently substituted and never absorbed later where `business_date` is
+/// computed. Only `day_start_time` and `config_version` are touched — every
+/// other outlet column is left alone, since the config-bundle apply path
+/// this function serves carries no other outlet field today.
+pub fn upsert_outlet_day_start_time(
+    conn: &Connection,
+    outlet_id: &str,
+    day_start_time: &str,
+    config_version: i64,
+) -> DbResult<()> {
+    crate::deduction::business_date::DayStartTime::parse(day_start_time)?;
+    conn.execute(
+        "UPDATE outlet SET day_start_time = ?2, config_version = ?3
+         WHERE id = ?1 AND ?3 >= config_version",
+        params![outlet_id, day_start_time, config_version],
+    )?;
+    Ok(())
+}
+
+/// Raw (unvalidated) read of `outlet.day_start_time`, for callers outside
+/// this crate that just want to display or assert the stored value —
+/// `get_outlet_business_date_config` above is the validated, `pub(crate)`
+/// equivalent used on the money/stock path.
+pub fn get_outlet_day_start_time(conn: &Connection, outlet_id: &str) -> DbResult<Option<String>> {
+    conn.query_row(
+        "SELECT day_start_time FROM outlet WHERE id = ?1",
+        params![outlet_id],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
 // ----------------------------------------------------------------- device --
 
 pub fn upsert_device(conn: &Connection, d: &Device) -> DbResult<()> {
@@ -656,6 +698,126 @@ pub fn upsert_modifier_ingredient_delta(
         ],
     )?;
     Ok(())
+}
+
+/// Read-by-id getters for the five M4 inventory config shapes, added for
+/// M4 T4b (the config-bundle sync apply path needs somewhere to prove a row
+/// landed, from `edge/sync`, a separate crate — `crate::inventory::resolve`
+/// queries these tables directly and did not need one before).
+pub fn get_inventory_item(conn: &Connection, id: &str) -> DbResult<Option<InventoryItem>> {
+    conn.query_row(
+        "SELECT id, outlet_id, sku, name, category, dimension, reorder_level_micro,
+                par_level_micro, storage_location, is_active, yield_factor_ppm, config_version
+         FROM inventory_item WHERE id = ?1",
+        params![id],
+        |row| {
+            Ok(InventoryItem {
+                id: row.get(0)?,
+                outlet_id: row.get(1)?,
+                sku: row.get(2)?,
+                name: row.get(3)?,
+                category: row.get(4)?,
+                dimension: row.get(5)?,
+                reorder_level_micro: row.get(6)?,
+                par_level_micro: row.get(7)?,
+                storage_location: row.get(8)?,
+                is_active: i64_to_bool(row.get(9)?),
+                yield_factor_ppm: row.get(10)?,
+                config_version: row.get(11)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+pub fn get_item_unit_conversion(conn: &Connection, id: &str) -> DbResult<Option<ItemUnitConversion>> {
+    conn.query_row(
+        "SELECT id, inventory_item_id, pack_unit_label, source_dimension, numerator, denominator, config_version
+         FROM item_unit_conversion WHERE id = ?1",
+        params![id],
+        |row| {
+            Ok(ItemUnitConversion {
+                id: row.get(0)?,
+                inventory_item_id: row.get(1)?,
+                pack_unit_label: row.get(2)?,
+                source_dimension: row.get(3)?,
+                numerator: row.get(4)?,
+                denominator: row.get(5)?,
+                config_version: row.get(6)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+pub fn get_recipe(conn: &Connection, id: &str) -> DbResult<Option<Recipe>> {
+    conn.query_row(
+        "SELECT id, menu_item_variant_id, name, recipe_version, output_dimension, output_quantity_micro, config_version
+         FROM recipe WHERE id = ?1",
+        params![id],
+        |row| {
+            Ok(Recipe {
+                id: row.get(0)?,
+                menu_item_variant_id: row.get(1)?,
+                name: row.get(2)?,
+                recipe_version: row.get(3)?,
+                output_dimension: row.get(4)?,
+                output_quantity_micro: row.get(5)?,
+                config_version: row.get(6)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+pub fn get_recipe_ingredient(conn: &Connection, id: &str) -> DbResult<Option<RecipeIngredient>> {
+    conn.query_row(
+        "SELECT id, recipe_id, component_kind, inventory_item_id, sub_recipe_id, quantity_micro,
+                quantity_dimension, yield_factor_ppm, sort_order, config_version
+         FROM recipe_ingredient WHERE id = ?1",
+        params![id],
+        |row| {
+            Ok(RecipeIngredient {
+                id: row.get(0)?,
+                recipe_id: row.get(1)?,
+                component_kind: row.get(2)?,
+                inventory_item_id: row.get(3)?,
+                sub_recipe_id: row.get(4)?,
+                quantity_micro: row.get(5)?,
+                quantity_dimension: row.get(6)?,
+                yield_factor_ppm: row.get(7)?,
+                sort_order: row.get(8)?,
+                config_version: row.get(9)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+pub fn get_modifier_ingredient_delta(
+    conn: &Connection,
+    id: &str,
+) -> DbResult<Option<ModifierIngredientDelta>> {
+    conn.query_row(
+        "SELECT id, menu_item_modifier_id, inventory_item_id, quantity_micro, config_version
+         FROM modifier_ingredient_delta WHERE id = ?1",
+        params![id],
+        |row| {
+            Ok(ModifierIngredientDelta {
+                id: row.get(0)?,
+                menu_item_modifier_id: row.get(1)?,
+                inventory_item_id: row.get(2)?,
+                quantity_micro: row.get(3)?,
+                config_version: row.get(4)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
 }
 
 // ------------------------------------------------------------- "order" -----
@@ -2403,6 +2565,37 @@ pub fn replace_printer_roles(
         )?;
     }
     tx.commit()?;
+    Ok(())
+}
+
+/// Per-row upsert for one `printer_role`, keyed on its actual primary key
+/// `(printer_id, role)` — M4 T4b's config-bundle apply path.
+///
+/// Deliberately NOT [`replace_printer_roles`]: that helper is DELETE-then-
+/// INSERT scoped to one `printer_id`, correct for a caller that supplies a
+/// printer's FULL current role set in one call (an admin "PUT this
+/// printer's roles" action). The cloud sync bundle instead ships a
+/// `since_version`-filtered DELTA of individual `printer_role` rows
+/// (`backend/internal/kitchen/repository.go::PrinterRolesSince` filters on
+/// `pr.config_version > sinceVersion`, per-row, not per-printer) — the same
+/// shape `restaurant_table`/`menu_item` already sync in. Calling
+/// `replace_printer_roles` against a delta would DELETE every role for a
+/// printer that the delta happens to mention and re-insert only the rows
+/// that changed, silently dropping any of that printer's older, unchanged
+/// roles. A plain per-row upsert, config_version-gated like every other
+/// delta-synced config row, is the correct shape here; role REMOVAL is not
+/// representable by this delta model, which matches every other config
+/// family this bundle already carries (removal is not signalled by absence
+/// for any of them).
+pub fn upsert_printer_role(conn: &Connection, r: &PrinterRole) -> DbResult<()> {
+    conn.execute(
+        "INSERT INTO printer_role (printer_id, role, config_version)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT(printer_id, role) DO UPDATE SET
+            config_version = excluded.config_version
+         WHERE excluded.config_version >= printer_role.config_version",
+        params![r.printer_id, r.role, r.config_version],
+    )?;
     Ok(())
 }
 

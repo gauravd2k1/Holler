@@ -68,19 +68,22 @@ impl OutletTimezone {
 
 /// A validated `outlet.day_start_time` (`HH:MM`, `00`–`23` / `00`–`59`).
 ///
-/// **The residual gap, stated rather than hidden.** Unlike `timezone`,
-/// `day_start_time` has no dedicated write path in this crate today —
-/// `repo::upsert_outlet`'s column list does not include it (added later,
-/// 0013, and never threaded through the sync-apply path this task owns),
-/// so the only writer in practice is the migration's own `DEFAULT '00:00'`.
-/// Validating "at config apply" is therefore not yet possible for this
-/// field the way it is for `timezone`; [`DayStartTime::parse`] is called
-/// defensively at the one place this crate currently reads the column
-/// (`repo::get_outlet_business_date_config`), and a value that fails to
-/// parse propagates as a real `DbError` — never a silent substitution —
-/// rather than being absorbed into a fabricated offset. Wiring a real
-/// config-apply validation path for this column is out of this task's
-/// scope and is reported as an open risk.
+/// **The gap this comment used to name is closed (M4 T4b).** `day_start_time`
+/// now has a dedicated config-apply write path,
+/// [`repo::upsert_outlet_day_start_time`](crate::repo::upsert_outlet_day_start_time),
+/// which validates through [`DayStartTime::parse`] before writing anything —
+/// the same posture `repo::upsert_outlet` already takes for `timezone` — so
+/// an unparseable value rejects the whole bundle apply rather than landing
+/// as the migration's own `DEFAULT '00:00'` forever. [`DayStartTime::parse`]
+/// is still called defensively at the one place this crate reads the column
+/// for computation (`repo::get_outlet_business_date_config`), and a value
+/// that fails to parse there propagates as a real `DbError` — never a
+/// silent substitution — rather than being absorbed into a fabricated
+/// offset. Two paths validate the same rule for two different reasons: the
+/// write path rejects a bad bundle loudly at apply time; the read path is a
+/// second, independent check that never trusts "it must be valid, it was
+/// validated on the way in" from a different transaction on a different
+/// day.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct DayStartTime(Duration);
 
