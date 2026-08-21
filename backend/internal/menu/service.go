@@ -86,6 +86,7 @@ type NewItemInput struct {
 type NewVariantInput struct {
 	Name            string
 	PriceDeltaPaise int64
+	IsDefault       bool
 }
 
 type NewModifierInput struct {
@@ -101,6 +102,26 @@ func (s *Service) ListItems(ctx context.Context, outletID string) ([]Item, error
 		return nil, fmt.Errorf("%w: outlet_id is required", httpx.ErrInvalidInput)
 	}
 	return s.repo.ListItems(ctx, outletID)
+}
+
+// ListVariantsSince and ListModifiersSince are this context's
+// since_version-filtered sync exports (M4 T4 delivery-fix follow-up):
+// menu_item_variant and menu_item_modifier never reached GET /sync/config
+// before this, so a cloud-synced outlet had every recipe pointing at variant
+// rows it did not have — recipe.menu_item_variant_id is NOT NULL, so every
+// order line failed to stamp a variant and every sale gapped NO_VARIANT.
+func (s *Service) ListVariantsSince(ctx context.Context, outletID string, sinceVersion int) ([]Variant, error) {
+	if strings.TrimSpace(outletID) == "" {
+		return nil, fmt.Errorf("%w: outlet_id is required", httpx.ErrInvalidInput)
+	}
+	return s.repo.ListVariantsSince(ctx, outletID, sinceVersion)
+}
+
+func (s *Service) ListModifiersSince(ctx context.Context, outletID string, sinceVersion int) ([]Modifier, error) {
+	if strings.TrimSpace(outletID) == "" {
+		return nil, fmt.Errorf("%w: outlet_id is required", httpx.ErrInvalidInput)
+	}
+	return s.repo.ListModifiersSince(ctx, outletID, sinceVersion)
 }
 
 func (s *Service) CreateItem(ctx context.Context, in NewItemInput) (Item, []Variant, []Modifier, error) {
@@ -135,6 +156,7 @@ func (s *Service) CreateItem(ctx context.Context, in NewItemInput) (Item, []Vari
 			MenuItemID:      item.ID,
 			Name:            v.Name,
 			PriceDeltaPaise: v.PriceDeltaPaise,
+			IsDefault:       v.IsDefault,
 		}
 	}
 

@@ -34,6 +34,16 @@ type Repository interface {
 
 	InsertVariant(ctx context.Context, tx pgx.Tx, v Variant) error
 	InsertModifier(ctx context.Context, tx pgx.Tx, m Modifier) error
+
+	// ListVariantsSince and ListModifiersSince are this context's
+	// since_version-filtered sync exports, the shape
+	// backend/internal/kitchen exports station_printers with
+	// (StationPrintersSince): joined through menu_item to outletID,
+	// filtered at the DB rather than in the caller (M4 T4 delivery-fix
+	// follow-up — variants and modifiers never reached GET /sync/config
+	// before this).
+	ListVariantsSince(ctx context.Context, outletID string, sinceVersion int) ([]Variant, error)
+	ListModifiersSince(ctx context.Context, outletID string, sinceVersion int) ([]Modifier, error)
 }
 
 type pgRepository struct {
@@ -124,7 +134,7 @@ func (r *pgRepository) CategoryExists(ctx context.Context, outletID, categoryID 
 
 func (r *pgRepository) ListItems(ctx context.Context, outletID string) ([]Item, error) {
 	rows, err := r.pool.Query(ctx,
-		`SELECT id, outlet_id, category_id, name, base_price_paise, is_available, config_version
+		`SELECT id, outlet_id, category_id, name, base_price_paise, is_available, tax_profile_id, hsn_sac, config_version
 		 FROM menu_item WHERE outlet_id = $1 ORDER BY name`,
 		outletID,
 	)
@@ -136,7 +146,7 @@ func (r *pgRepository) ListItems(ctx context.Context, outletID string) ([]Item, 
 	var out []Item
 	for rows.Next() {
 		var i Item
-		if err := rows.Scan(&i.ID, &i.OutletID, &i.CategoryID, &i.Name, &i.BasePricePaise, &i.IsAvailable, &i.ConfigVersion); err != nil {
+		if err := rows.Scan(&i.ID, &i.OutletID, &i.CategoryID, &i.Name, &i.BasePricePaise, &i.IsAvailable, &i.TaxProfileID, &i.HSNSAC, &i.ConfigVersion); err != nil {
 			return nil, fmt.Errorf("menu: scanning item: %w", err)
 		}
 		out = append(out, i)
@@ -146,9 +156,9 @@ func (r *pgRepository) ListItems(ctx context.Context, outletID string) ([]Item, 
 
 func (r *pgRepository) InsertItem(ctx context.Context, tx pgx.Tx, i Item) error {
 	_, err := tx.Exec(ctx,
-		`INSERT INTO menu_item (id, outlet_id, category_id, name, base_price_paise, is_available, config_version)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		i.ID, i.OutletID, i.CategoryID, i.Name, i.BasePricePaise, i.IsAvailable, i.ConfigVersion,
+		`INSERT INTO menu_item (id, outlet_id, category_id, name, base_price_paise, is_available, tax_profile_id, hsn_sac, config_version)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		i.ID, i.OutletID, i.CategoryID, i.Name, i.BasePricePaise, i.IsAvailable, i.TaxProfileID, i.HSNSAC, i.ConfigVersion,
 	)
 	if err != nil {
 		return fmt.Errorf("menu: inserting item: %w", err)
@@ -159,10 +169,10 @@ func (r *pgRepository) InsertItem(ctx context.Context, tx pgx.Tx, i Item) error 
 func (r *pgRepository) GetItem(ctx context.Context, outletID, itemID string) (Item, error) {
 	var i Item
 	err := r.pool.QueryRow(ctx,
-		`SELECT id, outlet_id, category_id, name, base_price_paise, is_available, config_version
+		`SELECT id, outlet_id, category_id, name, base_price_paise, is_available, tax_profile_id, hsn_sac, config_version
 		 FROM menu_item WHERE id = $1 AND outlet_id = $2`,
 		itemID, outletID,
-	).Scan(&i.ID, &i.OutletID, &i.CategoryID, &i.Name, &i.BasePricePaise, &i.IsAvailable, &i.ConfigVersion)
+	).Scan(&i.ID, &i.OutletID, &i.CategoryID, &i.Name, &i.BasePricePaise, &i.IsAvailable, &i.TaxProfileID, &i.HSNSAC, &i.ConfigVersion)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Item{}, fmt.Errorf("%w: menu item %s", httpx.ErrNotFound, itemID)
 	}
@@ -188,9 +198,9 @@ func (r *pgRepository) UpdateItemAvailability(ctx context.Context, tx pgx.Tx, it
 
 func (r *pgRepository) InsertVariant(ctx context.Context, tx pgx.Tx, v Variant) error {
 	_, err := tx.Exec(ctx,
-		`INSERT INTO menu_item_variant (id, menu_item_id, name, price_delta_paise, config_version)
-		 VALUES ($1, $2, $3, $4, $5)`,
-		v.ID, v.MenuItemID, v.Name, v.PriceDeltaPaise, v.ConfigVersion,
+		`INSERT INTO menu_item_variant (id, menu_item_id, name, price_delta_paise, is_default, config_version)
+		 VALUES ($1, $2, $3, $4, $5, $6)`,
+		v.ID, v.MenuItemID, v.Name, v.PriceDeltaPaise, v.IsDefault, v.ConfigVersion,
 	)
 	if err != nil {
 		return fmt.Errorf("menu: inserting variant: %w", err)
@@ -209,4 +219,54 @@ func (r *pgRepository) InsertModifier(ctx context.Context, tx pgx.Tx, m Modifier
 		return fmt.Errorf("menu: inserting modifier: %w", err)
 	}
 	return nil
+}
+
+func (r *pgRepository) ListVariantsSince(ctx context.Context, outletID string, sinceVersion int) ([]Variant, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT v.id, v.menu_item_id, v.name, v.price_delta_paise, v.is_default, v.config_version
+		 FROM menu_item_variant v
+		 JOIN menu_item mi ON mi.id = v.menu_item_id
+		 WHERE mi.outlet_id = $1 AND v.config_version > $2
+		 ORDER BY v.config_version`,
+		outletID, sinceVersion,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("menu: listing variants since %d: %w", sinceVersion, err)
+	}
+	defer rows.Close()
+
+	var out []Variant
+	for rows.Next() {
+		var v Variant
+		if err := rows.Scan(&v.ID, &v.MenuItemID, &v.Name, &v.PriceDeltaPaise, &v.IsDefault, &v.ConfigVersion); err != nil {
+			return nil, fmt.Errorf("menu: scanning variant: %w", err)
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+func (r *pgRepository) ListModifiersSince(ctx context.Context, outletID string, sinceVersion int) ([]Modifier, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT m.id, m.menu_item_id, m.group_name, m.option_name, m.price_delta_paise, m.min_selection, m.max_selection, m.config_version
+		 FROM menu_item_modifier m
+		 JOIN menu_item mi ON mi.id = m.menu_item_id
+		 WHERE mi.outlet_id = $1 AND m.config_version > $2
+		 ORDER BY m.config_version`,
+		outletID, sinceVersion,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("menu: listing modifiers since %d: %w", sinceVersion, err)
+	}
+	defer rows.Close()
+
+	var out []Modifier
+	for rows.Next() {
+		var m Modifier
+		if err := rows.Scan(&m.ID, &m.MenuItemID, &m.GroupName, &m.OptionName, &m.PriceDeltaPaise, &m.MinSelection, &m.MaxSelection, &m.ConfigVersion); err != nil {
+			return nil, fmt.Errorf("menu: scanning modifier: %w", err)
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
 }

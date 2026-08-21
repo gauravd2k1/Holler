@@ -416,3 +416,93 @@ func ledgerEnvelope(recordID, tenantID, outletID string, version int) contracts.
 		Version:       version, SyncStatus: contracts.SyncStatusPending,
 	}
 }
+
+// TestCreateRecipe_DepthExceededIsRejected covers the other half of ADR-018
+// §7's cycle guard — bounded depth, not just cycles — flagged as an open
+// risk (no dedicated test) in the M4 T4 report and closed here.
+//
+// Builds a linear chain R1 -> R2 -> ... -> R9 (nine recipes, eight
+// sub-recipe links, so R9 sits at depth 9 below R1), then tries to create a
+// brand-new recipe referencing R1 as a sub-recipe. Reachable-from-R1 includes
+// R9 at depth 9, which exceeds MaxRecipeDepth (8), so the write must be
+// rejected — never silently accepted into a graph the edge's own resolver
+// would then have to walk nine levels deep inside confirm_order's
+// transaction.
+func TestCreateRecipe_DepthExceededIsRejected(t *testing.T) {
+	pool := setupPool(t)
+	ctx := context.Background()
+	svc := inventory.NewService(inventory.NewRepository(pool))
+	fx := newFixture(t, pool, "Depth Exceeded")
+
+	menuSvc := menu.NewService(menu.NewRepository(pool))
+	menuCtx := menu.WithPrincipal(ctx, auth.NewPrincipal(auth.AuthenticatedPrincipal{
+		UserID: "principal-user", TenantID: fx.tenantID, OutletID: fx.outletID,
+		Permissions: []auth.Permission{auth.PermissionMenuManage},
+	}))
+	category, err := menuSvc.CreateCategory(menuCtx, menu.NewCategoryInput{OutletID: fx.outletID, Name: "Depth Chain", SortOrder: 3})
+	if err != nil {
+		t.Fatalf("CreateCategory: %v", err)
+	}
+
+	const chainLength = 9 // depths 1..9 below the proposed reference; 9 > MaxRecipeDepth(8)
+	variantIDs := make([]string, chainLength)
+	for i := 0; i < chainLength; i++ {
+		item, variants, _, err := menuSvc.CreateItem(menuCtx, menu.NewItemInput{
+			OutletID: fx.outletID, CategoryID: category.ID, Name: "Chain Dish", BasePricePaise: 1,
+			Variants: []menu.NewVariantInput{{Name: "Regular"}},
+		})
+		if err != nil || len(variants) != 1 {
+			t.Fatalf("CreateItem chain link %d: item=%+v variants=%d err=%v", i, item, len(variants), err)
+		}
+		variantIDs[i] = variants[0].ID
+	}
+
+	recipeIDs := make([]string, chainLength)
+	for i := chainLength - 1; i >= 0; i-- {
+		in := inventory.NewRecipeInput{
+			ID: newULID(), MenuItemVariantID: variantIDs[i], Name: "Chain Link",
+			OutputDimension: contracts.DimensionCount, OutputQuantityMicro: 1_000_000,
+		}
+		if i < chainLength-1 {
+			nextID := recipeIDs[i+1]
+			in.Ingredients = []inventory.NewRecipeIngredientInput{
+				{ID: newULID(), ComponentKind: contracts.RecipeComponentKindSubRecipe, SubRecipeID: &nextID,
+					QuantityMicro: 1_000_000, QuantityDimension: contracts.DimensionCount},
+			}
+		}
+		recipe, _, err := svc.CreateRecipe(ctx, fx.tenantID, in)
+		if err != nil {
+			t.Fatalf("CreateRecipe chain link %d: %v", i, err)
+		}
+		recipeIDs[i] = recipe.ID
+	}
+	// Assert the chain actually persisted the full length before asserting
+	// anything about the depth guard — a short chain would make the
+	// rejection below pass for the wrong reason (or not fire at all).
+	if len(recipeIDs) != chainLength || recipeIDs[chainLength-1] == "" {
+		t.Fatalf("recipe chain did not persist as expected: %v", recipeIDs)
+	}
+
+	// A brand-new recipe on its own variant, referencing R1 (recipeIDs[0])
+	// as a sub-recipe: reachable-from-R1 bottoms out at R9, depth 9.
+	rootItem, rootVariants, _, err := menuSvc.CreateItem(menuCtx, menu.NewItemInput{
+		OutletID: fx.outletID, CategoryID: category.ID, Name: "Depth Probe Root", BasePricePaise: 1,
+		Variants: []menu.NewVariantInput{{Name: "Regular"}},
+	})
+	if err != nil || len(rootVariants) != 1 {
+		t.Fatalf("CreateItem root: item=%+v variants=%d err=%v", rootItem, len(rootVariants), err)
+	}
+
+	firstLinkID := recipeIDs[0]
+	_, _, err = svc.CreateRecipe(ctx, fx.tenantID, inventory.NewRecipeInput{
+		ID: newULID(), MenuItemVariantID: rootVariants[0].ID, Name: "Depth Probe",
+		OutputDimension: contracts.DimensionCount, OutputQuantityMicro: 1_000_000,
+		Ingredients: []inventory.NewRecipeIngredientInput{
+			{ID: newULID(), ComponentKind: contracts.RecipeComponentKindSubRecipe, SubRecipeID: &firstLinkID,
+				QuantityMicro: 1_000_000, QuantityDimension: contracts.DimensionCount},
+		},
+	})
+	if !errors.Is(err, inventory.ErrRecipeDepthExceeded) {
+		t.Fatalf("expected ErrRecipeDepthExceeded, got %v", err)
+	}
+}

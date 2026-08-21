@@ -24,13 +24,23 @@ type Category struct {
 // Item is a menu_item row. BasePricePaise is always an integer; no float
 // arithmetic touches money anywhere in this package.
 type Item struct {
-	ID              string
-	OutletID        string
-	CategoryID      string
-	Name            string
-	BasePricePaise  int64
-	IsAvailable     bool
-	ConfigVersion   int
+	ID             string
+	OutletID       string
+	CategoryID     string
+	Name           string
+	BasePricePaise int64
+	IsAvailable    bool
+	// TaxProfileID added at contracts 0.4.2 (ADR-016 addendum); nil means
+	// "use the outlet's default profile". No write path in this package
+	// sets it yet (filed gap, M4 T4 delivery-fix follow-up) — added here so
+	// the column round-trips once one exists, and so GET /sync/config can
+	// carry whatever a future write path, or a direct migration, puts here.
+	TaxProfileID *string
+	// HSNSAC added at contracts 0.4.5. An invoice cannot legally issue with
+	// a NULL/blank HSN/SAC on any line (CLAUDE.md) — same "unwritten, but
+	// must still be delivered" reasoning as TaxProfileID above.
+	HSNSAC        *string
+	ConfigVersion int
 }
 
 // Variant is a menu_item_variant row. PriceDeltaPaise is added to the item's
@@ -40,7 +50,14 @@ type Variant struct {
 	MenuItemID      string
 	Name            string
 	PriceDeltaPaise int64
-	ConfigVersion   int
+	// IsDefault added at contracts 0.5.0 (ADR-018 §2.1): at most one default
+	// variant per item, enforced by a partial unique index
+	// (postgres/0014_menu_default_variant.sql). A NOT NULL recipe binding
+	// depends on every sellable item resolving to a variant; this is the
+	// column that makes "resolve to a variant" meaningful when none was
+	// explicitly chosen.
+	IsDefault     bool
+	ConfigVersion int
 }
 
 // Modifier is a single option within a modifier group (e.g. group "Toppings",

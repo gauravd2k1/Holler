@@ -113,6 +113,39 @@ func (f *fakeRepository) InsertModifier(ctx context.Context, tx pgx.Tx, m Modifi
 	return nil
 }
 
+func (f *fakeRepository) itemOutlet(menuItemID string) (string, bool) {
+	for _, i := range f.items {
+		if i.ID == menuItemID {
+			return i.OutletID, true
+		}
+	}
+	return "", false
+}
+
+func (f *fakeRepository) ListVariantsSince(ctx context.Context, outletID string, sinceVersion int) ([]Variant, error) {
+	var out []Variant
+	for _, v := range f.variants {
+		itemOutlet, ok := f.itemOutlet(v.MenuItemID)
+		if !ok || itemOutlet != outletID || v.ConfigVersion <= sinceVersion {
+			continue
+		}
+		out = append(out, v)
+	}
+	return out, nil
+}
+
+func (f *fakeRepository) ListModifiersSince(ctx context.Context, outletID string, sinceVersion int) ([]Modifier, error) {
+	var out []Modifier
+	for _, m := range f.modifiers {
+		itemOutlet, ok := f.itemOutlet(m.MenuItemID)
+		if !ok || itemOutlet != outletID || m.ConfigVersion <= sinceVersion {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out, nil
+}
+
 type fakePrincipal struct{ permissions map[string]bool }
 
 func (p fakePrincipal) HasPermission(permission string) bool { return p.permissions[permission] }

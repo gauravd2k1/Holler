@@ -38,6 +38,8 @@ func (f fakeOutletProvider) GetOutlet(ctx context.Context, principal outlet.Prin
 type fakeMenuProvider struct {
 	categories []menu.Category
 	items      []menu.Item
+	variants   []menu.Variant
+	modifiers  []menu.Modifier
 }
 
 func (f fakeMenuProvider) ListCategories(ctx context.Context, outletID string) ([]menu.Category, error) {
@@ -45,6 +47,24 @@ func (f fakeMenuProvider) ListCategories(ctx context.Context, outletID string) (
 }
 func (f fakeMenuProvider) ListItems(ctx context.Context, outletID string) ([]menu.Item, error) {
 	return f.items, nil
+}
+func (f fakeMenuProvider) ListVariantsSince(ctx context.Context, outletID string, sinceVersion int) ([]menu.Variant, error) {
+	var out []menu.Variant
+	for _, v := range f.variants {
+		if v.ConfigVersion > sinceVersion {
+			out = append(out, v)
+		}
+	}
+	return out, nil
+}
+func (f fakeMenuProvider) ListModifiersSince(ctx context.Context, outletID string, sinceVersion int) ([]menu.Modifier, error) {
+	var out []menu.Modifier
+	for _, m := range f.modifiers {
+		if m.ConfigVersion > sinceVersion {
+			out = append(out, m)
+		}
+	}
+	return out, nil
 }
 
 type fakeTablesProvider struct {
@@ -137,7 +157,15 @@ func newTestSyncConfigHandler() *syncConfigHandler {
 			},
 			items: []menu.Item{
 				{ID: "item-old", OutletID: scOutletID, ConfigVersion: 1},
-				{ID: "item-new", OutletID: scOutletID, ConfigVersion: 6, BasePricePaise: 12550},
+				{ID: "item-new", OutletID: scOutletID, ConfigVersion: 6, BasePricePaise: 12550, TaxProfileID: pinHashPtr("tax-profile-1"), HSNSAC: pinHashPtr("9963")},
+			},
+			variants: []menu.Variant{
+				{ID: "variant-old", MenuItemID: "item-old", Name: "Old Variant", ConfigVersion: 1},
+				{ID: "variant-new", MenuItemID: "item-new", Name: "Regular", IsDefault: true, ConfigVersion: 6},
+			},
+			modifiers: []menu.Modifier{
+				{ID: "modifier-old", MenuItemID: "item-old", GroupName: "Old Group", OptionName: "Old Option", ConfigVersion: 1},
+				{ID: "modifier-new", MenuItemID: "item-new", GroupName: "Extras", OptionName: "Extra Paneer", ConfigVersion: 6},
 			},
 		},
 		fakeTablesProvider{
@@ -269,6 +297,69 @@ func TestSyncConfig_AllNineFieldsPresent(t *testing.T) {
 	}
 	if !contains(rec.Body.String(), "argon2id-hash-old") || !contains(rec.Body.String(), "argon2id-hash-new") {
 		t.Errorf("expected password_hash values on the wire: %s", rec.Body.String())
+	}
+}
+
+// TestSyncConfig_MenuItemVariantsAndModifiersDeliveredSinceVersion is the M4
+// T4 delivery-fix follow-up's own regression test: menu_item_variant and
+// menu_item_modifier never reached this response before, and
+// recipe.menu_item_variant_id is NOT NULL, so a cloud-synced outlet missing
+// its own variants gapped NO_VARIANT on every sale. Also covers the
+// itemConfigWire tax_profile_id/hsn_sac gap closed in the same pass.
+func TestSyncConfig_MenuItemVariantsAndModifiersDeliveredSinceVersion(t *testing.T) {
+	h := newTestSyncConfigHandler()
+	p := testDevicePrincipal()
+
+	rec := doSyncConfigRequest(t, h, &p, "outlet_id="+scOutletID+"&since_version=0")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp syncConfigResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decoding into syncConfigResponse: %v", err)
+	}
+	if len(resp.MenuItemVariants) != 2 {
+		t.Fatalf("expected 2 variants at since_version=0, got %d: %+v", len(resp.MenuItemVariants), resp.MenuItemVariants)
+	}
+	if len(resp.MenuItemModifiers) != 2 {
+		t.Fatalf("expected 2 modifiers at since_version=0, got %d: %+v", len(resp.MenuItemModifiers), resp.MenuItemModifiers)
+	}
+	var foundDefault bool
+	for _, v := range resp.MenuItemVariants {
+		if v.ID == "variant-new" {
+			if !v.IsDefault {
+				t.Error("expected variant-new.is_default to survive to the wire")
+			}
+			foundDefault = true
+		}
+	}
+	if !foundDefault {
+		t.Fatal("variant-new missing from the response entirely")
+	}
+
+	for _, it := range resp.Items {
+		if it.ID == "item-new" {
+			if it.TaxProfileID == nil || *it.TaxProfileID != "tax-profile-1" {
+				t.Errorf("expected item-new.tax_profile_id to survive to the wire, got %v", it.TaxProfileID)
+			}
+			if it.HSNSAC == nil || *it.HSNSAC != "9963" {
+				t.Errorf("expected item-new.hsn_sac to survive to the wire, got %v", it.HSNSAC)
+			}
+		}
+	}
+
+	// since_version filtering: only the "new" (config_version 6) rows
+	// should survive a since_version=5 request.
+	rec2 := doSyncConfigRequest(t, h, &p, "outlet_id="+scOutletID+"&since_version=5")
+	var resp2 syncConfigResponse
+	if err := json.Unmarshal(rec2.Body.Bytes(), &resp2); err != nil {
+		t.Fatalf("decoding into syncConfigResponse: %v", err)
+	}
+	if len(resp2.MenuItemVariants) != 1 || resp2.MenuItemVariants[0].ID != "variant-new" {
+		t.Fatalf("expected only variant-new at since_version=5, got %+v", resp2.MenuItemVariants)
+	}
+	if len(resp2.MenuItemModifiers) != 1 || resp2.MenuItemModifiers[0].ID != "modifier-new" {
+		t.Fatalf("expected only modifier-new at since_version=5, got %+v", resp2.MenuItemModifiers)
 	}
 }
 

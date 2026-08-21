@@ -92,28 +92,15 @@ var guardedTables = []guardedTable{
 //     — and the reason string says so, so nobody mistakes the exemption for
 //     "by design."
 var guardExemptions = map[string]map[string]string{
-	"menu_item": {
-		"tax_profile_id": "KNOWN GAP, not fixed by this task: menu.Item (backend/internal/menu) does not carry tax_profile_id at all yet, though contracts.MenuItem has since 0.4.2. Outside backend/internal/inventory and backend/cmd/api's owned scope; filed as a follow-up.",
-		"hsn_sac":        "KNOWN GAP, not fixed by this task: same as tax_profile_id, added to contracts.MenuItem at 0.4.5 but never reached menu.Item or the sync bundle. An invoice cannot legally issue without it (CLAUDE.md), so this is the higher-priority follow-up of the two.",
-	},
-	"menu_item_variant": {
-		"id":                "KNOWN GAP, not fixed by this task: menu_item_variant is entirely absent from GET /sync/config and from openapi.yaml's MenuItem schema. Every column here is exempted for that one reason, not per-column reasons — variants never reach the edge today.",
-		"menu_item_id":      "see id's entry in this table",
-		"name":              "see id's entry in this table",
-		"price_delta_paise": "see id's entry in this table",
-		"config_version":    "see id's entry in this table",
-		"is_default":        "see id's entry in this table",
-	},
-	"menu_item_modifier": {
-		"id":                "KNOWN GAP, not fixed by this task: menu_item_modifier is entirely absent from GET /sync/config, for the same reason as menu_item_variant above — no route or bundle field carries it.",
-		"menu_item_id":      "see id's entry in this table",
-		"group_name":        "see id's entry in this table",
-		"option_name":       "see id's entry in this table",
-		"price_delta_paise": "see id's entry in this table",
-		"min_selection":     "see id's entry in this table",
-		"max_selection":     "see id's entry in this table",
-		"config_version":    "see id's entry in this table",
-	},
+	// menu_item.tax_profile_id/hsn_sac, and all of menu_item_variant and
+	// menu_item_modifier, were exempted here as KNOWN GAPS by the M4 T4
+	// task that first wrote this guard. Both gaps are now closed
+	// (menuConfigProvider.ListVariantsSince/ListModifiersSince,
+	// itemConfigWire.TaxProfileID/HSNSAC, variantConfigWire,
+	// modifierConfigWire) — the exemptions are removed rather than left
+	// behind as dead entries, per this guard's own "a stale exemption also
+	// fails" discipline. See docs/RESUME.md / the M4 T4 follow-up report for
+	// the history.
 	"app_user": {
 		"created_at": "cloud-internal bookkeeping. EdgeUserCacheEntry carries updated_at, which is what the edge compares for cache freshness; it has never needed created_at.",
 	},

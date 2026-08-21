@@ -42,9 +42,15 @@ type outletConfigProvider interface {
 }
 
 // menuConfigProvider is the minimal seam onto backend/internal/menu.
+// ListVariantsSince/ListModifiersSince close the M4 T4 delivery-fix gap:
+// menu_item_variant and menu_item_modifier never reached GET /sync/config
+// before this — the most load-bearing instance of the class, since
+// recipe.menu_item_variant_id is NOT NULL and recipes now sync (T4).
 type menuConfigProvider interface {
 	ListCategories(ctx context.Context, outletID string) ([]menu.Category, error)
 	ListItems(ctx context.Context, outletID string) ([]menu.Item, error)
+	ListVariantsSince(ctx context.Context, outletID string, sinceVersion int) ([]menu.Variant, error)
+	ListModifiersSince(ctx context.Context, outletID string, sinceVersion int) ([]menu.Modifier, error)
 }
 
 // tablesConfigProvider is the minimal seam onto backend/internal/tables.
@@ -137,7 +143,50 @@ type itemConfigWire struct {
 	Name           string `json:"name"`
 	BasePricePaise int64  `json:"base_price_paise"`
 	IsAvailable    bool   `json:"is_available"`
-	ConfigVersion  int    `json:"config_version"`
+	// TaxProfileID/HSNSAC: filed gap closed (M4 T4 delivery-fix follow-up —
+	// found by TestSyncConfigGuard_EveryCloudAuthoritativeColumnIsWiredOrExempted).
+	// contracts.MenuItem has carried both since 0.4.2/0.4.5; nothing wrote
+	// them through to this wire shape until now. hsn_sac is nil until
+	// backend/internal/menu grows a write path for it — no route sets it
+	// today — but a NULL hsn_sac here is now genuinely "not configured
+	// yet", not "the sync bundle forgot to carry it": the edge already
+	// refuses to issue an invoice on a NULL hsn_sac line, which is the
+	// correct failure now that the column travels at all.
+	TaxProfileID  *string `json:"tax_profile_id"`
+	HSNSAC        *string `json:"hsn_sac"`
+	ConfigVersion int     `json:"config_version"`
+}
+
+// variantConfigWire mirrors contracts.MenuItemVariant plus IsDefault, which
+// contracts 0.5.6's Go mirror does not carry even though
+// postgres/0014_menu_default_variant.sql added the column at 0.5.0 (a
+// contract gap, not fixed here — packages/contracts is read-only to this
+// task). Local wire type for the same reason itemConfigWire is one:
+// backend/internal/menu's Variant is its own domain struct.
+type variantConfigWire struct {
+	ID              string `json:"id"`
+	MenuItemID      string `json:"menu_item_id"`
+	Name            string `json:"name"`
+	PriceDeltaPaise int64  `json:"price_delta_paise"`
+	IsDefault       bool   `json:"is_default"`
+	ConfigVersion   int    `json:"config_version"`
+	SchemaVersion   int    `json:"schema_version"`
+}
+
+// modifierConfigWire mirrors contracts.MenuItemModifier field for field —
+// unlike Variant, Modifier has no undelivered contract field, so this exists
+// only because backend/internal/menu.Modifier is its own domain struct
+// (no schema_version), the same itemConfigWire/tableConfigWire reason.
+type modifierConfigWire struct {
+	ID              string `json:"id"`
+	MenuItemID      string `json:"menu_item_id"`
+	GroupName       string `json:"group_name"`
+	OptionName      string `json:"option_name"`
+	PriceDeltaPaise int64  `json:"price_delta_paise"`
+	MinSelection    int    `json:"min_selection"`
+	MaxSelection    int    `json:"max_selection"`
+	ConfigVersion   int    `json:"config_version"`
+	SchemaVersion   int    `json:"schema_version"`
 }
 
 // syncConfigResponse is packages/contracts/openapi/openapi.yaml's
@@ -176,6 +225,14 @@ type syncConfigResponse struct {
 	Recipes                  []contracts.Recipe                  `json:"recipes"`
 	RecipeIngredients        []contracts.RecipeIngredient        `json:"recipe_ingredients"`
 	ModifierIngredientDeltas []contracts.ModifierIngredientDelta `json:"modifier_ingredient_deltas"`
+	// MenuItemVariants/MenuItemModifiers: M4 T4 delivery-fix follow-up, the
+	// most load-bearing instance of the class this task's guard exists to
+	// catch. recipe.menu_item_variant_id is NOT NULL and recipes now sync
+	// (T4), so an outlet that never received its own variants had every
+	// recipe pointing at a row it did not have — every order line failed to
+	// stamp a variant, and every sale gapped NO_VARIANT.
+	MenuItemVariants  []variantConfigWire  `json:"menu_item_variants"`
+	MenuItemModifiers []modifierConfigWire `json:"menu_item_modifiers"`
 }
 
 // syncConfigHandler assembles the composite bundle. It never runs SQL
@@ -259,6 +316,16 @@ func (h *syncConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, err)
 		return
 	}
+	variants, err := h.menu.ListVariantsSince(r.Context(), outletID, sinceVersion)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	modifiers, err := h.menu.ListModifiersSince(r.Context(), outletID, sinceVersion)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
 	bundle, err := h.kitchen.SyncConfigBundle(r.Context(), tenantID, outletID, sinceVersion)
 	if err != nil {
 		httpx.Error(w, err)
@@ -310,6 +377,9 @@ func (h *syncConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Recipes:                  inventoryBundle.Recipes,
 		RecipeIngredients:        inventoryBundle.RecipeIngredients,
 		ModifierIngredientDeltas: inventoryBundle.ModifierIngredientDeltas,
+
+		MenuItemVariants:  variantsToWire(variants),
+		MenuItemModifiers: modifiersToWire(modifiers),
 	}
 	if resp.Users == nil {
 		resp.Users = []contracts.EdgeUserCacheEntry{}
@@ -394,7 +464,37 @@ func filterItems(in []menu.Item, sinceVersion int) []itemConfigWire {
 		}
 		out = append(out, itemConfigWire{
 			ID: i.ID, OutletID: i.OutletID, CategoryID: i.CategoryID, Name: i.Name,
-			BasePricePaise: i.BasePricePaise, IsAvailable: i.IsAvailable, ConfigVersion: i.ConfigVersion,
+			BasePricePaise: i.BasePricePaise, IsAvailable: i.IsAvailable,
+			TaxProfileID: i.TaxProfileID, HSNSAC: i.HSNSAC, ConfigVersion: i.ConfigVersion,
+		})
+	}
+	return out
+}
+
+// variantsToWire/modifiersToWire adapt backend/internal/menu's own domain
+// structs to the wire shape, the itemConfigWire/tableConfigWire precedent.
+// ListVariantsSince/ListModifiersSince are already since_version-filtered at
+// the DB (the kitchen.StationPrintersSince shape), so unlike filterItems
+// above there is no client-side filter to apply here.
+func variantsToWire(in []menu.Variant) []variantConfigWire {
+	out := make([]variantConfigWire, 0, len(in))
+	for _, v := range in {
+		out = append(out, variantConfigWire{
+			ID: v.ID, MenuItemID: v.MenuItemID, Name: v.Name,
+			PriceDeltaPaise: v.PriceDeltaPaise, IsDefault: v.IsDefault,
+			ConfigVersion: v.ConfigVersion, SchemaVersion: 1,
+		})
+	}
+	return out
+}
+
+func modifiersToWire(in []menu.Modifier) []modifierConfigWire {
+	out := make([]modifierConfigWire, 0, len(in))
+	for _, m := range in {
+		out = append(out, modifierConfigWire{
+			ID: m.ID, MenuItemID: m.MenuItemID, GroupName: m.GroupName, OptionName: m.OptionName,
+			PriceDeltaPaise: m.PriceDeltaPaise, MinSelection: m.MinSelection, MaxSelection: m.MaxSelection,
+			ConfigVersion: m.ConfigVersion, SchemaVersion: 1,
 		})
 	}
 	return out
