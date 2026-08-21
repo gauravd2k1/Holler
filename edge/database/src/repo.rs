@@ -5099,6 +5099,7 @@ fn stock_ledger_entry_from_row(row: &rusqlite::Row) -> rusqlite::Result<StockLed
         modifier_name: row.get(20)?,
         modifier_delta_version: row.get(21)?,
         unit_cost_paise: row.get(22)?,
+        source_stock_count_id: row.get(23)?,
     })
 }
 
@@ -5106,7 +5107,7 @@ const STOCK_LEDGER_ENTRY_COLUMNS: &str = "id, outlet_id, entry_seq, inventory_it
     inventory_item_name, dimension, entry_type, origin, quantity_applied_micro, recipe_id, \
     recipe_version, recipe_name, source_order_id, source_order_item_id, reason_code, note, \
     occurred_at, business_date, created_by_user_id, modifier_delta_id, modifier_name, \
-    modifier_delta_version, unit_cost_paise";
+    modifier_delta_version, unit_cost_paise, source_stock_count_id";
 
 /// Fetches the exact row a just-completed insert wrote, by `(outlet_id,
 /// entry_seq)` — the table's own uniqueness key (0016) — so

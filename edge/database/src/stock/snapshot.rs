@@ -185,6 +185,7 @@ mod tests {
             modifier_delta_id: None,
             modifier_name: None,
             modifier_delta_version: None,
+            source_stock_count_id: None,
         };
         let conn = db.connection_mut();
         let tx = conn.transaction().expect("begin tx");

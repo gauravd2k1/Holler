@@ -12,18 +12,34 @@
 //! compare today's theory against yesterday's shelf.
 //!
 //! **A count is mutable while OPEN, immutable once COMPLETED** — enforced by
-//! this module's own `status == 'OPEN'` check, backed by the 0016 triggers
-//! on both `stock_count` and `stock_count_line` for the cases the triggers
-//! actually reach. **Falsified, not assumed**: those two triggers are both
-//! `BEFORE UPDATE`, so they catch a CORRECTION to an existing line on a
-//! completed count, but NOT a brand-new item counted for the first time
-//! after completion — that path is a plain `INSERT`, which no `BEFORE
-//! UPDATE` trigger ever sees. Removing this module's own check and running
-//! [`tests::a_completed_count_rejects_a_further_line_write`] confirmed a
-//! fresh line insert sails through with no error at all when only the
-//! trigger is relied on. This module's check is therefore not redundant
-//! belt-and-braces — it is the ONLY guard for that case, and the trigger is
-//! the backstop for corrections to a line already on the count.
+//! this module's own `status == 'OPEN'` check AND, as of contracts 0.5.5
+//! (`packages/contracts/sqlite/0023_stock_count_integrity.sql`), by triggers
+//! on `stock_count_line` covering all three verbs the table accepts:
+//! `BEFORE UPDATE` and `BEFORE DELETE` (0016), and `BEFORE INSERT` (0023).
+//!
+//! **This is corrected history, not a first draft, and the correction is
+//! itself the lesson.** The original falsification here removed this
+//! module's check and ran
+//! [`tests::a_completed_count_rejects_a_further_line_write`] — which,
+//! before 0023, exercised only the `INSERT`-of-a-new-line path (there was
+//! no existing line to correct in that test's setup), found the two 0016
+//! triggers were both `BEFORE UPDATE`/`BEFORE DELETE` and neither saw an
+//! `INSERT`, and concluded this module's check was the ONLY guard on that
+//! path. That was correct **at the time**, and it was also incomplete: the
+//! falsification tested the verb the test happened to exercise, not every
+//! verb the table accepts. 0023's own migration header names this
+//! precisely — "a guard falsified along the routes you thought of is a
+//! guard tested against your own imagination" — and adds the missing
+//! `BEFORE INSERT` trigger.
+//!
+//! Post-0023, this module's check and the schema triggers are genuine
+//! belt-and-braces on `INSERT` too, not merely on `UPDATE`/`DELETE`:
+//! [`tests::completed_count_line_insert_is_rejected_by_the_trigger_alone`]
+//! proves the `BEFORE INSERT` trigger fires even with this module's own
+//! check bypassed entirely (raw SQL, not [`add_or_update_count_line`]) —
+//! the schema-level half of the belt-and-braces claim, evidenced
+//! independently of the application-level half
+//! ([`tests::a_completed_count_rejects_a_further_line_write`]).
 //!
 //! **The count's own `business_date` — not the completion instant's — is
 //! what every `COUNT_ADJUSTMENT` entry it posts carries** (0016's own
@@ -168,19 +184,21 @@ pub(crate) fn complete_stock_count(
             source_order_id: None,
             source_order_item_id: None,
             reason_code: None,
-            // 0016 carries no `source_stock_count_id` column (no FK, by the
-            // table's own no-FK provenance design) — the count's id is
-            // recorded here, in `note`, as the best available provenance
-            // link. Flagged as an open item: a dedicated column would be a
-            // cleaner audit trail, but adding one is a contract change this
-            // task does not have the authority to make.
-            note: Some(format!("stock_count:{stock_count_id}")),
+            // Human-readable only, now that contracts 0.5.5 gives the row a
+            // typed link (`source_stock_count_id`, below) — the `note`
+            // string this crate used to parse-as-provenance is gone; this
+            // one is free text, never read back programmatically.
+            note: Some("physical stock count".to_string()),
             occurred_at: completed_at.to_string(),
             business_date: count.business_date.clone(),
             created_by_user_id: count.counted_by_user_id.clone(),
             modifier_delta_id: None,
             modifier_name: None,
             modifier_delta_version: None,
+            // Contracts 0.5.5 (`0023_stock_count_integrity.sql`): typed,
+            // no-FK provenance — the fix for the gap this crate flagged
+            // when it had only `note` to link with.
+            source_stock_count_id: Some(stock_count_id.to_string()),
         };
         let entry_seq = repo::next_stock_ledger_sequence_value(tx, outlet_id, completed_at)?;
         let id = uuid::Uuid::now_v7().to_string();
@@ -284,13 +302,22 @@ mod tests {
             .expect("count ledger rows");
         assert_eq!(ledger_count, 1, "a non-zero variance must post exactly one COUNT_ADJUSTMENT entry");
 
-        let stored: (String, String, i64, String) = db
+        let stored: (String, String, i64, String, Option<String>) = db
             .connection()
             .query_row(
-                "SELECT entry_type, origin, quantity_applied_micro, business_date \
+                "SELECT entry_type, origin, quantity_applied_micro, business_date, \
+                        source_stock_count_id \
                  FROM stock_ledger_entry WHERE outlet_id = 'outlet-1'",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
             )
             .expect("read entry");
         assert_eq!(stored.0, "ADJUSTMENT");
@@ -299,6 +326,12 @@ mod tests {
         assert_eq!(
             stored.3, "2026-08-21",
             "the ADJUSTMENT entry must carry the COUNT's own business_date, not completion time's"
+        );
+        assert_eq!(
+            stored.4.as_deref(),
+            Some("count-1"),
+            "contracts 0.5.5: the ADJUSTMENT entry must carry the typed \
+             source_stock_count_id, not a string parsed out of note"
         );
     }
 
@@ -357,6 +390,54 @@ mod tests {
         )
         .expect_err("a completed count must reject a further line write");
         assert!(matches!(err, DbError::StockCountNotOpen { .. }));
+    }
+
+    /// Contracts 0.5.5 (`0023_stock_count_integrity.sql`): the `BEFORE
+    /// INSERT` trigger evidenced independently of this module's own
+    /// `status == 'OPEN'` check — raw SQL, bypassing
+    /// [`add_or_update_count_line`] entirely, so a pass here proves the
+    /// SCHEMA stops the write, not this file's Rust. Companion to
+    /// [`a_completed_count_rejects_a_further_line_write`], which proves the
+    /// application-level half; together they are the belt-and-braces claim
+    /// this module's doc comment now makes.
+    #[test]
+    fn completed_count_line_insert_is_rejected_by_the_trigger_alone() {
+        let mut db = Db::open_in_memory_for_tests().expect("open db");
+        seed_outlet_and_item(db.connection());
+
+        let conn = db.connection_mut();
+        let tx = conn.transaction().expect("begin");
+        open_stock_count(&tx, new_count_req("count-1", "2026-08-20T10:00:00Z")).expect("open");
+        complete_stock_count(&tx, "count-1", "outlet-1", "2026-08-20T10:05:00Z").expect("complete");
+
+        // Assert the count is actually COMPLETED before trusting the
+        // trigger test that follows — a count still OPEN would let this
+        // INSERT through for an unrelated reason and the test would pass
+        // for the wrong cause.
+        let status: String = tx
+            .query_row(
+                "SELECT status FROM stock_count WHERE id = 'count-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read count status");
+        assert_eq!(status, "COMPLETED");
+
+        let result = tx.execute(
+            "INSERT INTO stock_count_line
+                (id, stock_count_id, inventory_item_id, inventory_item_name, dimension,
+                 counted_quantity_micro, expected_quantity_micro, note)
+             VALUES ('line-bypass', 'count-1', 'item-1', 'Paneer', 'MASS', 1000000, 0, NULL)",
+            [],
+        );
+        let err = result.expect_err(
+            "a raw INSERT of a brand-new line into a COMPLETED count must be rejected by the \
+             0023 BEFORE INSERT trigger, with no Rust-level check involved at all",
+        );
+        assert!(
+            err.to_string().contains("cannot be inserted into a COMPLETED count"),
+            "unexpected error, trigger message not found: {err}"
+        );
     }
 
     #[test]

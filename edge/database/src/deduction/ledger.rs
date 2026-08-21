@@ -70,9 +70,10 @@ pub(crate) fn insert_stock_ledger_entry(
             (id, outlet_id, entry_seq, inventory_item_id, inventory_item_name, dimension,
              entry_type, origin, quantity_applied_micro, recipe_id, recipe_version, recipe_name,
              source_order_id, source_order_item_id, reason_code, note, occurred_at, business_date,
-             created_by_user_id, modifier_delta_id, modifier_name, modifier_delta_version)
+             created_by_user_id, modifier_delta_id, modifier_name, modifier_delta_version,
+             source_stock_count_id)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
-                 ?19, ?20, ?21, ?22)",
+                 ?19, ?20, ?21, ?22, ?23)",
         params![
             id,
             e.outlet_id,
@@ -96,6 +97,7 @@ pub(crate) fn insert_stock_ledger_entry(
             e.modifier_delta_id,
             e.modifier_name,
             e.modifier_delta_version,
+            e.source_stock_count_id,
         ],
     )?;
     Ok(())
@@ -276,6 +278,7 @@ fn deduct_one_line(
                     modifier_delta_id: None,
                     modifier_name: None,
                     modifier_delta_version: None,
+                    source_stock_count_id: None,
                 };
                 insert_stock_ledger_entry_with_next_seq(tx, outlet_id, occurred_at_utc, &entry)?;
             }
@@ -424,6 +427,7 @@ fn deduct_modifiers_for_line(
                 modifier_delta_id: Some(delta.id.clone()),
                 modifier_name: Some(format!("{}: {}", modifier.group_name, modifier.option_name)),
                 modifier_delta_version: Some(delta.config_version),
+                source_stock_count_id: None,
             };
             insert_stock_ledger_entry_with_next_seq(tx, outlet_id, occurred_at_utc, &entry)?;
         }

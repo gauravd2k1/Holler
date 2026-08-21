@@ -1262,6 +1262,14 @@ pub struct NewStockLedgerEntry {
     pub modifier_delta_id: Option<String>,
     pub modifier_name: Option<String>,
     pub modifier_delta_version: Option<i64>,
+    /// Contracts 0.5.5 (`packages/contracts/sqlite/0023_stock_count_integrity.sql`):
+    /// typed provenance for a `COUNT_ADJUSTMENT` row, no FK (the same
+    /// no-FK provenance discipline as `recipe_id`/`source_order_id`) —
+    /// `Some(_)` only when `origin == "COUNT_ADJUSTMENT"`
+    /// ([`crate::stock::count::complete_stock_count`]); `None` everywhere
+    /// else. Replaces the `"stock_count:{id}"` string this crate used to
+    /// write into `note` before this column existed.
+    pub source_stock_count_id: Option<String>,
 }
 
 /// Caller-supplied fields to insert one `stock_deduction_gap` row — a
@@ -1315,6 +1323,8 @@ pub struct StockLedgerEntry {
     pub modifier_name: Option<String>,
     pub modifier_delta_version: Option<i64>,
     pub unit_cost_paise: Option<i64>,
+    /// Contracts 0.5.5 — see [`NewStockLedgerEntry::source_stock_count_id`].
+    pub source_stock_count_id: Option<String>,
 }
 
 // ------------------------------ wastage / stock counts / variance (M4, T3) --

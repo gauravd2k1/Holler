@@ -162,6 +162,7 @@ mod tests {
                 modifier_delta_id: None,
                 modifier_name: None,
                 modifier_delta_version: None,
+                source_stock_count_id: None,
             };
             let seq = repo::next_stock_ledger_sequence_value(&tx, "outlet-1", "2026-08-19T09:00:00Z")
                 .expect("mint seq");

@@ -76,6 +76,10 @@ pub(crate) fn record_wastage(
         modifier_delta_id: None,
         modifier_name: None,
         modifier_delta_version: None,
+        // Wastage is not count-driven — contracts 0.5.5's new column is
+        // for COUNT_ADJUSTMENT provenance only (see
+        // `crate::stock::count::complete_stock_count`).
+        source_stock_count_id: None,
     };
 
     let entry_seq =
