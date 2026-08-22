@@ -1301,6 +1301,32 @@ pub struct NewStockDeductionGap {
     pub business_date: String,
 }
 
+/// A `stock_deduction_gap` row, as stored — field-for-field the table, the
+/// read counterpart of [`NewStockDeductionGap`]. Returned by
+/// [`crate::Db::list_stock_deduction_gaps`], the M4 acceptance-criterion-5
+/// ("items sold with no recipe") report's sanctioned data source — the only
+/// prior reader was a private `#[cfg(test)]` helper, unreachable from
+/// outside this crate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StockDeductionGap {
+    pub id: String,
+    pub outlet_id: String,
+    pub order_id: String,
+    pub order_item_id: String,
+    pub menu_item_id: String,
+    pub menu_item_variant_id: Option<String>,
+    pub menu_item_name: String,
+    /// Sellable units sold unaccounted, not a micro-quantity — nothing was
+    /// resolved to an ingredient, which is the point of the row.
+    pub quantity: i64,
+    /// `"NO_RECIPE"`, `"NO_VARIANT"`, `"CYCLE"`, `"DEPTH_EXCEEDED"`,
+    /// `"UNKNOWN_UNIT"`, `"DIMENSION_MISMATCH"`, or
+    /// `"UNRESOLVABLE_REFERENCE"`.
+    pub reason: String,
+    pub occurred_at: String,
+    pub business_date: String,
+}
+
 /// A `stock_ledger_entry`, as stored — field-for-field the table plus
 /// nothing else, the read counterpart of [`NewStockLedgerEntry`]. Returned
 /// by [`crate::stock::wastage::record_wastage`] and by the completed lines
@@ -1378,6 +1404,18 @@ pub struct NewStockCount {
     pub started_at: String,
     pub counted_by_user_id: Option<String>,
     pub note: Option<String>,
+}
+
+/// Caller-supplied identity for a `StockCountOpened`/`StockCountCompleted`
+/// `local_outbox` row — the [`CashShiftOutboxMeta`] shape, generalised. The
+/// caller supplies only what this crate cannot derive: the outbox row's own
+/// id and the moment the event occurred; every other field of the payload
+/// is built by this crate from the row it just wrote, so a caller cannot
+/// commit a mismatched or misleading event.
+#[derive(Debug, Clone)]
+pub struct StockCountOutboxMeta {
+    pub outbox_id: String,
+    pub occurred_at: String,
 }
 
 /// A `stock_count`, as stored.

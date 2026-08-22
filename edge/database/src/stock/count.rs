@@ -51,7 +51,10 @@
 use rusqlite::Transaction;
 
 use crate::error::{DbError, DbResult};
-use crate::model::{NewStockCount, NewStockCountLine, NewStockLedgerEntry, StockCount, StockCountLine};
+use crate::model::{
+    NewStockCount, NewStockCountLine, NewStockLedgerEntry, StockCount, StockCountLine,
+    StockCountOutboxMeta,
+};
 use crate::repo;
 
 use super::snapshot::get_current_stock_in_tx;
@@ -78,6 +81,24 @@ pub(crate) fn open_stock_count(tx: &Transaction, req: NewStockCount) -> DbResult
         req.note.as_deref(),
     )?;
     repo::get_stock_count(tx, &req.id)?.ok_or(DbError::NotFound("stock_count"))
+}
+
+/// [`open_stock_count`] plus its `StockCountOpened` `local_outbox` row, both
+/// inside `tx` — the `_with_outbox` sibling [`crate::Db::open_stock_count`]
+/// never had, so a caller outside this crate could not emit
+/// `StockCountOpened` atomically with the state change (there is no
+/// `Db::connection_mut`/`transaction` accessor to attach a second write to,
+/// and a second, separate transaction is explicitly not this shape — the
+/// same "commit-then-publish is not atomic" reasoning behind every other
+/// `_with_outbox` method in this crate).
+pub(crate) fn open_stock_count_with_outbox(
+    tx: &Transaction,
+    req: NewStockCount,
+    outbox_meta: &StockCountOutboxMeta,
+) -> DbResult<StockCount> {
+    let stored = open_stock_count(tx, req)?;
+    repo::insert_stock_count_opened_outbox(tx, &stored, outbox_meta)?;
+    Ok(stored)
 }
 
 /// Adds a new counted line, or corrects an existing one for the same item
@@ -206,6 +227,25 @@ pub(crate) fn complete_stock_count(
     }
 
     repo::get_stock_count(tx, stock_count_id)?.ok_or(DbError::NotFound("stock_count"))
+}
+
+/// [`complete_stock_count`] plus its `StockCountCompleted` `local_outbox`
+/// row, both inside `tx` — the `_with_outbox` sibling
+/// [`crate::Db::complete_stock_count`] never had. The payload carries the
+/// count's final lines, read fresh after completion so the counted/expected
+/// values in the event match exactly what was just posted, not a stale
+/// snapshot from before the `COUNT_ADJUSTMENT` entries were written.
+pub(crate) fn complete_stock_count_with_outbox(
+    tx: &Transaction,
+    stock_count_id: &str,
+    outlet_id: &str,
+    completed_at: &str,
+    outbox_meta: &StockCountOutboxMeta,
+) -> DbResult<StockCount> {
+    let stored = complete_stock_count(tx, stock_count_id, outlet_id, completed_at)?;
+    let lines = repo::list_stock_count_lines(tx, stock_count_id)?;
+    repo::insert_stock_count_completed_outbox(tx, &stored, &lines, outbox_meta)?;
+    Ok(stored)
 }
 
 #[cfg(test)]

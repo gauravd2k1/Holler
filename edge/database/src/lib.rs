@@ -631,6 +631,28 @@ impl Db {
         Ok(result)
     }
 
+    /// [`Db::open_stock_count`] plus its `StockCountOpened` `local_outbox`
+    /// row, written in the SAME transaction as the state change — the
+    /// `_with_outbox` sibling this method lacked until now, closing the
+    /// gap the POS inventory task found: there was no way for a caller
+    /// outside this crate to emit `StockCountOpened` atomically with the
+    /// count's own insert, since `Db` exposes no transaction handle to
+    /// attach a second write to. `StockCountOpened`/`StockCountCompleted`
+    /// are individually meaningful, low-volume business events (a handful a
+    /// week) — the outbox, not the entry_seq-ranged ledger cursor `stock_count`
+    /// has no `entry_seq` to fit (contracts 0.5.5's own reasoning).
+    /// **Caller must have already checked `inventory.count`.**
+    pub fn open_stock_count_with_outbox(
+        &mut self,
+        req: model::NewStockCount,
+        outbox_meta: &model::StockCountOutboxMeta,
+    ) -> DbResult<model::StockCount> {
+        let tx = self.connection_mut().transaction()?;
+        let result = stock::count::open_stock_count_with_outbox(&tx, req, outbox_meta)?;
+        tx.commit()?;
+        Ok(result)
+    }
+
     /// Adds a new counted line, or corrects an existing one for the same
     /// item, on an OPEN count — "mutable while OPEN" (0016). Rejects with
     /// [`DbError::StockCountNotOpen`] once the count is `COMPLETED`.
@@ -679,6 +701,31 @@ impl Db {
         Ok(result)
     }
 
+    /// [`Db::complete_stock_count`] plus its `StockCountCompleted`
+    /// `local_outbox` row, written in the SAME transaction as the status
+    /// change and the `COUNT_ADJUSTMENT` ledger postings — see
+    /// [`Db::open_stock_count_with_outbox`]'s doc comment for why this
+    /// sibling did not exist before. **Caller must have already checked
+    /// `inventory.count`.**
+    pub fn complete_stock_count_with_outbox(
+        &mut self,
+        stock_count_id: &str,
+        outlet_id: &str,
+        completed_at: &str,
+        outbox_meta: &model::StockCountOutboxMeta,
+    ) -> DbResult<model::StockCount> {
+        let tx = self.connection_mut().transaction()?;
+        let result = stock::count::complete_stock_count_with_outbox(
+            &tx,
+            stock_count_id,
+            outlet_id,
+            completed_at,
+            outbox_meta,
+        )?;
+        tx.commit()?;
+        Ok(result)
+    }
+
     /// Builds the Actual-vs-Theoretical variance report for a COMPLETED
     /// count — DERIVED, never stored. `sales_unaccounted` is the named
     /// "N sales unaccounted" term (ADR-018 §10.1), never folded into any
@@ -711,6 +758,20 @@ impl Db {
     /// query per item.
     pub fn list_current_stock(&self, outlet_id: &str) -> DbResult<Vec<model::CurrentStockLine>> {
         repo::list_current_stock_for_outlet(self.connection(), outlet_id)
+    }
+
+    /// The bounded, newest-first `stock_deduction_gap` read for one outlet —
+    /// the sanctioned data source for the M4 acceptance-criterion-5 report
+    /// ("items sold with no recipe"). The only prior reader was a private
+    /// `#[cfg(test)]` helper, unreachable from outside this crate — the
+    /// gap the POS inventory task found and reported rather than routing
+    /// around. Hard-bounded at `repo::STOCK_DEDUCTION_GAP_REPORT_LIMIT`
+    /// rows, the same "fixed-cost read" posture as [`Db::list_current_stock`].
+    pub fn list_stock_deduction_gaps(
+        &self,
+        outlet_id: &str,
+    ) -> DbResult<Vec<model::StockDeductionGap>> {
+        repo::list_stock_deduction_gaps_for_outlet(self.connection(), outlet_id)
     }
 
     /// Sets `order_type`/`table_id` on a `DRAFT` order — the cashier

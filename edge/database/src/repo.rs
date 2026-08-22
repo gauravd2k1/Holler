@@ -5574,6 +5574,103 @@ pub(crate) fn list_stock_count_lines(
     Ok(rows)
 }
 
+const EVENT_TYPE_STOCK_COUNT_OPENED: &str = "StockCountOpened";
+const EVENT_TYPE_STOCK_COUNT_COMPLETED: &str = "StockCountCompleted";
+
+fn stock_count_line_json(l: &StockCountLine) -> serde_json::Value {
+    serde_json::json!({
+        "id": l.id,
+        "stock_count_id": l.stock_count_id,
+        "inventory_item_id": l.inventory_item_id,
+        "inventory_item_name": l.inventory_item_name,
+        "dimension": l.dimension,
+        "counted_quantity_micro": l.counted_quantity_micro,
+        "expected_quantity_micro": l.expected_quantity_micro,
+        "note": l.note,
+    })
+}
+
+fn stock_count_json(c: &StockCount, lines: &[StockCountLine]) -> serde_json::Value {
+    serde_json::json!({
+        "id": c.id,
+        "outlet_id": c.outlet_id,
+        "business_date": c.business_date,
+        "status": c.status,
+        "started_at": c.started_at,
+        "completed_at": c.completed_at,
+        "counted_by_user_id": c.counted_by_user_id,
+        "note": c.note,
+        "lines": lines.iter().map(stock_count_line_json).collect::<Vec<_>>(),
+        "schema_version": 1,
+    })
+}
+
+/// `StockCountOpened` analogue of [`insert_cash_shift_opened_outbox`] —
+/// individually meaningful, low-volume business events go on the outbox,
+/// never the entry_seq-ranged ledger cursor (`stock_count` carries no
+/// `entry_seq` to range over; contracts 0.5.5's own reasoning). `lines` is
+/// always empty at open — a count has no counted lines yet — but is passed
+/// through [`stock_count_json`] for the same shape [`insert_stock_count_completed_outbox`]
+/// emits, so a consumer never special-cases one event's payload shape
+/// against the other's.
+pub(crate) fn insert_stock_count_opened_outbox(
+    tx: &Transaction,
+    c: &StockCount,
+    meta: &StockCountOutboxMeta,
+) -> DbResult<()> {
+    let payload = serde_json::json!({
+        "event_id": meta.outbox_id,
+        "event_type": EVENT_TYPE_STOCK_COUNT_OPENED,
+        "occurred_at": meta.occurred_at,
+        "outlet_id": c.outlet_id,
+        "schema_version": 1,
+        "data": { "stock_count": stock_count_json(c, &[]) },
+    })
+    .to_string();
+    insert_outbox_entry(
+        tx,
+        &NewOutboxEntry {
+            id: meta.outbox_id.clone(),
+            aggregate_type: "stock_count".to_string(),
+            aggregate_id: c.id.clone(),
+            event_type: EVENT_TYPE_STOCK_COUNT_OPENED.to_string(),
+            payload_json: payload,
+            created_at: meta.occurred_at.clone(),
+        },
+    )
+}
+
+/// `StockCountCompleted` analogue of [`insert_cash_shift_closed_outbox`] —
+/// carries the count's final lines so a consumer sees the counted-vs-
+/// expected shape without a second query.
+pub(crate) fn insert_stock_count_completed_outbox(
+    tx: &Transaction,
+    c: &StockCount,
+    lines: &[StockCountLine],
+    meta: &StockCountOutboxMeta,
+) -> DbResult<()> {
+    let payload = serde_json::json!({
+        "event_id": meta.outbox_id,
+        "event_type": EVENT_TYPE_STOCK_COUNT_COMPLETED,
+        "occurred_at": meta.occurred_at,
+        "outlet_id": c.outlet_id,
+        "schema_version": 1,
+        "data": { "stock_count": stock_count_json(c, lines) },
+    })
+    .to_string();
+    insert_outbox_entry(
+        tx,
+        &NewOutboxEntry {
+            id: meta.outbox_id.clone(),
+            aggregate_type: "stock_count".to_string(),
+            aggregate_id: c.id.clone(),
+            event_type: EVENT_TYPE_STOCK_COUNT_COMPLETED.to_string(),
+            payload_json: payload,
+            created_at: meta.occurred_at.clone(),
+        },
+    )
+}
+
 /// The total sellable units sold with an unresolvable recipe (ADR-018 §10.1
 /// "N sales unaccounted"), for one outlet, up to and including
 /// `business_date` — the same cumulative posture the bounded stock read
@@ -5591,6 +5688,48 @@ pub(crate) fn sum_unaccounted_sales_through_business_date(
         |row| row.get(0),
     )
     .map_err(Into::into)
+}
+
+/// Hard row bound for [`list_stock_deduction_gaps_for_outlet`] — this is a
+/// human-facing report ("items sold with no recipe", ADR-018 §10.1), never
+/// an unbounded scan of an append-only signal table. Mirrors the posture of
+/// [`get_current_stock`]'s bounded formula: a caller reads a fixed-cost
+/// answer, not a query whose cost grows with the table.
+pub(crate) const STOCK_DEDUCTION_GAP_REPORT_LIMIT: i64 = 500;
+
+/// The bounded, newest-first `stock_deduction_gap` read for one outlet —
+/// the M4 acceptance-criterion-5 report's sanctioned data source. Ordered by
+/// `occurred_at DESC` with `id DESC` as a stable tiebreak (UUIDv7 ids sort
+/// with insertion order, so this stays newest-first even for two gaps
+/// recorded in the same instant).
+pub(crate) fn list_stock_deduction_gaps_for_outlet(
+    conn: &Connection,
+    outlet_id: &str,
+) -> DbResult<Vec<StockDeductionGap>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, outlet_id, order_id, order_item_id, menu_item_id, menu_item_variant_id, \
+                menu_item_name, quantity, reason, occurred_at, business_date \
+         FROM stock_deduction_gap WHERE outlet_id = ?1 \
+         ORDER BY occurred_at DESC, id DESC LIMIT ?2",
+    )?;
+    let rows = stmt
+        .query_map(params![outlet_id, STOCK_DEDUCTION_GAP_REPORT_LIMIT], |row| {
+            Ok(StockDeductionGap {
+                id: row.get(0)?,
+                outlet_id: row.get(1)?,
+                order_id: row.get(2)?,
+                order_item_id: row.get(3)?,
+                menu_item_id: row.get(4)?,
+                menu_item_variant_id: row.get(5)?,
+                menu_item_name: row.get(6)?,
+                quantity: row.get(7)?,
+                reason: row.get(8)?,
+                occurred_at: row.get(9)?,
+                business_date: row.get(10)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
 }
 
 // --------------------------------------------- stock_balance_snapshot ------
