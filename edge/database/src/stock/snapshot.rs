@@ -432,4 +432,147 @@ mod tests {
             "sealing an already-sealed day twice must not create a second row"
         );
     }
+
+    // ------------------------- criterion 7: measured, not asserted --------
+
+    /// Builds one outlet whose item has `sealed_days` business days of
+    /// history, every one of them sealed, followed by exactly
+    /// `unsealed_entries` entries on an unsealed day. Returns the VM steps
+    /// the SHIPPED current-stock read takes over that data.
+    ///
+    /// One entry per sealed day (rather than many) keeps the two scenarios
+    /// differing in exactly one variable: the volume of history behind the
+    /// seal.
+    fn vm_steps_for_history(sealed_days: usize, unsealed_entries: usize) -> i64 {
+        let mut db = Db::open_in_memory_for_tests().expect("open db");
+        seed_outlet(db.connection(), "outlet-1");
+        repo::upsert_inventory_item(
+            db.connection(),
+            &crate::model::InventoryItem {
+                id: "item-1".to_string(),
+                outlet_id: "outlet-1".to_string(),
+                sku: "PANEER-1KG".to_string(),
+                name: "Paneer".to_string(),
+                category: None,
+                dimension: "MASS".to_string(),
+                reorder_level_micro: None,
+                par_level_micro: None,
+                storage_location: None,
+                is_active: true,
+                yield_factor_ppm: 1_000_000,
+                config_version: 1,
+            },
+        )
+        .expect("seed item");
+
+        // Sealed history: one entry per day across consecutive days in 2020.
+        let start = DateTime::parse_from_rfc3339("2020-01-01T10:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        for d in 0..sealed_days {
+            let day = start + chrono::Duration::days(d as i64);
+            insert_ledger_entry(
+                &mut db,
+                "outlet-1",
+                "item-1",
+                grams(1),
+                &day.to_rfc3339(),
+                &day.format("%Y-%m-%d").to_string(),
+            );
+        }
+
+        // Seal everything above, from a "now" past all of it. Must clear the
+        // LONGEST history this helper is called with: 400 days from
+        // 2020-01-01 reaches 2021-02-04, and an earlier `now` silently seals
+        // only part of it — which the assertion below caught when it did.
+        let now = DateTime::parse_from_rfc3339("2021-07-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        {
+            let conn = db.connection_mut();
+            let tx = conn.transaction().expect("begin");
+            seal_unsealed_business_days(&tx, now).expect("seal history");
+            tx.commit().expect("commit");
+        }
+
+        let sealed_count: i64 = db
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM stock_balance_snapshot WHERE outlet_id = 'outlet-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count snapshots");
+        assert_eq!(
+            sealed_count, sealed_days as i64,
+            "every day of history must actually be sealed, or this measures the wrong thing"
+        );
+
+        // The unsealed tail, after the seal, on a later day.
+        for i in 0..unsealed_entries {
+            let at = DateTime::parse_from_rfc3339("2022-01-01T10:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc)
+                + chrono::Duration::minutes(i as i64);
+            insert_ledger_entry(
+                &mut db,
+                "outlet-1",
+                "item-1",
+                -grams(1),
+                &at.to_rfc3339(),
+                "2022-01-01",
+            );
+        }
+
+        repo::measure_list_current_stock_vm_steps(db.connection(), "outlet-1")
+            .expect("measure the shipped read")
+    }
+
+    /// **M4 acceptance criterion 7, measured rather than asserted.** The
+    /// engine counts the work; nothing here times a clock, so the result is
+    /// identical on a fast machine and a 4GB spinning-disk till, and a
+    /// regression cannot hide behind a generous timing margin.
+    ///
+    /// The claim under test is ADR-018 §9's whole reason for the sealed
+    /// snapshot: a stock read costs what the UNSEALED tail costs, and is
+    /// independent of how much sealed history sits behind it. If the read
+    /// ever regressed to scanning history — a dropped `entry_seq >` term, a
+    /// date predicate substituted for the mark — this number would climb
+    /// with `sealed_days` and the test would fail with both figures named.
+    #[test]
+    fn stock_reads_stay_bounded_after_a_sealed_snapshot() {
+        // Same unsealed tail, two very different volumes of sealed history.
+        let short_history = vm_steps_for_history(5, 3);
+        let long_history = vm_steps_for_history(400, 3);
+
+        assert!(
+            short_history > 0,
+            "the measurement itself must do work, or it is measuring nothing"
+        );
+        assert_eq!(
+            long_history, short_history,
+            "the bounded read must cost the same with 400 sealed days behind it as with 5. \
+             Measured VM steps: {short_history} at 5 sealed days, {long_history} at 400. \
+             A number that grows with sealed history means the read is scanning the ledger \
+             again rather than reading from the seal (ADR-018 §9)."
+        );
+    }
+
+    /// The companion that stops the test above from passing vacuously. If
+    /// the measurement were insensitive to everything, "cost does not grow
+    /// with sealed history" would be true and meaningless. Cost MUST grow
+    /// with the unsealed tail, because that is the work the read genuinely
+    /// has to do.
+    #[test]
+    fn the_measurement_does_respond_to_the_unsealed_tail() {
+        let small_tail = vm_steps_for_history(5, 3);
+        let large_tail = vm_steps_for_history(5, 60);
+
+        assert!(
+            large_tail > small_tail,
+            "a longer unsealed tail must cost more ({small_tail} steps at 3 entries vs \
+             {large_tail} at 60). If these were equal the measurement would be blind, and \
+             `stock_reads_stay_bounded_after_a_sealed_snapshot` would prove nothing."
+        );
+    }
 }

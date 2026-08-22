@@ -5772,27 +5772,57 @@ pub(crate) fn get_current_stock(
 /// [`get_current_stock`]'s same formula per item (a correlated subquery,
 /// not a materialised join — ADR-018 §9: "there is no materialized
 /// current-stock table"). Ordered by name for a stable, human-readable list.
+/// The SQL [`list_current_stock_for_outlet`] runs, hoisted to a constant for
+/// ONE reason: [`measure_list_current_stock_vm_steps`] must measure the
+/// shipped query, not a copy of it. A measurement that re-types the SQL it
+/// claims to bound proves the copy is bounded and nothing else — the same
+/// "harnesses do not count as evidence" rule ADR-018 §9 and docs/retro.md
+/// apply to acceptance runs, arriving here at the level of a single query.
+pub(crate) const LIST_CURRENT_STOCK_SQL: &str = concat!(
+    "SELECT ii.id, ii.name, ii.dimension, ii.reorder_level_micro, ii.par_level_micro, ",
+    "COALESCE(snap.closing_quantity_micro, 0) + COALESCE((",
+    "    SELECT SUM(sle.quantity_applied_micro) FROM stock_ledger_entry sle",
+    "     WHERE sle.outlet_id = ii.outlet_id AND sle.inventory_item_id = ii.id",
+    "       AND sle.entry_seq > COALESCE(snap.through_entry_seq, 0)",
+    "), 0) AS current_quantity_micro ",
+    "FROM inventory_item ii ",
+    "LEFT JOIN stock_balance_snapshot snap ",
+    "  ON snap.outlet_id = ii.outlet_id AND snap.inventory_item_id = ii.id ",
+    " AND snap.business_date = (",
+    "     SELECT MAX(s2.business_date) FROM stock_balance_snapshot s2",
+    "      WHERE s2.outlet_id = ii.outlet_id AND s2.inventory_item_id = ii.id",
+    ") ",
+    "WHERE ii.outlet_id = ?1 AND ii.is_active = 1 ",
+    "ORDER BY ii.name",
+);
+
+/// Runs [`LIST_CURRENT_STOCK_SQL`] to completion and reports the SQLite
+/// virtual-machine steps it took — the work the read actually did, counted
+/// by the engine rather than timed by a clock. M4 acceptance criterion 7
+/// says stock reads stay bounded after a sealed snapshot, **measured, not
+/// asserted**; a wall-clock assertion on a shared laptop measures the
+/// laptop, and an `EXPLAIN QUERY PLAN` assertion is a structural claim, not
+/// a measurement. VM steps are deterministic for given data, so the same
+/// scenario yields the same number on every machine and every run.
+#[cfg(test)]
+pub(crate) fn measure_list_current_stock_vm_steps(
+    conn: &Connection,
+    outlet_id: &str,
+) -> DbResult<i64> {
+    let mut stmt = conn.prepare(LIST_CURRENT_STOCK_SQL)?;
+    let mut rows = stmt.query(params![outlet_id])?;
+    // Drain fully: VM steps accrue as rows are stepped, so a partially
+    // consumed cursor would under-report the read's real cost.
+    while rows.next()?.is_some() {}
+    drop(rows);
+    Ok(stmt.get_status(rusqlite::StatementStatus::VmStep) as i64)
+}
+
 pub(crate) fn list_current_stock_for_outlet(
     conn: &Connection,
     outlet_id: &str,
 ) -> DbResult<Vec<CurrentStockLine>> {
-    let mut stmt = conn.prepare(
-        "SELECT ii.id, ii.name, ii.dimension, ii.reorder_level_micro, ii.par_level_micro, \
-                COALESCE(snap.closing_quantity_micro, 0) + COALESCE((
-                    SELECT SUM(sle.quantity_applied_micro) FROM stock_ledger_entry sle
-                     WHERE sle.outlet_id = ii.outlet_id AND sle.inventory_item_id = ii.id
-                       AND sle.entry_seq > COALESCE(snap.through_entry_seq, 0)
-                ), 0) AS current_quantity_micro
-         FROM inventory_item ii
-         LEFT JOIN stock_balance_snapshot snap
-           ON snap.outlet_id = ii.outlet_id AND snap.inventory_item_id = ii.id
-          AND snap.business_date = (
-              SELECT MAX(s2.business_date) FROM stock_balance_snapshot s2
-               WHERE s2.outlet_id = ii.outlet_id AND s2.inventory_item_id = ii.id
-          )
-         WHERE ii.outlet_id = ?1 AND ii.is_active = 1
-         ORDER BY ii.name",
-    )?;
+    let mut stmt = conn.prepare(LIST_CURRENT_STOCK_SQL)?;
     let rows = stmt
         .query_map(params![outlet_id], |row| {
             Ok(CurrentStockLine {
