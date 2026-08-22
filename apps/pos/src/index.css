@@ -258,6 +258,95 @@ button {
   color: #f66;
 }
 
+/* --------------------------------------------------- low stock banner -- */
+/* M4 acceptance criterion 4: an ingredient crossing its reorder level must
+   be VISIBLE TO A HUMAN on the POS. Fixed overlay, mirrors
+   `.print-failure-banner` but sits above it (higher z-index) so both can be
+   visible at once without one hiding the other, and is itself a button —
+   tapping it goes straight to the stock detail screen. */
+.low-stock-banner {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 48px;
+  z-index: 1001;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  width: 100%;
+  padding: 0.5rem 1rem;
+  background: #642;
+  border-top: 3px solid #fa3;
+  color: #fff;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.low-stock-summary {
+  font-weight: bold;
+}
+.low-stock-names {
+  flex: 1;
+}
+.low-stock-action {
+  text-decoration: underline;
+}
+
+/* -------------------------------------------------------- current stock -- */
+.current-stock-screen table,
+.wastage-screen table,
+.stock-count-screen table,
+.stock-deduction-gaps-screen table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.current-stock-screen th,
+.current-stock-screen td,
+.stock-count-screen th,
+.stock-count-screen td,
+.stock-deduction-gaps-screen th,
+.stock-deduction-gaps-screen td {
+  border-bottom: 1px solid #333;
+  padding: 0.5rem;
+  text-align: left;
+}
+.current-stock-row-low {
+  background: #431;
+}
+.current-stock-low-tag {
+  margin-left: 0.5rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: 3px;
+  background: #fa3;
+  color: #000;
+  font-weight: bold;
+  font-size: 0.75rem;
+}
+
+/* ------------------------------------------------------------- wastage -- */
+.wastage-form,
+.stock-count-open-form,
+.stock-count-resume-form,
+.stock-count-line-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-width: 360px;
+}
+.wastage-error,
+.stock-count-error {
+  color: #f66;
+}
+.wastage-success {
+  color: #6c6;
+}
+
+/* --------------------------------------------------------- stock count -- */
+.stock-count-sales-unaccounted {
+  font-weight: bold;
+}
+
 /* ------------------------------------------------------------ kots panel -- */
 .kots-panel {
   padding: 0.5rem 0;

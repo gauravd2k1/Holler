@@ -687,3 +687,249 @@ export async function findOpenCashShift(cashierUserId: string): Promise<CashShif
     throw toCommandError(err);
   }
 }
+
+// ------------------------------------------------------------ inventory (M4) --
+// ADR-018, apps/pos/src-tauri/src/dto.rs "inventory (M4)" section. None of
+// these shapes has a `packages/contracts` mirror — they are POS-local read
+// projections/wire shapes, the `MenuCategory` precedent above — so every
+// schema below matches the Rust DTO's field set verbatim rather than
+// inventing one. Quantities are integer MICRO-units (`domain/inventory.ts`
+// formats them); `StockDeductionGap.quantity` is the one field here that is
+// NOT micro — see that module for the distinction.
+
+const CurrentStockLineSchema = z.object({
+  inventory_item_id: z.string(),
+  inventory_item_name: z.string(),
+  dimension: z.string(),
+  current_quantity_micro: z.number().int(),
+  reorder_level_micro: z.number().int().nullable(),
+  par_level_micro: z.number().int().nullable(),
+  schema_version: z.literal(1),
+});
+export type CurrentStockLine = z.infer<typeof CurrentStockLineSchema>;
+
+/** The bounded, outlet-wide current-stock read — what the low-stock signal
+ * and every item picker in the wastage/count screens read from
+ * (`apps/pos/src-tauri/src/commands/inventory.rs` `list_current_stock`). */
+export async function listCurrentStock(): Promise<CurrentStockLine[]> {
+  try {
+    const raw = await invoke<unknown[]>("list_current_stock");
+    return raw.map((l) => CurrentStockLineSchema.parse(l));
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
+
+const StockDeductionGapSchema = z.object({
+  id: z.string(),
+  outlet_id: z.string(),
+  order_id: z.string(),
+  order_item_id: z.string(),
+  menu_item_id: z.string(),
+  menu_item_variant_id: z.string().nullable(),
+  menu_item_name: z.string(),
+  quantity: z.number().int(),
+  reason: z.string(),
+  occurred_at: z.string(),
+  business_date: z.string(),
+  schema_version: z.literal(1),
+});
+export type StockDeductionGap = z.infer<typeof StockDeductionGapSchema>;
+
+/** The "items sold with no recipe" report (M4 acceptance criterion 5) —
+ * `apps/pos/src-tauri/src/commands/inventory.rs` `list_stock_deduction_gaps`. */
+export async function listStockDeductionGaps(): Promise<StockDeductionGap[]> {
+  try {
+    const raw = await invoke<unknown[]>("list_stock_deduction_gaps");
+    return raw.map((g) => StockDeductionGapSchema.parse(g));
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
+
+const StockLedgerEntrySchema = z.object({
+  id: z.string(),
+  outlet_id: z.string(),
+  entry_seq: z.number().int(),
+  inventory_item_id: z.string(),
+  inventory_item_name: z.string(),
+  dimension: z.string(),
+  entry_type: z.string(),
+  origin: z.string(),
+  quantity_applied_micro: z.number().int(),
+  recipe_id: z.string().nullable(),
+  recipe_version: z.number().int().nullable(),
+  recipe_name: z.string().nullable(),
+  modifier_delta_id: z.string().nullable(),
+  modifier_name: z.string().nullable(),
+  modifier_delta_version: z.number().int().nullable(),
+  source_order_id: z.string().nullable(),
+  source_order_item_id: z.string().nullable(),
+  reason_code: z.string().nullable(),
+  note: z.string().nullable(),
+  occurred_at: z.string(),
+  business_date: z.string(),
+  created_by_user_id: z.string().nullable(),
+  unit_cost_paise: z.number().int().nullable(),
+  schema_version: z.literal(1),
+});
+export type StockLedgerEntry = z.infer<typeof StockLedgerEntrySchema>;
+
+/** Records a WASTAGE ledger entry. `quantity` is a WHOLE-NUMBER HUMAN-UNIT
+ * quantity (whole grams/millilitres/pieces, matching the item's own
+ * dimension) — the Rust side converts to micro-units
+ * (`apps/pos/src-tauri/src/commands/inventory.rs` `human_quantity_to_micro`);
+ * this function must never multiply by 1e6 itself. Rejects with
+ * `WASTAGE_REASON_REQUIRED`/`WASTAGE_QUANTITY_NOT_POSITIVE`/`NOT_FOUND`/
+ * `UNKNOWN_DIMENSION` — see `inventoryErrorMessage`. */
+export async function recordWastage(args: {
+  inventoryItemId: string;
+  quantity: number;
+  reasonCode: string;
+  note: string | null;
+  createdByUserId: string;
+}): Promise<StockLedgerEntry> {
+  try {
+    const raw = await invoke("record_wastage", {
+      inventoryItemId: args.inventoryItemId,
+      quantity: args.quantity,
+      reasonCode: args.reasonCode,
+      note: args.note,
+      createdByUserId: args.createdByUserId,
+    });
+    return StockLedgerEntrySchema.parse(raw);
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
+
+const StockCountSchema = z.object({
+  id: z.string(),
+  outlet_id: z.string(),
+  business_date: z.string(),
+  status: z.enum(["OPEN", "COMPLETED"]),
+  started_at: z.string(),
+  completed_at: z.string().nullable(),
+  counted_by_user_id: z.string().nullable(),
+  note: z.string().nullable(),
+  schema_version: z.literal(1),
+});
+export type StockCount = z.infer<typeof StockCountSchema>;
+
+/** Opens a new physical stock count for this outlet
+ * (`apps/pos/src-tauri/src/commands/inventory.rs` `open_stock_count`). */
+export async function openStockCount(
+  countedByUserId: string | null,
+  note: string | null,
+): Promise<StockCount> {
+  try {
+    const raw = await invoke("open_stock_count", { countedByUserId, note });
+    return StockCountSchema.parse(raw);
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
+
+const StockCountLineSchema = z.object({
+  id: z.string(),
+  stock_count_id: z.string(),
+  inventory_item_id: z.string(),
+  inventory_item_name: z.string(),
+  dimension: z.string(),
+  counted_quantity_micro: z.number().int(),
+  expected_quantity_micro: z.number().int(),
+  note: z.string().nullable(),
+  schema_version: z.literal(1),
+});
+export type StockCountLine = z.infer<typeof StockCountLineSchema>;
+
+/** Adds or corrects one counted line on a still-OPEN count. `quantity` is a
+ * WHOLE-NUMBER HUMAN-UNIT quantity, converted to micro-units on the Rust
+ * side exactly as `recordWastage`'s does — never multiply by 1e6 here.
+ * Rejects with `STOCK_COUNT_NOT_OPEN` once the count is COMPLETED — a count
+ * is mutable only while OPEN. */
+export async function addOrUpdateStockCountLine(args: {
+  stockCountId: string;
+  inventoryItemId: string;
+  quantity: number;
+  note: string | null;
+}): Promise<StockCountLine> {
+  try {
+    const raw = await invoke("add_or_update_stock_count_line", {
+      stockCountId: args.stockCountId,
+      inventoryItemId: args.inventoryItemId,
+      quantity: args.quantity,
+      note: args.note,
+    });
+    return StockCountLineSchema.parse(raw);
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
+
+export async function listStockCountLines(stockCountId: string): Promise<StockCountLine[]> {
+  try {
+    const raw = await invoke<unknown[]>("list_stock_count_lines", { stockCountId });
+    return raw.map((l) => StockCountLineSchema.parse(l));
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
+
+export async function getStockCount(stockCountId: string): Promise<StockCount | null> {
+  try {
+    const raw = await invoke("get_stock_count", { stockCountId });
+    return raw === null ? null : StockCountSchema.parse(raw);
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
+
+/** OPEN -> COMPLETED. Rejects with `STOCK_COUNT_NOT_OPEN` if the count is
+ * already COMPLETED — a completed count cannot be completed twice, and this
+ * must surface as a clear message, not a silent no-op. */
+export async function completeStockCount(stockCountId: string): Promise<StockCount> {
+  try {
+    const raw = await invoke("complete_stock_count", { stockCountId });
+    return StockCountSchema.parse(raw);
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
+
+const StockCountVarianceLineSchema = z.object({
+  inventory_item_id: z.string(),
+  inventory_item_name: z.string(),
+  dimension: z.string(),
+  counted_quantity_micro: z.number().int(),
+  expected_quantity_micro: z.number().int(),
+  variance_quantity_micro: z.number().int(),
+  variance_percentage_bps: z.number().int().nullable(),
+  schema_version: z.literal(1),
+});
+export type StockCountVarianceLine = z.infer<typeof StockCountVarianceLineSchema>;
+
+/** A completed count's variance report. `sales_unaccounted` is the named
+ * "N sales unaccounted" term (ADR-018 §10.1) — screens must render it as its
+ * own line, never fold it into any line's shrinkage. Every number here is
+ * computed by the edge; this function performs no arithmetic of its own
+ * (CLAUDE.md: never recompute variance arithmetic in TypeScript). */
+const StockCountVarianceReportSchema = z.object({
+  stock_count_id: z.string(),
+  business_date: z.string(),
+  lines: z.array(StockCountVarianceLineSchema),
+  sales_unaccounted: z.number().int(),
+  schema_version: z.literal(1),
+});
+export type StockCountVarianceReport = z.infer<typeof StockCountVarianceReportSchema>;
+
+export async function getStockCountVarianceReport(
+  stockCountId: string,
+): Promise<StockCountVarianceReport> {
+  try {
+    const raw = await invoke("get_stock_count_variance_report", { stockCountId });
+    return StockCountVarianceReportSchema.parse(raw);
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}

@@ -23,6 +23,7 @@ import {
 } from "../domain/kitchen";
 import { useAuthStore } from "../store/auth";
 import { PrintFailureBanner } from "./PrintFailureBanner";
+import { LowStockBanner } from "./LowStockBanner";
 
 // The only reporting permitted in Milestone 1 (CLAUDE.md EXCLUDES: "reporting
 // beyond a basic order list"). No filtering, totals-by-day, or exports.
@@ -90,6 +91,7 @@ export function OrderListScreen() {
   return (
     <main className="order-list-screen">
       <PrintFailureBanner />
+      <LowStockBanner />
       <header>
         <h1>Orders</h1>
         <button type="button" onClick={() => void navigate({ to: "/" })}>

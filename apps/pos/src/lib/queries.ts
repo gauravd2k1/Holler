@@ -2,6 +2,9 @@ import { useQuery } from "@tanstack/react-query";
 import {
   getCashShift,
   getOrder,
+  getStockCount,
+  getStockCountVarianceReport,
+  listCurrentStock,
   listDiscountDefinitions,
   listFailedPrintJobs,
   listInvoicesForOrder,
@@ -11,6 +14,8 @@ import {
   listOrders,
   listPaymentsForOrder,
   listStations,
+  listStockCountLines,
+  listStockDeductionGaps,
   listTables,
 } from "./tauri";
 
@@ -29,6 +34,12 @@ export const queryKeys = {
   payments: (orderId: string) => ["payments", orderId] as const,
   cashShift: (cashShiftId: string) => ["cash-shift", cashShiftId] as const,
   discountDefinitions: ["discount-definitions"] as const,
+  currentStock: ["current-stock"] as const,
+  stockDeductionGaps: ["stock-deduction-gaps"] as const,
+  stockCount: (stockCountId: string) => ["stock-count", stockCountId] as const,
+  stockCountLines: (stockCountId: string) => ["stock-count-lines", stockCountId] as const,
+  stockCountVarianceReport: (stockCountId: string) =>
+    ["stock-count-variance-report", stockCountId] as const,
 };
 
 export function useMenuItemsQuery() {
@@ -108,5 +119,50 @@ export function useDiscountDefinitionsQuery() {
   return useQuery({
     queryKey: queryKeys.discountDefinitions,
     queryFn: listDiscountDefinitions,
+  });
+}
+
+// ------------------------------------------------------------ inventory (M4) --
+
+/** Polled — this milestone has no push channel from the edge's stock ledger
+ * to the UI (the same reason `useFailedPrintJobsQuery` polls). A short
+ * interval keeps the low-stock signal (M4 acceptance criterion 4) live
+ * during service without the cashier needing to navigate anywhere. */
+export function useCurrentStockQuery() {
+  return useQuery({
+    queryKey: queryKeys.currentStock,
+    queryFn: listCurrentStock,
+    refetchInterval: 15000,
+  });
+}
+
+export function useStockDeductionGapsQuery() {
+  return useQuery({
+    queryKey: queryKeys.stockDeductionGaps,
+    queryFn: listStockDeductionGaps,
+  });
+}
+
+export function useStockCountQuery(stockCountId: string | null) {
+  return useQuery({
+    queryKey: queryKeys.stockCount(stockCountId ?? "none"),
+    queryFn: () => getStockCount(stockCountId as string),
+    enabled: stockCountId !== null,
+  });
+}
+
+export function useStockCountLinesQuery(stockCountId: string | null) {
+  return useQuery({
+    queryKey: queryKeys.stockCountLines(stockCountId ?? "none"),
+    queryFn: () => listStockCountLines(stockCountId as string),
+    enabled: stockCountId !== null,
+  });
+}
+
+export function useStockCountVarianceReportQuery(stockCountId: string | null) {
+  return useQuery({
+    queryKey: queryKeys.stockCountVarianceReport(stockCountId ?? "none"),
+    queryFn: () => getStockCountVarianceReport(stockCountId as string),
+    enabled: stockCountId !== null,
   });
 }

@@ -6,6 +6,10 @@ import { OrderListScreen } from "../components/OrderListScreen";
 import { BillingScreen } from "../components/BillingScreen";
 import { CrashScreen } from "../components/CrashScreen";
 import { ErrorBoundary } from "../components/ErrorBoundary";
+import { CurrentStockScreen } from "../components/CurrentStockScreen";
+import { WastageScreen } from "../components/WastageScreen";
+import { StockCountListScreen, StockCountScreen } from "../components/StockCountScreen";
+import { StockDeductionGapsScreen } from "../components/StockDeductionGapsScreen";
 
 /** Wraps a screen so OUR boundary sees the throw before the router's
  * CatchBoundary does.
@@ -67,7 +71,54 @@ const billingRoute = createRoute({
   component: withBoundary(BillingScreen),
 });
 
-const routeTree = rootRoute.addChildren([loginRoute, posRoute, ordersRoute, billingRoute]);
+// ------------------------------------------------------------ inventory (M4) --
+
+const currentStockRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/inventory/stock",
+  beforeLoad: requireAuth,
+  component: withBoundary(CurrentStockScreen),
+});
+
+const wastageRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/inventory/wastage",
+  beforeLoad: requireAuth,
+  component: withBoundary(WastageScreen),
+});
+
+const stockCountListRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/inventory/counts",
+  beforeLoad: requireAuth,
+  component: withBoundary(StockCountListScreen),
+});
+
+const stockCountRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/inventory/counts/$stockCountId",
+  beforeLoad: requireAuth,
+  component: withBoundary(StockCountScreen),
+});
+
+const stockDeductionGapsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/inventory/gaps",
+  beforeLoad: requireAuth,
+  component: withBoundary(StockDeductionGapsScreen),
+});
+
+const routeTree = rootRoute.addChildren([
+  loginRoute,
+  posRoute,
+  ordersRoute,
+  billingRoute,
+  currentStockRoute,
+  wastageRoute,
+  stockCountListRoute,
+  stockCountRoute,
+  stockDeductionGapsRoute,
+]);
 
 // TanStack Router catches a throw inside a route component in its own
 // CatchBoundary, BEFORE any React error boundary of ours can see it, and its

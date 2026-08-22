@@ -10,6 +10,7 @@ import { hasPermission } from "../domain/permissions";
 import { useAuthStore } from "../store/auth";
 import { useCartStore } from "../store/cart";
 import { PrintFailureBanner } from "./PrintFailureBanner";
+import { LowStockBanner } from "./LowStockBanner";
 
 // docs/spec/ordering.md §POS layout: TOP search + order-type + table,
 // LEFT categories, CENTER menu grid, RIGHT cart, BOTTOM subtotal/send.
@@ -156,6 +157,7 @@ export function PosScreen() {
   return (
     <main className="pos-screen">
       <PrintFailureBanner />
+      <LowStockBanner />
       <header className="pos-top-bar">
         <input
           className="pos-search"
@@ -193,6 +195,9 @@ export function PosScreen() {
         )}
         <button type="button" onClick={() => void navigate({ to: "/orders" })}>
           Orders
+        </button>
+        <button type="button" onClick={() => void navigate({ to: "/inventory/stock" })}>
+          Stock
         </button>
       </header>
 
