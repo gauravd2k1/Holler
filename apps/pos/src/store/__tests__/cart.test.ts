@@ -35,6 +35,7 @@ const MENU_ITEMS: MenuItem[] = [
     base_price_paise: 25000,
     is_available: true,
     tax_profile_id: null,
+    hsn_sac: null,
     config_version: 1,
     schema_version: 1,
   },

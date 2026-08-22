@@ -118,6 +118,7 @@ describe("listMenuItems", () => {
         base_price_paise: 25000,
         is_available: true,
         tax_profile_id: null,
+        hsn_sac: "2106",
         config_version: 1,
         schema_version: 1,
       },
@@ -137,6 +138,7 @@ describe("listMenuItems", () => {
         base_price_paise: 25000,
         is_available: true,
         tax_profile_id: null,
+        hsn_sac: "2106",
         config_version: 1,
       },
     ]);
