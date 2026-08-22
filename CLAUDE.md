@@ -27,7 +27,8 @@ Full vision: `docs/vision.md`. Full spec source: `HOLLER_MASTER_PROMPT.md` (orch
 The split that matters: WSL2 hosts the **cloud** dependencies for local development and nothing else. It is a convenience — Hyper-V, a remote database or a native Go build would serve equally — and no Holler component requires it. Nothing in the shipped outlet path touches it.
 
 ## Dev environment (developer convenience only — NOT a product requirement)
-- Dev machine here: Windows laptop (i7-9750H, 16GB, GTX1050). Cap concurrent agent sessions at 3.
+- Dev machine here: Windows laptop (i7-14650HX, 24 logical cores, 32GB RAM). Cap concurrent agent sessions at 3 — a scheduling choice, no longer a memory one. Page file is system-managed (~62GB on D:, peak use ~16GB), so "paging file too small" is **not** the expected failure on this box; corrected 2026-08-22, having previously read i7-9750H/16GB.
+- **The recurring Rust build failure here is `LNK1104: cannot open file ...exe`, and it is McAfee, not memory.** McAfee is the active real-time scanner (Defender's `WinDefend` service is stopped/passive); it holds a lock on each freshly-linked test binary, so a different test target fails on each run. Compilation has already succeeded when this fires. Re-running makes forward progress, because cargo caches every binary that did link — two or three retries reach green. Do not read it as a code error, and do not "fix" it by reducing parallelism.
 - `make dev` brings up the **cloud** stack for local development. It is never run at an outlet. Frontend runs natively for HMR.
 
 ## Money / time / identifiers
