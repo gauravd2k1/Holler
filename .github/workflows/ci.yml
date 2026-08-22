@@ -104,6 +104,12 @@ jobs:
       # This greps them against the frozen list in both directions.
       - name: event type drift check
         run: node scripts/check-event-type-drift.mjs
+      # This script existed but was never run by CI — the "verify the runner,
+      # not the file" defect, in the checker itself. It pins the CLAUDE.md
+      # milestone block to .claude/current-milestone, and the contracts-version
+      # + migration-high-water prose to package.json and the files on disk.
+      - name: milestone + contracts marker check
+        run: node scripts/check-milestone-marker.mjs
 
   # The Rust edge crates carry the majority of Milestone 1's test coverage —
   # including the offline order-creation test that IS the milestone acceptance

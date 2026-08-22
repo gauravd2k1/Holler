@@ -240,11 +240,13 @@ never repeats for any index up to `i64::MAX`, plus a per-business-day counter
 reset. Regression test `formatter_never_repeats_past_the_old_wrap_point` drives
 past the old collision point (25975, where `#Z999` rolled to `#A1`).
 
-**Contracts are FROZEN at v0.4.7** (was 0.4.6 in the last resume; CLAUDE.md now
-says 0.4.7 with migrations through 0012). 0.4.7 added `printer_role` as a join
-table rather than a column on `printer`, so nothing that compiled stopped
-compiling. A printer with no role row is a candidate for **neither** path —
-absence is never read as consent.
+**Contracts are FROZEN at v0.5.7** (this line was written at 0.4.7 on
+2026-08-20 and went stale within two days — it is now cross-checked against
+`packages/contracts/package.json` by `scripts/check-milestone-marker.mjs`,
+which fails the build on disagreement). The 0.4.7 note that stood here: it
+added `printer_role` as a join table rather than a column on `printer`, so
+nothing that compiled stopped compiling, and a printer with no role row is a
+candidate for **neither** path — absence is never read as consent.
 
 | Where | What |
 |---|---|

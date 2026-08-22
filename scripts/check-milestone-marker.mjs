@@ -96,4 +96,91 @@ try {
   );
 }
 
-console.log(`check-milestone-marker: ok — CLAUDE.md and .claude/current-milestone both say milestone ${marker}`);
+// ---------------------------------------------------------------------------
+// Contracts version: the same drift, fourth instance. CLAUDE.md said 0.5.3 and
+// RESUME.md said 0.4.7 while package.json said 0.5.7 (2026-08-22) — the third
+// time the prose copy of the version had gone stale. The version is machine-
+// readable in exactly one place (packages/contracts/package.json); every prose
+// copy must either match it or fail the build.
+
+const pkg = JSON.parse(read("packages/contracts/package.json"));
+const pkgVersion = pkg.version;
+if (!/^\d+\.\d+\.\d+$/.test(pkgVersion ?? "")) {
+  console.error(
+    `check-milestone-marker: packages/contracts/package.json has no semver "version", got ${JSON.stringify(pkgVersion)}`,
+  );
+  process.exit(1);
+}
+
+// CLAUDE.md's contracts heading is REQUIRED: builders read it as the frozen
+// baseline. Mismatch or absence both fail.
+const contractsHeading = claudeMd.match(/^## Contracts status: FROZEN at v(\d+\.\d+\.\d+)\b/m);
+if (!contractsHeading) {
+  console.error(
+    'check-milestone-marker: CLAUDE.md has no "## Contracts status: FROZEN at v<x.y.z>" heading. ' +
+      "Builders read that line as the frozen baseline; it must exist and name a version.",
+  );
+  process.exit(1);
+}
+if (contractsHeading[1] !== pkgVersion) {
+  console.error(
+    `check-milestone-marker: CONTRACTS VERSION DISAGREEMENT\n` +
+      `  packages/contracts/package.json : ${pkgVersion}\n` +
+      `  CLAUDE.md contracts heading     : ${contractsHeading[1]}\n\n` +
+      `Builders read CLAUDE.md's line as the frozen baseline. Update the heading\n` +
+      `(and the addendum prose beneath it, not just the number), then re-run.`,
+  );
+  process.exit(1);
+}
+
+// The migration high-water marks on the same heading line, against the actual
+// files on disk — the runner, not the prose.
+const { readdirSync } = await import("node:fs");
+const highest = (dir) =>
+  Math.max(
+    0,
+    ...readdirSync(join(repoRoot, dir))
+      .map((f) => f.match(/^(\d{4})_/))
+      .filter(Boolean)
+      .map((m) => Number(m[1])),
+  );
+const migrations = claudeMd.match(/migrations through sqlite (\d{4}) \/ postgres (\d{4})/);
+if (!migrations) {
+  console.error(
+    'check-milestone-marker: CLAUDE.md\'s contracts heading must carry "migrations through sqlite NNNN / postgres NNNN".',
+  );
+  process.exit(1);
+}
+const sqliteHigh = highest("packages/contracts/sqlite");
+const postgresHigh = highest("packages/contracts/postgres");
+if (Number(migrations[1]) !== sqliteHigh || Number(migrations[2]) !== postgresHigh) {
+  console.error(
+    `check-milestone-marker: MIGRATION HIGH-WATER DISAGREEMENT\n` +
+      `  on disk   : sqlite ${String(sqliteHigh).padStart(4, "0")} / postgres ${String(postgresHigh).padStart(4, "0")}\n` +
+      `  CLAUDE.md : sqlite ${migrations[1]} / postgres ${migrations[2]}`,
+  );
+  process.exit(1);
+}
+
+// RESUME.md is a point-in-time snapshot, so the claim may legitimately be
+// absent (warn) — but a PRESENT claim that disagrees is exactly the stale copy
+// this check exists for (fail).
+const resumeMd = read("docs/RESUME.md");
+const resumeClaim = resumeMd.match(/Contracts are FROZEN at v(\d+\.\d+\.\d+)\b/);
+if (resumeClaim && resumeClaim[1] !== pkgVersion) {
+  console.error(
+    `check-milestone-marker: docs/RESUME.md claims contracts v${resumeClaim[1]} but ` +
+      `packages/contracts/package.json says ${pkgVersion}. A fresh session reads RESUME.md ` +
+      `first; update the claim or drop it.`,
+  );
+  process.exit(1);
+}
+if (!resumeClaim) {
+  console.warn(
+    "check-milestone-marker: note — docs/RESUME.md carries no 'Contracts are FROZEN at v…' claim; nothing to cross-check there.",
+  );
+}
+
+console.log(
+  `check-milestone-marker: ok — milestone ${marker}; contracts v${pkgVersion}; migrations sqlite ${String(sqliteHigh).padStart(4, "0")} / postgres ${String(postgresHigh).padStart(4, "0")}`,
+);

@@ -398,3 +398,13 @@ Decided before T4 rather than during it. `stock_ledger_entry` and `stock_deducti
 
 **The ingest rule does not change.** Batches stay `SyncEnvelope`-wrapped with `aggregate_type` and `direction` validated per §10; a mismatch is still 422. Ranged sync changes the cursor, not the envelope.
 
+### The transport rule, general form (2026-08-22)
+
+Written down so the next edge→cloud aggregate's transport is **derivable, not remembered**:
+
+> **High-volume stream rows that are meaningful only in aggregate → ranged sync on a monotone sequence.** Ledger entries, deduction gaps. Nobody asks "what happened to entry 8,412?"; they ask "is the stream replayed through the cursor?"
+>
+> **Low-volume, individually meaningful business events → the outbox.** A stock count opened or completed, an order, a payment. Each has its own identity, its own consumers, and earns its own row.
+
+Two corollaries, both already live: the missing `_with_outbox` sibling for stock-count open/complete is correctly an **outbox** fix — do not fold counts onto ranged sync because the machinery is nearby; and do not fold the ledger onto the outbox because the event enum is nearby. A proposal that moves an aggregate across this line is an ADR change, not a refactor.
+
