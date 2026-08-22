@@ -150,6 +150,21 @@ impl From<holler_edge_database::DbError> for AppError {
             DbError::InvoiceNotFoundForPayment { .. } => {
                 AppError::new("INVOICE_NOT_FOUND_FOR_PAYMENT", message)
             }
+            // Milestone 4 (ADR-018 §11, T5): the edge's own message already
+            // names the offending magnitude — surfaced verbatim (§64) rather
+            // than a generic "something went wrong", so a wastage entry
+            // submitted with no reason tells the cashier exactly why it was
+            // rejected.
+            DbError::WastageReasonRequired => {
+                AppError::new("WASTAGE_REASON_REQUIRED", message)
+            }
+            DbError::WastageQuantityNotPositive { .. } => {
+                AppError::new("WASTAGE_QUANTITY_NOT_POSITIVE", message)
+            }
+            // A caller tried to add/correct a line on, or complete, a count
+            // that is not currently OPEN — the message already names the
+            // count id and its actual status.
+            DbError::StockCountNotOpen { .. } => AppError::new("STOCK_COUNT_NOT_OPEN", message),
             _other => AppError::new("STORAGE_ERROR", message),
         }
     }

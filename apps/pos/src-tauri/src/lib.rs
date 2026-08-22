@@ -68,6 +68,14 @@ pub fn run() {
             commands::billing::record_paid_in_out,
             commands::billing::get_cash_shift,
             commands::billing::find_open_cash_shift,
+            commands::inventory::list_current_stock,
+            commands::inventory::record_wastage,
+            commands::inventory::open_stock_count,
+            commands::inventory::add_or_update_stock_count_line,
+            commands::inventory::list_stock_count_lines,
+            commands::inventory::get_stock_count,
+            commands::inventory::complete_stock_count,
+            commands::inventory::get_stock_count_variance_report,
         ])
         .build(tauri::generate_context!())
         .expect("error while building the Holler POS application")

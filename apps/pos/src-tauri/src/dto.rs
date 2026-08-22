@@ -981,3 +981,215 @@ impl From<holler_edge_printer::model::FailedPrintJobView> for FailedPrintJob {
         }
     }
 }
+
+// --------------------------------------------------------- inventory (M4) --
+// ADR-018, `packages/contracts/src/types/inventory.ts`. Field names mirror
+// that file exactly, the same discipline every other DTO in this module
+// follows, so the frontend's generated Zod schemas parse these unchanged.
+
+/// The bounded, outlet-wide current-stock read (ADR-018 §9) — what T5's
+/// low-stock surfacing and the wastage/count item pickers both read from.
+/// No `packages/contracts` mirror exists for this shape (it is a POS-local
+/// read projection, not a stored aggregate) — a local Zod schema on the
+/// frontend, the `MenuCategory` precedent this module's own doc comment
+/// already names.
+#[derive(Debug, Clone, Serialize)]
+pub struct CurrentStockLine {
+    pub inventory_item_id: String,
+    pub inventory_item_name: String,
+    pub dimension: String,
+    pub current_quantity_micro: i64,
+    pub reorder_level_micro: Option<i64>,
+    pub par_level_micro: Option<i64>,
+    pub schema_version: u8,
+}
+
+impl From<db::CurrentStockLine> for CurrentStockLine {
+    fn from(l: db::CurrentStockLine) -> Self {
+        Self {
+            inventory_item_id: l.inventory_item_id,
+            inventory_item_name: l.inventory_item_name,
+            dimension: l.dimension,
+            current_quantity_micro: l.current_quantity_micro,
+            reorder_level_micro: l.reorder_level_micro,
+            par_level_micro: l.par_level_micro,
+            schema_version: 1,
+        }
+    }
+}
+
+/// Mirrors `StockLedgerEntrySchema` — returned by `record_wastage` so the
+/// cashier's screen can display what was actually written without a second
+/// read.
+#[derive(Debug, Clone, Serialize)]
+pub struct StockLedgerEntry {
+    pub id: String,
+    pub outlet_id: String,
+    pub entry_seq: i64,
+    pub inventory_item_id: String,
+    pub inventory_item_name: String,
+    pub dimension: String,
+    pub entry_type: String,
+    pub origin: String,
+    pub quantity_applied_micro: i64,
+    pub recipe_id: Option<String>,
+    pub recipe_version: Option<i64>,
+    pub recipe_name: Option<String>,
+    pub modifier_delta_id: Option<String>,
+    pub modifier_name: Option<String>,
+    pub modifier_delta_version: Option<i64>,
+    pub source_order_id: Option<String>,
+    pub source_order_item_id: Option<String>,
+    pub reason_code: Option<String>,
+    pub note: Option<String>,
+    pub occurred_at: String,
+    pub business_date: String,
+    pub created_by_user_id: Option<String>,
+    pub unit_cost_paise: Option<i64>,
+    pub schema_version: u8,
+}
+
+impl From<db::StockLedgerEntry> for StockLedgerEntry {
+    fn from(e: db::StockLedgerEntry) -> Self {
+        Self {
+            id: e.id,
+            outlet_id: e.outlet_id,
+            entry_seq: e.entry_seq,
+            inventory_item_id: e.inventory_item_id,
+            inventory_item_name: e.inventory_item_name,
+            dimension: e.dimension,
+            entry_type: e.entry_type,
+            origin: e.origin,
+            quantity_applied_micro: e.quantity_applied_micro,
+            recipe_id: e.recipe_id,
+            recipe_version: e.recipe_version,
+            recipe_name: e.recipe_name,
+            modifier_delta_id: e.modifier_delta_id,
+            modifier_name: e.modifier_name,
+            modifier_delta_version: e.modifier_delta_version,
+            source_order_id: e.source_order_id,
+            source_order_item_id: e.source_order_item_id,
+            reason_code: e.reason_code,
+            note: e.note,
+            occurred_at: e.occurred_at,
+            business_date: e.business_date,
+            created_by_user_id: e.created_by_user_id,
+            unit_cost_paise: e.unit_cost_paise,
+            schema_version: 1,
+        }
+    }
+}
+
+/// Mirrors `StockCountSchema`.
+#[derive(Debug, Clone, Serialize)]
+pub struct StockCount {
+    pub id: String,
+    pub outlet_id: String,
+    pub business_date: String,
+    pub status: String,
+    pub started_at: String,
+    pub completed_at: Option<String>,
+    pub counted_by_user_id: Option<String>,
+    pub note: Option<String>,
+    pub schema_version: u8,
+}
+
+impl From<db::StockCount> for StockCount {
+    fn from(c: db::StockCount) -> Self {
+        Self {
+            id: c.id,
+            outlet_id: c.outlet_id,
+            business_date: c.business_date,
+            status: c.status,
+            started_at: c.started_at,
+            completed_at: c.completed_at,
+            counted_by_user_id: c.counted_by_user_id,
+            note: c.note,
+            schema_version: 1,
+        }
+    }
+}
+
+/// Mirrors `StockCountLineSchema`.
+#[derive(Debug, Clone, Serialize)]
+pub struct StockCountLine {
+    pub id: String,
+    pub stock_count_id: String,
+    pub inventory_item_id: String,
+    pub inventory_item_name: String,
+    pub dimension: String,
+    pub counted_quantity_micro: i64,
+    pub expected_quantity_micro: i64,
+    pub note: Option<String>,
+    pub schema_version: u8,
+}
+
+impl From<db::StockCountLine> for StockCountLine {
+    fn from(l: db::StockCountLine) -> Self {
+        Self {
+            id: l.id,
+            stock_count_id: l.stock_count_id,
+            inventory_item_id: l.inventory_item_id,
+            inventory_item_name: l.inventory_item_name,
+            dimension: l.dimension,
+            counted_quantity_micro: l.counted_quantity_micro,
+            expected_quantity_micro: l.expected_quantity_micro,
+            note: l.note,
+            schema_version: 1,
+        }
+    }
+}
+
+/// One line of a completed count's variance report — no `packages/contracts`
+/// mirror exists (it is DERIVED, never stored — ADR-018), so this is a
+/// POS-local wire shape, field-for-field `StockCountVarianceLine`.
+#[derive(Debug, Clone, Serialize)]
+pub struct StockCountVarianceLine {
+    pub inventory_item_id: String,
+    pub inventory_item_name: String,
+    pub dimension: String,
+    pub counted_quantity_micro: i64,
+    pub expected_quantity_micro: i64,
+    pub variance_quantity_micro: i64,
+    pub variance_percentage_bps: Option<i64>,
+    pub schema_version: u8,
+}
+
+impl From<db::StockCountVarianceLine> for StockCountVarianceLine {
+    fn from(l: db::StockCountVarianceLine) -> Self {
+        Self {
+            inventory_item_id: l.inventory_item_id,
+            inventory_item_name: l.inventory_item_name,
+            dimension: l.dimension,
+            counted_quantity_micro: l.counted_quantity_micro,
+            expected_quantity_micro: l.expected_quantity_micro,
+            variance_quantity_micro: l.variance_quantity_micro,
+            variance_percentage_bps: l.variance_percentage_bps,
+            schema_version: 1,
+        }
+    }
+}
+
+/// A completed count's variance report. `sales_unaccounted` is the named
+/// "N sales unaccounted" term (ADR-018 §10.1) — rendered standalone by the
+/// count screen, never folded into any line's shrinkage.
+#[derive(Debug, Clone, Serialize)]
+pub struct StockCountVarianceReport {
+    pub stock_count_id: String,
+    pub business_date: String,
+    pub lines: Vec<StockCountVarianceLine>,
+    pub sales_unaccounted: i64,
+    pub schema_version: u8,
+}
+
+impl From<db::StockCountVarianceReport> for StockCountVarianceReport {
+    fn from(r: db::StockCountVarianceReport) -> Self {
+        Self {
+            stock_count_id: r.stock_count_id,
+            business_date: r.business_date,
+            lines: r.lines.into_iter().map(StockCountVarianceLine::from).collect(),
+            sales_unaccounted: r.sales_unaccounted,
+            schema_version: 1,
+        }
+    }
+}

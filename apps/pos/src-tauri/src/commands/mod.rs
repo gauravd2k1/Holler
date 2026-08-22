@@ -5,6 +5,7 @@
 
 pub mod auth;
 pub mod billing;
+pub mod inventory;
 pub mod kitchen;
 pub mod menu;
 pub mod orders;
