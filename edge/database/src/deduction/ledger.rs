@@ -434,3 +434,147 @@ fn deduct_modifiers_for_line(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::Outlet;
+    use crate::Db;
+
+    fn seed_outlet(conn: &rusqlite::Connection, id: &str) {
+        repo::upsert_outlet(
+            conn,
+            &Outlet {
+                id: id.to_string(),
+                brand_id: "brand-1".to_string(),
+                name: format!("Outlet {id}"),
+                timezone: "Asia/Kolkata".to_string(),
+                config_version: 1,
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+                updated_at: "2026-01-01T00:00:00Z".to_string(),
+            },
+        )
+        .expect("seed outlet");
+    }
+
+    fn gap(outlet_id: &str, name: &str, occurred_at: &str) -> NewStockDeductionGap {
+        NewStockDeductionGap {
+            outlet_id: outlet_id.to_string(),
+            order_id: "order-1".to_string(),
+            order_item_id: "order-item-1".to_string(),
+            menu_item_id: "menu-item-1".to_string(),
+            menu_item_variant_id: None,
+            menu_item_name: name.to_string(),
+            quantity: 1,
+            reason: "NO_RECIPE".to_string(),
+            occurred_at: occurred_at.to_string(),
+            business_date: "2026-08-21".to_string(),
+        }
+    }
+
+    /// The acceptance-criterion-5 report must show the most recent gaps
+    /// first, and must never leak another outlet's rows into this outlet's
+    /// report.
+    #[test]
+    fn list_stock_deduction_gaps_is_newest_first_and_scoped_to_one_outlet() {
+        let mut db = Db::open_in_memory_for_tests().expect("open db");
+        seed_outlet(db.connection(), "outlet-1");
+        seed_outlet(db.connection(), "outlet-2");
+
+        let conn = db.connection_mut();
+        let tx = conn.transaction().expect("begin");
+        insert_stock_deduction_gap(&tx, "gap-1", &gap("outlet-1", "Oldest", "2026-08-21T10:00:00Z"))
+            .expect("insert oldest");
+        insert_stock_deduction_gap(&tx, "gap-3", &gap("outlet-1", "Newest", "2026-08-21T12:00:00Z"))
+            .expect("insert newest");
+        insert_stock_deduction_gap(&tx, "gap-2", &gap("outlet-1", "Middle", "2026-08-21T11:00:00Z"))
+            .expect("insert middle");
+        insert_stock_deduction_gap(&tx, "gap-9", &gap("outlet-2", "Other outlet", "2026-08-21T13:00:00Z"))
+            .expect("insert other outlet");
+        tx.commit().expect("commit");
+
+        let rows = db.list_stock_deduction_gaps("outlet-1").expect("read gaps");
+        let names: Vec<&str> = rows.iter().map(|g| g.menu_item_name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["Newest", "Middle", "Oldest"],
+            "the report is ordered occurred_at DESC"
+        );
+        assert!(
+            rows.iter().all(|g| g.outlet_id == "outlet-1"),
+            "outlet-2's gap must never appear in outlet-1's report"
+        );
+
+        // Round-trip one row field-for-field: a read model that silently
+        // drops or transposes a column would still satisfy the ordering
+        // assertions above.
+        let newest = &rows[0];
+        assert_eq!(newest.id, "gap-3");
+        assert_eq!(newest.order_id, "order-1");
+        assert_eq!(newest.order_item_id, "order-item-1");
+        assert_eq!(newest.menu_item_id, "menu-item-1");
+        assert_eq!(newest.menu_item_variant_id, None);
+        assert_eq!(newest.quantity, 1);
+        assert_eq!(newest.reason, "NO_RECIPE");
+        assert_eq!(newest.occurred_at, "2026-08-21T12:00:00Z");
+        assert_eq!(newest.business_date, "2026-08-21");
+    }
+
+    /// Two gaps recorded in the same instant still order by insertion, so
+    /// the report does not reshuffle between two reads of the same data.
+    #[test]
+    fn gaps_in_the_same_instant_are_broken_by_id_descending() {
+        let mut db = Db::open_in_memory_for_tests().expect("open db");
+        seed_outlet(db.connection(), "outlet-1");
+
+        let conn = db.connection_mut();
+        let tx = conn.transaction().expect("begin");
+        for (id, name) in [("gap-a", "First"), ("gap-b", "Second"), ("gap-c", "Third")] {
+            insert_stock_deduction_gap(&tx, id, &gap("outlet-1", name, "2026-08-21T10:00:00Z"))
+                .expect("insert");
+        }
+        tx.commit().expect("commit");
+
+        let names: Vec<String> = db
+            .list_stock_deduction_gaps("outlet-1")
+            .expect("read gaps")
+            .into_iter()
+            .map(|g| g.menu_item_name)
+            .collect();
+        assert_eq!(names, vec!["Third", "Second", "First"]);
+    }
+
+    /// The report is a fixed-cost read, not a scan whose cost grows with an
+    /// append-only signal table.
+    #[test]
+    fn list_stock_deduction_gaps_is_bounded_at_the_report_limit() {
+        let mut db = Db::open_in_memory_for_tests().expect("open db");
+        seed_outlet(db.connection(), "outlet-1");
+
+        let over = repo::STOCK_DEDUCTION_GAP_REPORT_LIMIT + 25;
+        let conn = db.connection_mut();
+        let tx = conn.transaction().expect("begin");
+        for i in 0..over {
+            // Zero-padded so lexical id order matches insertion order.
+            insert_stock_deduction_gap(
+                &tx,
+                &format!("gap-{i:05}"),
+                &gap("outlet-1", &format!("Item {i}"), "2026-08-21T10:00:00Z"),
+            )
+            .expect("insert");
+        }
+        tx.commit().expect("commit");
+
+        let rows = db.list_stock_deduction_gaps("outlet-1").expect("read gaps");
+        assert_eq!(
+            rows.len() as i64,
+            repo::STOCK_DEDUCTION_GAP_REPORT_LIMIT,
+            "the read is hard-bounded even with more rows present"
+        );
+        assert_eq!(
+            rows[0].menu_item_name,
+            format!("Item {}", over - 1),
+            "the bound keeps the NEWEST rows, never the oldest"
+        );
+    }
+}

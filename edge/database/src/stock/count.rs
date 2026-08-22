@@ -494,4 +494,155 @@ mod tests {
             .expect_err("completing twice must be rejected");
         assert!(matches!(err, DbError::StockCountNotOpen { .. }));
     }
+
+    // ------------------------------------------- the _with_outbox siblings --
+
+    fn meta(outbox_id: &str, occurred_at: &str) -> StockCountOutboxMeta {
+        StockCountOutboxMeta {
+            outbox_id: outbox_id.to_string(),
+            occurred_at: occurred_at.to_string(),
+        }
+    }
+
+    /// Opening a count through the `_with_outbox` sibling leaves exactly one
+    /// unpublished `StockCountOpened` entry — the event a consumer replays.
+    #[test]
+    fn open_with_outbox_leaves_one_unpublished_stock_count_opened_event() {
+        let mut db = Db::open_in_memory_for_tests().expect("open db");
+        seed_outlet_and_item(db.connection());
+
+        let count = db
+            .open_stock_count_with_outbox(
+                new_count_req("count-1", "2026-08-20T22:10:00Z"),
+                &meta("out-1", "2026-08-20T22:10:00Z"),
+            )
+            .expect("open with outbox");
+        assert_eq!(count.status, "OPEN");
+
+        let pending = repo::list_unpublished_outbox(db.connection(), 100).expect("read outbox");
+        assert_eq!(pending.len(), 1, "exactly one event, not zero and not two");
+        let e = &pending[0];
+        assert_eq!(e.id, "out-1");
+        assert_eq!(e.event_type, "StockCountOpened");
+        assert_eq!(e.aggregate_type, "stock_count");
+        assert_eq!(e.aggregate_id, "count-1");
+        assert!(e.published_at.is_none(), "born unpublished");
+
+        let payload: serde_json::Value =
+            serde_json::from_str(&e.payload_json).expect("payload is JSON");
+        assert_eq!(payload["event_type"], "StockCountOpened");
+        assert_eq!(payload["outlet_id"], "outlet-1");
+        assert_eq!(payload["data"]["stock_count"]["status"], "OPEN");
+        assert_eq!(
+            payload["data"]["stock_count"]["business_date"], "2026-08-21",
+            "the payload carries the count's own IST business date"
+        );
+        assert_eq!(
+            payload["data"]["stock_count"]["lines"]
+                .as_array()
+                .expect("lines is an array")
+                .len(),
+            0,
+            "a count has no counted lines at open, but the key is still present \
+             so no consumer special-cases one event's shape against the other's"
+        );
+    }
+
+    /// Completing through the sibling emits `StockCountCompleted` carrying
+    /// the count's FINAL lines — read after completion, so counted/expected
+    /// in the event match what was actually posted.
+    #[test]
+    fn complete_with_outbox_emits_completed_carrying_the_final_lines() {
+        let mut db = Db::open_in_memory_for_tests().expect("open db");
+        seed_outlet_and_item(db.connection());
+
+        db.open_stock_count_with_outbox(
+            new_count_req("count-1", "2026-08-20T22:10:00Z"),
+            &meta("out-1", "2026-08-20T22:10:00Z"),
+        )
+        .expect("open with outbox");
+
+        db.add_or_update_stock_count_line(
+            "count-1",
+            "outlet-1",
+            NewStockCountLine {
+                inventory_item_id: "item-1".to_string(),
+                counted_quantity_micro: grams(4_750),
+                note: None,
+            },
+        )
+        .expect("add line");
+
+        let completed = db
+            .complete_stock_count_with_outbox(
+                "count-1",
+                "outlet-1",
+                "2026-08-20T22:41:00Z",
+                &meta("out-2", "2026-08-20T22:41:00Z"),
+            )
+            .expect("complete with outbox");
+        assert_eq!(completed.status, "COMPLETED");
+
+        let pending = repo::list_unpublished_outbox(db.connection(), 100).expect("read outbox");
+        assert_eq!(pending.len(), 2, "open and complete each emit exactly one event");
+        let e = pending
+            .iter()
+            .find(|e| e.event_type == "StockCountCompleted")
+            .expect("a StockCountCompleted event");
+        assert_eq!(e.id, "out-2");
+        assert_eq!(e.aggregate_id, "count-1");
+
+        let payload: serde_json::Value =
+            serde_json::from_str(&e.payload_json).expect("payload is JSON");
+        assert_eq!(payload["data"]["stock_count"]["status"], "COMPLETED");
+        let lines = payload["data"]["stock_count"]["lines"]
+            .as_array()
+            .expect("lines is an array");
+        assert_eq!(lines.len(), 1, "the completed event carries the counted line");
+        assert_eq!(lines[0]["inventory_item_id"], "item-1");
+        assert_eq!(lines[0]["counted_quantity_micro"], grams(4_750));
+        assert_eq!(
+            lines[0]["expected_quantity_micro"], 0,
+            "no ledger activity before the count, so expected is zero"
+        );
+    }
+
+    /// The event and the state change are one transaction. A rejected
+    /// completion must leave NO event behind — the failure mode that makes
+    /// commit-then-publish wrong.
+    #[test]
+    fn a_rejected_complete_with_outbox_leaves_no_event_behind() {
+        let mut db = Db::open_in_memory_for_tests().expect("open db");
+        seed_outlet_and_item(db.connection());
+
+        db.open_stock_count_with_outbox(
+            new_count_req("count-1", "2026-08-20T22:10:00Z"),
+            &meta("out-1", "2026-08-20T22:10:00Z"),
+        )
+        .expect("open with outbox");
+        db.complete_stock_count_with_outbox(
+            "count-1",
+            "outlet-1",
+            "2026-08-20T22:41:00Z",
+            &meta("out-2", "2026-08-20T22:41:00Z"),
+        )
+        .expect("first complete");
+
+        let err = db
+            .complete_stock_count_with_outbox(
+                "count-1",
+                "outlet-1",
+                "2026-08-20T22:45:00Z",
+                &meta("out-3", "2026-08-20T22:45:00Z"),
+            )
+            .expect_err("completing an already-COMPLETED count must be rejected");
+        assert!(matches!(err, DbError::StockCountNotOpen { .. }));
+
+        let pending = repo::list_unpublished_outbox(db.connection(), 100).expect("read outbox");
+        assert_eq!(pending.len(), 2, "the rejected attempt must not have emitted a third event");
+        assert!(
+            !pending.iter().any(|e| e.id == "out-3"),
+            "the event rolled back with the state change it described"
+        );
+    }
 }
