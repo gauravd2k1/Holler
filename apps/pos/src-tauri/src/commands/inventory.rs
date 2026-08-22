@@ -16,33 +16,34 @@
 //! `apps/pos/src/domain/permissions.ts`); this module does not widen that
 //! gap, but it does not close it either.
 //!
-//! **Two `Db` surface gaps found while wiring this task, neither worked
-//! around — reported rather than routed around (task instruction):**
+//! **Two `Db` surface gaps were found while wiring this task and reported
+//! rather than routed around; both are now closed in `edge/database`, and
+//! this module consumes the sanctioned surface rather than the workarounds
+//! that were declined:**
 //!
-//! 1. `Db` exposes no way to list `stock_deduction_gap` rows. The only
-//!    existing reader is a private `#[cfg(test)] mod tests` helper in
-//!    `edge/database/src/lib.rs`, unreachable from this crate. Requirement 4
-//!    ("items sold with no recipe" report) therefore has no data source this
-//!    crate can call — not implemented, rather than hand-rolling a raw SQL
-//!    query against a table this crate has no sanctioned read path for.
-//! 2. `Db::open_stock_count`/`Db::complete_stock_count` have no
-//!    `_with_outbox` sibling, and `Db` exposes no transaction handle a
-//!    caller outside the crate could attach a second write to
-//!    (`Db::connection()` is `&Connection`, read-only; there is no
-//!    `connection_mut`/`transaction` accessor). `StockCountOpened`/
-//!    `StockCountCompleted` cannot be emitted from this crate without
-//!    either a second, non-atomic transaction (explicitly forbidden by the
-//!    task) or an edge-side `_with_outbox` addition (`edge/` is not this
-//!    task's directory). Requirement 5 is therefore not implemented, and
-//!    both entries stay in `scripts/check-event-type-drift.mjs`'s
-//!    `NOT_YET_EMITTED`, unchanged.
+//! 1. `Db::list_stock_deduction_gaps` is the "items sold with no recipe"
+//!    report's data source (M4 acceptance criterion 5). Before it existed,
+//!    the only reader was a private `#[cfg(test)]` helper, and the declined
+//!    workaround was a raw SQL query from this crate against a table it has
+//!    no sanctioned read path for.
+//! 2. `Db::open_stock_count_with_outbox`/`complete_stock_count_with_outbox`
+//!    write the state change and its `StockCountOpened`/`StockCountCompleted`
+//!    event in ONE transaction. The declined workaround was a second,
+//!    separate transaction after the commit — which is not atomic, and would
+//!    publish an event for a state change that a crash could leave unwritten.
+//!    This module calls only the `_with_outbox` forms; the plain
+//!    `Db::open_stock_count`/`complete_stock_count` would silently emit
+//!    nothing and are deliberately not used here.
 
-use holler_edge_database::model::{NewStockCount, NewStockCountLine, NewWastageEntry};
+use holler_edge_database::model::{
+    NewStockCount, NewStockCountLine, NewWastageEntry, StockCountOutboxMeta,
+};
 use holler_edge_database::Db;
 use tauri::State;
 
 use crate::dto::{
-    CurrentStockLine, StockCount, StockCountLine, StockCountVarianceReport, StockLedgerEntry,
+    CurrentStockLine, StockCount, StockCountLine, StockCountVarianceReport, StockDeductionGap,
+    StockLedgerEntry,
 };
 use crate::error::{AppError, AppResult};
 use crate::ids::{new_id, now_iso};
@@ -92,6 +93,15 @@ pub fn list_current_stock_impl(state: &AppState) -> AppResult<Vec<CurrentStockLi
     Ok(lines.into_iter().map(CurrentStockLine::from).collect())
 }
 
+/// The "items sold with no recipe" report (M4 acceptance criterion 5).
+/// Bounded and newest-first at the edge; this wrapper adds no filtering of
+/// its own, so what the screen shows is what the edge sanctioned.
+pub fn list_stock_deduction_gaps_impl(state: &AppState) -> AppResult<Vec<StockDeductionGap>> {
+    let db = lock_db(state)?;
+    let gaps = db.list_stock_deduction_gaps(&state.outlet_id)?;
+    Ok(gaps.into_iter().map(StockDeductionGap::from).collect())
+}
+
 // ---------------------------------------------------------------- wastage --
 
 pub fn record_wastage_impl(
@@ -126,13 +136,22 @@ pub fn open_stock_count_impl(
     note: Option<String>,
 ) -> AppResult<StockCount> {
     let mut db = lock_db(state)?;
-    let stored = db.open_stock_count(NewStockCount {
-        id: new_id(),
-        outlet_id: state.outlet_id.clone(),
-        started_at: now_iso(),
-        counted_by_user_id,
-        note,
-    })?;
+    // One `now_iso()` for both, so the count's `started_at` and the event's
+    // `occurred_at` cannot disagree about when the count began.
+    let occurred_at = now_iso();
+    let stored = db.open_stock_count_with_outbox(
+        NewStockCount {
+            id: new_id(),
+            outlet_id: state.outlet_id.clone(),
+            started_at: occurred_at.clone(),
+            counted_by_user_id,
+            note,
+        },
+        &StockCountOutboxMeta {
+            outbox_id: new_id(),
+            occurred_at,
+        },
+    )?;
     Ok(StockCount::from(stored))
 }
 
@@ -178,7 +197,16 @@ pub fn get_stock_count_impl(
 
 pub fn complete_stock_count_impl(state: &AppState, stock_count_id: &str) -> AppResult<StockCount> {
     let mut db = lock_db(state)?;
-    let stored = db.complete_stock_count(stock_count_id, &state.outlet_id, &now_iso())?;
+    let occurred_at = now_iso();
+    let stored = db.complete_stock_count_with_outbox(
+        stock_count_id,
+        &state.outlet_id,
+        &occurred_at,
+        &StockCountOutboxMeta {
+            outbox_id: new_id(),
+            occurred_at: occurred_at.clone(),
+        },
+    )?;
     Ok(StockCount::from(stored))
 }
 
@@ -196,6 +224,13 @@ pub fn get_stock_count_variance_report_impl(
 #[tauri::command]
 pub fn list_current_stock(state: State<'_, AppState>) -> AppResult<Vec<CurrentStockLine>> {
     list_current_stock_impl(&state)
+}
+
+#[tauri::command]
+pub fn list_stock_deduction_gaps(
+    state: State<'_, AppState>,
+) -> AppResult<Vec<StockDeductionGap>> {
+    list_stock_deduction_gaps_impl(&state)
 }
 
 #[tauri::command]

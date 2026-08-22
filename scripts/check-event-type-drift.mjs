@@ -47,31 +47,20 @@ const RUST_ROOTS = [
 // type is live, so the backward check no longer has an exemption to grant —
 // which is the state this map exists to drive toward, not a reason to delete it.
 // A future contract addition lands here with a reason, or it fails the check.
-// Milestone 3 (contracts 0.4.0, ADR-016) adds the five billing events ahead of
-// the tracks that emit them. Each entry names the track that must remove it —
+// Milestone 3 (contracts 0.4.0, ADR-016) added the five billing events ahead of
+// the tracks that emit them. Each entry named the track that must remove it —
 // an entry that outlives its track is the signal this map exists to produce.
-const NOT_YET_EMITTED = {
-  StockCountOpened:
-    "Contract landed at 0.5.5, closing the gap T3 found: stock_count is EDGE_TO_CLOUD " +
-    "with no push mechanism, since a count carries no entry_seq and so falls outside " +
-    "the ranged cursor. Emitted once the edge count feature (T3's surface, wired in " +
-    "T5) queues outbox rows; the cloud ingest side is T4.",
-  StockCountCompleted:
-    "Same as StockCountOpened — the pair land together when the count surface wires " +
-    "its outbox writes.",
-  InvoiceCreated:
-    "Contract landed at 0.4.0; emitted once the edge billing track (T7) issues invoices.",
-  PaymentReceived:
-    "Contract landed at 0.4.0; emitted once the edge billing track (T7) captures tenders.",
-  PaymentRefunded:
-    "Contract landed at 0.4.0; emitted once T7 appends reversal rows. Refund is an appended " +
-    "payment, never a mutation, so this cannot be emitted before the append path exists.",
-  CashShiftOpened:
-    "Contract landed at 0.4.0; emitted once the cash-shift track (T7/T9) opens a register.",
-  CashShiftClosed:
-    "Contract landed at 0.4.0; emitted once the cash-shift track (T7/T9) closes a register " +
-    "with its counted total and variance reason.",
-};
+//
+// Emptied again at M4/T5. Two removals, for the same reason and on the same
+// day: StockCountOpened/StockCountCompleted, now emitted by
+// `Db::open_stock_count_with_outbox`/`complete_stock_count_with_outbox`; and
+// the five M3 billing entries, which the edge had already been emitting since
+// M3 went code-complete. Those five had gone stale silently, because an entry
+// whose type IS seen in Rust is skipped before the exemption is consulted — so
+// the map can rot without ever failing the check it belongs to. Read that as a
+// standing instruction: when a track lands, delete its entry here in the same
+// change, because nothing else will tell you.
+const NOT_YET_EMITTED = {};
 
 function frozenEventTypes() {
   const source = readFileSync(EVENTS_TS, "utf-8");

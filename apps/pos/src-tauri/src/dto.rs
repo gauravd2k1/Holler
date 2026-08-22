@@ -1018,6 +1018,46 @@ impl From<db::CurrentStockLine> for CurrentStockLine {
     }
 }
 
+/// Mirrors `StockDeductionGapSchema` — one row of the "items sold with no
+/// recipe" report (M4 acceptance criterion 5, ADR-018 §10.1). `quantity` is
+/// sellable units, NOT a micro-quantity: nothing resolved to an ingredient,
+/// which is the point of the row, so the frontend must not run it through
+/// any micro formatter.
+#[derive(Debug, Clone, Serialize)]
+pub struct StockDeductionGap {
+    pub id: String,
+    pub outlet_id: String,
+    pub order_id: String,
+    pub order_item_id: String,
+    pub menu_item_id: String,
+    pub menu_item_variant_id: Option<String>,
+    pub menu_item_name: String,
+    pub quantity: i64,
+    pub reason: String,
+    pub occurred_at: String,
+    pub business_date: String,
+    pub schema_version: u8,
+}
+
+impl From<db::StockDeductionGap> for StockDeductionGap {
+    fn from(g: db::StockDeductionGap) -> Self {
+        Self {
+            id: g.id,
+            outlet_id: g.outlet_id,
+            order_id: g.order_id,
+            order_item_id: g.order_item_id,
+            menu_item_id: g.menu_item_id,
+            menu_item_variant_id: g.menu_item_variant_id,
+            menu_item_name: g.menu_item_name,
+            quantity: g.quantity,
+            reason: g.reason,
+            occurred_at: g.occurred_at,
+            business_date: g.business_date,
+            schema_version: 1,
+        }
+    }
+}
+
 /// Mirrors `StockLedgerEntrySchema` — returned by `record_wastage` so the
 /// cashier's screen can display what was actually written without a second
 /// read.

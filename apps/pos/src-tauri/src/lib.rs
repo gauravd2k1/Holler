@@ -69,6 +69,7 @@ pub fn run() {
             commands::billing::get_cash_shift,
             commands::billing::find_open_cash_shift,
             commands::inventory::list_current_stock,
+            commands::inventory::list_stock_deduction_gaps,
             commands::inventory::record_wastage,
             commands::inventory::open_stock_count,
             commands::inventory::add_or_update_stock_count_line,
