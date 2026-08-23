@@ -3892,7 +3892,7 @@ pub fn list_discount_definitions_for_outlet(
 /// in `src/lib.rs` for the test that drops the whole `Db` mid-issue and
 /// reopens an independent handle on the sealed file to prove this (it lives
 /// there, not under `tests/`, because it needs the `#[cfg(test)]`-only
-/// `Db::simulate_crash_for_tests` seam, which is intentionally not part of
+/// `Db::abandon_session_unsealed_for_tests` seam, which is intentionally not part of
 /// this crate's public API).
 pub(crate) fn next_invoice_sequence_value(
     tx: &Transaction,

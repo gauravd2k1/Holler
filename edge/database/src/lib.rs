@@ -7,6 +7,7 @@
 //! (ADR-011) — other edge services and the sync worker call this API.
 
 pub mod auth;
+mod crash;
 pub mod crypto;
 pub(crate) mod deduction;
 mod error;
@@ -218,19 +219,28 @@ impl Db {
         self.conn.is_none()
     }
 
-    /// Test-only: models a process killed mid-session (power loss, SIGKILL,
-    /// task-manager End Task) — the plaintext file, its `-wal`/`-shm`
-    /// siblings and the unclean marker are all left on disk, with nothing
-    /// sealed.
+    /// Test-only: abandons this session WITHOUT sealing, leaving the
+    /// plaintext file, its `-wal`/`-shm` siblings and the unclean marker on
+    /// disk. Used by the encryption-at-rest RECOVERY tests, which need those
+    /// artifacts to exist in order to test recovering from them.
+    ///
+    /// **This is not a crash, and it proves nothing about crash durability.**
+    /// It was called `simulate_crash_for_tests`, and under that name it
+    /// carried a test claiming M4 acceptance criterion 2 — a durability
+    /// guarantee "proved" by a method call inside the same process, which is
+    /// exactly the kind of evidence the milestone's acceptance rules exclude.
+    /// That test is gone. Criterion 2 is proved by
+    /// `tests/crash_durability.rs`, which spawns a real binary and aborts it
+    /// at a deterministic point inside the confirm+deduct transaction.
     ///
     /// It drops the SQLite `Connection` first so the OS file handle is
-    /// released; `std::mem::forget` would model a crash more literally but
-    /// would keep the handle open and make the next `Db::open` fail with a
-    /// Windows sharing violation instead of exercising recovery. Taking the
-    /// connection also disarms the `Drop` seal, which is the behaviour under
-    /// test here.
+    /// released; `std::mem::forget` would model process death more literally
+    /// but would keep the handle open and make the next `Db::open` fail with
+    /// a Windows sharing violation instead of exercising recovery. Taking the
+    /// connection also disarms the `Drop` seal, which is the behaviour these
+    /// recovery tests are about.
     #[cfg(test)]
-    fn simulate_crash_for_tests(&mut self) {
+    fn abandon_session_unsealed_for_tests(&mut self) {
         drop(self.conn.take());
     }
 
@@ -583,6 +593,17 @@ impl Db {
         let outlet_id = repo::require_draft_order_for_confirm(&tx, order_id)?;
         repo::stamp_order_confirmed(&tx, order_id, &meta.confirmed_at, &meta.occurred_at)?;
         repo::insert_order_confirmed_outbox(&tx, &outlet_id, order_id, meta)?;
+
+        // THE CRASH-DURABILITY ABORT POINT (M4 criterion 2). Compiled only
+        // under the `crash-points` feature; in a release build this is an
+        // empty inlined call that generates nothing. The window it sits in is
+        // the one the criterion names: the order is stamped CONFIRMED and its
+        // outbox row written, the deduction has not run, and NOTHING is
+        // committed yet. A process dying here must leave the order and the
+        // ledger agreeing — which, because both writes share this one
+        // transaction, means neither survives.
+        crash::maybe_abort(crash::AFTER_CONFIRM_BEFORE_DEDUCT);
+
         // Milestone 4, ADR-018: automatic stock deduction, in the SAME
         // transaction as the confirm it rides with (ADR-018 Rule 3). Never
         // aborts this transaction for a business/config reason — see
@@ -3218,7 +3239,7 @@ mod tests {
     // Milestone 4, ADR-018: automatic stock deduction wired into
     // `confirm_order_with_outbox`, in the SAME transaction. These tests live
     // in this module (rather than an integration test crate) because the
-    // rollback/crash proofs below need `Db::simulate_crash_for_tests`, which
+    // rollback/crash proofs below need `Db::abandon_session_unsealed_for_tests`, which
     // is `#[cfg(test)]`-private to this crate — the same reason the invoice
     // crash test lives here rather than under `tests/`.
 
@@ -3733,81 +3754,6 @@ mod tests {
             entries[0].entry_seq, 1,
             "entry_seq must not skip 1 -- the failed attempt left no hole"
         );
-    }
-
-    /// M4 acceptance criterion 2, generalised from the durable-cart crash
-    /// test to the stock ledger: kill the POS between confirm and
-    /// deduction having been durably written, reopen an INDEPENDENT `Db`
-    /// handle on the same sealed file, and assert the order and its ledger
-    /// entries agree. Follows the exact pattern
-    /// `invoice_survives_a_crash_mid_session_and_reads_back_on_independent_reopen`
-    /// established: `Db::simulate_crash_for_tests` drops the connection
-    /// with nothing sealed, leaving on-disk crash artifacts; a genuinely
-    /// separate `Db::open` call (not the handle that confirmed the order)
-    /// proves durability rather than merely proving the same process
-    /// remembers its own write.
-    #[test]
-    fn order_and_ledger_agree_after_a_crash_between_confirm_and_reopen() {
-        let dir = tempdir().expect("tempdir");
-        let sealed = dir.path().join("edge.db.enc");
-        let plaintext = dir.path().join("edge.db");
-        let key_bytes = [61u8; 32];
-
-        {
-            let mut db =
-                Db::open(&sealed, &plaintext, EncryptionKey::new(key_bytes)).expect("first open");
-            seed_outlet_and_device(&db, "outlet-1", "device-1");
-            let (_, item_id, variant_id) = seed_menu(&db, "outlet-1");
-            insert_inventory_item(db.connection(), "inv-flour", "outlet-1", "Flour", "MASS");
-            insert_one_serving_recipe_with_item_ingredient(
-                db.connection(),
-                "recipe-1",
-                &variant_id,
-                "inv-flour",
-                grams(250),
-                "MASS",
-            );
-
-            let order = sample_order("order-crash-1", "outlet-1", "device-1");
-            let mut item =
-                sample_order_item("order-item-crash-1", "order-crash-1", &item_id, 30_000);
-            item.variant_id = Some(variant_id);
-            item.quantity = 4;
-            db.create_order_with_outbox(&order, &[item], &sample_outbox("order-crash-1"))
-                .expect("create draft order before crash");
-
-            db.confirm_order_with_outbox(
-                "order-crash-1",
-                &order_confirmed_meta("order-crash-1"),
-            )
-            .expect("confirm (and deduct) before crash");
-
-            db.simulate_crash_for_tests();
-        }
-
-        assert!(plaintext.exists(), "precondition: plaintext left behind");
-        assert!(
-            crypto::marker_path(&plaintext).exists(),
-            "precondition: unclean marker left behind"
-        );
-
-        let db2 = Db::open(&sealed, &plaintext, EncryptionKey::new(key_bytes))
-            .expect("reopen after crash must succeed");
-
-        let order = db2
-            .get_order("order-crash-1")
-            .expect("read order")
-            .expect("the committed pre-crash order must survive recovery");
-        assert_eq!(order.status, "CONFIRMED");
-
-        let entries = list_stock_ledger_entries(db2.connection(), "outlet-1");
-        assert_eq!(
-            entries.len(),
-            1,
-            "the committed pre-crash ledger entry must survive recovery"
-        );
-        assert_eq!(entries[0].quantity_applied_micro, -grams(1000)); // 250g * 4
-        assert_eq!(entries[0].entry_seq, 1);
     }
 
     /// FALSIFICATION target for contracts 0.5.3's entry_seq correction: the
@@ -4452,7 +4398,7 @@ mod tests {
             // The crash. Note this is NOT the same as letting `db` drop:
             // `Drop` now seals and wipes (ADR-011), so a plain drop would
             // leave no crash artifacts to recover from.
-            db.simulate_crash_for_tests();
+            db.abandon_session_unsealed_for_tests();
         }
 
         // Crash artifacts must actually be present, or this test would
@@ -4489,7 +4435,7 @@ mod tests {
     /// `crash_leftovers_are_recovered_not_wiped_and_no_plaintext_survives`
     /// above, applied to `issue_invoice_with_outbox`: an invoice is issued
     /// and COMMITTED, the whole `Db` is dropped with no graceful close
-    /// (`simulate_crash_for_tests` — the sealed file is left exactly as a
+    /// (`abandon_session_unsealed_for_tests` — the sealed file is left exactly as a
     /// killed process would leave it), and a genuinely INDEPENDENT `Db`
     /// handle reopens the same sealed file and reads the invoice, its
     /// number, its lines and its totals back unchanged.
@@ -4548,7 +4494,7 @@ mod tests {
             // `Drop` now seals and wipes (ADR-011), so a plain drop would
             // leave no crash artifacts to recover from — see the sibling
             // order-level test above.
-            db.simulate_crash_for_tests();
+            db.abandon_session_unsealed_for_tests();
         }
 
         assert!(plaintext.exists(), "precondition: plaintext left behind");
@@ -4650,7 +4596,7 @@ mod tests {
                 Db::open(&sealed, &plaintext, EncryptionKey::new(key_bytes)).expect("first open");
             // The crash — see the note in the test above on why this is not
             // simply a drop.
-            db.simulate_crash_for_tests();
+            db.abandon_session_unsealed_for_tests();
         }
         assert!(crypto::marker_path(&plaintext).exists());
 

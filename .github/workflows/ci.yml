@@ -154,6 +154,40 @@ jobs:
           cd ../printer && cargo test
           cd ../device && cargo test
 
+  # M4 acceptance criterion 2: "kill the POS between confirm and deduction ->
+  # order and ledger agree on reopen", judged against the crash rather than
+  # against an API.
+  #
+  # WINDOWS, NOT LINUX. Crash durability is filesystem- and OS-specific, and
+  # WAL recovery on Windows is what outlets actually run (ADR-013). A green
+  # tick from ubuntu-latest would be evidence about a platform no outlet uses.
+  #
+  # IN CI, NOT A LOCAL GATE. The two PARKED items are local because they need
+  # physical hardware nobody has yet; a process kill needs none. A durability
+  # check run by hand proves the code was durable on the one day someone
+  # remembered to run it -- which is how M2's acceptance item was recorded met
+  # while silently failing to compile (docs/RESUME.md §4).
+  #
+  # ONLY this criterion needs Windows: criterion 1 is SQLite and Rust with no
+  # network on the path by definition, so it runs in the `edge` job above, and
+  # the cloud replay criterion runs on the Postgres-backed `backend` job. One
+  # narrow job is the whole cost.
+  crash-durability:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: edge/database -> target
+      # `crash-points` is off by default and the crashpoint binary declares it
+      # as a required-feature, so neither the abort point nor the binary that
+      # drives it can reach a release build. The test spawns that binary,
+      # waits for the abnormal exit, and reopens the same sealed file.
+      - name: crash durability (M4 criterion 2)
+        working-directory: edge/database
+        run: cargo test --features crash-points --test crash_durability
+
   pos:
     runs-on: ubuntu-latest
     steps:

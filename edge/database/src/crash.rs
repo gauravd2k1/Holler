@@ -1,0 +1,62 @@
+//! Deterministic abort points for the crash-durability acceptance test
+//! (M4 criterion 2), compiled only under the `crash-points` feature.
+//!
+//! # Why this exists rather than an external kill
+//!
+//! Criterion 2 asks what survives the POS dying between confirm and
+//! deduction. Killing the process from outside at a guessed moment tests that
+//! — sometimes. The kill lands wherever it lands, so the test passes on runs
+//! that never reached the interesting instruction and fails intermittently on
+//! the ones that do. **A flaky durability test gets disabled, which is worse
+//! than not having one at all.**
+//!
+//! An abort point inside the transaction fires at an exact instruction on
+//! every run, with no sleeps and no timing assumptions.
+//!
+//! # Why `process::abort`
+//!
+//! It models what is under test. Destructors do not run, so the `Drop` that
+//! would seal the database never fires; nothing is flushed; the SQLite
+//! connection is never closed; the `-wal` and `-shm` files and the unclean
+//! marker are left exactly as a killed process leaves them. A returned error
+//! or a panic would unwind and run the very cleanup whose absence is the
+//! point.
+//!
+//! # What this proves, and what it does not
+//!
+//! It proves the WAL and the transaction boundary survive PROCESS death. It
+//! does NOT prove the release binary makes no non-transactional write outside
+//! the gated path, and it does not exercise OS page-cache loss — a machine
+//! losing power is a different failure mode from a process dying, and neither
+//! substitutes for the other. Hard power-cut recovery is part of the parked
+//! bare-4GB validation (ADR-013); it has a home and needs no new decision.
+
+/// Between the order being stamped CONFIRMED (with its outbox row) and the
+/// stock deduction that rides in the same transaction — the exact window
+/// criterion 2 names.
+pub const AFTER_CONFIRM_BEFORE_DEDUCT: &str = "after_confirm_before_deduct";
+
+/// The environment variable naming the point to abort at. Absent (the normal
+/// case, including every test that is not about crashing) means no point
+/// fires.
+#[cfg_attr(not(feature = "crash-points"), allow(dead_code))]
+pub const CRASH_POINT_ENV: &str = "HOLLER_CRASH_POINT";
+
+/// Aborts the process if `HOLLER_CRASH_POINT` names this point.
+///
+/// Read from the environment on each call rather than cached: the cost is a
+/// `getenv` on a path that already does file I/O, and a cache would make the
+/// point's behaviour depend on when it was first reached.
+#[cfg(feature = "crash-points")]
+pub(crate) fn maybe_abort(point: &str) {
+    if std::env::var(CRASH_POINT_ENV).is_ok_and(|v| v == point) {
+        eprintln!("crash-point: aborting at {point}");
+        std::process::abort();
+    }
+}
+
+/// The release shape: nothing. An empty `#[inline(always)]` function so the
+/// call sites read the same in both builds and generate no code in this one.
+#[cfg(not(feature = "crash-points"))]
+#[inline(always)]
+pub(crate) fn maybe_abort(_point: &str) {}

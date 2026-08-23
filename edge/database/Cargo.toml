@@ -59,5 +59,27 @@ chrono = { version = "0.4", default-features = false, features = ["std", "clock"
 # target.
 chrono-tz = { version = "0.9", default-features = false, features = ["std"] }
 
+# `crash-points` compiles the deterministic abort points used by the
+# crash-durability acceptance test (M4 criterion 2). OFF by default, so a
+# release build contains no abort point at all: with the feature off,
+# `crash::maybe_abort` is an empty `#[inline(always)]` function and the call
+# sites generate nothing.
+#
+# WHY DETERMINISTIC RATHER THAN AN EXTERNAL KILL. Killing a process from
+# outside at a guessed moment is a race, and a flaky durability test gets
+# disabled -- which is worse than not having one. An abort point inside the
+# transaction fires at an exact instruction, every run, with no sleeps.
+[features]
+default = []
+crash-points = []
+
+# Drives one real confirm+deduct against a real sealed database and aborts at
+# a named point inside the transaction. Cannot be built without the feature,
+# so it cannot appear in a release build by accident.
+[[bin]]
+name = "crashpoint"
+path = "src/bin/crashpoint.rs"
+required-features = ["crash-points"]
+
 [dev-dependencies]
 tempfile = "3"
