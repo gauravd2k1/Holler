@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -22,6 +23,14 @@ type Service struct {
 
 func NewService(repo Repository) *Service {
 	return &Service{repo: repo}
+}
+
+// now is the observation timestamp for replay-gap bookkeeping. A method so
+// tests can pin it without threading a clock through every ingest signature;
+// the values it stamps are diagnostics, never business time (business time
+// always comes from the edge, on the row).
+func (s *Service) now() time.Time {
+	return time.Now().UTC()
 }
 
 func (s *Service) requireOutletInTenant(ctx context.Context, tenantID, outletID string) error {
@@ -313,33 +322,74 @@ func (s *Service) IngestLedgerEntry(ctx context.Context, callerTenantID string, 
 		return StockLedgerEntry{}, fmt.Errorf("%w: entry_seq must be >= 1", httpx.ErrInvalidInput)
 	}
 
-	// Idempotent replay of an id already ingested.
+	// SILENT AND IDEMPOTENT, and BEFORE the contiguity check. The same id
+	// arriving twice is an ordinary retry (a dropped ack, a resumed batch),
+	// not a fault: the mark it carries is already stored, so reaching the
+	// contiguity check would read it as a reused mark and refuse a request
+	// that is merely a repeat — a false alarm on every reconnect.
 	if existing, found, err := s.repo.GetLedgerEntryByID(ctx, entry.ID); err != nil {
 		return StockLedgerEntry{}, err
 	} else if found {
 		return existing, nil
 	}
 
-	cursor, err := s.repo.LastEntrySeq(ctx, entry.OutletID)
-	if err != nil {
+	if err := s.checkContiguity(ctx, entry.OutletID, ReplayStreamLedger, entry.EntrySeq); err != nil {
 		return StockLedgerEntry{}, err
-	}
-	switch {
-	case entry.EntrySeq <= cursor:
-		// A different id claiming an already-covered entry_seq: the mark
-		// would become ambiguous exactly as ADR-018 §6/§9 warns. Loud,
-		// never silently accepted or skipped.
-		return StockLedgerEntry{}, fmt.Errorf("%w: entry_seq %d is not greater than outlet %s's last acked entry_seq %d",
-			ErrLedgerSequenceGap, entry.EntrySeq, entry.OutletID, cursor)
-	case entry.EntrySeq > cursor+1:
-		return StockLedgerEntry{}, fmt.Errorf("%w: outlet %s's last acked entry_seq is %d, missing entry_seq %d..%d before %d",
-			ErrLedgerSequenceGap, entry.OutletID, cursor, cursor+1, entry.EntrySeq-1, entry.EntrySeq)
 	}
 
 	if err := s.repo.InsertLedgerEntry(ctx, entry); err != nil {
 		return StockLedgerEntry{}, err
 	}
+	// The entry just stored may be the one that completes an earlier hole.
+	// Resolving here rather than on a sweep keeps the table meaning "still
+	// missing" at every moment a human might read it.
+	if err := s.repo.ResolveCoveredReplayGaps(ctx, entry.OutletID, ReplayStreamLedger, s.now()); err != nil {
+		return StockLedgerEntry{}, err
+	}
 	return entry, nil
+}
+
+// checkContiguity compares an arriving mark against the stream's high-water
+// mark, and is the shared implementation for both ranged streams.
+//
+// A HOLE IS RECORDED, NOT REJECTED — the condition this function exists to
+// get right. Rejecting an entry whose mark is beyond the cursor turns one
+// lost row into a permanent outage: replay halts there, every later entry
+// stays at the outlet, and the failure is silent because "no ledger activity"
+// and "replay wedged since Tuesday" look identical downstream. Detection is
+// the goal; blocking was a side effect nobody wanted. So the hole is written
+// to ledger_replay_gap and the arriving entry is accepted.
+//
+// The one refusal left is a mark at or below the cursor under a different id,
+// which would make the mark ambiguous. That is unreachable through the edge's
+// own path (contracts 0.5.3 made entry_seq a durable counter for exactly this
+// reason) and clearing it is a documented manual operation — see
+// ErrLedgerSequenceMarkReused.
+func (s *Service) checkContiguity(ctx context.Context, outletID string, stream ReplayStream, entrySeq int64) error {
+	var cursor int64
+	var err error
+	switch stream {
+	case ReplayStreamLedger:
+		cursor, err = s.repo.LastEntrySeq(ctx, outletID)
+	case ReplayStreamDeductionGap:
+		cursor, err = s.repo.LastGapEntrySeq(ctx, outletID)
+	default:
+		return fmt.Errorf("inventory: unknown replay stream %q", stream)
+	}
+	if err != nil {
+		return err
+	}
+
+	switch {
+	case entrySeq <= cursor:
+		return fmt.Errorf("%w: %s entry_seq %d is not greater than outlet %s's high-water mark %d",
+			ErrLedgerSequenceMarkReused, stream, entrySeq, outletID, cursor)
+
+	case entrySeq > cursor+1:
+		// Loud and durable, and the stream keeps moving.
+		return s.repo.RecordReplayGap(ctx, outletID, stream, cursor+1, entrySeq-1, s.now())
+	}
+	return nil
 }
 
 // IngestDeductionGap replays a stock_deduction_gap signal — never a
@@ -364,13 +414,33 @@ func (s *Service) IngestDeductionGap(ctx context.Context, callerTenantID string,
 	if gap.Quantity <= 0 {
 		return StockDeductionGap{}, fmt.Errorf("%w: quantity must be positive", httpx.ErrInvalidInput)
 	}
+	if gap.EntrySeq < 1 {
+		return StockDeductionGap{}, fmt.Errorf("%w: entry_seq must be >= 1", httpx.ErrInvalidInput)
+	}
 
+	// SILENT AND IDEMPOTENT, deliberately, and BEFORE the contiguity check.
+	// The same id arriving twice is an ordinary retry — a dropped ack, a
+	// resumed batch. Treating it as anything louder would make every
+	// reconnect produce a false alarm, and the mark it carries is one the
+	// cloud has already stored, so the contiguity check below would read it
+	// as a reused mark and refuse a request that is simply a repeat.
 	if existing, found, err := s.repo.GetDeductionGapByID(ctx, gap.ID); err != nil {
 		return StockDeductionGap{}, err
 	} else if found {
 		return existing, nil
 	}
+
+	// The gap stream ranges over its OWN counter and so has its own
+	// high-water mark: a gap row is the signal that a sale went unaccounted,
+	// and a signal lost in transit must be as visible as a lost movement.
+	if err := s.checkContiguity(ctx, gap.OutletID, ReplayStreamDeductionGap, gap.EntrySeq); err != nil {
+		return StockDeductionGap{}, err
+	}
+
 	if err := s.repo.InsertDeductionGap(ctx, gap); err != nil {
+		return StockDeductionGap{}, err
+	}
+	if err := s.repo.ResolveCoveredReplayGaps(ctx, gap.OutletID, ReplayStreamDeductionGap, s.now()); err != nil {
 		return StockDeductionGap{}, err
 	}
 	return gap, nil

@@ -119,19 +119,34 @@ fn insert_stock_ledger_entry_with_next_seq(
     insert_stock_ledger_entry(tx, &id, entry_seq, e)
 }
 
+/// Inserts one `stock_deduction_gap` row, first minting its durable
+/// `entry_seq` mark from `stock_deduction_gap_sequence` in the SAME
+/// transaction (contracts 0.5.8) — the atomicity argument
+/// [`insert_stock_ledger_entry_with_next_seq`] makes for the ledger, applied
+/// to the other ranged stream: a crash takes both the mark and the row, or
+/// neither. A hole in the sequence reads to the cloud as a lost row, and a
+/// reused one as a duplicate.
+///
+/// The counter is the gap stream's OWN. Sharing the ledger's would put
+/// permanent holes in both sequences, and a hole is precisely what the
+/// cloud's contiguity check reads as a loss.
 pub(crate) fn insert_stock_deduction_gap(
     tx: &Transaction,
     id: &str,
     g: &NewStockDeductionGap,
 ) -> DbResult<()> {
+    let entry_seq =
+        repo::next_stock_deduction_gap_sequence_value(tx, &g.outlet_id, &g.occurred_at)?;
     tx.execute(
         "INSERT INTO stock_deduction_gap
-            (id, outlet_id, order_id, order_item_id, menu_item_id, menu_item_variant_id,
-             menu_item_name, quantity, reason, occurred_at, business_date)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            (id, outlet_id, entry_seq, order_id, order_item_id, menu_item_id,
+             menu_item_variant_id, menu_item_name, quantity, reason, occurred_at,
+             business_date)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             id,
             g.outlet_id,
+            entry_seq,
             g.order_id,
             g.order_item_id,
             g.menu_item_id,

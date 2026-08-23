@@ -1027,6 +1027,9 @@ impl From<db::CurrentStockLine> for CurrentStockLine {
 pub struct StockDeductionGap {
     pub id: String,
     pub outlet_id: String,
+    /// The ranged-replay mark (contracts 0.5.8), from the gap stream's own
+    /// counter.
+    pub entry_seq: i64,
     pub order_id: String,
     pub order_item_id: String,
     pub menu_item_id: String,
@@ -1044,6 +1047,7 @@ impl From<db::StockDeductionGap> for StockDeductionGap {
         Self {
             id: g.id,
             outlet_id: g.outlet_id,
+            entry_seq: g.entry_seq,
             order_id: g.order_id,
             order_item_id: g.order_item_id,
             menu_item_id: g.menu_item_id,
@@ -1230,6 +1234,51 @@ impl From<db::StockCountVarianceReport> for StockCountVarianceReport {
             lines: r.lines.into_iter().map(StockCountVarianceLine::from).collect(),
             sales_unaccounted: r.sales_unaccounted,
             schema_version: 1,
+        }
+    }
+}
+
+/// One ranged-replay entry this outlet has given up on sending
+/// (contracts 0.5.8, `sync_replay_block`).
+///
+/// This is the human-visible half of the per-entry retry bound. The bound
+/// exists so a single row the cloud will never accept cannot hold back every
+/// row behind it — but an outlet that has quietly stopped sending part of its
+/// stock history is exactly the kind of failure that must not be discovered
+/// months later in a variance report. Halting sync is survivable; halting it
+/// silently is not.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SyncReplayBlock {
+    pub outlet_id: String,
+    /// `"LEDGER"` or `"DEDUCTION_GAP"`.
+    pub stream: String,
+    pub entry_seq: i64,
+    /// The row that could not be sent, so the person chasing this has
+    /// something to look up rather than an ordinal.
+    pub record_id: String,
+    pub attempts: i64,
+    pub last_status: Option<i64>,
+    pub last_error: String,
+    pub first_attempt_at: String,
+    pub last_attempt_at: String,
+    /// Always present on a row this command returns — it lists only entries
+    /// whose budget is spent.
+    pub blocked_at: Option<String>,
+}
+
+impl From<db::SyncReplayBlock> for SyncReplayBlock {
+    fn from(b: db::SyncReplayBlock) -> Self {
+        Self {
+            outlet_id: b.outlet_id,
+            stream: b.stream,
+            entry_seq: b.entry_seq,
+            record_id: b.record_id,
+            attempts: b.attempts,
+            last_status: b.last_status,
+            last_error: b.last_error,
+            first_attempt_at: b.first_attempt_at,
+            last_attempt_at: b.last_attempt_at,
+            blocked_at: b.blocked_at,
         }
     }
 }

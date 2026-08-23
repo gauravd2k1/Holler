@@ -3306,7 +3306,8 @@ pub fn get_device_credential_cache_by_id(
 pub fn get_sync_state(conn: &Connection, outlet_id: &str) -> DbResult<Option<SyncState>> {
     conn.query_row(
         "SELECT outlet_id, last_pushed_outbox_id, last_applied_config_version,
-                last_sync_attempt_at, last_sync_success_at, is_online
+                last_sync_attempt_at, last_sync_success_at, is_online,
+                last_acked_ledger_entry_seq, last_acked_gap_entry_seq
          FROM sync_state WHERE outlet_id = ?1",
         params![outlet_id],
         |row| {
@@ -3317,6 +3318,8 @@ pub fn get_sync_state(conn: &Connection, outlet_id: &str) -> DbResult<Option<Syn
                 last_sync_attempt_at: row.get(3)?,
                 last_sync_success_at: row.get(4)?,
                 is_online: i64_to_bool(row.get(5)?),
+                last_acked_ledger_entry_seq: row.get(6)?,
+                last_acked_gap_entry_seq: row.get(7)?,
             })
         },
     )
@@ -5707,8 +5710,9 @@ pub(crate) fn list_stock_deduction_gaps_for_outlet(
     outlet_id: &str,
 ) -> DbResult<Vec<StockDeductionGap>> {
     let mut stmt = conn.prepare(
-        "SELECT id, outlet_id, order_id, order_item_id, menu_item_id, menu_item_variant_id, \
-                menu_item_name, quantity, reason, occurred_at, business_date \
+        "SELECT id, outlet_id, entry_seq, order_id, order_item_id, menu_item_id, \
+                menu_item_variant_id, menu_item_name, quantity, reason, occurred_at, \
+                business_date \
          FROM stock_deduction_gap WHERE outlet_id = ?1 \
          ORDER BY occurred_at DESC, id DESC LIMIT ?2",
     )?;
@@ -5717,15 +5721,16 @@ pub(crate) fn list_stock_deduction_gaps_for_outlet(
             Ok(StockDeductionGap {
                 id: row.get(0)?,
                 outlet_id: row.get(1)?,
-                order_id: row.get(2)?,
-                order_item_id: row.get(3)?,
-                menu_item_id: row.get(4)?,
-                menu_item_variant_id: row.get(5)?,
-                menu_item_name: row.get(6)?,
-                quantity: row.get(7)?,
-                reason: row.get(8)?,
-                occurred_at: row.get(9)?,
-                business_date: row.get(10)?,
+                entry_seq: row.get(2)?,
+                order_id: row.get(3)?,
+                order_item_id: row.get(4)?,
+                menu_item_id: row.get(5)?,
+                menu_item_variant_id: row.get(6)?,
+                menu_item_name: row.get(7)?,
+                quantity: row.get(8)?,
+                reason: row.get(9)?,
+                occurred_at: row.get(10)?,
+                business_date: row.get(11)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -5941,6 +5946,287 @@ pub(crate) fn list_all_outlet_ids(tx: &Transaction) -> DbResult<Vec<String>> {
     let mut stmt = tx.prepare("SELECT id FROM outlet")?;
     let rows = stmt
         .query_map([], |row| row.get(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+// ------------------------------------------------------ ranged replay (0.5.8) --
+//
+// The transport half of ADR-018's rule: high-volume stream rows that are
+// meaningful only in aggregate replay by RANGE over a monotone sequence, not
+// as one outbox event each. Nobody asks "what happened to entry 8,412?"; they
+// ask "is the stream replayed through the cursor?"
+//
+// Everything here is edge-local bookkeeping (sqlite/0025). The cursor records
+// how far THIS outlet has replayed; the cloud keeps its own high-water mark
+// derived from what it actually stored.
+
+/// Atomically advances the durable per-outlet `stock_deduction_gap` counter
+/// and returns the NEW value, inside the SAME transaction as the gap insert
+/// that will use it — [`next_stock_ledger_sequence_value`]'s atomicity
+/// argument, for the other ranged stream.
+///
+/// SEPARATE from the ledger's counter, deliberately. The two streams advance
+/// at wildly different rates — 15,000 ledger rows a day against a handful of
+/// gaps — and a shared counter would leave each stream's sequence full of
+/// holes that belong to the other. A hole is exactly what the cloud's
+/// contiguity check reads as a lost row.
+pub(crate) fn next_stock_deduction_gap_sequence_value(
+    tx: &Transaction,
+    outlet_id: &str,
+    updated_at: &str,
+) -> DbResult<i64> {
+    tx.query_row(
+        "INSERT INTO stock_deduction_gap_sequence (outlet_id, last_value, updated_at)
+         VALUES (?1, 1, ?2)
+         ON CONFLICT(outlet_id) DO UPDATE SET
+            last_value = stock_deduction_gap_sequence.last_value + 1,
+            updated_at = excluded.updated_at
+         RETURNING last_value",
+        params![outlet_id, updated_at],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
+/// The two ranged streams. Both count from 1 over their own counter, so an
+/// `entry_seq` on its own does not identify a row — every cursor, block and
+/// cloud-side hole is keyed by stream as well.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplayStream {
+    Ledger,
+    DeductionGap,
+}
+
+impl ReplayStream {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReplayStream::Ledger => "LEDGER",
+            ReplayStream::DeductionGap => "DEDUCTION_GAP",
+        }
+    }
+
+    /// The `sync_state` column this stream's cursor lives in. A function
+    /// rather than two call sites, so the two streams cannot drift into
+    /// reading each other's mark.
+    fn cursor_column(self) -> &'static str {
+        match self {
+            ReplayStream::Ledger => "last_acked_ledger_entry_seq",
+            ReplayStream::DeductionGap => "last_acked_gap_entry_seq",
+        }
+    }
+}
+
+/// The highest `entry_seq` the cloud has acknowledged for one stream. 0 means
+/// "nothing acked", which pairs with a 1-BASED `entry_seq`: `entry_seq > 0`
+/// selects the whole stream. Were the sequence 0-based, every outlet's first
+/// entry would be unselectable forever.
+pub fn get_replay_cursor(
+    conn: &Connection,
+    outlet_id: &str,
+    stream: ReplayStream,
+) -> DbResult<i64> {
+    conn.query_row(
+        &format!(
+            "SELECT {} FROM sync_state WHERE outlet_id = ?1",
+            stream.cursor_column()
+        ),
+        params![outlet_id],
+        |row| row.get(0),
+    )
+    .optional()
+    .map(|v| v.unwrap_or(0))
+    .map_err(Into::into)
+}
+
+/// Moves a stream's cursor forward. MONOTONE by construction (`MAX`): an
+/// out-of-order or replayed ack can never walk the mark backwards and cause
+/// rows already acknowledged to be sent again.
+pub fn advance_replay_cursor(
+    conn: &Connection,
+    outlet_id: &str,
+    stream: ReplayStream,
+    acked_entry_seq: i64,
+) -> DbResult<()> {
+    let column = stream.cursor_column();
+    conn.execute(
+        &format!(
+            "UPDATE sync_state SET {column} = MAX({column}, ?1) WHERE outlet_id = ?2"
+        ),
+        params![acked_entry_seq, outlet_id],
+    )?;
+    Ok(())
+}
+
+/// The send set for the ledger stream: `entry_seq > cursor`, in order, capped
+/// at `limit`. Ordered by the mark and not by time — a late-arriving row
+/// carries a mark above the cursor and is therefore picked up on the next
+/// pass, which is the same self-healing property the sealed snapshot relies
+/// on (ADR-018 §9).
+pub fn list_ledger_entries_after(
+    conn: &Connection,
+    outlet_id: &str,
+    after_entry_seq: i64,
+    limit: i64,
+) -> DbResult<Vec<StockLedgerEntry>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {STOCK_LEDGER_ENTRY_COLUMNS} FROM stock_ledger_entry \
+         WHERE outlet_id = ?1 AND entry_seq > ?2 \
+         ORDER BY entry_seq ASC LIMIT ?3"
+    ))?;
+    let rows = stmt
+        .query_map(
+            params![outlet_id, after_entry_seq, limit],
+            stock_ledger_entry_from_row,
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// The send set for the deduction-gap stream, over its own cursor and its own
+/// counter.
+pub fn list_deduction_gaps_after(
+    conn: &Connection,
+    outlet_id: &str,
+    after_entry_seq: i64,
+    limit: i64,
+) -> DbResult<Vec<StockDeductionGap>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, outlet_id, entry_seq, order_id, order_item_id, menu_item_id, \
+                menu_item_variant_id, menu_item_name, quantity, reason, occurred_at, \
+                business_date \
+         FROM stock_deduction_gap \
+         WHERE outlet_id = ?1 AND entry_seq > ?2 \
+         ORDER BY entry_seq ASC LIMIT ?3",
+    )?;
+    let rows = stmt
+        .query_map(params![outlet_id, after_entry_seq, limit], |row| {
+            Ok(StockDeductionGap {
+                id: row.get(0)?,
+                outlet_id: row.get(1)?,
+                entry_seq: row.get(2)?,
+                order_id: row.get(3)?,
+                order_item_id: row.get(4)?,
+                menu_item_id: row.get(5)?,
+                menu_item_variant_id: row.get(6)?,
+                menu_item_name: row.get(7)?,
+                quantity: row.get(8)?,
+                reason: row.get(9)?,
+                occurred_at: row.get(10)?,
+                business_date: row.get(11)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// One entry the cloud would not take — see [`model::SyncReplayBlock`].
+/// Records the attempt and returns the running count, so the caller can
+/// decide whether the per-entry budget is spent.
+///
+/// Only PERMANENT rejections reach here. Transport failures and "come back
+/// later" statuses stop the stream and are retried indefinitely, because the
+/// uplink being down is not this row's fault and no budget should be spent on
+/// it.
+#[allow(clippy::too_many_arguments)]
+pub fn record_replay_failure(
+    conn: &Connection,
+    outlet_id: &str,
+    stream: ReplayStream,
+    entry_seq: i64,
+    record_id: &str,
+    last_status: Option<u16>,
+    last_error: &str,
+    now: &str,
+) -> DbResult<i64> {
+    conn.query_row(
+        "INSERT INTO sync_replay_block
+            (outlet_id, stream, entry_seq, record_id, attempts, last_status,
+             last_error, first_attempt_at, last_attempt_at, blocked_at)
+         VALUES (?1, ?2, ?3, ?4, 1, ?5, ?6, ?7, ?7, NULL)
+         ON CONFLICT(outlet_id, stream, entry_seq) DO UPDATE SET
+            attempts = sync_replay_block.attempts + 1,
+            last_status = excluded.last_status,
+            last_error = excluded.last_error,
+            last_attempt_at = excluded.last_attempt_at
+         RETURNING attempts",
+        params![
+            outlet_id,
+            stream.as_str(),
+            entry_seq,
+            record_id,
+            last_status.map(i64::from),
+            last_error,
+            now
+        ],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
+/// Spends the last of an entry's budget: the cursor is about to move past it,
+/// so this is the moment the row becomes something to show a human.
+pub fn mark_replay_blocked(
+    conn: &Connection,
+    outlet_id: &str,
+    stream: ReplayStream,
+    entry_seq: i64,
+    now: &str,
+) -> DbResult<()> {
+    conn.execute(
+        "UPDATE sync_replay_block SET blocked_at = ?4 \
+         WHERE outlet_id = ?1 AND stream = ?2 AND entry_seq = ?3 AND blocked_at IS NULL",
+        params![outlet_id, stream.as_str(), entry_seq, now],
+    )?;
+    Ok(())
+}
+
+/// An entry that failed earlier and has now been accepted leaves no block
+/// behind — otherwise the surface fills with resolved alarms and stops being
+/// read, which is the outcome a table was chosen over a log line to avoid.
+pub fn clear_replay_failure(
+    conn: &Connection,
+    outlet_id: &str,
+    stream: ReplayStream,
+    entry_seq: i64,
+) -> DbResult<()> {
+    conn.execute(
+        "DELETE FROM sync_replay_block \
+         WHERE outlet_id = ?1 AND stream = ?2 AND entry_seq = ?3",
+        params![outlet_id, stream.as_str(), entry_seq],
+    )?;
+    Ok(())
+}
+
+/// Every entry this outlet has given up on sending — the human-visible half
+/// of the per-entry retry bound. Blocked first, then longest-outstanding, so
+/// the surface leads with what has actually been abandoned.
+pub fn list_blocked_replays(
+    conn: &Connection,
+    outlet_id: &str,
+) -> DbResult<Vec<SyncReplayBlock>> {
+    let mut stmt = conn.prepare(
+        "SELECT outlet_id, stream, entry_seq, record_id, attempts, last_status, \
+                last_error, first_attempt_at, last_attempt_at, blocked_at \
+         FROM sync_replay_block \
+         WHERE outlet_id = ?1 AND blocked_at IS NOT NULL \
+         ORDER BY blocked_at ASC, stream ASC, entry_seq ASC",
+    )?;
+    let rows = stmt
+        .query_map(params![outlet_id], |row| {
+            Ok(SyncReplayBlock {
+                outlet_id: row.get(0)?,
+                stream: row.get(1)?,
+                entry_seq: row.get(2)?,
+                record_id: row.get(3)?,
+                attempts: row.get(4)?,
+                last_status: row.get(5)?,
+                last_error: row.get(6)?,
+                first_attempt_at: row.get(7)?,
+                last_attempt_at: row.get(8)?,
+                blocked_at: row.get(9)?,
+            })
+        })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
 }

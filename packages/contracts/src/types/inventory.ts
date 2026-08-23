@@ -409,6 +409,13 @@ export type StockDeductionGapReason = z.infer<typeof StockDeductionGapReasonSche
 export const StockDeductionGapSchema = z.object({
   id: z.string().uuid(),
   outlet_id: z.string().uuid(),
+  // THE REPLAY MARK, 0.5.8. Per-outlet monotonic, minted by the edge in the
+  // same transaction as the insert — from stock_deduction_gap_sequence, which
+  // is SEPARATE from the ledger's counter. Under ranged sync a gap row is
+  // replayed by `entry_seq > cursor`, so a row without a mark can never be
+  // selected, acked, or missed; a signal that cannot reach the cloud is not a
+  // signal. 1-based, because a cursor of 0 means "nothing acked".
+  entry_seq: z.number().int().positive(),
   order_id: z.string().uuid(),
   order_item_id: z.string().uuid(),
   menu_item_id: z.string().uuid(),

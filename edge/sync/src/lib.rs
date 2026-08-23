@@ -7,6 +7,10 @@
 //!   `local_outbox` in order, wraps each row in a [`envelope::SyncEnvelope`],
 //!   posts it to its contracted route, and marks it published (never
 //!   deletes) only on a 2xx ack.
+//! - [`ranged::SyncWorker::pump_ranged_streams`] — edge→cloud, for the two
+//!   high-volume stock streams. Not the outbox: a ledger entry is a row in a
+//!   stream, not an event with its own identity (ADR-018's transport rule).
+//!   Sends `entry_seq > cursor` in order and advances the cursor on ack.
 //! - [`config::pull_and_apply_config`] — cloud→edge. Pulls the config bundle
 //!   and applies it as a wholesale replace, transactionally, only at a
 //!   strictly newer `config_version`.
@@ -21,9 +25,11 @@ pub mod client;
 pub mod config;
 pub mod envelope;
 pub mod error;
+pub mod ranged;
 pub mod route;
 pub mod worker;
 
 pub use client::HttpClient;
 pub use error::{SyncError, SyncResult};
+pub use ranged::{BlockedEntry, RangedReport, MAX_ENTRY_REPLAY_ATTEMPTS, RANGED_BATCH_LIMIT};
 pub use worker::{PumpReport, StopReason, SyncWorker, WorkerConfig};

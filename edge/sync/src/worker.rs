@@ -121,6 +121,41 @@ impl SyncWorker {
         }
     }
 
+    // Accessors for the ranged-replay pump (crate::ranged), which is the
+    // same worker's second edge→cloud flow and needs this node's identity and
+    // its authenticated client without duplicating either.
+    pub(crate) fn tenant_id(&self) -> &str {
+        &self.config.tenant_id
+    }
+
+    pub(crate) fn outlet_id(&self) -> &str {
+        &self.config.outlet_id
+    }
+
+    pub(crate) fn device_id(&self) -> &str {
+        &self.config.device_id
+    }
+
+    pub(crate) fn client(&self) -> &HttpClient {
+        &self.client
+    }
+
+    /// Verifies this node's enrollment once per session, for callers outside
+    /// `pump_outbox` (the ranged pump, `crate::ranged`). ADR-017 hole 1
+    /// applies to every outbound flow, not only the outbox one: a node whose
+    /// credential does not resolve to `config.outlet_id` must be stopped
+    /// before it sends anything, not after it has mislabelled a run of stock
+    /// movements. Shares the `enrollment_verified` flag, so a worker driving
+    /// both flows still pays for the check once.
+    pub(crate) fn ensure_enrolled(&self) -> SyncResult<()> {
+        if self.enrollment_verified.get() {
+            return Ok(());
+        }
+        self.verify_enrollment()?;
+        self.enrollment_verified.set(true);
+        Ok(())
+    }
+
     /// For tests: inject an already-built client (e.g. pointed at a local
     /// `tiny_http` server) instead of constructing one from `base_url`. The
     /// caller decides whether that client carries a bearer token — this

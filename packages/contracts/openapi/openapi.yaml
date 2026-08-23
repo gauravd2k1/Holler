@@ -2918,10 +2918,20 @@ components:
         Cloud-visible because the person who can SEE it and the person who can
         FIX it are different people in different places: fixing means authoring
         a recipe, which is cloud config under recipe.manage.
-      required: [id, outlet_id, order_id, order_item_id, menu_item_id, menu_item_name, quantity, reason, occurred_at, business_date, schema_version]
+      required: [id, outlet_id, entry_seq, order_id, order_item_id, menu_item_id, menu_item_name, quantity, reason, occurred_at, business_date, schema_version]
       properties:
         id: { type: string, format: uuid }
         outlet_id: { type: string, format: uuid }
+        entry_seq:
+          type: integer
+          format: int64
+          minimum: 1
+          description: >
+            THE REPLAY MARK (0.5.8). Per-outlet monotonic, minted by the edge
+            from its own gap counter — SEPARATE from the ledger's, so the two
+            ranged streams advance independently. The cloud checks contiguity
+            of the received stream against this value. 1-based: a replay cursor
+            of 0 means "nothing acked".
         order_id: { type: string, format: uuid }
         order_item_id: { type: string, format: uuid }
         menu_item_id: { type: string, format: uuid }

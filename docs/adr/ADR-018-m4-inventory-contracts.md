@@ -408,3 +408,37 @@ Written down so the next edge→cloud aggregate's transport is **derivable, not 
 
 Two corollaries, both already live: the missing `_with_outbox` sibling for stock-count open/complete is correctly an **outbox** fix — do not fold counts onto ranged sync because the machinery is nearby; and do not fold the ledger onto the outbox because the event enum is nearby. A proposal that moves an aggregate across this line is an ADR change, not a refactor.
 
+
+---
+
+## Addendum — ranged sync implemented, and detection made non-blocking (contracts 0.5.8, 2026-08-23)
+
+The transport rule above said *what* the two stock streams do. This is what shipped, and the one thing the first implementation got backwards.
+
+### The shapes
+
+- `sync_state` gains **two** cursors — `last_acked_ledger_entry_seq`, `last_acked_gap_entry_seq`. Edge-local, SQLite only, declared in `SINGLE_STORE_MIGRATIONS`. Two counters mean two cursors: both streams mint 1, 2, 3… and one mark cannot mean two positions.
+- `stock_deduction_gap.entry_seq`, NOT NULL, `UNIQUE (outlet_id, entry_seq)`, in **both** stores, minted from its own `stock_deduction_gap_sequence`. The cloud receives it and checks contiguity against it, so declaring it single-store would have been wrong.
+- **The two changes ship as separate migrations on purpose.** The asymmetry guard keys on the filename stem. Had the cursors and the gap column shared a file, declaring that file single-store would have silently exempted the gap column from ever needing its PostgreSQL mirror — the guard would have been satisfied by the declaration that made it unable to fire.
+- `ledger_replay_gap` — cloud-only, the `refresh_token` precedent — records a hole the cloud observed, with `resolved_at` and `UNIQUE (outlet_id, stream, from_entry_seq, to_entry_seq)`.
+- `sync_replay_block` — edge-local — records an entry the outlet has stopped trying to send.
+
+`entry_seq` is **1-based** on both streams, and cursors default to 0 meaning "nothing acked". A 0-based sequence would make every outlet's first entry unselectable forever, once, silently.
+
+### The correction: detection must not block
+
+**M4 defect, found after T4 shipped.** `IngestLedgerEntry` rejected any `entry_seq` beyond the cloud's high-water mark. One genuinely lost entry therefore halted that outlet's ledger replay **permanently**: entry 5 refused, and 6, 7, 8… refused behind it forever. Worse, silently — nothing downstream distinguishes a quiet outlet from one wedged since Tuesday. A mechanism added to make loss visible was the thing that hid it.
+
+> **A contiguity check must surface a violation loudly and let the stream continue.** Blocking is a side effect of detection, not a feature of it. The only refusal left is a mark at or below the high-water mark under a *different* id, which would make the mark ambiguous; that is unreachable through the edge's durable counter and clearing it is a documented manual operation.
+
+A hole that later fills is not a loss — late arrival is ordinary — so `resolved_at` closes it, and the UNIQUE key keeps one hole to one row however many times it is re-observed. Without both, the table becomes a pile of false alarms: the log-line outcome, reached slowly.
+
+### The same outage from the other end
+
+Bounding the cloud alone is half a fix. If the cloud permanently rejects entry 7 and the edge retries 7 forever, entries 8..N never leave the outlet — the same outage, authored at the other end. So the edge's retry budget is spent **per entry**: after `MAX_ENTRY_REPLAY_ATTEMPTS` permanent rejections the entry is recorded in `sync_replay_block`, the cursor moves past it, and the stream continues. The skipped mark then arrives at the cloud as a hole, so one fact is visible from both ends.
+
+Transient conditions — transport failure, 5xx, 401/403, 408, 429 — never spend that budget. Abandoning good entries during a cloud outage would be data loss dressed as resilience, and retrying them indefinitely is safe precisely because **no core outlet path depends on the uplink** (ADR-013). Halting sync is survivable. Halting it silently is not, which is why a blocked entry is a row on a POS screen rather than a log line.
+
+### Idempotency comes first
+
+The same id arriving twice is an ordinary retry — a dropped ack, a resumed batch — and returns the stored row quietly. That check runs **before** contiguity deliberately: the mark it carries is already stored, so reaching the contiguity check would read an ordinary retry as a reused mark and refuse it, manufacturing a false alarm on every reconnect.

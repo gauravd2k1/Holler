@@ -513,3 +513,37 @@ briefs naming the same directory are a conflict however unrelated the work
 reads. If the work genuinely must share a directory, serialise it: dispatch,
 wait, dispatch again.
 
+
+## 2026-08-23 — The gap detector was the outage
+
+**Severity:** high (caught before the milestone closed, never ran at an outlet).
+
+M4's T4 added `entry_seq` contiguity checking to the cloud's ledger ingest, so a
+lost stream row would be visible instead of vanishing. It shipped rejecting any
+`entry_seq` beyond the outlet's high-water mark.
+
+That turns one lost row into a permanent, silent outage. Entry 5 is refused;
+6, 7, 8 are refused behind it, forever; and because nothing downstream can tell
+"quiet outlet" from "replay wedged since Tuesday", nobody finds out. The
+mechanism added to make loss visible was the mechanism that hid it — and it
+would have hidden far more than the single row that triggered it.
+
+The fix: record the hole (`ledger_replay_gap`, with `resolved_at` so a hole
+that later fills stops claiming a loss, and a UNIQUE span key so one hole stays
+one row), accept the entry, keep going.
+
+### The lesson, stated for the next reader
+
+**A detector that blocks is not a detector.** When a check finds a violation it
+has two jobs that look like one: make it visible, and decide what happens next.
+Rejecting is the reflex — it is what validation does — but for a *stream*, a
+rejection is not a rejection of one row, it is a rejection of every row behind
+it. Ask which of "loud" and "blocking" the check actually needs, and note that
+blocking is almost never the part anyone wanted.
+
+**And check the mirror image.** The same defect exists at the other end of any
+replayed stream: a sender that retries one permanently-rejected row forever
+strands everything behind it just as completely. Both ends were bounded here —
+the cloud records and continues, the edge gives up on the entry rather than the
+stream — because fixing only the end you were looking at leaves the outage
+intact and moves it one hop.

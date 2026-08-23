@@ -129,6 +129,14 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0024_fix_gap_reason_check.sql",
         include_str!("../../../packages/contracts/sqlite/0024_fix_gap_reason_check.sql"),
     ),
+    (
+        "0025_sync_ledger_cursors.sql",
+        include_str!("../../../packages/contracts/sqlite/0025_sync_ledger_cursors.sql"),
+    ),
+    (
+        "0026_gap_entry_seq.sql",
+        include_str!("../../../packages/contracts/sqlite/0026_gap_entry_seq.sql"),
+    ),
 ];
 
 /// Applies any migrations not yet reflected in `PRAGMA user_version`. Safe
@@ -854,6 +862,16 @@ mod tests {
             "ADR-018 0.5.3: the SQLite half of this bound lives inside              0021_stock_ledger_sequence.sql, because SQLite cannot ADD              CONSTRAINT and needs triggers instead. Same rule, different file              name, so the stem match cannot pair them.",
         ),
         (
+            "sqlite",
+            "sync_ledger_cursors.sql",
+            "ADR-018 0.5.8: sync_state's two ranged-replay cursors and the              stock_deduction_gap_sequence counter are EDGE-LOCAL, the              invoice_sequence/stock_ledger_sequence precedent. A cursor              records how far THIS outlet has replayed; the cloud derives its              own high-water mark from what it actually stored, and mirroring              the edge's cursor would make it a second authority on the edge's              progress. Note what is NOT in this file:              stock_deduction_gap.entry_seq ships as 0026 in BOTH stores,              because the cloud receives it and checks contiguity against it.",
+        ),
+        (
+            "postgres",
+            "ledger_replay_gap.sql",
+            "ADR-018 0.5.8: a record of what the CLOUD observed about a              stream it received -- a hole between its high-water mark and an              arriving entry_seq. Cloud-only, the refresh_token precedent: the              edge cannot author it, and an edge reporting on its own losses              would be the wrong authority for the fact.",
+        ),
+        (
             "postgres",
             "refresh_token.sql",
             "ADR-012: refresh tokens are cloud-only and deliberately not an \
@@ -1418,5 +1436,193 @@ INSERT INTO cash_shift (id,outlet_id,device_id,cashier_user_id,status,opened_at,
             format!("{err}").contains("CHECK"),
             "expected CHECK failure, got {err}"
         );
+    }
+}
+
+/// Contracts 0.5.8 — the ranged-replay migrations, falsified against a
+/// database that ALREADY HAS ROWS.
+///
+/// WHY THAT QUALIFIER IS THE WHOLE TEST. `ADD COLUMN entry_seq NOT NULL
+/// DEFAULT 0` under `UNIQUE (outlet_id, entry_seq)` passes on an empty table
+/// and fails on the second gap row of any outlet — and it fails at open, so
+/// the edge database will not start. A migration test that seeds nothing
+/// proves only that the syntax parses.
+#[cfg(test)]
+mod m4_ranged_sync_migration {
+    use super::*;
+    use crate::pragma::configure_connection;
+
+    const SEED_OUTLETS: &str = r#"
+INSERT INTO outlet (id,brand_id,name,created_at,updated_at) VALUES
+ ('out-1','brand-1','Pune','2026-08-12T00:00:00Z','2026-08-12T00:00:00Z'),
+ ('out-2','brand-1','Mumbai','2026-08-12T00:00:00Z','2026-08-12T00:00:00Z');
+"#;
+
+    /// Applies every migration strictly BEFORE `name`, leaving the database
+    /// at exactly the version an outlet upgrading into 0.5.8 would be at.
+    fn apply_up_to_but_not(conn: &Connection, name: &str) {
+        let stop = MIGRATIONS
+            .iter()
+            .position(|(n, _)| *n == name)
+            .unwrap_or_else(|| panic!("{name} is not in MIGRATIONS"));
+        for (n, sql) in MIGRATIONS.iter().take(stop) {
+            conn.execute_batch(sql)
+                .unwrap_or_else(|e| panic!("applying {n}: {e}"));
+        }
+        conn.pragma_update(None, "user_version", stop as i64)
+            .expect("set user_version");
+    }
+
+    fn seed_pre_upgrade_gaps(conn: &Connection) {
+        conn.execute_batch(SEED_OUTLETS).expect("seed outlets");
+        // Two gaps for ONE outlet — the row a constant default breaks on —
+        // deliberately inserted out of occurrence order, so the backfill has
+        // to sort rather than inherit insertion order.
+        conn.execute_batch(
+            r#"
+INSERT INTO stock_deduction_gap
+ (id,outlet_id,order_id,order_item_id,menu_item_id,menu_item_variant_id,
+  menu_item_name,quantity,reason,occurred_at,business_date) VALUES
+ ('gap-b','out-1','ord-2','oi-2','mi-2',NULL,'Dal Fry',1,'NO_RECIPE',
+  '2026-08-20T11:00:00Z','2026-08-20'),
+ ('gap-a','out-1','ord-1','oi-1','mi-1',NULL,'Butter Chicken',2,'NO_RECIPE',
+  '2026-08-20T09:00:00Z','2026-08-20'),
+ ('gap-c','out-2','ord-3','oi-3','mi-3',NULL,'Paneer Tikka',1,'UNKNOWN_UNIT',
+  '2026-08-20T10:00:00Z','2026-08-20');
+"#,
+        )
+        .expect("seed gaps");
+    }
+
+    #[test]
+    fn gap_entry_seq_backfills_in_sequence_on_a_populated_table() {
+        let conn = Connection::open_in_memory().expect("open");
+        configure_connection(&conn).expect("pragmas");
+        apply_up_to_but_not(&conn, "0026_gap_entry_seq.sql");
+        seed_pre_upgrade_gaps(&conn);
+
+        // The upgrade an existing outlet actually performs.
+        apply_all(&conn).expect("0026 must survive a table that already has rows");
+
+        let mut stmt = conn
+            .prepare("SELECT id, entry_seq FROM stock_deduction_gap ORDER BY outlet_id, entry_seq")
+            .unwrap();
+        let rows: Vec<(String, i64)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+
+        // 1-based, per outlet, in OCCURRENCE order — not insertion order, and
+        // not one counter shared across outlets.
+        assert_eq!(
+            rows,
+            vec![
+                ("gap-a".to_string(), 1),
+                ("gap-b".to_string(), 2),
+                ("gap-c".to_string(), 1),
+            ],
+            "backfill must number each outlet's stream 1..N, oldest first"
+        );
+    }
+
+    #[test]
+    fn the_gap_counter_is_seeded_so_the_next_mint_cannot_collide() {
+        let conn = Connection::open_in_memory().expect("open");
+        configure_connection(&conn).expect("pragmas");
+        apply_up_to_but_not(&conn, "0026_gap_entry_seq.sql");
+        seed_pre_upgrade_gaps(&conn);
+        apply_all(&conn).expect("apply");
+
+        let seeded: Vec<(String, i64)> = conn
+            .prepare(
+                "SELECT outlet_id, last_value FROM stock_deduction_gap_sequence ORDER BY outlet_id",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(
+            seeded,
+            vec![("out-1".to_string(), 2), ("out-2".to_string(), 1)],
+            "the counter must resume where the backfill stopped"
+        );
+
+        // The failure this seeding prevents: the first unaccounted sale after
+        // an upgrade would collide on UNIQUE (outlet_id, entry_seq) INSIDE
+        // confirm_order's transaction, which is the one place ADR-018 Rule 2
+        // forbids a failure.
+        conn.execute_batch(
+            r#"
+INSERT INTO stock_deduction_gap
+ (id,outlet_id,entry_seq,order_id,order_item_id,menu_item_id,
+  menu_item_variant_id,menu_item_name,quantity,reason,occurred_at,business_date)
+ VALUES ('gap-d','out-1',3,'ord-9','oi-9','mi-9',NULL,'Naan',1,'NO_RECIPE',
+  '2026-08-23T09:00:00Z','2026-08-23');
+"#,
+        )
+        .expect("the next mark after the seeded counter must be free");
+    }
+
+    #[test]
+    fn replay_cursors_start_at_zero_meaning_nothing_acked() {
+        let conn = Connection::open_in_memory().expect("open");
+        configure_connection(&conn).expect("pragmas");
+        apply_all(&conn).expect("apply");
+        conn.execute_batch(SEED_OUTLETS).expect("seed outlets");
+        conn.execute_batch("INSERT INTO sync_state (outlet_id) VALUES ('out-1');")
+            .expect("init sync_state");
+
+        let (ledger, gap): (i64, i64) = conn
+            .query_row(
+                "SELECT last_acked_ledger_entry_seq, last_acked_gap_entry_seq \
+                 FROM sync_state WHERE outlet_id = 'out-1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("cursors exist");
+
+        // 0 pairs with a 1-BASED entry_seq: `entry_seq > 0` selects the whole
+        // stream. Were the sequence 0-based, the first entry of every outlet
+        // would be unselectable forever — silently, once, at the only moment
+        // nobody is watching.
+        assert_eq!((ledger, gap), (0, 0));
+    }
+
+    #[test]
+    fn both_streams_mint_one_first_and_advance_independently() {
+        let conn = Connection::open_in_memory().expect("open");
+        configure_connection(&conn).expect("pragmas");
+        apply_all(&conn).expect("apply");
+        conn.execute_batch(SEED_OUTLETS).expect("seed outlets");
+
+        let bump = |table: &str| -> i64 {
+            conn.query_row(
+                &format!(
+                    "INSERT INTO {table} (outlet_id, last_value, updated_at)
+                     VALUES ('out-1', 1, '2026-08-23T00:00:00Z')
+                     ON CONFLICT(outlet_id) DO UPDATE SET
+                        last_value = {table}.last_value + 1,
+                        updated_at = excluded.updated_at
+                     RETURNING last_value"
+                ),
+                [],
+                |r| r.get(0),
+            )
+            .expect("mint")
+        };
+
+        assert_eq!(bump("stock_ledger_sequence"), 1, "entry_seq is 1-based");
+        assert_eq!(
+            bump("stock_deduction_gap_sequence"),
+            1,
+            "entry_seq is 1-based"
+        );
+        assert_eq!(bump("stock_ledger_sequence"), 2);
+        // Two streams, two counters: advancing the ledger must not move the
+        // gap stream's position. One mark cannot mean two positions.
+        assert_eq!(bump("stock_deduction_gap_sequence"), 2);
+        assert_eq!(bump("stock_ledger_sequence"), 3);
     }
 }

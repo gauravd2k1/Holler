@@ -333,8 +333,14 @@ const (
 // which is cloud config under recipe.manage. It shares the ledger ingest route
 // rather than taking one of its own.
 type StockDeductionGap struct {
-	ID                string  `json:"id"`
-	OutletID          string  `json:"outlet_id"`
+	ID       string `json:"id"`
+	OutletID string `json:"outlet_id"`
+	// THE REPLAY MARK, 0.5.8. Per-outlet monotonic, minted by the edge from
+	// stock_deduction_gap_sequence — SEPARATE from the ledger's counter, so
+	// the two ranged streams advance independently. The cloud checks
+	// contiguity of the received stream against it, which is why this column
+	// lives in both stores while the replay CURSORS stay edge-local.
+	EntrySeq          int64   `json:"entry_seq"`
 	OrderID           string  `json:"order_id"`
 	OrderItemID       string  `json:"order_item_id"`
 	MenuItemID        string  `json:"menu_item_id"`

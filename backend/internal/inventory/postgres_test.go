@@ -366,13 +366,23 @@ func TestCreateRecipe_DimensionMismatchIsRejected422(t *testing.T) {
 	}
 }
 
-// TestIngestLedgerEntry_SequenceGapIsRejectedAndNamesTheMissingEntry is the
-// replay addendum's contiguity check: entry_seq 1,2,3 succeed, then 5 (skipping
-// 4) must fail loudly naming entry 4 as missing — never a silent skip.
-func TestIngestLedgerEntry_SequenceGapIsRejectedAndNamesTheMissingEntry(t *testing.T) {
+// TestIngestLedgerEntry_AHoleIsRecordedAndTheStreamKeepsMoving is the
+// contiguity check as it must behave, and the regression test for the defect
+// this replaced.
+//
+// THE DEFECT. Shipped T4 code rejected any entry_seq beyond the high-water
+// mark. One genuinely lost entry therefore halted that outlet's ledger replay
+// permanently: entry 5 rejected, 6, 7, 8… all rejected behind it, forever,
+// with nothing downstream able to tell "quiet outlet" from "wedged since
+// Tuesday". Detection is the goal; blocking was a side effect nobody wanted.
+//
+// So: the hole is recorded and entry 5 is STORED, and — the half that proves
+// there is no outage — entry 6 lands afterwards.
+func TestIngestLedgerEntry_AHoleIsRecordedAndTheStreamKeepsMoving(t *testing.T) {
 	pool := setupPool(t)
 	ctx := context.Background()
-	svc := inventory.NewService(inventory.NewRepository(pool))
+	repo := inventory.NewRepository(pool)
+	svc := inventory.NewService(repo)
 	fx := newFixture(t, pool, "Ledger Gap")
 
 	item := newInventoryItem(t, svc, ctx, fx.tenantID, fx.outletID, "GAP-ITEM", contracts.DimensionMass)
@@ -398,12 +408,196 @@ func TestIngestLedgerEntry_SequenceGapIsRejectedAndNamesTheMissingEntry(t *testi
 		}
 	}
 
-	_, err := send(5)
-	if !errors.Is(err, inventory.ErrLedgerSequenceGap) {
-		t.Fatalf("expected ErrLedgerSequenceGap for entry_seq 5 after 3, got %v", err)
+	// 4 never arrives.
+	if _, err := send(5); err != nil {
+		t.Fatalf("entry_seq 5 must be ACCEPTED despite the hole at 4, got: %v", err)
 	}
-	if !contains(err.Error(), "4") {
-		t.Fatalf("expected the gap error to name the missing entry_seq 4, got: %v", err)
+
+	gaps, err := repo.ListUnresolvedReplayGaps(ctx, fx.outletID)
+	if err != nil {
+		t.Fatalf("listing replay gaps: %v", err)
+	}
+	if len(gaps) != 1 {
+		t.Fatalf("expected exactly one recorded hole, got %d: %+v", len(gaps), gaps)
+	}
+	if gaps[0].Stream != inventory.ReplayStreamLedger ||
+		gaps[0].FromEntrySeq != 4 || gaps[0].ToEntrySeq != 4 {
+		t.Fatalf("expected LEDGER hole 4..4, got %+v", gaps[0])
+	}
+	if gaps[0].ResolvedAt != nil {
+		t.Fatalf("a hole that has not filled must stay unresolved, got %+v", gaps[0])
+	}
+
+	// The whole point: replay is not wedged.
+	if _, err := send(6); err != nil {
+		t.Fatalf("entry_seq 6 must still replay after a recorded hole, got: %v", err)
+	}
+}
+
+// TestIngestLedgerEntry_ReObservingTheSameHoleStaysOneRow. The edge retries a
+// batch and the same hole is seen again; that is not new information. Without
+// the UNIQUE key and its upsert, one hole becomes N rows and the table
+// degrades into the log-line outcome it exists to avoid — unreadable, so
+// unread.
+func TestIngestLedgerEntry_ReObservingTheSameHoleStaysOneRow(t *testing.T) {
+	pool := setupPool(t)
+	ctx := context.Background()
+	repo := inventory.NewRepository(pool)
+	fx := newFixture(t, pool, "Hole Reobserved")
+
+	now := time.Now().UTC()
+	for i := 0; i < 3; i++ {
+		if err := repo.RecordReplayGap(ctx, fx.outletID, inventory.ReplayStreamLedger, 4, 4, now); err != nil {
+			t.Fatalf("recording the hole (observation %d): %v", i+1, err)
+		}
+	}
+
+	gaps, err := repo.ListUnresolvedReplayGaps(ctx, fx.outletID)
+	if err != nil {
+		t.Fatalf("listing replay gaps: %v", err)
+	}
+	if len(gaps) != 1 {
+		t.Fatalf("three observations of one hole must stay one row, got %d", len(gaps))
+	}
+	if gaps[0].ObservationCount != 3 {
+		t.Fatalf("expected observation_count 3, got %d", gaps[0].ObservationCount)
+	}
+}
+
+// TestIngestLedgerEntry_AFilledHoleResolves. A hole that later fills is not a
+// loss — late arrival is ordinary. A row still claiming a permanent loss that
+// has healed is a false alarm, and a table of false alarms is one nobody
+// reads.
+func TestIngestLedgerEntry_AFilledHoleResolves(t *testing.T) {
+	pool := setupPool(t)
+	ctx := context.Background()
+	repo := inventory.NewRepository(pool)
+	svc := inventory.NewService(repo)
+	fx := newFixture(t, pool, "Hole Filled")
+
+	item := newInventoryItem(t, svc, ctx, fx.tenantID, fx.outletID, "FILL-ITEM", contracts.DimensionMass)
+
+	send := func(seq int64) error {
+		id := newULID()
+		env := ledgerEnvelope(id, fx.tenantID, fx.outletID, 1)
+		_, err := svc.IngestLedgerEntry(ctx, fx.tenantID, env, contracts.StockLedgerEntry{
+			ID: id, OutletID: fx.outletID, EntrySeq: seq,
+			InventoryItemID: item.ID, InventoryItemName: item.Name, Dimension: item.Dimension,
+			EntryType: contracts.StockEntryTypeConsumption, Origin: contracts.StockEntryOriginManual,
+			QuantityAppliedMicro: -1_000_000,
+			OccurredAt:           time.Now().UTC().Format(time.RFC3339),
+			BusinessDate:         time.Now().UTC().Format("2006-01-02"),
+			SchemaVersion:        1,
+		})
+		return err
+	}
+
+	if err := send(1); err != nil {
+		t.Fatalf("entry 1: %v", err)
+	}
+	if err := send(3); err != nil { // hole at 2
+		t.Fatalf("entry 3: %v", err)
+	}
+	gaps, err := repo.ListUnresolvedReplayGaps(ctx, fx.outletID)
+	if err != nil || len(gaps) != 1 {
+		t.Fatalf("expected one open hole, got %d (err %v)", len(gaps), err)
+	}
+
+	// 2 arrives late, out of order — exactly the case that must not leave a
+	// permanent alarm behind.
+	if err := send(2); err != nil {
+		t.Fatalf("the late entry must be accepted: %v", err)
+	}
+
+	gaps, err = repo.ListUnresolvedReplayGaps(ctx, fx.outletID)
+	if err != nil {
+		t.Fatalf("listing replay gaps: %v", err)
+	}
+	if len(gaps) != 0 {
+		t.Fatalf("a filled hole must resolve, still open: %+v", gaps)
+	}
+}
+
+// TestIngestLedgerEntry_SameIDReIngestIsASilentNoOp. A dropped ack means the
+// edge resends a row the cloud already stored. That is an ordinary retry: it
+// must return the stored row quietly, never a conflict, or every reconnect
+// manufactures a false alarm. It must also not be read as a reused mark —
+// which is why the idempotency check runs BEFORE the contiguity check.
+func TestIngestLedgerEntry_SameIDReIngestIsASilentNoOp(t *testing.T) {
+	pool := setupPool(t)
+	ctx := context.Background()
+	repo := inventory.NewRepository(pool)
+	svc := inventory.NewService(repo)
+	fx := newFixture(t, pool, "Same ID Retry")
+
+	item := newInventoryItem(t, svc, ctx, fx.tenantID, fx.outletID, "RETRY-ITEM", contracts.DimensionMass)
+
+	id := newULID()
+	env := ledgerEnvelope(id, fx.tenantID, fx.outletID, 1)
+	entry := contracts.StockLedgerEntry{
+		ID: id, OutletID: fx.outletID, EntrySeq: 1,
+		InventoryItemID: item.ID, InventoryItemName: item.Name, Dimension: item.Dimension,
+		EntryType: contracts.StockEntryTypeConsumption, Origin: contracts.StockEntryOriginManual,
+		QuantityAppliedMicro: -1_000_000,
+		OccurredAt:           time.Now().UTC().Format(time.RFC3339),
+		BusinessDate:         time.Now().UTC().Format("2006-01-02"),
+		SchemaVersion:        1,
+	}
+
+	first, err := svc.IngestLedgerEntry(ctx, fx.tenantID, env, entry)
+	if err != nil {
+		t.Fatalf("first ingest: %v", err)
+	}
+	second, err := svc.IngestLedgerEntry(ctx, fx.tenantID, env, entry)
+	if err != nil {
+		t.Fatalf("re-ingesting the same id must be a quiet no-op, got: %v", err)
+	}
+	if second.ID != first.ID || second.EntrySeq != first.EntrySeq {
+		t.Fatalf("the retry must return the stored row, got %+v want %+v", second, first)
+	}
+
+	gaps, err := repo.ListUnresolvedReplayGaps(ctx, fx.outletID)
+	if err != nil {
+		t.Fatalf("listing replay gaps: %v", err)
+	}
+	if len(gaps) != 0 {
+		t.Fatalf("an ordinary retry must record no hole, got %+v", gaps)
+	}
+}
+
+// TestIngestLedgerEntry_AReusedMarkUnderADifferentIDIsRefused. The one
+// contiguity condition that still rejects: two rows cannot claim one
+// position, or the mark the sealed snapshot and the gap detection both read
+// becomes ambiguous. Unreachable through the edge's own durable counter;
+// reaching it means something upstream is minting marks it does not own.
+func TestIngestLedgerEntry_AReusedMarkUnderADifferentIDIsRefused(t *testing.T) {
+	pool := setupPool(t)
+	ctx := context.Background()
+	svc := inventory.NewService(inventory.NewRepository(pool))
+	fx := newFixture(t, pool, "Reused Mark")
+
+	item := newInventoryItem(t, svc, ctx, fx.tenantID, fx.outletID, "REUSE-ITEM", contracts.DimensionMass)
+
+	send := func(seq int64) error {
+		id := newULID()
+		env := ledgerEnvelope(id, fx.tenantID, fx.outletID, 1)
+		_, err := svc.IngestLedgerEntry(ctx, fx.tenantID, env, contracts.StockLedgerEntry{
+			ID: id, OutletID: fx.outletID, EntrySeq: seq,
+			InventoryItemID: item.ID, InventoryItemName: item.Name, Dimension: item.Dimension,
+			EntryType: contracts.StockEntryTypeConsumption, Origin: contracts.StockEntryOriginManual,
+			QuantityAppliedMicro: -1_000_000,
+			OccurredAt:           time.Now().UTC().Format(time.RFC3339),
+			BusinessDate:         time.Now().UTC().Format("2006-01-02"),
+			SchemaVersion:        1,
+		})
+		return err
+	}
+
+	if err := send(1); err != nil {
+		t.Fatalf("entry 1: %v", err)
+	}
+	if err := send(1); !errors.Is(err, inventory.ErrLedgerSequenceMarkReused) {
+		t.Fatalf("expected ErrLedgerSequenceMarkReused for a reused mark, got %v", err)
 	}
 }
 

@@ -43,7 +43,7 @@ use tauri::State;
 
 use crate::dto::{
     CurrentStockLine, StockCount, StockCountLine, StockCountVarianceReport, StockDeductionGap,
-    StockLedgerEntry,
+    StockLedgerEntry, SyncReplayBlock,
 };
 use crate::error::{AppError, AppResult};
 use crate::ids::{new_id, now_iso};
@@ -100,6 +100,19 @@ pub fn list_stock_deduction_gaps_impl(state: &AppState) -> AppResult<Vec<StockDe
     let db = lock_db(state)?;
     let gaps = db.list_stock_deduction_gaps(&state.outlet_id)?;
     Ok(gaps.into_iter().map(StockDeductionGap::from).collect())
+}
+
+/// Every ranged-replay entry this outlet has given up on sending (contracts
+/// 0.5.8). Empty is the normal answer, and a non-empty one is a condition a
+/// human is meant to act on: some of this outlet's stock history is not
+/// reaching the cloud and never will without intervention.
+///
+/// Bounded and ordered at the edge (blocked first, longest-outstanding
+/// first); this wrapper adds no filtering of its own.
+pub fn list_blocked_replays_impl(state: &AppState) -> AppResult<Vec<SyncReplayBlock>> {
+    let db = lock_db(state)?;
+    let blocked = holler_edge_database::repo::list_blocked_replays(db.connection(), &state.outlet_id)?;
+    Ok(blocked.into_iter().map(SyncReplayBlock::from).collect())
 }
 
 // ---------------------------------------------------------------- wastage --
@@ -231,6 +244,11 @@ pub fn list_stock_deduction_gaps(
     state: State<'_, AppState>,
 ) -> AppResult<Vec<StockDeductionGap>> {
     list_stock_deduction_gaps_impl(&state)
+}
+
+#[tauri::command]
+pub fn list_blocked_replays(state: State<'_, AppState>) -> AppResult<Vec<SyncReplayBlock>> {
+    list_blocked_replays_impl(&state)
 }
 
 #[tauri::command]

@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/holler/backend/internal/platform/httpx"
+	"github.com/holler/backend/internal/platform/id"
 	"github.com/holler/backend/internal/platform/postgres"
 )
 
@@ -93,6 +94,24 @@ type Repository interface {
 	InsertLedgerEntry(ctx context.Context, entry StockLedgerEntry) error
 	GetDeductionGapByID(ctx context.Context, id string) (StockDeductionGap, bool, error)
 	InsertDeductionGap(ctx context.Context, gap StockDeductionGap) error
+	// LastGapEntrySeq is LastEntrySeq for the OTHER ranged stream. Separate
+	// because the two streams mint from two independent counters (contracts
+	// 0.5.8) — one mark cannot mean two positions.
+	LastGapEntrySeq(ctx context.Context, outletID string) (int64, error)
+
+	// --- ledger_replay_gap -------------------------------------------------
+
+	// RecordReplayGap upserts an observed hole in a ranged stream, keyed by
+	// (outlet, stream, span): re-observing the same hole across batches bumps
+	// its counters instead of adding a row, so one hole never becomes N.
+	RecordReplayGap(ctx context.Context, outletID string, stream ReplayStream, fromSeq, toSeq int64, observedAt time.Time) error
+	// ResolveCoveredReplayGaps closes every open hole in one stream whose
+	// span is now fully ingested. A healed hole left open is a false alarm,
+	// and a table of false alarms is one nobody reads.
+	ResolveCoveredReplayGaps(ctx context.Context, outletID string, stream ReplayStream, resolvedAt time.Time) error
+	// ListUnresolvedReplayGaps is the read that matters: what is still
+	// missing for this outlet.
+	ListUnresolvedReplayGaps(ctx context.Context, outletID string) ([]LedgerReplayGap, error)
 
 	// --- stock_count ---------------------------------------------------
 
@@ -549,11 +568,11 @@ func (r *pgRepository) GetDeductionGapByID(ctx context.Context, id string) (Stoc
 	var reason string
 	var occurredAt, businessDate time.Time
 	err := r.pool.QueryRow(ctx,
-		`SELECT id, outlet_id, order_id, order_item_id, menu_item_id, menu_item_variant_id, menu_item_name,
+		`SELECT id, outlet_id, entry_seq, order_id, order_item_id, menu_item_id, menu_item_variant_id, menu_item_name,
 		        quantity, reason, occurred_at, business_date
 		 FROM stock_deduction_gap WHERE id = $1`,
 		id,
-	).Scan(&g.ID, &g.OutletID, &g.OrderID, &g.OrderItemID, &g.MenuItemID, &g.MenuItemVariantID, &g.MenuItemName,
+	).Scan(&g.ID, &g.OutletID, &g.EntrySeq, &g.OrderID, &g.OrderItemID, &g.MenuItemID, &g.MenuItemVariantID, &g.MenuItemName,
 		&g.Quantity, &reason, &occurredAt, &businessDate)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return StockDeductionGap{}, false, nil
@@ -570,18 +589,136 @@ func (r *pgRepository) GetDeductionGapByID(ctx context.Context, id string) (Stoc
 
 func (r *pgRepository) InsertDeductionGap(ctx context.Context, gap StockDeductionGap) error {
 	_, err := r.pool.Exec(ctx,
-		`INSERT INTO stock_deduction_gap (id, outlet_id, order_id, order_item_id, menu_item_id, menu_item_variant_id, menu_item_name, quantity, reason, occurred_at, business_date)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-		gap.ID, gap.OutletID, gap.OrderID, gap.OrderItemID, gap.MenuItemID, gap.MenuItemVariantID, gap.MenuItemName,
+		`INSERT INTO stock_deduction_gap (id, outlet_id, entry_seq, order_id, order_item_id, menu_item_id, menu_item_variant_id, menu_item_name, quantity, reason, occurred_at, business_date)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+		gap.ID, gap.OutletID, gap.EntrySeq, gap.OrderID, gap.OrderItemID, gap.MenuItemID, gap.MenuItemVariantID, gap.MenuItemName,
 		gap.Quantity, string(gap.Reason), gap.OccurredAt, gap.BusinessDate,
 	)
 	if err != nil {
 		if isUniqueViolation(err) {
-			return fmt.Errorf("%w: deduction gap id already exists", httpx.ErrConflict)
+			return fmt.Errorf("%w: deduction gap id or (outlet_id, entry_seq) already exists", httpx.ErrConflict)
 		}
 		return fmt.Errorf("inventory: inserting deduction gap: %w", err)
 	}
 	return nil
+}
+
+func (r *pgRepository) LastGapEntrySeq(ctx context.Context, outletID string) (int64, error) {
+	var seq int64
+	err := r.pool.QueryRow(ctx,
+		`SELECT COALESCE(MAX(entry_seq), 0) FROM stock_deduction_gap WHERE outlet_id = $1`,
+		outletID,
+	).Scan(&seq)
+	if err != nil {
+		return 0, fmt.Errorf("inventory: getting last gap entry_seq: %w", err)
+	}
+	return seq, nil
+}
+
+// --- ledger_replay_gap ------------------------------------------------------
+
+// replayGapStreamTable maps a stream to the table its marks live in. A
+// closed switch over a typed constant, never caller-supplied text: these
+// names are interpolated into SQL below because a table name cannot be a
+// bind parameter.
+func replayGapStreamTable(stream ReplayStream) (string, error) {
+	switch stream {
+	case ReplayStreamLedger:
+		return "stock_ledger_entry", nil
+	case ReplayStreamDeductionGap:
+		return "stock_deduction_gap", nil
+	default:
+		return "", fmt.Errorf("inventory: unknown replay stream %q", stream)
+	}
+}
+
+func (r *pgRepository) RecordReplayGap(ctx context.Context, outletID string, stream ReplayStream, fromSeq, toSeq int64, observedAt time.Time) error {
+	if _, err := replayGapStreamTable(stream); err != nil {
+		return err
+	}
+	// The UNIQUE key is what keeps one hole to one row. Without the upsert,
+	// an edge retrying a batch would write a fresh row per attempt and the
+	// table would degrade into the log-line outcome it exists to avoid.
+	//
+	// resolved_at is deliberately untouched: a hole that healed and is then
+	// re-observed is a NEW loss and must reopen, which the ON CONFLICT below
+	// does by clearing it.
+	_, err := r.pool.Exec(ctx,
+		`INSERT INTO ledger_replay_gap
+		   (id, outlet_id, stream, from_entry_seq, to_entry_seq,
+		    first_observed_at, last_observed_at, observation_count, resolved_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,$6,1,NULL)
+		 ON CONFLICT (outlet_id, stream, from_entry_seq, to_entry_seq) DO UPDATE SET
+		   last_observed_at = EXCLUDED.last_observed_at,
+		   observation_count = ledger_replay_gap.observation_count + 1,
+		   resolved_at = NULL`,
+		id.New(), outletID, string(stream), fromSeq, toSeq, observedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("inventory: recording replay gap: %w", err)
+	}
+	return nil
+}
+
+func (r *pgRepository) ResolveCoveredReplayGaps(ctx context.Context, outletID string, stream ReplayStream, resolvedAt time.Time) error {
+	table, err := replayGapStreamTable(stream)
+	if err != nil {
+		return err
+	}
+	// entry_seq is UNIQUE per outlet, so "every seq in the span is present"
+	// is exactly "the count of stored marks inside the span equals the span's
+	// width" — an index range scan rather than a row-by-row existence check
+	// over a span that can be arbitrarily wide.
+	_, err = r.pool.Exec(ctx,
+		fmt.Sprintf(`UPDATE ledger_replay_gap g
+		 SET resolved_at = $3
+		 WHERE g.outlet_id = $1 AND g.stream = $2 AND g.resolved_at IS NULL
+		   AND (SELECT COUNT(*) FROM %s t
+		        WHERE t.outlet_id = g.outlet_id
+		          AND t.entry_seq BETWEEN g.from_entry_seq AND g.to_entry_seq)
+		       = (g.to_entry_seq - g.from_entry_seq + 1)`, table),
+		outletID, string(stream), resolvedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("inventory: resolving covered replay gaps: %w", err)
+	}
+	return nil
+}
+
+func (r *pgRepository) ListUnresolvedReplayGaps(ctx context.Context, outletID string) ([]LedgerReplayGap, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT id, outlet_id, stream, from_entry_seq, to_entry_seq,
+		        first_observed_at, last_observed_at, observation_count, resolved_at
+		 FROM ledger_replay_gap
+		 WHERE outlet_id = $1 AND resolved_at IS NULL
+		 ORDER BY stream ASC, from_entry_seq ASC`,
+		outletID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("inventory: listing replay gaps: %w", err)
+	}
+	defer rows.Close()
+
+	var out []LedgerReplayGap
+	for rows.Next() {
+		var g LedgerReplayGap
+		var stream string
+		var first, last time.Time
+		var resolved *time.Time
+		if err := rows.Scan(&g.ID, &g.OutletID, &stream, &g.FromEntrySeq, &g.ToEntrySeq,
+			&first, &last, &g.ObservationCount, &resolved); err != nil {
+			return nil, fmt.Errorf("inventory: scanning replay gap: %w", err)
+		}
+		g.Stream = ReplayStream(stream)
+		g.FirstObservedAt = first.UTC().Format(time.RFC3339)
+		g.LastObservedAt = last.UTC().Format(time.RFC3339)
+		if resolved != nil {
+			formatted := resolved.UTC().Format(time.RFC3339)
+			g.ResolvedAt = &formatted
+		}
+		out = append(out, g)
+	}
+	return out, rows.Err()
 }
 
 // --- stock_count -----------------------------------------------------------

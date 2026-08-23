@@ -57,6 +57,48 @@ const (
 	YieldFactorPPMIdentity = contracts.YieldFactorPPMIdentity
 )
 
+// ReplayStream names one of the two ranged edge->cloud streams (contracts
+// 0.5.8). Both count from 1 over their own independent counter, so an
+// entry_seq alone does not identify a row: ledger 41..43 and gap 41..43 are
+// different facts.
+type ReplayStream string
+
+const (
+	ReplayStreamLedger       ReplayStream = "LEDGER"
+	ReplayStreamDeductionGap ReplayStream = "DEDUCTION_GAP"
+)
+
+// LedgerReplayGap records a hole the cloud OBSERVED in a ranged stream: the
+// span between its high-water mark and an arriving entry_seq.
+//
+// WHY THIS IS A ROW AND NOT A REJECTION. Contiguity detection exists to make
+// a lost stream row visible. Enforcing it by rejecting the arriving row makes
+// it invisible instead — replay halts at the hole, every later entry stays at
+// the outlet, and nothing downstream can distinguish "nothing happened today"
+// from "replay has been wedged since Tuesday". One bad row must never become
+// an outage.
+//
+// A hole that later FILLS is not a loss: late arrival is ordinary (a retry
+// landing after its successor, an outlet resuming mid-stream). ResolvedAt is
+// set once every seq in the span has been ingested, so the table holds
+// outstanding losses rather than a growing pile of false alarms.
+type LedgerReplayGap struct {
+	ID       string       `json:"id"`
+	OutletID string       `json:"outlet_id"`
+	Stream   ReplayStream `json:"stream"`
+	// The missing span, inclusive.
+	FromEntrySeq int64 `json:"from_entry_seq"`
+	ToEntrySeq   int64 `json:"to_entry_seq"`
+
+	FirstObservedAt string `json:"first_observed_at"`
+	LastObservedAt  string `json:"last_observed_at"`
+	// Re-observation is expected (the edge retries a batch) and is not new
+	// information — one hole stays one row.
+	ObservationCount int `json:"observation_count"`
+
+	ResolvedAt *string `json:"resolved_at"`
+}
+
 // ConfigBundle is the inventory context's contribution to GET /sync/config:
 // inventory items, their unit conversions, recipes, recipe ingredients and
 // modifier ingredient deltas newer than the caller's since_version. The full

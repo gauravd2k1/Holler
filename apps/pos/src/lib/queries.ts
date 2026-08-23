@@ -4,6 +4,7 @@ import {
   getOrder,
   getStockCount,
   getStockCountVarianceReport,
+  listBlockedReplays,
   listCurrentStock,
   listDiscountDefinitions,
   listFailedPrintJobs,
@@ -36,6 +37,7 @@ export const queryKeys = {
   discountDefinitions: ["discount-definitions"] as const,
   currentStock: ["current-stock"] as const,
   stockDeductionGaps: ["stock-deduction-gaps"] as const,
+  blockedReplays: ["blocked-replays"] as const,
   stockCount: (stockCountId: string) => ["stock-count", stockCountId] as const,
   stockCountLines: (stockCountId: string) => ["stock-count-lines", stockCountId] as const,
   stockCountVarianceReport: (stockCountId: string) =>
@@ -140,6 +142,17 @@ export function useStockDeductionGapsQuery() {
   return useQuery({
     queryKey: queryKeys.stockDeductionGaps,
     queryFn: listStockDeductionGaps,
+  });
+}
+
+/** Stock history this outlet has given up on sending (contracts 0.5.8).
+ * Polled on the same cadence as the rest of the inventory surfaces — a
+ * blocked entry is not urgent to the second, but it must not require anyone
+ * to go looking for it either. */
+export function useBlockedReplaysQuery() {
+  return useQuery({
+    queryKey: queryKeys.blockedReplays,
+    queryFn: listBlockedReplays,
   });
 }
 

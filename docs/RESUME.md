@@ -240,10 +240,16 @@ never repeats for any index up to `i64::MAX`, plus a per-business-day counter
 reset. Regression test `formatter_never_repeats_past_the_old_wrap_point` drives
 past the old collision point (25975, where `#Z999` rolled to `#A1`).
 
-**Contracts are FROZEN at v0.5.7** (this line was written at 0.4.7 on
+**Contracts are FROZEN at v0.5.8** (this line was written at 0.4.7 on
 2026-08-20 and went stale within two days — it is now cross-checked against
 `packages/contracts/package.json` by `scripts/check-milestone-marker.mjs`,
-which fails the build on disagreement). The 0.4.7 note that stood here: it
+which fails the build on disagreement). 0.5.8 implemented ranged sync for the
+two high-volume stock streams: two edge-local replay cursors, `entry_seq` on
+`stock_deduction_gap` in both stores, and — the correction that came with it —
+a contiguity check that **records** a hole instead of rejecting the entry that
+revealed it. The shipped T4 code rejected, which halted an outlet's ledger
+replay permanently after one lost row; see `docs/retro.md` 2026-08-23. The
+0.4.7 note that stood here: it
 added `printer_role` as a join table rather than a column on `printer`, so
 nothing that compiled stopped compiling, and a printer with no role row is a
 candidate for **neither** path — absence is never read as consent.

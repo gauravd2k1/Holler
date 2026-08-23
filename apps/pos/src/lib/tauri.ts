@@ -723,6 +723,7 @@ export async function listCurrentStock(): Promise<CurrentStockLine[]> {
 const StockDeductionGapSchema = z.object({
   id: z.string(),
   outlet_id: z.string(),
+  entry_seq: z.number().int(),
   order_id: z.string(),
   order_item_id: z.string(),
   menu_item_id: z.string(),
@@ -735,6 +736,35 @@ const StockDeductionGapSchema = z.object({
   schema_version: z.literal(1),
 });
 export type StockDeductionGap = z.infer<typeof StockDeductionGapSchema>;
+
+/** One ranged-replay entry this outlet has given up on sending (contracts
+ * 0.5.8) — `apps/pos/src-tauri/src/dto.rs` `SyncReplayBlock`. */
+const SyncReplayBlockSchema = z.object({
+  outlet_id: z.string(),
+  stream: z.string(),
+  entry_seq: z.number().int(),
+  record_id: z.string(),
+  attempts: z.number().int(),
+  last_status: z.number().int().nullable(),
+  last_error: z.string(),
+  first_attempt_at: z.string(),
+  last_attempt_at: z.string(),
+  blocked_at: z.string().nullable(),
+});
+export type SyncReplayBlock = z.infer<typeof SyncReplayBlockSchema>;
+
+/** Stock history this outlet has stopped trying to send. Empty is the normal
+ * answer; anything else is a condition someone has to act on, which is the
+ * whole reason the per-entry retry bound writes a row instead of a log line.
+ * `apps/pos/src-tauri/src/commands/inventory.rs` `list_blocked_replays`. */
+export async function listBlockedReplays(): Promise<SyncReplayBlock[]> {
+  try {
+    const raw = await invoke<unknown[]>("list_blocked_replays");
+    return raw.map((b) => SyncReplayBlockSchema.parse(b));
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
 
 /** The "items sold with no recipe" report (M4 acceptance criterion 5) —
  * `apps/pos/src-tauri/src/commands/inventory.rs` `list_stock_deduction_gaps`. */

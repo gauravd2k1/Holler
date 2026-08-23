@@ -1311,6 +1311,11 @@ pub struct NewStockDeductionGap {
 pub struct StockDeductionGap {
     pub id: String,
     pub outlet_id: String,
+    /// The per-outlet replay mark (contracts 0.5.8), minted from
+    /// `stock_deduction_gap_sequence` in the same transaction as the insert.
+    /// SEPARATE from the ledger's counter: two ranged streams, two counters,
+    /// two cursors. 1-based, so a cursor of 0 means "nothing acked".
+    pub entry_seq: i64,
     pub order_id: String,
     pub order_item_id: String,
     pub menu_item_id: String,
@@ -1513,7 +1518,49 @@ pub struct SyncState {
     pub outlet_id: String,
     pub last_pushed_outbox_id: Option<String>,
     pub last_applied_config_version: i64,
+    /// Ranged-replay cursors (contracts 0.5.8): the highest `entry_seq` the
+    /// cloud has acknowledged for each stream. `entry_seq > cursor` is the
+    /// send set. Two streams advance at wildly different rates and mint from
+    /// two independent counters, so one mark cannot serve both.
+    pub last_acked_ledger_entry_seq: i64,
+    pub last_acked_gap_entry_seq: i64,
     pub last_sync_attempt_at: Option<String>,
     pub last_sync_success_at: Option<String>,
     pub is_online: bool,
+}
+
+/// One ranged-replay entry this outlet has given up on sending
+/// (`sync_replay_block`, contracts 0.5.8) — the human-visible half of the
+/// per-entry retry bound.
+///
+/// WHY THE BOUND IS PER ENTRY. If the cloud permanently rejects entry 7 and
+/// the edge retries 7 forever, 8..N never leave the outlet: one bad row
+/// becomes an outage, the mirror image of a contiguity check that rejects
+/// rather than records. After the budget is spent the cursor moves past the
+/// entry and the stream continues; the skipped mark then shows up at the
+/// cloud as a hole in `ledger_replay_gap`, so the same fact is visible from
+/// both ends.
+///
+/// Halting sync is survivable — no core outlet path depends on the uplink
+/// (ADR-013). Halting it silently is not, which is why this is a row rather
+/// than a log line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncReplayBlock {
+    pub outlet_id: String,
+    /// `"LEDGER"` or `"DEDUCTION_GAP"` — see `repo::ReplayStream`.
+    pub stream: String,
+    pub entry_seq: i64,
+    /// The row that could not be sent, so a human chasing this has something
+    /// to look up rather than an ordinal.
+    pub record_id: String,
+    pub attempts: i64,
+    /// The cloud's last word: an HTTP status, or `None` when the row never
+    /// got as far as the wire.
+    pub last_status: Option<i64>,
+    pub last_error: String,
+    pub first_attempt_at: String,
+    pub last_attempt_at: String,
+    /// `None` while the entry is still inside its retry budget. `Some` once
+    /// the budget is spent and the cursor has moved past it.
+    pub blocked_at: Option<String>,
 }

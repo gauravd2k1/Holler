@@ -1,5 +1,5 @@
 import { useNavigate } from "@tanstack/react-router";
-import { useStockDeductionGapsQuery } from "../lib/queries";
+import { useBlockedReplaysQuery, useStockDeductionGapsQuery } from "../lib/queries";
 import { canManageInventory, formatGapQuantity } from "../domain/inventory";
 import { useAuthStore } from "../store/auth";
 
@@ -13,6 +13,8 @@ export function StockDeductionGapsScreen() {
   const principal = useAuthStore((s) => s.principal);
   const canView = canManageInventory(principal);
   const gapsQuery = useStockDeductionGapsQuery();
+  const blockedQuery = useBlockedReplaysQuery();
+  const blocked = blockedQuery.data ?? [];
 
   return (
     <main className="stock-deduction-gaps-screen">
@@ -24,6 +26,50 @@ export function StockDeductionGapsScreen() {
       </header>
 
       {!canView && <p role="alert">You do not have permission to view this report.</p>}
+
+      {/* Stock history this outlet has stopped trying to send (contracts
+          0.5.8). The per-entry retry bound exists so one row the cloud will
+          not accept cannot hold back every row behind it — but an outlet
+          quietly not replaying part of its stock history is exactly the
+          failure that must not surface months later in a variance report.
+          Halting sync is survivable; halting it silently is not, which is
+          why this is on a screen and not only in a table. */}
+      {canView && blocked.length > 0 && (
+        <section className="sync-replay-blocked" role="alert">
+          <h2>
+            {blocked.length} stock {blocked.length === 1 ? "record has" : "records have"} stopped
+            syncing
+          </h2>
+          <p>
+            These were rejected by the cloud repeatedly and are no longer being retried. The rest of
+            this outlet&rsquo;s stock history is still syncing normally.
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>Stream</th>
+                <th>Entry</th>
+                <th>Record</th>
+                <th>Attempts</th>
+                <th>Last error</th>
+                <th>Blocked since</th>
+              </tr>
+            </thead>
+            <tbody>
+              {blocked.map((b) => (
+                <tr key={`${b.stream}-${b.entry_seq}`}>
+                  <td>{b.stream}</td>
+                  <td>{b.entry_seq}</td>
+                  <td>{b.record_id}</td>
+                  <td>{b.attempts}</td>
+                  <td>{b.last_error}</td>
+                  <td>{b.blocked_at ?? ""}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      )}
 
       {canView && (
         <>

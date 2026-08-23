@@ -31,6 +31,14 @@ impl SyncDirection {
 pub fn authority_for(aggregate_type: &str) -> Option<SyncDirection> {
     match aggregate_type {
         "order" | "kot" | "payment" | "table_session" => Some(SyncDirection::EdgeToCloud),
+        // M4, contracts 0.5.8. `stock_ledger_entry` and `stock_deduction_gap`
+        // reach the cloud by RANGED replay rather than the outbox (ADR-018's
+        // transport rule) — but the envelope and its authority gate are
+        // unchanged by that: ranged sync changes the cursor, not the wrapper.
+        // `stock_count` is here because it is an ordinary outbox aggregate.
+        "stock_ledger_entry" | "stock_deduction_gap" | "stock_count" => {
+            Some(SyncDirection::EdgeToCloud)
+        }
         "menu_item" | "app_user" | "role" | "restaurant_table" => Some(SyncDirection::CloudToEdge),
         _ => None,
     }

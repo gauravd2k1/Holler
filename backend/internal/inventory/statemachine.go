@@ -28,11 +28,22 @@ var ErrRecipeDepthExceeded = fmt.Errorf("%w: sub-recipe nesting exceeds MaxRecip
 // through: a recipe is not an inventory item.
 var ErrDimensionMismatch = fmt.Errorf("%w: quantity_dimension does not match the referenced item or recipe's dimension", httpx.ErrInvalidInput)
 
-// ErrLedgerSequenceGap is returned when an incoming stock_ledger_entry's
-// entry_seq is not exactly one past the outlet's current high-water mark —
-// a lost ledger entry, reported loudly rather than silently skipped (ADR-018
-// replay addendum, task instruction).
-var ErrLedgerSequenceGap = fmt.Errorf("%w: stock_ledger_entry.entry_seq is not contiguous with the outlet's last acked entry", httpx.ErrConflict)
+// ErrLedgerSequenceMarkReused is returned when an incoming entry claims an
+// entry_seq at or below the outlet's high-water mark under a DIFFERENT id.
+// The mark would become ambiguous exactly as ADR-018 §6/§9 warns, so this is
+// rejected — the one contiguity condition that still refuses a row.
+//
+// It is unreachable through the edge's own code path: contracts 0.5.3 made
+// entry_seq a durable counter precisely so a mark is never reused, and the
+// UNIQUE (outlet_id, entry_seq) key would reject it at the database anyway.
+// Reaching it means something upstream is minting marks it does not own, and
+// the correct response is to stop rather than to store two rows claiming one
+// position. CLEARING IT IS A MANUAL OPERATION: an operator establishes which
+// row is genuine and removes or renumbers the other at source.
+//
+// NOTE what this does NOT cover. An entry_seq BEYOND the mark — a hole — is
+// accepted and recorded in ledger_replay_gap; see Service.IngestLedgerEntry.
+var ErrLedgerSequenceMarkReused = fmt.Errorf("%w: entry_seq is at or below the outlet's high-water mark under a different id", httpx.ErrConflict)
 
 // validateAuthority enforces the §50.1 authority rule: an envelope for
 // aggregateType must carry exactly the direction contracts.AggregateAuthority
