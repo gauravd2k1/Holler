@@ -3335,6 +3335,20 @@ pub fn init_sync_state(conn: &Connection, outlet_id: &str) -> DbResult<()> {
     Ok(())
 }
 
+/// Updates one outlet's sync bookkeeping.
+///
+/// `last_pushed_outbox_id` is **leave-unchanged on `None`**, not
+/// clear-on-`None`. It was the latter, which made the column meaningless:
+/// `record_attempt_stop` passes `None` on every failed attempt, so a
+/// high-water mark was wiped to NULL by the first offline tick after it was
+/// set. Nothing depended on it — outbox resumption keys off `published_at`,
+/// never this column — so it was harmless and stayed wrong, which is the
+/// worst combination: a stored value that means nothing, waiting for someone
+/// to trust it. `pull_and_apply_config` already carried a read-it-back
+/// workaround for exactly this.
+///
+/// A caller that genuinely needs to clear the mark should do so explicitly
+/// rather than by passing an absence; nothing needs that today.
 pub fn update_sync_cursor(
     conn: &Connection,
     outlet_id: &str,
@@ -3346,7 +3360,7 @@ pub fn update_sync_cursor(
 ) -> DbResult<()> {
     conn.execute(
         "UPDATE sync_state SET
-            last_pushed_outbox_id = ?1,
+            last_pushed_outbox_id = COALESCE(?1, last_pushed_outbox_id),
             last_applied_config_version = ?2,
             last_sync_attempt_at = ?3,
             last_sync_success_at = ?4,

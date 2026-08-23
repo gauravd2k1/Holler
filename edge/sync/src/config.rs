@@ -978,14 +978,15 @@ pub fn apply_bundle(
     }
 
     let now = Utc::now().to_rfc3339();
-    let existing = repo::get_sync_state(conn, outlet_id)?;
+    // `None` means "leave the outbox high-water mark alone", which is what a
+    // config pull wants: it advances the cloud→edge cursor and has no opinion
+    // about the edge→cloud one. This used to read the value back and pass it
+    // in unchanged, because `None` then CLEARED the column — a workaround for
+    // a defect now fixed at its source (`repo::update_sync_cursor`).
     repo::update_sync_cursor(
         conn,
         outlet_id,
-        existing
-            .as_ref()
-            .and_then(|s| s.last_pushed_outbox_id.clone())
-            .as_deref(),
+        None,
         bundle.config_version,
         Some(&now),
         Some(&now),

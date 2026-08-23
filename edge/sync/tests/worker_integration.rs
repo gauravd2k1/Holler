@@ -1,13 +1,37 @@
 //! Integration tests: a real in-memory `holler_edge_database::Db` against a
 //! local `tiny_http` server standing in for Holler Cloud.
+//!
+//! **Every receive in this harness carries a deadline.** A bare
+//! `Server::recv()` blocks forever when the request it is waiting for never
+//! arrives, so a test whose expectations are one request out does not fail —
+//! it hangs, says nothing about why, and costs the full outer timeout per
+//! iteration. A failure that names the problem in under a second is strictly
+//! better than a hang that names nothing in ten minutes. See
+//! [`recv_before_deadline`], and `docs/retro.md` 2026-08-23 for why this rule
+//! is written down rather than remembered.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use holler_edge_database::{model, repo, Db};
 use holler_edge_sync::client::HttpClient;
 use holler_edge_sync::worker::{StopReason, SyncWorker, WorkerConfig};
 use tiny_http::{Response, Server};
+
+/// How long a stand-in cloud waits for a request that should already be on
+/// its way. Generous next to the milliseconds a local round trip takes, and
+/// still two orders of magnitude below the timeout that would otherwise be
+/// reached by hanging.
+const RECV_DEADLINE: Duration = Duration::from_secs(5);
+
+/// `Server::recv()` with a deadline. `None` means the request never came,
+/// which ends the responder thread so the test proceeds to its assertions and
+/// fails on what it actually observed — instead of blocking forever on an
+/// expectation that will never be met.
+fn recv_before_deadline(server: &Server) -> Option<tiny_http::Request> {
+    server.recv_timeout(RECV_DEADLINE).ok().flatten()
+}
 
 fn seed_outlet_and_device(db: &Db, outlet_id: &str, device_id: &str) {
     repo::upsert_outlet(
@@ -110,7 +134,7 @@ fn outbox_drains_in_order_and_marks_published_without_deleting() {
         // First request is SyncWorker::verify_enrollment (ADR-017), then the
         // two order pushes.
         for _ in 0..3 {
-            if let Ok(req) = server.recv() {
+            if let Some(req) = recv_before_deadline(&server) {
                 seen_paths_clone.lock().unwrap().push(req.url().to_string());
                 let _ = req.respond(Response::from_string("{}").with_status_code(201));
             }
@@ -161,7 +185,7 @@ fn resumption_after_interruption_does_not_resend_or_skip() {
         let handle = std::thread::spawn(move || {
             // verify_enrollment, then the outbox-1 push.
             for _ in 0..2 {
-                if let Ok(req) = server.recv() {
+                if let Some(req) = recv_before_deadline(&server) {
                     count.fetch_add(1, Ordering::SeqCst);
                     let _ = req.respond(Response::from_string("{}").with_status_code(201));
                 }
@@ -216,10 +240,10 @@ fn rejected_envelope_increments_attempt_count_and_computes_backoff() {
     let base_url = format!("http://{addr}");
     let handle = std::thread::spawn(move || {
         // verify_enrollment succeeds first, then the order push is rejected.
-        if let Ok(req) = server.recv() {
+        if let Some(req) = recv_before_deadline(&server) {
             let _ = req.respond(Response::from_string("{}").with_status_code(200));
         }
-        if let Ok(req) = server.recv() {
+        if let Some(req) = recv_before_deadline(&server) {
             let _ = req.respond(Response::from_string("{\"code\":\"boom\"}").with_status_code(500));
         }
     });
@@ -388,7 +412,7 @@ fn config_pull_error_paths_never_expose_password_hash() {
     let addr = server.server_addr();
     let base_url = format!("http://{addr}");
     let handle = std::thread::spawn(move || {
-        if let Ok(req) = server.recv() {
+        if let Some(req) = recv_before_deadline(&server) {
             // Malformed on purpose (items must be an array) so the pull
             // fails while a hash is present in the body.
             let body = r#"{"config_version":1,"users":[{"id":"u1","tenant_id":"t1","outlet_id":"o1","email":"a@b.com","full_name":"A","password_hash":"argon2id$LEAK-ME","is_active":true,"permissions":[],"config_version":1}],"roles":[],"tables":[],"categories":[],"items":"not-an-array"}"#;
@@ -435,7 +459,7 @@ fn mis_enrolled_outlet_id_is_rejected_before_any_envelope_is_sent() {
         // request also arrives, this loop consumes it as a second
         // "unexpected" 404 and the test's path-count assertion below
         // catches it — the pump must never get that far.
-        if let Ok(req) = server.recv() {
+        if let Some(req) = recv_before_deadline(&server) {
             seen_paths_clone.lock().unwrap().push(req.url().to_string());
             let _ = req
                 .respond(Response::from_string("{\"code\":\"not_found\"}").with_status_code(404));

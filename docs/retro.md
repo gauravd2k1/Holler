@@ -547,3 +547,24 @@ strands everything behind it just as completely. Both ends were bounded here —
 the cloud records and continues, the edge gives up on the entry rather than the
 stream — because fixing only the end you were looking at leaves the outage
 intact and moves it one hop.
+
+### Postscript, same day: the harness did it too
+
+The test harness written to prove the fix used `Server::recv()` with no
+deadline. A script one request longer than the requests that actually arrived
+blocked the responder thread forever, `join()` with it, and the run had to be
+killed at the outer timeout — twice, since the abandoned process then held a
+lock on its own binary and the next build failed to link.
+
+So: a replay mechanism that blocks forever waiting for something that never
+arrives, fixed by someone who then built a test harness that blocks forever
+waiting for something that never arrives. **Same shape, one layer up.** Third
+application of "check the mirror image" this week, and the first one aimed at
+the checking code rather than the code under check.
+
+**A test that hangs is worse than a test that fails.** A failure names the
+problem in under a second; a hang names nothing and costs the full timeout
+every iteration, and it degrades the environment around it. Every receive in
+`edge/sync/tests` now carries a deadline, so a wrong expectation surfaces as a
+fast, legible failure. Removing the cause fixes one test; a deadline removes
+the class.

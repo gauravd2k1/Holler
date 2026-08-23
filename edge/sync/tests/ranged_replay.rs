@@ -9,6 +9,7 @@
 //! never accept must not hold back every row behind it.
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use holler_edge_database::{model, repo, repo::ReplayStream, Db};
 use holler_edge_sync::worker::{StopReason, SyncWorker, WorkerConfig};
@@ -60,9 +61,21 @@ fn worker_config(base_url: String) -> WorkerConfig {
     }
 }
 
+/// How long the stand-in cloud waits for a request that should already be on
+/// its way.
+const RECV_DEADLINE: Duration = Duration::from_secs(5);
+
 /// A cloud that answers each request with the next status in a script, and
 /// records the paths it was asked for. The first request of a worker's life
 /// is always `verify_enrollment` (ADR-017).
+///
+/// **Every receive carries a deadline.** A script one entry longer than the
+/// requests that actually arrive would otherwise block this thread forever,
+/// and `handle.join()` with it: the test would hang rather than fail, telling
+/// nobody what went wrong. That is exactly the shape of the defect this file
+/// tests for — waiting forever on something that never arrives — one layer
+/// up, in the code doing the checking. On timeout the responder simply stops
+/// and the test fails on its own assertions.
 fn scripted_cloud(statuses: Vec<u16>) -> (String, Arc<Mutex<Vec<String>>>, std::thread::JoinHandle<()>) {
     let server = Server::http("127.0.0.1:0").expect("start test server");
     let base_url = format!("http://{}", server.server_addr());
@@ -71,12 +84,14 @@ fn scripted_cloud(statuses: Vec<u16>) -> (String, Arc<Mutex<Vec<String>>>, std::
 
     let handle = std::thread::spawn(move || {
         for status in statuses {
-            match server.recv() {
-                Ok(req) => {
+            match server.recv_timeout(RECV_DEADLINE) {
+                Ok(Some(req)) => {
                     seen_clone.lock().unwrap().push(req.url().to_string());
                     let _ = req.respond(Response::from_string("{}").with_status_code(status));
                 }
-                Err(_) => break,
+                // Timed out, or the socket died: the expected request is not
+                // coming. Stop, so join() returns and the assertions speak.
+                Ok(None) | Err(_) => break,
             }
         }
     });
