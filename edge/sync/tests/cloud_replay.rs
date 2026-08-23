@@ -41,6 +41,7 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use holler_edge_database::{model, repo, Db};
@@ -304,21 +305,47 @@ impl Drop for Cloud {
     }
 }
 
+/// ONE BUILD, SERIALISED, PER TEST BINARY.
+///
+/// Every test here needs `cmd/api`, and cargo runs them on parallel threads
+/// of one process. Building per test meant two `go build -o` invocations
+/// racing for the same output path while a third thread was spawning it --
+/// on Windows that is `os error 32`, the linker's sharing violation, and it
+/// fires only when the Go sources actually changed since the last run. The
+/// falsification pass for criterion 6 edits Go, so the failure it produced
+/// was this race and not the assertion under test: a test that cannot be
+/// falsified on demand is not evidence of anything.
+///
+/// `OnceLock::get_or_init` blocks every other thread until the first one
+/// finishes, so the build happens exactly once and every test afterwards
+/// spawns an executable nobody is still writing. Concurrent *reads* of one
+/// exe are fine on Windows; concurrent writes are what was never allowed.
+static API_BINARY: OnceLock<PathBuf> = OnceLock::new();
+
+fn api_binary(root: &Path) -> PathBuf {
+    API_BINARY
+        .get_or_init(|| {
+            let exe = root.join("target").join(if cfg!(windows) {
+                "holler-api-e2e.exe"
+            } else {
+                "holler-api-e2e"
+            });
+            std::fs::create_dir_all(root.join("target")).ok();
+            run(
+                "go build ./cmd/api",
+                Command::new("go")
+                    .args(["build", "-o"])
+                    .arg(&exe)
+                    .arg("./cmd/api")
+                    .current_dir(root.join("backend")),
+            );
+            exe
+        })
+        .clone()
+}
+
 fn start_cloud(root: &Path, db_url: &str) -> Cloud {
-    let exe = root.join("target").join(if cfg!(windows) {
-        "holler-api-e2e.exe"
-    } else {
-        "holler-api-e2e"
-    });
-    std::fs::create_dir_all(root.join("target")).ok();
-    run(
-        "go build ./cmd/api",
-        Command::new("go")
-            .args(["build", "-o"])
-            .arg(&exe)
-            .arg("./cmd/api")
-            .current_dir(root.join("backend")),
-    );
+    let exe = api_binary(root);
 
     let port = free_port();
     let child = Command::new(&exe)

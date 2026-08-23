@@ -185,10 +185,15 @@ jobs:
           cd ../sync && cargo fmt --check
           cd ../printer && cargo fmt --check
           cd ../device && cargo fmt --check
+      # `--all-targets` does NOT mean all targets: a target with
+      # `required-features` is invisible without the feature, so the criterion-6
+      # test would compile for the first time in the `cloud-replay` job, where a
+      # clippy error would read as a failed acceptance criterion. Same blindness
+      # scripts/check-gated-tests.mjs guards on the test side, one job over.
       - name: clippy
         run: |
           cd edge/database && cargo clippy --all-targets -- -D warnings
-          cd ../sync && cargo clippy --all-targets -- -D warnings
+          cd ../sync && cargo clippy --all-targets --features cloud-e2e -- -D warnings
           cd ../printer && cargo clippy --all-targets -- -D warnings
           cd ../device && cargo clippy --all-targets -- -D warnings
 
