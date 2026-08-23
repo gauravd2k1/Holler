@@ -7,6 +7,11 @@
 //! beyond the high-water mark and record the hole — is tested in
 //! `backend/internal/inventory`. This is the edge half: a row the cloud will
 //! never accept must not hold back every row behind it.
+//!
+//! The deadline bounds the RESPONDER side only. A script shorter than the
+//! requests that actually arrive leaves the worker waiting out its own HTTP
+//! read timeout on each unanswered one — bounded, but slow and silent about
+//! why. Size a script from what the flow under test will really send.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -308,5 +313,59 @@ fn the_two_streams_carry_independent_cursors() {
         repo::get_replay_cursor(db.connection(), "outlet-1", ReplayStream::DeductionGap).unwrap(),
         1,
         "one mark cannot mean two positions"
+    );
+}
+
+/// ADR-017 hole 1, pinned for the ranged pump specifically.
+///
+/// This pump originally omitted the enrollment check the outbox pump had
+/// performed since M1 — a second implementation of an existing pattern that
+/// silently dropped one of its checks, and nothing failed, because a dropped
+/// check is invisible until the day it was the check that mattered. The
+/// structural fix was to make `SyncWorker::post_verified` the only path to
+/// the cloud; this test is what fails if a future flow finds another one.
+///
+/// Two assertions, and the second is the one with teeth: nothing is sent,
+/// AND no entry is charged for it. A credential this node cannot present is
+/// not the row's fault, so spending a per-entry retry budget on it would
+/// abandon good entries over a problem that has nothing to do with them.
+#[test]
+fn a_mis_enrolled_node_sends_nothing_and_charges_no_entry() {
+    // The node is never verified, so EVERY pass re-pings /sync/config: one
+    // request per pass, all refused. The script is sized from the loop below
+    // rather than guessed — a script SHORTER than the requests that actually
+    // arrive leaves the client waiting out its own read timeout on each
+    // unanswered one, which is slow and explains nothing. The responder's
+    // deadline does not help there: it bounds this side of the socket only.
+    let passes = (MAX_ENTRY_REPLAY_ATTEMPTS + 1) as usize;
+    let (base_url, seen, handle) = scripted_cloud(vec![404; passes]);
+
+    let mut db = Db::open_in_memory_for_tests().expect("open db");
+    seed_outlet(&db, "outlet-1");
+    seed_ledger_entries(&db, "outlet-1", &[1, 2]);
+
+    let worker = SyncWorker::new(worker_config(base_url));
+    for _ in 0..passes {
+        let report = worker.pump_ranged_streams(&mut db, 10).expect("pump");
+        assert_eq!(report.stopped, Some(StopReason::Rejected { status: 404 }));
+        assert!(report.ledger_acked.is_empty());
+        assert!(report.blocked.is_empty(), "no entry is at fault here");
+    }
+    handle.join().unwrap();
+
+    let paths = seen.lock().unwrap().clone();
+    assert!(
+        paths.iter().all(|p| p.starts_with("/sync/config")),
+        "a mis-enrolled node must never reach the ingest route: {paths:?}"
+    );
+    assert_eq!(
+        recorded_failures(&db),
+        0,
+        "a credential this node cannot present is not the entry's fault"
+    );
+    assert_eq!(
+        repo::get_replay_cursor(db.connection(), "outlet-1", ReplayStream::Ledger).unwrap(),
+        0,
+        "nothing was acked, so nothing may be skipped"
     );
 }

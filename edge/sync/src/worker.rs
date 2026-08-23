@@ -98,6 +98,19 @@ pub struct PumpReport {
     pub stopped: Option<StopReason>,
 }
 
+/// What one attempt to reach the cloud produced. Separates "this node is not
+/// enrolled" from "the cloud rejected this request", because the two demand
+/// different responses from a caller that keeps a per-entry retry budget.
+#[derive(Debug)]
+pub enum SendOutcome {
+    Ok(serde_json::Value),
+    /// The cloud was reached and refused this request.
+    Rejected { status: u16 },
+    /// This node's credential is invalid or does not resolve to its
+    /// configured outlet (ADR-017 hole 1). Nothing was sent.
+    NotEnrolled { status: u16 },
+}
+
 pub struct SyncWorker {
     config: WorkerConfig,
     client: HttpClient,
@@ -136,24 +149,47 @@ impl SyncWorker {
         &self.config.device_id
     }
 
-    pub(crate) fn client(&self) -> &HttpClient {
-        &self.client
-    }
-
-    /// Verifies this node's enrollment once per session, for callers outside
-    /// `pump_outbox` (the ranged pump, `crate::ranged`). ADR-017 hole 1
-    /// applies to every outbound flow, not only the outbox one: a node whose
-    /// credential does not resolve to `config.outlet_id` must be stopped
-    /// before it sends anything, not after it has mislabelled a run of stock
-    /// movements. Shares the `enrollment_verified` flag, so a worker driving
-    /// both flows still pays for the check once.
-    pub(crate) fn ensure_enrolled(&self) -> SyncResult<()> {
-        if self.enrollment_verified.get() {
-            return Ok(());
+    /// **The only way anything in this crate reaches the cloud.** Verifies
+    /// this node's enrollment once per session, then posts.
+    ///
+    /// WHY IT IS A CHOKE POINT AND NOT A STEP EACH PUMP REMEMBERS. ADR-017
+    /// hole 1 applies to every outbound flow: a node whose credential does
+    /// not resolve to `config.outlet_id` must be stopped before it sends,
+    /// not after it has mislabelled a run of records. The outbox pump did
+    /// that check inline; the ranged pump — written later, against the same
+    /// struct — simply did not, and nothing failed, because a dropped check
+    /// is invisible until the day it was the check that mattered.
+    ///
+    /// A second implementation omitting a predecessor's check is not a
+    /// discipline problem, it is a structure problem. With `client` private
+    /// and this the only path to it, a third flow cannot skip the check
+    /// without deleting code that is plainly load-bearing. Making the
+    /// omission impossible beats making it detectable.
+    ///
+    /// A failed VERIFY is reported as [`SendOutcome::NotEnrolled`], distinct
+    /// from a rejected POST. The outbox pump treats the two alike, but the
+    /// ranged pump must not: it spends a per-entry retry budget on rejections
+    /// that are the row's fault, and a credential this node cannot present is
+    /// not the row's fault. Collapsing them would let a mis-enrolled device
+    /// burn through and abandon a run of perfectly good entries.
+    pub(crate) fn post_verified(
+        &self,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> SyncResult<SendOutcome> {
+        if !self.enrollment_verified.get() {
+            match self.verify_enrollment() {
+                Ok(()) => self.enrollment_verified.set(true),
+                Err(SyncError::HttpStatus { status }) => {
+                    return Ok(SendOutcome::NotEnrolled { status });
+                }
+                Err(other) => return Err(other),
+            }
         }
-        self.verify_enrollment()?;
-        self.enrollment_verified.set(true);
-        Ok(())
+        Ok(match self.client.post_json(path, body)? {
+            Reply::Ok(v) => SendOutcome::Ok(v),
+            Reply::Rejected { status } => SendOutcome::Rejected { status },
+        })
     }
 
     /// For tests: inject an already-built client (e.g. pointed at a local
@@ -302,41 +338,18 @@ impl SyncWorker {
                 Err(other) => return Err(other),
             };
 
-            // Verify enrollment once per session, and only right before the
-            // first row that actually needs the network — a row that never
-            // reaches this point (unrouted, an authority violation, a local
-            // parse failure) proves those checks work without ever
-            // requiring connectivity, which is what
+            // Enrollment is verified inside `post_verified`, once per
+            // session, and only for a row that actually needs the network —
+            // a row that never reaches this point (unrouted, an authority
+            // violation, a local parse failure) proves those checks work
+            // without ever requiring connectivity, which is what
             // `authority_violation_is_refused_locally_and_never_sent` pins.
-            if !self.enrollment_verified.get() {
-                match self.verify_enrollment() {
-                    Ok(()) => self.enrollment_verified.set(true),
-                    Err(SyncError::HttpTransport) => {
-                        self.record_attempt_stop(db, &row.id, false, StopReason::Offline)?;
-                        report.stopped = Some(StopReason::Offline);
-                        return Ok(report);
-                    }
-                    Err(SyncError::HttpStatus { status }) => {
-                        // 401/404 here means this device's credential is
-                        // invalid or does not resolve to config.outlet_id —
-                        // ADR-017 hole 1, closed: a mis-enrolled node is
-                        // stopped before it sends anything, not after.
-                        self.record_attempt_stop(
-                            db,
-                            &row.id,
-                            true,
-                            StopReason::Rejected { status },
-                        )?;
-                        report.stopped = Some(StopReason::Rejected { status });
-                        return Ok(report);
-                    }
-                    Err(other) => return Err(other),
-                }
-            }
-
+            // A rejected credential arrives below as `Reply::Rejected`
+            // (401/404), which is what a mis-enrolled node must produce:
+            // stopped before it sends anything, not after.
             let body = serde_json::to_value(&envelope)?;
-            match self.client.post_json(&route.path, &body) {
-                Ok(Reply::Ok(_)) => {
+            match self.post_verified(&route.path, &body) {
+                Ok(SendOutcome::Ok(_)) => {
                     let now = Utc::now().to_rfc3339();
                     repo::mark_outbox_published(db.connection(), &row.id, &now)?;
                     repo::update_sync_cursor(
@@ -350,7 +363,11 @@ impl SyncWorker {
                     )?;
                     report.published.push(row.id.clone());
                 }
-                Ok(Reply::Rejected { status }) => {
+                // A mis-enrolled node and a rejected envelope are handled
+                // alike here: both mean the cloud was reached and this row
+                // was not accepted, and the outbox keeps no per-row budget
+                // that the distinction would change.
+                Ok(SendOutcome::Rejected { status } | SendOutcome::NotEnrolled { status }) => {
                     self.record_attempt_stop(db, &row.id, true, StopReason::Rejected { status })?;
                     report.stopped = Some(StopReason::Rejected { status });
                     return Ok(report);

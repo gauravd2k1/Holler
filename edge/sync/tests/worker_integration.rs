@@ -9,6 +9,11 @@
 //! better than a hang that names nothing in ten minutes. See
 //! [`recv_before_deadline`], and `docs/retro.md` 2026-08-23 for why this rule
 //! is written down rather than remembered.
+//!
+//! The deadline bounds the RESPONDER side only. A script shorter than the
+//! requests that actually arrive leaves the worker waiting out its own HTTP
+//! read timeout on each unanswered one — bounded, but slow and silent about
+//! why. Size a script from what the flow under test will really send.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;

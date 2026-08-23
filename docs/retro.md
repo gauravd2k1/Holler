@@ -568,3 +568,35 @@ every iteration, and it degrades the environment around it. Every receive in
 `edge/sync/tests` now carries a deadline, so a wrong expectation surfaces as a
 fast, legible failure. Removing the cause fixes one test; a deadline removes
 the class.
+
+## 2026-08-23 — An unnamed workaround hid its defect for a milestone
+
+`repo::update_sync_cursor` treated `Option<&str>` as clear-on-`None`, so the
+first failed sync attempt after a successful push wiped `last_pushed_outbox_id`
+to NULL. `pull_and_apply_config` had a small piece of code that read the
+existing value back out and passed it in unchanged — a workaround, correct,
+undocumented, and never described as one.
+
+Nothing broke, because outbox resumption keys off `published_at` and no reader
+of that column exists. The column simply stopped meaning anything, and stayed
+that way.
+
+### The class
+
+**An unnamed workaround hides the defect it works around, twice.**
+
+First, it makes the defect *harmless* — and harmless defects are never fixed,
+because nothing ever fails to prompt anyone. The workaround is what buys the
+silence.
+
+Second, the workaround is itself a trap. It reads as redundant code. A future
+reader tidying away that pointless read-it-back silently reintroduces the bug,
+and now there is no workaround and still no failure — just a column quietly
+meaning something different from what its name says.
+
+The rule: **when you route around a defect, name it in place.** A comment
+saying *"this exists because X is broken"* costs one line, keeps the defect
+visible so it can be fixed, and stops the next reader from deleting the only
+thing holding the behaviour together. If it is not worth a line of explanation,
+fix the defect instead — that is usually the cheaper of the two anyway, as it
+was here (`COALESCE(?1, last_pushed_outbox_id)`, and the workaround deleted).

@@ -31,10 +31,9 @@
 use chrono::Utc;
 use holler_edge_database::{repo, repo::ReplayStream, Db};
 
-use crate::client::Reply;
 use crate::envelope::build_edge_to_cloud_envelope;
 use crate::error::{SyncError, SyncResult};
-use crate::worker::{StopReason, SyncWorker};
+use crate::worker::{SendOutcome, StopReason, SyncWorker};
 
 /// The contracted ingest route for both streams. A gap belongs beside the
 /// movements it failed to produce, so ADR-018 §10.1 pins a SET of aggregate
@@ -91,6 +90,10 @@ fn is_permanent_rejection(status: u16) -> bool {
     match status {
         // Unauthorized / forbidden: this device's credential, not this row.
         401 | 403 => false,
+        // The route is not there. A deployment or version problem — every
+        // entry would get the same answer, so charging it to this one
+        // abandons rows for a reason that has nothing to do with them.
+        404 => false,
         // Timeout, rate limit: come back later, unchanged.
         408 | 429 => false,
         // The cloud said this row is wrong and will say so again.
@@ -111,24 +114,11 @@ impl SyncWorker {
         let mut report = RangedReport::default();
         repo::init_sync_state(db.connection(), self.outlet_id())?;
 
-        // ADR-017 hole 1 applies here as much as to the outbox: a node whose
-        // credential does not resolve to its configured outlet must be
-        // stopped BEFORE it sends, not after it has mislabelled a run of
-        // stock movements with the wrong outlet. Offline and a rejected
-        // credential are both reported, never raised — offline is the normal
-        // case at an outlet.
-        match self.ensure_enrolled() {
-            Ok(()) => {}
-            Err(SyncError::HttpTransport) => {
-                report.stopped = Some(StopReason::Offline);
-                return Ok(report);
-            }
-            Err(SyncError::HttpStatus { status }) => {
-                report.stopped = Some(StopReason::Rejected { status });
-                return Ok(report);
-            }
-            Err(other) => return Err(other),
-        }
+        // Enrollment (ADR-017 hole 1) is not checked here: it is checked
+        // inside `SyncWorker::post_verified`, which is the only path this
+        // crate has to the cloud. This pump forgetting that check is exactly
+        // what happened when it was written, and why the check moved into
+        // the send path rather than staying a step each pump remembers.
 
         self.pump_one_stream(db, ReplayStream::Ledger, limit, &mut report)?;
         // Deliberately continues even if the ledger stream stopped: a gap row
@@ -175,8 +165,8 @@ impl SyncWorker {
             let body = serde_json::to_value(&envelope)?;
             let now = Utc::now().to_rfc3339();
 
-            match self.client().post_json(INGEST_PATH, &body) {
-                Ok(Reply::Ok(_)) => {
+            match self.post_verified(INGEST_PATH, &body) {
+                Ok(SendOutcome::Ok(_)) => {
                     // An entry that failed earlier and has now been accepted
                     // leaves no block behind — a surface full of resolved
                     // alarms stops being read, which is the outcome a table
@@ -189,7 +179,16 @@ impl SyncWorker {
                     }
                 }
 
-                Ok(Reply::Rejected { status }) if is_permanent_rejection(status) => {
+                // Nothing was sent and this node cannot send anything: stop,
+                // and charge it to no entry. A credential problem is not the
+                // row's fault, and abandoning good entries over one would be
+                // data loss dressed as resilience.
+                Ok(SendOutcome::NotEnrolled { status }) => {
+                    report.stopped = Some(StopReason::Rejected { status });
+                    return Ok(());
+                }
+
+                Ok(SendOutcome::Rejected { status }) if is_permanent_rejection(status) => {
                     let attempts = repo::record_replay_failure(
                         db.connection(),
                         &outlet_id,
@@ -221,7 +220,7 @@ impl SyncWorker {
                     });
                 }
 
-                Ok(Reply::Rejected { status }) => {
+                Ok(SendOutcome::Rejected { status }) => {
                     // Transient or device-level. Costs no budget.
                     report.stopped = Some(StopReason::Rejected { status });
                     return Ok(());
