@@ -1,10 +1,43 @@
 name: CI
 
+# STYLE CHECKS DO NOT SHARE A JOB WITH TESTS. Steps in a GitHub Actions job
+# run fail-fast, so a formatter or linter placed in front of a test suite does
+# not report a style problem -- it WITHDRAWS THE VERDICT from every test
+# behind it, and the run shows one red job either way.
+#
+# That is not hypothetical here. `cargo fmt --check` sat in front of `cargo
+# test` in the `edge` job and was red, so four consecutive pushes produced no
+# Rust test result at all and an M4 acceptance criterion was recorded UNPROVEN
+# because nothing had ever run to prove it. A second breakage (clippy, in
+# edge/printer) was hiding behind the first the entire time.
+#
+# The rule, generalised: independent checks in sequence inside one fail-fast
+# job make the later ones unobservable whenever an earlier one breaks. Style
+# (fmt, clippy, vet, lint, typecheck) goes in a `*-style` job; tests and
+# builds go in their own. Both still gate the merge. Neither can mask the
+# other.
+#
+# Adding a check? Ask what it makes invisible when it fails.
+
 on:
   push:
   pull_request:
 
 jobs:
+  # Style only, and deliberately WITHOUT the postgres service the `backend` job
+  # needs: `go vet` used to be the first step there, in front of migrate and
+  # the whole suite. Nothing about vet requires a database, and nothing about
+  # the suite should be unobservable because vet failed.
+  backend-style:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - name: vet
+        run: cd backend && go vet ./...
+
   backend:
     runs-on: ubuntu-latest
 
@@ -44,8 +77,6 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.22"
-      - name: vet
-        run: cd backend && go vet ./...
       # Schema comes from packages/contracts/postgres/*.sql. Most Postgres
       # tests call postgres.Migrate themselves, but internal/auth,
       # internal/menu and internal/tables assume the schema already exists
@@ -122,6 +153,40 @@ jobs:
   # (MSVC) plus WebView2 (ADR-013), and a Linux runner cannot honestly stand in
   # for the outlet target. Validating it belongs with the clean Windows 10 VM
   # item in docs/backlog-m2.md, not with a green tick on ubuntu-latest.
+  # Style only. These four crates' fmt and clippy checks used to be the first
+  # two steps of the `edge` job below, which is exactly how four pushes went by
+  # with no Rust test verdict at all. They gate the merge from here instead,
+  # where failing tells you about formatting and nothing else.
+  #
+  # A crate absent from this list is a crate CI does not defend -- keep it
+  # matching the edge/ directory, same as the `edge` job.
+  #
+  # rust-toolchain.toml pins the version, so `@stable` here is only a rustup
+  # bootstrap; rustfmt's and clippy's output cannot drift under CI on their own
+  # schedule any more.
+  edge-style:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: edge/database -> target
+      - name: fmt
+        run: |
+          cd edge/database && cargo fmt --check
+          cd ../sync && cargo fmt --check
+          cd ../printer && cargo fmt --check
+          cd ../device && cargo fmt --check
+      - name: clippy
+        run: |
+          cd edge/database && cargo clippy --all-targets -- -D warnings
+          cd ../sync && cargo clippy --all-targets -- -D warnings
+          cd ../printer && cargo clippy --all-targets -- -D warnings
+          cd ../device && cargo clippy --all-targets -- -D warnings
+
   edge:
     runs-on: ubuntu-latest
     steps:
@@ -135,18 +200,6 @@ jobs:
       # Milestone 2 added printer and device. A crate absent from this list is
       # a crate CI does not defend, which is how edge/database's own drift went
       # unguarded until 0.2.3 — keep this list matching the edge/ directory.
-      - name: fmt
-        run: |
-          cd edge/database && cargo fmt --check
-          cd ../sync && cargo fmt --check
-          cd ../printer && cargo fmt --check
-          cd ../device && cargo fmt --check
-      - name: clippy
-        run: |
-          cd edge/database && cargo clippy --all-targets -- -D warnings
-          cd ../sync && cargo clippy --all-targets -- -D warnings
-          cd ../printer && cargo clippy --all-targets -- -D warnings
-          cd ../device && cargo clippy --all-targets -- -D warnings
       - name: test
         run: |
           cd edge/database && cargo test
@@ -188,7 +241,10 @@ jobs:
         working-directory: edge/database
         run: cargo test --features crash-points --test crash_durability
 
-  pos:
+  # Style only. Split out of `pos` so a lint or type error can never again
+  # hide that app's test and build results -- see the note at the top of this
+  # file. The duplicated install is the whole cost of that separation.
+  pos-style:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -206,7 +262,7 @@ jobs:
       # catches an unbound *class method* reference (e.g. `const fn =
       # this.doThing`), which silently loses `this` when called later. It
       # does NOT catch a bare global builtin (setInterval/fetch/WebSocket/...)
-      # stored on a field without `.bind` — verified directly against the
+      # stored on a field without `.bind` â€” verified directly against the
       # sibling KDS bug: `lib.dom.d.ts` declares those globals as functions,
       # not interface methods, so the rule has no receiver to reason about.
       # See apps/pos/eslint.config.js for the full explanation. This app has
@@ -214,12 +270,29 @@ jobs:
       # here.
       - name: lint
         run: cd apps/pos && pnpm lint
+
+
+  pos:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - name: install
+        run: cd apps/pos && pnpm install --frozen-lockfile
       - name: test
         run: cd apps/pos && pnpm test
       - name: build
         run: cd apps/pos && pnpm build
 
-  kds:
+  # Style only. Split out of `kds` so a lint or type error can never again
+  # hide that app's test and build results -- see the note at the top of this
+  # file. The duplicated install is the whole cost of that separation.
+  kds-style:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -236,17 +309,31 @@ jobs:
       # @typescript-eslint/unbound-method (T13, docs/retro.md 2026-08-11):
       # catches an unbound *class method* reference (e.g. `const fn =
       # this.doThing`), which silently loses `this` when called later. It
-      # does NOT catch the actual bug this task exists because of — a bare
+      # does NOT catch the actual bug this task exists because of â€” a bare
       # global builtin (setInterval/fetch/WebSocket/...) stored on a field
       # without `.bind`. Verified directly: reverting connectionController.ts's
       # `.bind(globalThis)` fix and re-running this lint produces zero errors.
       # `lib.dom.d.ts` declares those globals as functions, not interface
-      # methods, so the rule has no receiver to reason about — see
+      # methods, so the rule has no receiver to reason about â€” see
       # apps/kds/eslint.config.js for the full explanation. The
       # `kds-browser-smoke` job below is what actually guards that bug, not
       # this step.
       - name: lint
         run: cd apps/kds && pnpm lint
+
+
+  kds:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - name: install
+        run: cd apps/kds && pnpm install --frozen-lockfile
       - name: test
         run: cd apps/kds && pnpm test
       - name: build
