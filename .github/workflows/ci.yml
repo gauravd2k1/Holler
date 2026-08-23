@@ -141,6 +141,11 @@ jobs:
       # + migration-high-water prose to package.json and the files on disk.
       - name: milestone + contracts marker check
         run: node scripts/check-milestone-marker.mjs
+      # A cargo target behind `required-features` is not built, not run, and
+      # not reported as skipped by a plain `cargo test`. This fails the build
+      # if any such target is not invoked by a run line above.
+      - name: gated tests are actually invoked
+        run: node scripts/check-gated-tests.mjs
 
   # The Rust edge crates carry the majority of Milestone 1's test coverage —
   # including the offline order-creation test that IS the milestone acceptance
@@ -244,6 +249,56 @@ jobs:
   # Style only. Split out of `pos` so a lint or type error can never again
   # hide that app's test and build results -- see the note at the top of this
   # file. The duplicated install is the whole cost of that separation.
+  # M4 acceptance criterion 6: "Ledger entries created at the edge replay to
+  # the cloud and read back identically."
+  #
+  # THE ONLY JOB WHERE RUST AND GO MEET. Every other Rust-side cloud test in
+  # this repo answers itself through a `tiny_http` fake that agrees with
+  # whatever the edge says, so the fake was the risk: the pump's actual HTTP
+  # conversation -- envelope shape, headers, enrollment, what comes back --
+  # had never been checked against anything real. Here the real pump talks to
+  # the real `cmd/api`, built from this checkout, over a real socket, against
+  # a real PostgreSQL, holding a real device credential.
+  #
+  # The test creates and drops its own database per test, so it needs the
+  # connection user to be able to CREATE DATABASE -- POSTGRES_USER is, and
+  # that isolation is what lets the job be re-run without the second run
+  # colliding on a per-outlet entry_seq the cloud already holds.
+  #
+  # Gated behind `cloud-e2e` because none of the above belongs in the `edge`
+  # job, and invoked HERE because a gate nobody opens is not coverage --
+  # scripts/check-gated-tests.mjs fails the build if this line disappears.
+  cloud-replay:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: holler
+          POSTGRES_PASSWORD: holler_dev
+          POSTGRES_DB: holler
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U holler"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      HOLLER_TEST_DATABASE_URL: postgres://holler:holler_dev@localhost:5432/holler?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: edge/sync -> target
+      - name: edge -> cloud ledger replay (M4 criterion 6)
+        working-directory: edge/sync
+        run: cargo test --features cloud-e2e --test cloud_replay
+
   pos-style:
     runs-on: ubuntu-latest
     steps:

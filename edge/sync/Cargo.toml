@@ -29,6 +29,28 @@ serde_json = "1"
 thiserror = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
+[features]
+# M4 acceptance criterion 6. OFF BY DEFAULT because the test behind it needs
+# things no other test in this crate does: a live PostgreSQL, the Go toolchain,
+# and the real `cmd/api` binary built from this checkout. `cargo test` in the
+# `edge` CI job must stay a pure-Rust, no-network run.
+#
+# A gated target is only as good as the pipeline that remembers to invoke it,
+# and "the test exists but never runs" is the exact state criterion 1 spent
+# four pushes in. So scripts/check-gated-tests.mjs fails the build if any test
+# target carrying `required-features` is not named in a ci.yml run line.
+cloud-e2e = []
+
+[[test]]
+name = "cloud_replay"
+required-features = ["cloud-e2e"]
+
 [dev-dependencies]
 tempfile = "3"
 tiny_http = "0.12"
+
+# criterion 6 only (cloud-e2e): reads stock_ledger_entry straight out of
+# PostgreSQL to prove STORAGE fidelity, next to the 201 echo which proves WIRE
+# fidelity. No TLS feature -- the test connects with sslmode=disable to a
+# local database and this crate ships nothing that talks to Postgres.
+postgres = "0.19"

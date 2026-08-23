@@ -76,6 +76,18 @@ pub struct RangedReport {
     pub blocked: Vec<BlockedEntry>,
     /// Set if a stream stopped before draining its send set.
     pub stopped: Option<StopReason>,
+    /// What the cloud ECHOED for each accepted entry, in send order, paired
+    /// with the mark it acknowledged.
+    ///
+    /// The ingest route returns the stored row, so this is the cloud's own
+    /// account of what it now holds -- not the edge's account of what it
+    /// sent. Keeping it makes an ack answerable: "acked 7" and "acked 7, and
+    /// here is the row it became" are different claims, and only the second
+    /// one can be checked. M4 acceptance criterion 6 checks it; a support
+    /// question about a divergent outlet needs exactly the same thing.
+    ///
+    /// Bounded by the batch limit and dropped with the report.
+    pub acked_echo: Vec<(i64, serde_json::Value)>,
 }
 
 /// Whether a rejection is the ENTRY's fault, and so spends its budget.
@@ -166,7 +178,7 @@ impl SyncWorker {
             let now = Utc::now().to_rfc3339();
 
             match self.post_verified(INGEST_PATH, &body) {
-                Ok(SendOutcome::Ok(_)) => {
+                Ok(SendOutcome::Ok(echo)) => {
                     // An entry that failed earlier and has now been accepted
                     // leaves no block behind — a surface full of resolved
                     // alarms stops being read, which is the outcome a table
@@ -177,6 +189,7 @@ impl SyncWorker {
                         ReplayStream::Ledger => report.ledger_acked.push(entry_seq),
                         ReplayStream::DeductionGap => report.gap_acked.push(entry_seq),
                     }
+                    report.acked_echo.push((entry_seq, echo));
                 }
 
                 // Nothing was sent and this node cannot send anything: stop,
