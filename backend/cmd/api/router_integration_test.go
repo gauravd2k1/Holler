@@ -17,6 +17,7 @@ import (
 	"github.com/holler/backend/internal/outlet"
 	"github.com/holler/backend/internal/platform/config"
 	"github.com/holler/backend/internal/platform/crypto"
+	"github.com/holler/backend/internal/platform/id"
 	"github.com/holler/backend/internal/platform/postgres"
 	"github.com/holler/backend/internal/platform/testdb"
 	"github.com/holler/backend/internal/tables"
@@ -70,29 +71,27 @@ func TestBuildRouter_SyncConfigEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateOrganisation: %v", err)
 	}
-	// This fixture uses fixed IDs below (userID, station id) rather than
-	// id.New(), so without cleanup a second run collides on a primary key
-	// that survived the first. Delete in FK-safe order, scoped to org.ID.
-	t.Cleanup(func() {
-		pool.Exec(ctx, `DELETE FROM audit_event WHERE tenant_id = $1`, org.ID)
-		pool.Exec(ctx, `DELETE FROM device_credential WHERE tenant_id = $1`, org.ID)
-		pool.Exec(ctx, `DELETE FROM device WHERE outlet_id IN (SELECT id FROM outlet WHERE brand_id IN (SELECT id FROM brand WHERE tenant_id = $1))`, org.ID)
-		pool.Exec(ctx, `DELETE FROM refresh_token WHERE user_id IN (SELECT id FROM app_user WHERE tenant_id = $1)`, org.ID)
-		pool.Exec(ctx, `DELETE FROM user_role WHERE user_id IN (SELECT id FROM app_user WHERE tenant_id = $1)`, org.ID)
-		pool.Exec(ctx, `DELETE FROM app_user WHERE tenant_id = $1`, org.ID)
-		pool.Exec(ctx, `DELETE FROM role_permission WHERE role_id IN (SELECT id FROM role WHERE tenant_id = $1)`, org.ID)
-		pool.Exec(ctx, `DELETE FROM role WHERE tenant_id = $1`, org.ID)
-		pool.Exec(ctx, `DELETE FROM menu_item_station WHERE menu_item_id IN (SELECT id FROM menu_item WHERE outlet_id IN (SELECT id FROM outlet WHERE brand_id IN (SELECT id FROM brand WHERE tenant_id = $1)))`, org.ID)
-		pool.Exec(ctx, `DELETE FROM station_printer WHERE station_id IN (SELECT id FROM station WHERE outlet_id IN (SELECT id FROM outlet WHERE brand_id IN (SELECT id FROM brand WHERE tenant_id = $1)))`, org.ID)
-		pool.Exec(ctx, `DELETE FROM station WHERE outlet_id IN (SELECT id FROM outlet WHERE brand_id IN (SELECT id FROM brand WHERE tenant_id = $1))`, org.ID)
-		pool.Exec(ctx, `DELETE FROM printer WHERE outlet_id IN (SELECT id FROM outlet WHERE brand_id IN (SELECT id FROM brand WHERE tenant_id = $1))`, org.ID)
-		pool.Exec(ctx, `DELETE FROM restaurant_table WHERE outlet_id IN (SELECT id FROM outlet WHERE brand_id IN (SELECT id FROM brand WHERE tenant_id = $1))`, org.ID)
-		pool.Exec(ctx, `DELETE FROM menu_item WHERE outlet_id IN (SELECT id FROM outlet WHERE brand_id IN (SELECT id FROM brand WHERE tenant_id = $1))`, org.ID)
-		pool.Exec(ctx, `DELETE FROM menu_category WHERE outlet_id IN (SELECT id FROM outlet WHERE brand_id IN (SELECT id FROM brand WHERE tenant_id = $1))`, org.ID)
-		pool.Exec(ctx, `DELETE FROM outlet WHERE brand_id IN (SELECT id FROM brand WHERE tenant_id = $1)`, org.ID)
-		pool.Exec(ctx, `DELETE FROM brand WHERE tenant_id = $1`, org.ID)
-		pool.Exec(ctx, `DELETE FROM tenant WHERE id = $1`, org.ID)
-	})
+	// EVERY id below is minted with id.New(), and there is deliberately no
+	// t.Cleanup that tries to delete this fixture.
+	//
+	// There used to be both: fixed ids (userID, the role assignment, the
+	// station) plus a cleanup that deleted org.ID's rows in FK-safe order.
+	// Contracts 0.5.0 then made audit_event append-only, and that cleanup's
+	// FIRST statement became one the database refuses forever. Its error was
+	// discarded like every other Exec in the block, so the chain stopped
+	// silently at statement one, audit_event kept pinning app_user through
+	// actor_user_id, and the fixed userID collided on the next run.
+	//
+	// So this test was green exactly once per database. CI never saw it,
+	// because CI's postgres service container is new every run -- the same
+	// "passes only under a condition nobody wrote down" shape this repo keeps
+	// paying for. Locally it failed on the second `go test` and read as a
+	// regression in whatever had just changed.
+	//
+	// Unique ids remove the reason the cleanup existed, and a cleanup that
+	// cannot succeed is worse than none: it reads as tidiness that is
+	// happening. Leftover fixture rows are harmless, and every other
+	// Postgres-backed test here already leaves its own.
 	brand, err := tenantSvc.CreateBrand(ctx, org.ID, "Sync Config Integration Brand")
 	if err != nil {
 		t.Fatalf("CreateBrand: %v", err)
@@ -126,14 +125,14 @@ func TestBuildRouter_SyncConfigEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HashPassword: %v", err)
 	}
-	userID := "dddddddd-dddd-7ddd-8ddd-dddddddddddd"
+	userID := id.New()
 	if err := authRepo.CreateUser(ctx, userID, org.ID, "sync-config@holler.test", "Sync Config Owner", hash, time.Now().UTC()); err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
 	if _, err := authRepo.GetUser(ctx, org.ID, userID); err != nil {
 		t.Fatalf("GetUser: %v", err)
 	}
-	if err := authRepo.ReplaceUserRoles(ctx, userID, []auth.RoleAssignment{{ID: "eeeeeeee-eeee-7eee-8eee-eeeeeeeeeeee", RoleID: ownerRoleID}}, time.Now().UTC()); err != nil {
+	if err := authRepo.ReplaceUserRoles(ctx, userID, []auth.RoleAssignment{{ID: id.New(), RoleID: ownerRoleID}}, time.Now().UTC()); err != nil {
 		t.Fatalf("ReplaceUserRoles: %v", err)
 	}
 
@@ -241,7 +240,7 @@ func TestBuildRouter_SyncConfigEndToEnd(t *testing.T) {
 	itemResp.Body.Close()
 
 	stationResp := authedPost("/stations", map[string]any{
-		"id": "ffffffff-ffff-7fff-8fff-ffffffffffff", "outlet_id": out.ID,
+		"id": id.New(), "outlet_id": out.ID,
 		"code": "MAIN", "name": "Main Kitchen", "sort_order": 1, "is_active": true,
 	})
 	if stationResp.StatusCode != http.StatusCreated {
