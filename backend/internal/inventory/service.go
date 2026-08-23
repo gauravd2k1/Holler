@@ -360,11 +360,18 @@ func (s *Service) IngestLedgerEntry(ctx context.Context, callerTenantID string, 
 // the goal; blocking was a side effect nobody wanted. So the hole is written
 // to ledger_replay_gap and the arriving entry is accepted.
 //
-// The one refusal left is a mark at or below the cursor under a different id,
-// which would make the mark ambiguous. That is unreachable through the edge's
-// own path (contracts 0.5.3 made entry_seq a durable counter for exactly this
-// reason) and clearing it is a documented manual operation — see
-// ErrLedgerSequenceMarkReused.
+// The one refusal left is a mark that is ALREADY OCCUPIED by a different id,
+// which would make the mark ambiguous. Note "occupied", not "at or below the
+// cursor": those are different questions, and answering the second one is how
+// this function reintroduced the very outage it was written to remove. A hole
+// recorded at 2 while the cursor sits at 3 is precisely the case where 2 is
+// below the cursor AND vacant — so the late arrival that would have HEALED
+// the hole was refused, resolved_at could never fire, and the alarm was
+// permanent. The blocking detector, one layer in.
+//
+// Occupancy costs one indexed EXISTS on the miss path only; the common case
+// (entrySeq == cursor+1) never reaches it. Clearing a genuine reuse remains a
+// documented manual operation — see ErrLedgerSequenceMarkReused.
 func (s *Service) checkContiguity(ctx context.Context, outletID string, stream ReplayStream, entrySeq int64) error {
 	var cursor int64
 	var err error
@@ -382,8 +389,18 @@ func (s *Service) checkContiguity(ctx context.Context, outletID string, stream R
 
 	switch {
 	case entrySeq <= cursor:
-		return fmt.Errorf("%w: %s entry_seq %d is not greater than outlet %s's high-water mark %d",
-			ErrLedgerSequenceMarkReused, stream, entrySeq, outletID, cursor)
+		occupied, err := s.repo.EntrySeqOccupied(ctx, outletID, stream, entrySeq)
+		if err != nil {
+			return err
+		}
+		if occupied {
+			return fmt.Errorf("%w: %s entry_seq %d is already stored for outlet %s under a different id",
+				ErrLedgerSequenceMarkReused, stream, entrySeq, outletID)
+		}
+		// Vacant and below the cursor: an entry arriving late into a hole
+		// somebody already recorded. Accept it — the caller resolves any
+		// gap the arrival now covers.
+		return nil
 
 	case entrySeq > cursor+1:
 		// Loud and durable, and the stream keeps moving.

@@ -86,10 +86,12 @@ type Repository interface {
 	// if none exist yet — the cursor the contiguity check compares an
 	// incoming entry_seq against (ADR-018 replay addendum).
 	LastEntrySeq(ctx context.Context, outletID string) (int64, error)
-	// GetLedgerEntryBySeq looks up an existing row by (outlet_id, entry_seq)
-	// so a replayed envelope for an already-ingested entry_seq can be told
-	// apart from a genuine conflicting write.
-	GetLedgerEntryBySeq(ctx context.Context, outletID string, entrySeq int64) (StockLedgerEntry, bool, error)
+	// EntrySeqOccupied reports whether one exact mark is already stored for
+	// this outlet in this stream. The contiguity check needs occupancy, not
+	// the high-water mark: below the cursor, "taken by another row" and
+	// "still a hole" are opposite answers, and MAX(entry_seq) cannot tell
+	// them apart. Stream-generic because both ranged streams have the bug.
+	EntrySeqOccupied(ctx context.Context, outletID string, stream ReplayStream, entrySeq int64) (bool, error)
 	GetLedgerEntryByID(ctx context.Context, id string) (StockLedgerEntry, bool, error)
 	InsertLedgerEntry(ctx context.Context, entry StockLedgerEntry) error
 	GetDeductionGapByID(ctx context.Context, id string) (StockDeductionGap, bool, error)
@@ -494,9 +496,20 @@ func (r *pgRepository) LastEntrySeq(ctx context.Context, outletID string) (int64
 	return seq, nil
 }
 
-func (r *pgRepository) GetLedgerEntryBySeq(ctx context.Context, outletID string, entrySeq int64) (StockLedgerEntry, bool, error) {
-	entry, ok, err := scanLedgerEntryRow(r.pool.QueryRow(ctx, ledgerEntrySelect+` WHERE outlet_id = $1 AND entry_seq = $2`, outletID, entrySeq))
-	return entry, ok, err
+func (r *pgRepository) EntrySeqOccupied(ctx context.Context, outletID string, stream ReplayStream, entrySeq int64) (bool, error) {
+	table, err := replayGapStreamTable(stream)
+	if err != nil {
+		return false, err
+	}
+	var occupied bool
+	err = r.pool.QueryRow(ctx,
+		fmt.Sprintf(`SELECT EXISTS (SELECT 1 FROM %s WHERE outlet_id = $1 AND entry_seq = $2)`, table),
+		outletID, entrySeq,
+	).Scan(&occupied)
+	if err != nil {
+		return false, fmt.Errorf("inventory: checking whether entry_seq is occupied: %w", err)
+	}
+	return occupied, nil
 }
 
 func (r *pgRepository) GetLedgerEntryByID(ctx context.Context, id string) (StockLedgerEntry, bool, error) {

@@ -601,6 +601,72 @@ func TestIngestLedgerEntry_AReusedMarkUnderADifferentIDIsRefused(t *testing.T) {
 	}
 }
 
+// TestIngestDeductionGap_AFilledHoleResolvesOnTheOtherStream is the same
+// invariant as TestIngestLedgerEntry_AFilledHoleResolves, on the stream that
+// had no test at all.
+//
+// It exists because of HOW the ledger version failed: checkContiguity is
+// shared by both ranged streams, so the defect was never ledger-specific — it
+// was simply only ever exercised on one side. One stream tested and one
+// stream trusted is how a shared function gets a reputation it has not
+// earned, and 0.5.8 minted these two counters independently precisely so the
+// streams could diverge.
+func TestIngestDeductionGap_AFilledHoleResolvesOnTheOtherStream(t *testing.T) {
+	pool := setupPool(t)
+	ctx := context.Background()
+	repo := inventory.NewRepository(pool)
+	svc := inventory.NewService(repo)
+	fx := newFixture(t, pool, "Gap Stream Hole Filled")
+
+	send := func(seq int64) error {
+		id := newULID()
+		env := ledgerEnvelope(id, fx.tenantID, fx.outletID, 1)
+		env.AggregateType = contracts.AggregateTypeStockDeductionGap
+		_, err := svc.IngestDeductionGap(ctx, fx.tenantID, env, contracts.StockDeductionGap{
+			ID: id, OutletID: fx.outletID, EntrySeq: seq,
+			OrderID: newULID(), OrderItemID: newULID(), MenuItemID: newULID(),
+			MenuItemName:  "Butter Chicken",
+			Quantity:      1,
+			Reason:        contracts.StockDeductionGapReasonNoRecipe,
+			OccurredAt:    time.Now().UTC().Format(time.RFC3339),
+			BusinessDate:  time.Now().UTC().Format("2006-01-02"),
+			SchemaVersion: 1,
+		})
+		return err
+	}
+
+	if err := send(1); err != nil {
+		t.Fatalf("gap 1: %v", err)
+	}
+	if err := send(3); err != nil { // hole at 2
+		t.Fatalf("gap 3: %v", err)
+	}
+	gaps, err := repo.ListUnresolvedReplayGaps(ctx, fx.outletID)
+	if err != nil || len(gaps) != 1 {
+		t.Fatalf("expected one open hole, got %d (err %v)", len(gaps), err)
+	}
+	if gaps[0].Stream != inventory.ReplayStreamDeductionGap {
+		t.Fatalf("the hole must be recorded against the gap stream, got %q", gaps[0].Stream)
+	}
+
+	if err := send(2); err != nil {
+		t.Fatalf("the late gap must be accepted: %v", err)
+	}
+	gaps, err = repo.ListUnresolvedReplayGaps(ctx, fx.outletID)
+	if err != nil {
+		t.Fatalf("listing replay gaps: %v", err)
+	}
+	if len(gaps) != 0 {
+		t.Fatalf("a filled hole must resolve, still open: %+v", gaps)
+	}
+
+	// The refusal that must SURVIVE the fix: 2 is now occupied, so a second
+	// row claiming it is a genuinely ambiguous mark, not a late arrival.
+	if err := send(2); !errors.Is(err, inventory.ErrLedgerSequenceMarkReused) {
+		t.Fatalf("expected ErrLedgerSequenceMarkReused for a truly reused mark, got %v", err)
+	}
+}
+
 func ledgerEnvelope(recordID, tenantID, outletID string, version int) contracts.SyncEnvelope {
 	return contracts.SyncEnvelope{
 		RecordID: recordID, TenantID: tenantID, OutletID: outletID,
