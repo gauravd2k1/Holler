@@ -108,7 +108,7 @@ fn to_readable_text(bytes: &[u8]) -> String {
                 out.push('\n');
                 i += 1;
             }
-            b if b >= 0x20 && b < 0x7F => {
+            b if (0x20..0x7F).contains(&b) => {
                 out.push(b as char);
                 i += 1;
             }
