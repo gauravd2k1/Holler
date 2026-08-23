@@ -1,0 +1,22 @@
+# Pinned so `cargo fmt --check` cannot go red on its own.
+#
+# The `edge` CI job runs fmt -> clippy -> test as three steps of ONE job, and a
+# job step that fails stops the ones after it. So a formatter whose output
+# drifts between releases does not just report a formatting nit: it silently
+# withdraws the verdict from every Rust test in the repo. That is what happened
+# across 6f72ba6..8a2819e -- four pushes, no edge test result, and an M4
+# acceptance criterion recorded UNPROVEN because nothing ever ran to prove it.
+#
+# rustup honours this file for every cargo invocation under the repo root,
+# including the six crates that deliberately do not share a workspace
+# (edge/{database,sync,printer,device}, apps/pos/src-tauri, and the two test
+# bridges). CI's `dtolnay/rust-toolchain@stable` step is now only a rustup
+# bootstrap -- this file decides the version, so `components` is listed here
+# rather than trusted to that step.
+#
+# Raising this version is a deliberate act: bump it and land the resulting
+# `cargo fmt` diff in its own commit, never mixed with code.
+[toolchain]
+channel = "1.97.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
