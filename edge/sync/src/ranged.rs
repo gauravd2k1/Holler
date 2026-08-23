@@ -196,7 +196,10 @@ impl SyncWorker {
                         entry_seq,
                         &record_id,
                         Some(status),
-                        &format!("cloud rejected {} with status {status}", aggregate_type_for(stream)),
+                        &format!(
+                            "cloud rejected {} with status {status}",
+                            aggregate_type_for(stream)
+                        ),
                         &now,
                     )?;
 
@@ -210,7 +213,13 @@ impl SyncWorker {
 
                     // Budget spent. Move PAST the entry rather than retrying
                     // it forever — the whole point of a per-entry bound.
-                    repo::mark_replay_blocked(db.connection(), &outlet_id, stream, entry_seq, &now)?;
+                    repo::mark_replay_blocked(
+                        db.connection(),
+                        &outlet_id,
+                        stream,
+                        entry_seq,
+                        &now,
+                    )?;
                     repo::advance_replay_cursor(db.connection(), &outlet_id, stream, entry_seq)?;
                     report.blocked.push(BlockedEntry {
                         stream: stream.as_str(),

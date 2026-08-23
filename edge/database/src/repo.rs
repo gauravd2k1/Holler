@@ -734,7 +734,10 @@ pub fn get_inventory_item(conn: &Connection, id: &str) -> DbResult<Option<Invent
     .map_err(Into::into)
 }
 
-pub fn get_item_unit_conversion(conn: &Connection, id: &str) -> DbResult<Option<ItemUnitConversion>> {
+pub fn get_item_unit_conversion(
+    conn: &Connection,
+    id: &str,
+) -> DbResult<Option<ItemUnitConversion>> {
     conn.query_row(
         "SELECT id, inventory_item_id, pack_unit_label, source_dimension, numerator, denominator, config_version
          FROM item_unit_conversion WHERE id = ?1",
@@ -5731,22 +5734,25 @@ pub(crate) fn list_stock_deduction_gaps_for_outlet(
          ORDER BY occurred_at DESC, id DESC LIMIT ?2",
     )?;
     let rows = stmt
-        .query_map(params![outlet_id, STOCK_DEDUCTION_GAP_REPORT_LIMIT], |row| {
-            Ok(StockDeductionGap {
-                id: row.get(0)?,
-                outlet_id: row.get(1)?,
-                entry_seq: row.get(2)?,
-                order_id: row.get(3)?,
-                order_item_id: row.get(4)?,
-                menu_item_id: row.get(5)?,
-                menu_item_variant_id: row.get(6)?,
-                menu_item_name: row.get(7)?,
-                quantity: row.get(8)?,
-                reason: row.get(9)?,
-                occurred_at: row.get(10)?,
-                business_date: row.get(11)?,
-            })
-        })?
+        .query_map(
+            params![outlet_id, STOCK_DEDUCTION_GAP_REPORT_LIMIT],
+            |row| {
+                Ok(StockDeductionGap {
+                    id: row.get(0)?,
+                    outlet_id: row.get(1)?,
+                    entry_seq: row.get(2)?,
+                    order_id: row.get(3)?,
+                    order_item_id: row.get(4)?,
+                    menu_item_id: row.get(5)?,
+                    menu_item_variant_id: row.get(6)?,
+                    menu_item_name: row.get(7)?,
+                    quantity: row.get(8)?,
+                    reason: row.get(9)?,
+                    occurred_at: row.get(10)?,
+                    business_date: row.get(11)?,
+                })
+            },
+        )?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
 }
@@ -6064,9 +6070,7 @@ pub fn advance_replay_cursor(
 ) -> DbResult<()> {
     let column = stream.cursor_column();
     conn.execute(
-        &format!(
-            "UPDATE sync_state SET {column} = MAX({column}, ?1) WHERE outlet_id = ?2"
-        ),
+        &format!("UPDATE sync_state SET {column} = MAX({column}, ?1) WHERE outlet_id = ?2"),
         params![acked_entry_seq, outlet_id],
     )?;
     Ok(())
@@ -6215,10 +6219,7 @@ pub fn clear_replay_failure(
 /// Every entry this outlet has given up on sending — the human-visible half
 /// of the per-entry retry bound. Blocked first, then longest-outstanding, so
 /// the surface leads with what has actually been abandoned.
-pub fn list_blocked_replays(
-    conn: &Connection,
-    outlet_id: &str,
-) -> DbResult<Vec<SyncReplayBlock>> {
+pub fn list_blocked_replays(conn: &Connection, outlet_id: &str) -> DbResult<Vec<SyncReplayBlock>> {
     let mut stmt = conn.prepare(
         "SELECT outlet_id, stream, entry_seq, record_id, attempts, last_status, \
                 last_error, first_attempt_at, last_attempt_at, blocked_at \

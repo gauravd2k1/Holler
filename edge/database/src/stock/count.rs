@@ -66,10 +66,12 @@ use super::snapshot::get_current_stock_in_tx;
 /// carry, however late `complete_stock_count` is actually called.
 pub(crate) fn open_stock_count(tx: &Transaction, req: NewStockCount) -> DbResult<StockCount> {
     let started_at = crate::tax::parse_utc(&req.started_at)?;
-    let (timezone, day_start_time) =
-        repo::get_outlet_business_date_config(tx, &req.outlet_id)?;
-    let business_date =
-        crate::deduction::business_date::compute_business_date(started_at, &timezone, &day_start_time);
+    let (timezone, day_start_time) = repo::get_outlet_business_date_config(tx, &req.outlet_id)?;
+    let business_date = crate::deduction::business_date::compute_business_date(
+        started_at,
+        &timezone,
+        &day_start_time,
+    );
 
     repo::insert_stock_count(
         tx,
@@ -113,8 +115,8 @@ pub(crate) fn add_or_update_count_line(
     outlet_id: &str,
     req: NewStockCountLine,
 ) -> DbResult<StockCountLine> {
-    let count = repo::get_stock_count(tx, stock_count_id)?
-        .ok_or(DbError::NotFound("stock_count"))?;
+    let count =
+        repo::get_stock_count(tx, stock_count_id)?.ok_or(DbError::NotFound("stock_count"))?;
     if count.status != "OPEN" {
         return Err(DbError::StockCountNotOpen {
             stock_count_id: stock_count_id.to_string(),
@@ -122,14 +124,12 @@ pub(crate) fn add_or_update_count_line(
         });
     }
 
-    let Some((name, dimension)) =
-        repo::get_inventory_item_snapshot(tx, &req.inventory_item_id)?
+    let Some((name, dimension)) = repo::get_inventory_item_snapshot(tx, &req.inventory_item_id)?
     else {
         return Err(DbError::NotFound("inventory_item"));
     };
 
-    let expected_quantity_micro =
-        get_current_stock_in_tx(tx, outlet_id, &req.inventory_item_id)?;
+    let expected_quantity_micro = get_current_stock_in_tx(tx, outlet_id, &req.inventory_item_id)?;
 
     let new_id = uuid::Uuid::now_v7().to_string();
     repo::upsert_stock_count_line(
@@ -163,8 +163,8 @@ pub(crate) fn complete_stock_count(
     outlet_id: &str,
     completed_at: &str,
 ) -> DbResult<StockCount> {
-    let count = repo::get_stock_count(tx, stock_count_id)?
-        .ok_or(DbError::NotFound("stock_count"))?;
+    let count =
+        repo::get_stock_count(tx, stock_count_id)?.ok_or(DbError::NotFound("stock_count"))?;
     if count.status != "OPEN" {
         return Err(DbError::StockCountNotOpen {
             stock_count_id: stock_count_id.to_string(),
@@ -325,8 +325,8 @@ mod tests {
         assert_eq!(line.expected_quantity_micro, 0, "no ledger activity yet");
         assert_eq!(line.counted_quantity_micro, grams(4_750));
 
-        let completed =
-            complete_stock_count(&tx, "count-1", "outlet-1", "2026-08-20T22:41:00Z").expect("complete");
+        let completed = complete_stock_count(&tx, "count-1", "outlet-1", "2026-08-20T22:41:00Z")
+            .expect("complete");
         assert_eq!(completed.status, "COMPLETED");
         tx.commit().expect("commit");
 
@@ -340,7 +340,10 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("count ledger rows");
-        assert_eq!(ledger_count, 1, "a non-zero variance must post exactly one COUNT_ADJUSTMENT entry");
+        assert_eq!(
+            ledger_count, 1,
+            "a non-zero variance must post exactly one COUNT_ADJUSTMENT entry"
+        );
 
         let stored: (String, String, i64, String, Option<String>) = db
             .connection()
@@ -475,7 +478,8 @@ mod tests {
              0023 BEFORE INSERT trigger, with no Rust-level check involved at all",
         );
         assert!(
-            err.to_string().contains("cannot be inserted into a COMPLETED count"),
+            err.to_string()
+                .contains("cannot be inserted into a COMPLETED count"),
             "unexpected error, trigger message not found: {err}"
         );
     }
@@ -488,7 +492,8 @@ mod tests {
         let conn = db.connection_mut();
         let tx = conn.transaction().expect("begin");
         open_stock_count(&tx, new_count_req("count-1", "2026-08-20T10:00:00Z")).expect("open");
-        complete_stock_count(&tx, "count-1", "outlet-1", "2026-08-20T10:05:00Z").expect("first complete");
+        complete_stock_count(&tx, "count-1", "outlet-1", "2026-08-20T10:05:00Z")
+            .expect("first complete");
 
         let err = complete_stock_count(&tx, "count-1", "outlet-1", "2026-08-20T10:06:00Z")
             .expect_err("completing twice must be rejected");
@@ -584,7 +589,11 @@ mod tests {
         assert_eq!(completed.status, "COMPLETED");
 
         let pending = repo::list_unpublished_outbox(db.connection(), 100).expect("read outbox");
-        assert_eq!(pending.len(), 2, "open and complete each emit exactly one event");
+        assert_eq!(
+            pending.len(),
+            2,
+            "open and complete each emit exactly one event"
+        );
         let e = pending
             .iter()
             .find(|e| e.event_type == "StockCountCompleted")
@@ -598,7 +607,11 @@ mod tests {
         let lines = payload["data"]["stock_count"]["lines"]
             .as_array()
             .expect("lines is an array");
-        assert_eq!(lines.len(), 1, "the completed event carries the counted line");
+        assert_eq!(
+            lines.len(),
+            1,
+            "the completed event carries the counted line"
+        );
         assert_eq!(lines[0]["inventory_item_id"], "item-1");
         assert_eq!(lines[0]["counted_quantity_micro"], grams(4_750));
         assert_eq!(
@@ -639,7 +652,11 @@ mod tests {
         assert!(matches!(err, DbError::StockCountNotOpen { .. }));
 
         let pending = repo::list_unpublished_outbox(db.connection(), 100).expect("read outbox");
-        assert_eq!(pending.len(), 2, "the rejected attempt must not have emitted a third event");
+        assert_eq!(
+            pending.len(),
+            2,
+            "the rejected attempt must not have emitted a third event"
+        );
         assert!(
             !pending.iter().any(|e| e.id == "out-3"),
             "the event rolled back with the state change it described"

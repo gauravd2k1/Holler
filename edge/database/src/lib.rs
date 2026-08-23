@@ -11,8 +11,8 @@ mod crash;
 pub mod crypto;
 pub(crate) mod deduction;
 mod error;
-mod invoice;
 pub mod inventory;
+mod invoice;
 mod migrations;
 pub mod model;
 mod payment;
@@ -765,11 +765,7 @@ impl Db {
     /// The bounded current-stock read for one item (ADR-018 §9): latest
     /// sealed snapshot's closing balance plus every entry not covered by its
     /// mark. Never a materialised column — this always re-derives.
-    pub fn get_current_stock(
-        &self,
-        outlet_id: &str,
-        inventory_item_id: &str,
-    ) -> DbResult<i64> {
+    pub fn get_current_stock(&self, outlet_id: &str, inventory_item_id: &str) -> DbResult<i64> {
         repo::get_current_stock(self.connection(), outlet_id, inventory_item_id)
     }
 
@@ -3243,7 +3239,13 @@ mod tests {
     // is `#[cfg(test)]`-private to this crate — the same reason the invoice
     // crash test lives here rather than under `tests/`.
 
-    fn insert_inventory_item(conn: &Connection, id: &str, outlet_id: &str, name: &str, dimension: &str) {
+    fn insert_inventory_item(
+        conn: &Connection,
+        id: &str,
+        outlet_id: &str,
+        name: &str,
+        dimension: &str,
+    ) {
         conn.execute(
             "INSERT INTO inventory_item (id, outlet_id, sku, name, dimension, config_version) \
              VALUES (?1, ?2, ?1, ?3, ?4, 1)",
@@ -3291,9 +3293,11 @@ mod tests {
         )
         .expect("insert recipe_ingredient");
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM recipe WHERE id = ?1", [recipe_id], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT COUNT(*) FROM recipe WHERE id = ?1",
+                [recipe_id],
+                |r| r.get(0),
+            )
             .expect("count recipe");
         assert_eq!(count, 1, "recipe fixture did not land: {recipe_id}");
     }
@@ -3319,7 +3323,10 @@ mod tests {
                 |r| r.get(0),
             )
             .expect("count modifier_ingredient_delta");
-        assert_eq!(count, 1, "modifier_ingredient_delta fixture did not land: {id}");
+        assert_eq!(
+            count, 1,
+            "modifier_ingredient_delta fixture did not land: {id}"
+        );
     }
 
     struct LedgerRow {
@@ -3415,17 +3422,24 @@ mod tests {
         db.confirm_order_with_outbox("order-deduct-1", &order_confirmed_meta("order-deduct-1"))
             .expect("confirm order with a resolvable recipe must succeed");
 
-        let stored = db.get_order("order-deduct-1").unwrap().expect("order exists");
+        let stored = db
+            .get_order("order-deduct-1")
+            .unwrap()
+            .expect("order exists");
         assert_eq!(stored.status, "CONFIRMED");
 
         let entries = list_stock_ledger_entries(db.connection(), "outlet-1");
         assert_eq!(entries.len(), 1, "exactly one leaf ingredient must deduct");
         let e = &entries[0];
-        assert_eq!(e.entry_seq, 1, "first entry at a fresh outlet starts the mark at 1");
+        assert_eq!(
+            e.entry_seq, 1,
+            "first entry at a fresh outlet starts the mark at 1"
+        );
         assert_eq!(e.inventory_item_id, "inv-flour");
         assert_eq!(e.origin, "RECIPE");
         assert_eq!(
-            e.quantity_applied_micro, -grams(750),
+            e.quantity_applied_micro,
+            -grams(750),
             "250g * 3 servings, NEGATIVE (consumption)"
         );
         assert_eq!(e.recipe_id.as_deref(), Some("recipe-1"));
@@ -3478,7 +3492,10 @@ mod tests {
         assert_eq!(gaps.len(), 1, "the gap row must exist afterwards");
         assert_eq!(gaps[0].reason, "NO_RECIPE");
         assert_eq!(gaps[0].menu_item_id, item_id);
-        assert_eq!(gaps[0].menu_item_variant_id.as_deref(), Some(variant_id.as_str()));
+        assert_eq!(
+            gaps[0].menu_item_variant_id.as_deref(),
+            Some(variant_id.as_str())
+        );
         assert_eq!(gaps[0].menu_item_name, "Burger");
         assert_eq!(gaps[0].quantity, 2);
         assert_eq!(gaps[0].business_date, "2026-08-08");
@@ -3521,13 +3538,16 @@ mod tests {
             .expect("confirm order");
 
         let entries = list_stock_ledger_entries(db.connection(), "outlet-1");
-        let modifier_entries: Vec<&LedgerRow> =
-            entries.iter().filter(|e| e.origin == "MODIFIER_DELTA").collect();
+        let modifier_entries: Vec<&LedgerRow> = entries
+            .iter()
+            .filter(|e| e.origin == "MODIFIER_DELTA")
+            .collect();
         assert_eq!(modifier_entries.len(), 1);
         let m = modifier_entries[0];
         assert_eq!(m.inventory_item_id, "inv-paneer");
         assert_eq!(
-            m.quantity_applied_micro, -grams(100),
+            m.quantity_applied_micro,
+            -grams(100),
             "50g * 2 servings, NEGATIVE (consumption)"
         );
         assert_eq!(m.modifier_delta_id.as_deref(), Some("delta-1"));
@@ -3551,7 +3571,13 @@ mod tests {
         seed_outlet_and_device(&db, "outlet-1", "device-1");
         let (_, item_id, variant_id) = seed_menu(&db, "outlet-1");
 
-        insert_inventory_item(db.connection(), "inv-overflow", "outlet-1", "Overflow Item", "MASS");
+        insert_inventory_item(
+            db.connection(),
+            "inv-overflow",
+            "outlet-1",
+            "Overflow Item",
+            "MASS",
+        );
         insert_modifier_ingredient_delta(
             db.connection(),
             "delta-overflow-1",
@@ -3561,7 +3587,12 @@ mod tests {
         );
 
         let order = sample_order("order-overflow-1", "outlet-1", "device-1");
-        let mut item = sample_order_item("order-item-overflow-1", "order-overflow-1", &item_id, 30_000);
+        let mut item = sample_order_item(
+            "order-item-overflow-1",
+            "order-overflow-1",
+            &item_id,
+            30_000,
+        );
         item.variant_id = Some(variant_id);
         // i64::MAX / 1e15 ~= 9223.37 -- one past that safe threshold.
         item.quantity = 9224;
@@ -3606,7 +3637,12 @@ mod tests {
         let (_, item_id, variant_id) = seed_menu(&db, "outlet-1"); // modifier-1 exists, no delta row
 
         let order = sample_order("order-mod-nodelta-1", "outlet-1", "device-1");
-        let mut item = sample_order_item("order-item-mod-nodelta-1", "order-mod-nodelta-1", &item_id, 30_000);
+        let mut item = sample_order_item(
+            "order-item-mod-nodelta-1",
+            "order-mod-nodelta-1",
+            &item_id,
+            30_000,
+        );
         item.variant_id = Some(variant_id);
         item.quantity = 1;
         let modifier = sample_modifier("mod-sel-nodelta-1", "order-item-mod-nodelta-1", 3000);
@@ -3678,8 +3714,12 @@ mod tests {
         .expect("seed doomed menu item");
 
         let order = sample_order("order-rollback-1", "outlet-1", "device-1");
-        let mut item_ok =
-            sample_order_item("order-item-rollback-ok", "order-rollback-1", &item_id, 30_000);
+        let mut item_ok = sample_order_item(
+            "order-item-rollback-ok",
+            "order-rollback-1",
+            &item_id,
+            30_000,
+        );
         item_ok.variant_id = Some(variant_id.clone());
         item_ok.quantity = 1;
         item_ok.created_at = "2026-08-08T10:05:00Z".to_string(); // sorts first
@@ -3716,7 +3756,10 @@ mod tests {
             "a genuine SQLite failure mid-deduction must propagate, not degrade to a gap"
         );
 
-        let stored = db.get_order("order-rollback-1").unwrap().expect("order exists");
+        let stored = db
+            .get_order("order-rollback-1")
+            .unwrap()
+            .expect("order exists");
         assert_eq!(
             stored.status, "DRAFT",
             "the whole confirm, including the order's own status stamp, must roll back"
@@ -3729,8 +3772,12 @@ mod tests {
         // A second, entirely valid order must reuse entry_seq = 1: the
         // failed attempt above must not have burned it.
         let order2 = sample_order("order-rollback-2", "outlet-1", "device-1");
-        let mut item2 =
-            sample_order_item("order-item-rollback-2", "order-rollback-2", &item_id, 30_000);
+        let mut item2 = sample_order_item(
+            "order-item-rollback-2",
+            "order-rollback-2",
+            &item_id,
+            30_000,
+        );
         item2.variant_id = Some(variant_id);
         item2.quantity = 1;
         db.create_order_with_outbox(
@@ -3780,8 +3827,12 @@ mod tests {
         );
 
         let order = sample_order("order-archival-1", "outlet-1", "device-1");
-        let mut item =
-            sample_order_item("order-item-archival-1", "order-archival-1", &item_id, 30_000);
+        let mut item = sample_order_item(
+            "order-item-archival-1",
+            "order-archival-1",
+            &item_id,
+            30_000,
+        );
         item.variant_id = Some(variant_id.clone());
         item.quantity = 1;
         db.create_order_with_outbox(&order, &[item], &sample_outbox("order-archival-1"))
@@ -3802,10 +3853,16 @@ mod tests {
         // documents), and the durable counter is advanced as if 99 more
         // entries had existed and been archived after it.
         db.connection()
-            .execute("DROP TRIGGER stock_ledger_entry_is_append_only_no_delete", [])
+            .execute(
+                "DROP TRIGGER stock_ledger_entry_is_append_only_no_delete",
+                [],
+            )
             .expect("drop the append-only trigger for this archival simulation");
         db.connection()
-            .execute("DELETE FROM stock_ledger_entry WHERE outlet_id = 'outlet-1'", [])
+            .execute(
+                "DELETE FROM stock_ledger_entry WHERE outlet_id = 'outlet-1'",
+                [],
+            )
             .expect("delete the archived row");
         db.connection()
             .execute(
@@ -3819,8 +3876,12 @@ mod tests {
         );
 
         let order2 = sample_order("order-archival-2", "outlet-1", "device-1");
-        let mut item2 =
-            sample_order_item("order-item-archival-2", "order-archival-2", &item_id, 30_000);
+        let mut item2 = sample_order_item(
+            "order-item-archival-2",
+            "order-archival-2",
+            &item_id,
+            30_000,
+        );
         item2.variant_id = Some(variant_id);
         item2.quantity = 1;
         db.create_order_with_outbox(
@@ -3906,8 +3967,10 @@ mod tests {
         assert_eq!(stored.status, "CONFIRMED");
 
         let gaps = list_stock_deduction_gaps(db.connection(), "outlet-1");
-        let unresolved: Vec<&GapRow> =
-            gaps.iter().filter(|g| g.reason == "UNRESOLVABLE_REFERENCE").collect();
+        let unresolved: Vec<&GapRow> = gaps
+            .iter()
+            .filter(|g| g.reason == "UNRESOLVABLE_REFERENCE")
+            .collect();
         assert_eq!(
             unresolved.len(),
             1,
@@ -3959,7 +4022,10 @@ mod tests {
             "a malformed confirmed_at must be REJECTED, not silently defaulted to Utc::now()"
         );
 
-        let stored = db.get_order("order-bad-ts-1").unwrap().expect("order exists");
+        let stored = db
+            .get_order("order-bad-ts-1")
+            .unwrap()
+            .expect("order exists");
         assert_eq!(
             stored.status, "DRAFT",
             "the whole confirm, including the order's own status stamp, must roll back"

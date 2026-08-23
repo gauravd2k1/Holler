@@ -107,7 +107,10 @@ pub fn resolve_line_discount_per_unit_paise(
         "PERCENT" => {
             let bps = def.value_bps.ok_or_else(|| AppError {
                 code: "DISCOUNT_MISCONFIGURED",
-                message: format!("discount '{}' is PERCENT but carries no value_bps", def.code),
+                message: format!(
+                    "discount '{}' is PERCENT but carries no value_bps",
+                    def.code
+                ),
             })?;
             let computed = round_half_up_div(unit_price_paise * bps, BPS_DENOMINATOR);
             Ok(match def.max_discount_paise {
@@ -117,7 +120,10 @@ pub fn resolve_line_discount_per_unit_paise(
         }
         "AMOUNT" => def.value_paise.ok_or_else(|| AppError {
             code: "DISCOUNT_MISCONFIGURED",
-            message: format!("discount '{}' is AMOUNT but carries no value_paise", def.code),
+            message: format!(
+                "discount '{}' is AMOUNT but carries no value_paise",
+                def.code
+            ),
         }),
         other => Err(AppError {
             code: "DISCOUNT_MISCONFIGURED",

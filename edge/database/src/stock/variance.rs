@@ -36,8 +36,8 @@ pub(crate) fn build_variance_report(
     stock_count_id: &str,
     outlet_id: &str,
 ) -> DbResult<StockCountVarianceReport> {
-    let count = repo::get_stock_count(tx, stock_count_id)?
-        .ok_or(DbError::NotFound("stock_count"))?;
+    let count =
+        repo::get_stock_count(tx, stock_count_id)?.ok_or(DbError::NotFound("stock_count"))?;
     if count.status != "COMPLETED" {
         return Err(DbError::StockCountNotOpen {
             stock_count_id: stock_count_id.to_string(),
@@ -48,7 +48,8 @@ pub(crate) fn build_variance_report(
     let lines = repo::list_stock_count_lines(tx, stock_count_id)?
         .into_iter()
         .map(|line| {
-            let variance_quantity_micro = line.counted_quantity_micro - line.expected_quantity_micro;
+            let variance_quantity_micro =
+                line.counted_quantity_micro - line.expected_quantity_micro;
             let variance_percentage_bps = if line.expected_quantity_micro == 0 {
                 None
             } else {
@@ -164,8 +165,9 @@ mod tests {
                 modifier_delta_version: None,
                 source_stock_count_id: None,
             };
-            let seq = repo::next_stock_ledger_sequence_value(&tx, "outlet-1", "2026-08-19T09:00:00Z")
-                .expect("mint seq");
+            let seq =
+                repo::next_stock_ledger_sequence_value(&tx, "outlet-1", "2026-08-19T09:00:00Z")
+                    .expect("mint seq");
             let id = uuid::Uuid::now_v7().to_string();
             crate::deduction::ledger::insert_stock_ledger_entry(&tx, &id, seq, &entry)
                 .expect("insert purchase");
@@ -173,7 +175,11 @@ mod tests {
         }
         // Assert the fixture landed before trusting anything downstream of it.
         let seeded = repo::get_current_stock(db.connection(), "outlet-1", "item-1").expect("read");
-        assert_eq!(seeded, grams(5_000), "fixture purchase must actually be on the ledger");
+        assert_eq!(
+            seeded,
+            grams(5_000),
+            "fixture purchase must actually be on the ledger"
+        );
 
         let conn = db.connection_mut();
         let tx = conn.transaction().expect("begin");

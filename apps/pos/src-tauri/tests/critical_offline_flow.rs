@@ -493,8 +493,8 @@ fn add_and_remove_item_on_a_draft_order_round_trip_through_storage() {
         .id
         .clone();
 
-    let after_remove =
-        remove_order_item_impl(&state, &order.holler_order_id, &added_item_id).expect("remove item");
+    let after_remove = remove_order_item_impl(&state, &order.holler_order_id, &added_item_id)
+        .expect("remove item");
     assert_eq!(after_remove.items.len(), 1);
     assert_eq!(after_remove.subtotal_paise, 25000);
 }
@@ -575,8 +575,8 @@ fn a_draft_order_survives_the_pos_process_ending_and_a_fresh_one_reopening() {
     }
 
     // ---- "session 2": a fresh process, fresh AppState, same file. ----
-    let db2 = Db::open(&sealed, &plaintext, EncryptionKey::new([42u8; 32]))
-        .expect("reopen must succeed");
+    let db2 =
+        Db::open(&sealed, &plaintext, EncryptionKey::new([42u8; 32])).expect("reopen must succeed");
     let state2 = AppState::new(db2, OUTLET_ID.to_string(), DEVICE_ID.to_string());
 
     let recovered = get_active_draft_order_impl(&state2)
@@ -777,13 +777,9 @@ fn order_type_can_be_changed_after_the_first_item_lands_and_it_persists() {
     .expect("first tap creates the draft order");
     assert_eq!(order.order_type, "DINE_IN");
 
-    let updated = update_order_shape_impl(
-        &state,
-        &order.holler_order_id,
-        "TAKEAWAY".to_string(),
-        None,
-    )
-    .expect("shape change on a DRAFT order must succeed");
+    let updated =
+        update_order_shape_impl(&state, &order.holler_order_id, "TAKEAWAY".to_string(), None)
+            .expect("shape change on a DRAFT order must succeed");
     assert_eq!(updated.order_type, "TAKEAWAY");
     assert_eq!(updated.table_id, None);
 
@@ -851,13 +847,8 @@ fn order_shape_cannot_be_changed_once_the_order_leaves_draft() {
     holler_pos_lib::commands::orders::confirm_order_impl(&state, &order.holler_order_id)
         .expect("confirm order");
 
-    let err = update_order_shape_impl(
-        &state,
-        &order.holler_order_id,
-        "TAKEAWAY".to_string(),
-        None,
-    )
-    .expect_err("shape must be immutable once the order has left DRAFT");
+    let err = update_order_shape_impl(&state, &order.holler_order_id, "TAKEAWAY".to_string(), None)
+        .expect_err("shape must be immutable once the order has left DRAFT");
     assert_eq!(err.code, "ORDER_NOT_DRAFT");
 
     let fetched = get_order_impl(&state, &order.holler_order_id)
@@ -971,8 +962,7 @@ fn send_to_kitchen_produces_one_ticket_per_routed_station_and_it_is_listable() {
 
     holler_pos_lib::commands::orders::confirm_order_impl(&state, &order.holler_order_id)
         .expect("confirm order");
-    let kots =
-        send_order_to_kitchen_impl(&state, &order.holler_order_id).expect("send to kitchen");
+    let kots = send_order_to_kitchen_impl(&state, &order.holler_order_id).expect("send to kitchen");
     assert_eq!(kots.len(), 1, "item-1 routes to exactly one station");
     assert_eq!(kots[0].station, "MAIN_KITCHEN");
     assert_eq!(kots[0].status, "NEW");
@@ -1089,13 +1079,9 @@ fn kot_status_transitions_through_the_state_machine_and_rejects_illegal_moves() 
     let kots = send_order_to_kitchen_impl(&state, &order.holler_order_id).expect("send");
     let kot_id = kots[0].id.clone();
 
-    let after_ack = transition_kot_status_impl(
-        &state,
-        &order.holler_order_id,
-        &kot_id,
-        "ACKNOWLEDGED",
-    )
-    .expect("NEW -> ACKNOWLEDGED");
+    let after_ack =
+        transition_kot_status_impl(&state, &order.holler_order_id, &kot_id, "ACKNOWLEDGED")
+            .expect("NEW -> ACKNOWLEDGED");
     assert_eq!(after_ack[0].status, "ACKNOWLEDGED");
 
     let err = transition_kot_status_impl(&state, &order.holler_order_id, &kot_id, "SERVED")
@@ -1198,7 +1184,10 @@ fn transition_kot_status_notifies_upserted_then_removed_on_terminal_status() {
     match message {
         KdsLanMessage::KotRemoved {
             kot_id: removed_id, ..
-        } => assert_eq!(removed_id, kot_id, "a terminal status must announce kot_removed, not kot_upserted"),
+        } => assert_eq!(
+            removed_id, kot_id,
+            "a terminal status must announce kot_removed, not kot_upserted"
+        ),
         other => panic!("expected kot_removed for SERVED, got {other:?}"),
     }
 }
@@ -1234,13 +1223,15 @@ fn a_print_failure_is_visible_to_staff_after_send_to_kitchen() {
     .expect("create order");
     holler_pos_lib::commands::orders::confirm_order_impl(&state, &order.holler_order_id)
         .expect("confirm order");
-    let kots =
-        send_order_to_kitchen_impl(&state, &order.holler_order_id).expect("send to kitchen");
+    let kots = send_order_to_kitchen_impl(&state, &order.holler_order_id).expect("send to kitchen");
     let kot_id = kots[0].id.clone();
 
     let failed = list_failed_print_jobs_impl(&state).expect("list failed print jobs");
     assert_eq!(failed.len(), 1);
-    assert_eq!(failed[0].target, holler_pos_lib::dto::FailedPrintJobTarget::Kot);
+    assert_eq!(
+        failed[0].target,
+        holler_pos_lib::dto::FailedPrintJobTarget::Kot
+    );
     assert_eq!(failed[0].printer_name, "Kitchen Printer");
     assert_eq!(
         failed[0].kot_id.as_deref(),
@@ -1441,8 +1432,8 @@ fn a_quantity_change_survives_the_pos_process_ending_and_a_fresh_one_reopening()
     }
 
     // ---- "session 2": a fresh process, fresh AppState, same file. ----
-    let db2 = Db::open(&sealed, &plaintext, EncryptionKey::new([17u8; 32]))
-        .expect("reopen must succeed");
+    let db2 =
+        Db::open(&sealed, &plaintext, EncryptionKey::new([17u8; 32])).expect("reopen must succeed");
     let state2 = AppState::new(db2, OUTLET_ID.to_string(), DEVICE_ID.to_string());
 
     let recovered = get_active_draft_order_impl(&state2)
@@ -1642,7 +1633,11 @@ fn addition_modifier_and_quantity_change_compose_correctly_after_send_to_kitchen
     assert_eq!(second_kots[0].items[0].quantity, 3);
 
     let all_kots = list_kots_for_order_impl(&state, &order.holler_order_id).expect("list kots");
-    assert_eq!(all_kots.len(), 2, "both tickets must be visible to the kitchen");
+    assert_eq!(
+        all_kots.len(),
+        2,
+        "both tickets must be visible to the kitchen"
+    );
 }
 
 // ---------------------------------------------------------------- T12 --
@@ -1683,11 +1678,21 @@ fn cancel_kitchen_items_produces_a_new_cancelled_ticket_132c() {
 
     assert_eq!(after_cancel.len(), 1, "one new cancellation ticket");
     assert_eq!(after_cancel[0].status, "CANCELLED");
-    assert_ne!(after_cancel[0].id, first_kots[0].id, "a new ticket, not a mutation of the first");
-    assert_eq!(after_cancel[0].items[0].order_item_id, ticketed_order_item_id);
+    assert_ne!(
+        after_cancel[0].id, first_kots[0].id,
+        "a new ticket, not a mutation of the first"
+    );
+    assert_eq!(
+        after_cancel[0].items[0].order_item_id,
+        ticketed_order_item_id
+    );
 
     let all_kots = list_kots_for_order_impl(&state, &order.holler_order_id).expect("list kots");
-    assert_eq!(all_kots.len(), 2, "both the original and the cancellation ticket are visible");
+    assert_eq!(
+        all_kots.len(),
+        2,
+        "both the original and the cancellation ticket are visible"
+    );
 }
 
 /// Cancelling a line that was never ticketed is rejected, not silently

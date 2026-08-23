@@ -113,11 +113,8 @@ pub(crate) fn seal_unsealed_business_days(tx: &Transaction, now: DateTime<Utc>) 
     let sealed_at = now.to_rfc3339();
     for outlet_id in repo::list_all_outlet_ids(tx)? {
         let (timezone, day_start_time) = repo::get_outlet_business_date_config(tx, &outlet_id)?;
-        let today = crate::deduction::business_date::compute_business_date(
-            now,
-            &timezone,
-            &day_start_time,
-        );
+        let today =
+            crate::deduction::business_date::compute_business_date(now, &timezone, &day_start_time);
         for (inventory_item_id, business_date) in
             repo::find_unsealed_item_days_before(tx, &outlet_id, &today)?
         {
@@ -291,8 +288,8 @@ mod tests {
             .expect("count snapshots");
         assert_eq!(snapshot_count, 3, "one snapshot per skipped business day");
 
-        let current = repo::get_current_stock(db.connection(), "outlet-1", "item-1")
-            .expect("bounded read");
+        let current =
+            repo::get_current_stock(db.connection(), "outlet-1", "item-1").expect("bounded read");
         assert_eq!(
             current, full_sum_before,
             "the bounded read must equal a full-ledger sum after catch-up sealing"
@@ -353,7 +350,10 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("count seal");
-        assert_eq!(sealed_count, 1, "day 1 must actually be sealed before the late arrival is written");
+        assert_eq!(
+            sealed_count, 1,
+            "day 1 must actually be sealed before the late arrival is written"
+        );
 
         // A late COUNT_ADJUSTMENT-shaped entry, dated to the ALREADY-SEALED
         // day, arriving after the seal — entry_seq will be higher than the
@@ -367,8 +367,8 @@ mod tests {
             "2020-01-01",
         );
 
-        let current = repo::get_current_stock(db.connection(), "outlet-1", "item-1")
-            .expect("bounded read");
+        let current =
+            repo::get_current_stock(db.connection(), "outlet-1", "item-1").expect("bounded read");
         assert_eq!(
             current,
             grams(5_000) - grams(300),

@@ -155,9 +155,7 @@ impl From<holler_edge_database::DbError> for AppError {
             // than a generic "something went wrong", so a wastage entry
             // submitted with no reason tells the cashier exactly why it was
             // rejected.
-            DbError::WastageReasonRequired => {
-                AppError::new("WASTAGE_REASON_REQUIRED", message)
-            }
+            DbError::WastageReasonRequired => AppError::new("WASTAGE_REASON_REQUIRED", message),
             DbError::WastageQuantityNotPositive { .. } => {
                 AppError::new("WASTAGE_QUANTITY_NOT_POSITIVE", message)
             }

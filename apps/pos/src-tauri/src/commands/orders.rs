@@ -246,7 +246,9 @@ pub fn list_orders_impl(state: &AppState) -> AppResult<Vec<CanonicalOrder>> {
     for order in orders {
         let items = holler_edge_database::repo::list_order_items(db.connection(), &order.id)?;
         let modifiers = modifiers_by_item(&db, &order.id)?;
-        out.push(CanonicalOrder::from_order_and_items(order, items, &modifiers));
+        out.push(CanonicalOrder::from_order_and_items(
+            order, items, &modifiers,
+        ));
     }
     Ok(out)
 }

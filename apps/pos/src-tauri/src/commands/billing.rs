@@ -220,14 +220,15 @@ pub fn issue_invoice_impl(
         db.connection(),
         &state.outlet_id,
     )?;
-    let fiscal_profile = resolve_fiscal_profile(&fiscal_profiles, &now).ok_or_else(|| AppError {
-        code: "NO_FISCAL_PROFILE_CONFIGURED",
-        message: format!(
+    let fiscal_profile =
+        resolve_fiscal_profile(&fiscal_profiles, &now).ok_or_else(|| AppError {
+            code: "NO_FISCAL_PROFILE_CONFIGURED",
+            message: format!(
             "no outlet_fiscal_profile is effective for outlet {} yet — billing cannot resolve a \
              GSTIN or address to print",
             state.outlet_id
         ),
-    })?;
+        })?;
 
     let series = holler_edge_database::repo::list_invoice_series_for_outlet(
         db.connection(),
@@ -367,10 +368,7 @@ fn build_split_part_lines(
                 id: new_id(),
                 order_item_id: item.id.clone(),
                 quantity: line.quantity,
-                discount_per_unit_paise: discounts_by_item
-                    .get(&item.id)
-                    .copied()
-                    .unwrap_or(0),
+                discount_per_unit_paise: discounts_by_item.get(&item.id).copied().unwrap_or(0),
             })
         })
         .collect()
@@ -434,14 +432,15 @@ pub fn issue_split_invoices_impl(
         db.connection(),
         &state.outlet_id,
     )?;
-    let fiscal_profile = resolve_fiscal_profile(&fiscal_profiles, &now).ok_or_else(|| AppError {
-        code: "NO_FISCAL_PROFILE_CONFIGURED",
-        message: format!(
+    let fiscal_profile =
+        resolve_fiscal_profile(&fiscal_profiles, &now).ok_or_else(|| AppError {
+            code: "NO_FISCAL_PROFILE_CONFIGURED",
+            message: format!(
             "no outlet_fiscal_profile is effective for outlet {} yet — billing cannot resolve a \
              GSTIN or address to print",
             state.outlet_id
         ),
-    })?;
+        })?;
 
     let series = holler_edge_database::repo::list_invoice_series_for_outlet(
         db.connection(),
@@ -489,12 +488,8 @@ pub fn issue_split_invoices_impl(
         .collect();
 
     let split_group_id = new_id();
-    let stored = db.issue_split_invoices_with_outbox(
-        &header,
-        split_group_id,
-        built_parts,
-        &outbox_metas,
-    )?;
+    let stored =
+        db.issue_split_invoices_with_outbox(&header, split_group_id, built_parts, &outbox_metas)?;
 
     let mut out = Vec::with_capacity(stored.len());
     for invoice in stored {

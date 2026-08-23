@@ -105,10 +105,14 @@ pub struct PumpReport {
 pub enum SendOutcome {
     Ok(serde_json::Value),
     /// The cloud was reached and refused this request.
-    Rejected { status: u16 },
+    Rejected {
+        status: u16,
+    },
     /// This node's credential is invalid or does not resolve to its
     /// configured outlet (ADR-017 hole 1). Nothing was sent.
-    NotEnrolled { status: u16 },
+    NotEnrolled {
+        status: u16,
+    },
 }
 
 pub struct SyncWorker {

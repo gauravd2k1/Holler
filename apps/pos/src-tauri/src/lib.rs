@@ -101,9 +101,7 @@ pub fn run() {
                         }
                     }
                     Err(_) => {
-                        eprintln!(
-                            "edge database lock poisoned on exit; relying on seal-on-drop"
-                        );
+                        eprintln!("edge database lock poisoned on exit; relying on seal-on-drop");
                     }
                 }
             }

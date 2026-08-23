@@ -81,7 +81,9 @@ const RECV_DEADLINE: Duration = Duration::from_secs(5);
 /// tests for — waiting forever on something that never arrives — one layer
 /// up, in the code doing the checking. On timeout the responder simply stops
 /// and the test fails on its own assertions.
-fn scripted_cloud(statuses: Vec<u16>) -> (String, Arc<Mutex<Vec<String>>>, std::thread::JoinHandle<()>) {
+fn scripted_cloud(
+    statuses: Vec<u16>,
+) -> (String, Arc<Mutex<Vec<String>>>, std::thread::JoinHandle<()>) {
     let server = Server::http("127.0.0.1:0").expect("start test server");
     let base_url = format!("http://{}", server.server_addr());
     let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(vec![]));
@@ -140,7 +142,9 @@ fn the_stream_replays_in_mark_order_and_the_cursor_advances_on_ack() {
     assert!(paths[1..].iter().all(|p| p == "/inventory/ledger-entries"));
 
     // Nothing is deleted on ack, and a second pass sends nothing.
-    let again = worker.pump_ranged_streams(&mut db, 10).expect("second pump");
+    let again = worker
+        .pump_ranged_streams(&mut db, 10)
+        .expect("second pump");
     assert!(
         again.ledger_acked.is_empty(),
         "an acked range must not be resent"

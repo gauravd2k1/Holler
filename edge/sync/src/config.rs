@@ -1354,8 +1354,8 @@ mod tests {
             "the previous valid value must survive a rejected apply"
         );
 
-        let tables = repo::list_restaurant_tables(db.connection(), "outlet-1")
-            .expect("list tables");
+        let tables =
+            repo::list_restaurant_tables(db.connection(), "outlet-1").expect("list tables");
         assert!(
             tables.is_empty(),
             "no part of a rejected bundle may apply, including the table carried \
@@ -1620,7 +1620,11 @@ mod tests {
         assert_eq!(stored_day_start, "04:00");
 
         let roles = repo::list_printer_roles(db.connection(), "printer-1").expect("list roles");
-        assert_eq!(roles.len(), 1, "re-applying must not duplicate the role row");
+        assert_eq!(
+            roles.len(),
+            1,
+            "re-applying must not duplicate the role row"
+        );
 
         let item = repo::get_inventory_item(db.connection(), "inv-chicken")
             .expect("lookup")
@@ -1781,8 +1785,7 @@ mod tests {
         let printers = repo::list_printers_for_outlet(db.connection(), "outlet-1").expect("list");
         assert_eq!(printers.len(), 1);
 
-        let item_stations =
-            repo::list_menu_item_stations(db.connection(), "item-1").expect("list");
+        let item_stations = repo::list_menu_item_stations(db.connection(), "item-1").expect("list");
         assert_eq!(item_stations.len(), 1);
         assert_eq!(item_stations[0].station_id, "station-1");
 
@@ -1811,8 +1814,8 @@ mod tests {
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].rate_bps, 250);
 
-        let series = repo::list_invoice_series_for_outlet(db.connection(), "outlet-1")
-            .expect("list");
+        let series =
+            repo::list_invoice_series_for_outlet(db.connection(), "outlet-1").expect("list");
         assert_eq!(series.len(), 1);
 
         let discounts =

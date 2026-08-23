@@ -347,7 +347,11 @@ fn split_name_quantity_unit(item: &str) -> (String, i64, String) {
         .collect::<String>()
         .parse()
         .unwrap_or_else(|e| panic!("could not parse quantity out of {item:?}: {e}"));
-    let name: String = chars[..qty_start].iter().collect::<String>().trim().to_string();
+    let name: String = chars[..qty_start]
+        .iter()
+        .collect::<String>()
+        .trim()
+        .to_string();
     (name, qty, unit)
 }
 
@@ -621,7 +625,9 @@ fn a_two_serving_recipe_is_expressible_and_scales_by_servings_requested_not_exec
     let outcome4 = resolve_recipe_for_variant(db.connection(), Some(&variant_id), 4)
         .expect("resolve should not be a DbError");
     assert_eq!(
-        leaf(&outcome4, "inv-chicken-platter").unwrap().applied_micro,
+        leaf(&outcome4, "inv-chicken-platter")
+            .unwrap()
+            .applied_micro,
         grams(1000)
     );
 
@@ -631,7 +637,9 @@ fn a_two_serving_recipe_is_expressible_and_scales_by_servings_requested_not_exec
     let outcome1 = resolve_recipe_for_variant(db.connection(), Some(&variant_id), 1)
         .expect("resolve should not be a DbError");
     assert_eq!(
-        leaf(&outcome1, "inv-chicken-platter").unwrap().applied_micro,
+        leaf(&outcome1, "inv-chicken-platter")
+            .unwrap()
+            .applied_micro,
         grams(250)
     );
 }
@@ -712,7 +720,12 @@ fn rounds_exactly_once_at_the_leaf_and_disagrees_with_per_level_rounding() {
     );
 
     // Root: one serving requests 333_334 micro-units of L1's output.
-    insert_one_serving_recipe(db.connection(), "recipe-rounding-root", &root_variant, "Root");
+    insert_one_serving_recipe(
+        db.connection(),
+        "recipe-rounding-root",
+        &root_variant,
+        "Root",
+    );
     insert_sub_recipe_ingredient(
         db.connection(),
         "ri-root-l1",
@@ -836,7 +849,10 @@ fn a_recipe_referencing_an_unsynced_inventory_item_is_an_unresolvable_reference_
 
     let outcome =
         resolve_recipe_for_variant(db.connection(), Some(&variant_id), 1).expect("no DbError");
-    assert_eq!(outcome, ResolveOutcome::Gap(GapReason::UnresolvableReference));
+    assert_eq!(
+        outcome,
+        ResolveOutcome::Gap(GapReason::UnresolvableReference)
+    );
 }
 
 // ---------------------------------------------------------------------
@@ -960,8 +976,8 @@ fn a_sub_recipe_row_whose_quantity_dimension_disagrees_with_the_childs_output_is
         "MASS", // disagrees with the child recipe's own VOLUME output
     );
 
-    let outcome = resolve_recipe_for_variant(db.connection(), Some(&parent_variant), 1)
-        .expect("no DbError");
+    let outcome =
+        resolve_recipe_for_variant(db.connection(), Some(&parent_variant), 1).expect("no DbError");
     assert_eq!(outcome, ResolveOutcome::Gap(GapReason::DimensionMismatch));
 }
 
@@ -991,14 +1007,29 @@ fn a_genuine_two_step_cycle_terminates_as_a_cycle_gap() {
     // A -> B, B -> C: both are ordinary forward references to
     // already-existing rows, no FK trick needed.
     insert_sub_recipe_ingredient(
-        db.connection(), "ri-a-b", "recipe-a", "recipe-b", pieces(1), "COUNT",
+        db.connection(),
+        "ri-a-b",
+        "recipe-a",
+        "recipe-b",
+        pieces(1),
+        "COUNT",
     );
     insert_sub_recipe_ingredient(
-        db.connection(), "ri-b-c", "recipe-b", "recipe-c", pieces(1), "COUNT",
+        db.connection(),
+        "ri-b-c",
+        "recipe-b",
+        "recipe-c",
+        pieces(1),
+        "COUNT",
     );
     // C -> A closes the cycle.
     insert_sub_recipe_ingredient(
-        db.connection(), "ri-c-a", "recipe-c", "recipe-a", pieces(1), "COUNT",
+        db.connection(),
+        "ri-c-a",
+        "recipe-c",
+        "recipe-a",
+        pieces(1),
+        "COUNT",
     );
 
     // Prerequisite: the loop-closing row must actually exist, or the
@@ -1043,7 +1074,12 @@ fn a_chain_deeper_than_max_recipe_depth_terminates_as_a_depth_exceeded_gap() {
         let variant_id = format!("variant-depth-{level}");
         seed_menu_item_with_variant(&db, &item_id, &variant_id, &format!("Depth {level}"));
         let recipe_id = format!("recipe-depth-{level}");
-        insert_one_serving_recipe(db.connection(), &recipe_id, &variant_id, &format!("D{level}"));
+        insert_one_serving_recipe(
+            db.connection(),
+            &recipe_id,
+            &variant_id,
+            &format!("D{level}"),
+        );
         recipe_ids.push(recipe_id);
     }
     insert_inventory_item(db.connection(), "inv-depth-leaf", "Depth Leaf", "MASS");

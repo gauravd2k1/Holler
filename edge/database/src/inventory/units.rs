@@ -242,7 +242,10 @@ mod tests {
         );
         assert_eq!(convert_tier1("g", 1).unwrap(), (Dimension::Mass, 1_000_000));
         assert_eq!(convert_tier1("mg", 1).unwrap(), (Dimension::Mass, 1_000));
-        assert_eq!(convert_tier1("l", 1).unwrap(), (Dimension::Volume, 1_000_000));
+        assert_eq!(
+            convert_tier1("l", 1).unwrap(),
+            (Dimension::Volume, 1_000_000)
+        );
         assert_eq!(convert_tier1("ml", 1).unwrap(), (Dimension::Volume, 1_000));
         assert_eq!(
             convert_tier1("piece", 1).unwrap(),
@@ -288,10 +291,7 @@ mod tests {
         assert_eq!(milligrams(7), convert_tier1("mg", 7).unwrap().1 as i64);
         assert_eq!(grams(300), convert_tier1("g", 300).unwrap().1 as i64);
         assert_eq!(kilograms(25), convert_tier1("kg", 25).unwrap().1 as i64);
-        assert_eq!(
-            millilitres(180),
-            convert_tier1("ml", 180).unwrap().1 as i64
-        );
+        assert_eq!(millilitres(180), convert_tier1("ml", 180).unwrap().1 as i64);
         assert_eq!(litres(1), convert_tier1("l", 1).unwrap().1 as i64);
         assert_eq!(pieces(2), convert_tier1("piece", 2).unwrap().1 as i64);
         assert_eq!(dozens(3), convert_tier1("dozen", 3).unwrap().1 as i64);

@@ -174,7 +174,10 @@ mod tests {
 
         let per_level_step1 = Rational::from_int(1).checked_mul_ratio(1, 3).unwrap();
         let per_level_step1_rounded = per_level_step1.round_half_away_from_zero();
-        assert_eq!(per_level_step1_rounded, 0, "0.333 rounds to 0 at this level");
+        assert_eq!(
+            per_level_step1_rounded, 0,
+            "0.333 rounds to 0 at this level"
+        );
         // Once collapsed to an integer 0 at level 1, every subsequent level
         // multiplies 0 by something and stays 0 forever — permanently wrong
         // versus the round-once answer of 1.

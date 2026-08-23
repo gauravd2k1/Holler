@@ -249,7 +249,14 @@ pub(crate) fn deduct_stock_for_confirmed_order(
     let items: Vec<OrderItem> = repo::list_order_items_in_tx(tx, order_id)?;
 
     for item in &items {
-        deduct_one_line(tx, outlet_id, order_id, item, occurred_at_utc, &business_date)?;
+        deduct_one_line(
+            tx,
+            outlet_id,
+            order_id,
+            item,
+            occurred_at_utc,
+            &business_date,
+        )?;
     }
 
     Ok(())
@@ -311,7 +318,14 @@ fn deduct_one_line(
         }
     }
 
-    deduct_modifiers_for_line(tx, outlet_id, order_id, item, occurred_at_utc, business_date)?;
+    deduct_modifiers_for_line(
+        tx,
+        outlet_id,
+        order_id,
+        item,
+        occurred_at_utc,
+        business_date,
+    )?;
     Ok(())
 }
 
@@ -498,14 +512,30 @@ mod tests {
 
         let conn = db.connection_mut();
         let tx = conn.transaction().expect("begin");
-        insert_stock_deduction_gap(&tx, "gap-1", &gap("outlet-1", "Oldest", "2026-08-21T10:00:00Z"))
-            .expect("insert oldest");
-        insert_stock_deduction_gap(&tx, "gap-3", &gap("outlet-1", "Newest", "2026-08-21T12:00:00Z"))
-            .expect("insert newest");
-        insert_stock_deduction_gap(&tx, "gap-2", &gap("outlet-1", "Middle", "2026-08-21T11:00:00Z"))
-            .expect("insert middle");
-        insert_stock_deduction_gap(&tx, "gap-9", &gap("outlet-2", "Other outlet", "2026-08-21T13:00:00Z"))
-            .expect("insert other outlet");
+        insert_stock_deduction_gap(
+            &tx,
+            "gap-1",
+            &gap("outlet-1", "Oldest", "2026-08-21T10:00:00Z"),
+        )
+        .expect("insert oldest");
+        insert_stock_deduction_gap(
+            &tx,
+            "gap-3",
+            &gap("outlet-1", "Newest", "2026-08-21T12:00:00Z"),
+        )
+        .expect("insert newest");
+        insert_stock_deduction_gap(
+            &tx,
+            "gap-2",
+            &gap("outlet-1", "Middle", "2026-08-21T11:00:00Z"),
+        )
+        .expect("insert middle");
+        insert_stock_deduction_gap(
+            &tx,
+            "gap-9",
+            &gap("outlet-2", "Other outlet", "2026-08-21T13:00:00Z"),
+        )
+        .expect("insert other outlet");
         tx.commit().expect("commit");
 
         let rows = db.list_stock_deduction_gaps("outlet-1").expect("read gaps");

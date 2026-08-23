@@ -111,7 +111,8 @@ pub fn list_stock_deduction_gaps_impl(state: &AppState) -> AppResult<Vec<StockDe
 /// first); this wrapper adds no filtering of its own.
 pub fn list_blocked_replays_impl(state: &AppState) -> AppResult<Vec<SyncReplayBlock>> {
     let db = lock_db(state)?;
-    let blocked = holler_edge_database::repo::list_blocked_replays(db.connection(), &state.outlet_id)?;
+    let blocked =
+        holler_edge_database::repo::list_blocked_replays(db.connection(), &state.outlet_id)?;
     Ok(blocked.into_iter().map(SyncReplayBlock::from).collect())
 }
 
@@ -240,9 +241,7 @@ pub fn list_current_stock(state: State<'_, AppState>) -> AppResult<Vec<CurrentSt
 }
 
 #[tauri::command]
-pub fn list_stock_deduction_gaps(
-    state: State<'_, AppState>,
-) -> AppResult<Vec<StockDeductionGap>> {
+pub fn list_stock_deduction_gaps(state: State<'_, AppState>) -> AppResult<Vec<StockDeductionGap>> {
     list_stock_deduction_gaps_impl(&state)
 }
 

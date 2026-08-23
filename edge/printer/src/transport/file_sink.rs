@@ -134,11 +134,7 @@ impl PrinterTransport for FileSinkTransport {
         // millisecond from colliding, which a split bill printing its parts
         // back to back will genuinely do.
         let now = chrono::Utc::now();
-        let stem = format!(
-            "{}-{}",
-            now.format("%Y%m%dT%H%M%S%.9f"),
-            self.safe_name()
-        );
+        let stem = format!("{}-{}", now.format("%Y%m%dT%H%M%S%.9f"), self.safe_name());
 
         let raw_path = self.dir.join(format!("{stem}.escpos"));
         let mut file = fs::File::create(&raw_path)

@@ -229,7 +229,9 @@ enum Request {
         order_id: String,
     },
     Introspect,
-    ResumeScenario { dir: String },
+    ResumeScenario {
+        dir: String,
+    },
     // ---------------------------------------------------- billing (T11b) --
     IssueInvoice {
         order_id: String,
@@ -455,7 +457,10 @@ fn build_template(root: &Path) -> PathBuf {
     repo::replace_menu_item_stations(
         conn,
         ITEM_MULTI_ID,
-        &[devseed_ids::STATION_1_ID.to_string(), STATION_2_ID.to_string()],
+        &[
+            devseed_ids::STATION_1_ID.to_string(),
+            STATION_2_ID.to_string(),
+        ],
         1,
     )
     .expect("route multi-station item to both stations");

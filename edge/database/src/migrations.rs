@@ -464,7 +464,10 @@ mod tests {
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        assert!(!columns.is_empty(), "invoice has no columns -- wrong table?");
+        assert!(
+            !columns.is_empty(),
+            "invoice has no columns -- wrong table?"
+        );
 
         let trigger_sql: String = conn
             .query_row(
@@ -579,7 +582,11 @@ mod tests {
                 .collect();
             files.sort();
 
-            assert!(!files.is_empty(), "no .sql files found in {}", dir.display());
+            assert!(
+                !files.is_empty(),
+                "no .sql files found in {}",
+                dir.display()
+            );
 
             for path in &files {
                 let sql = std::fs::read_to_string(path).expect("readable migration");
@@ -649,9 +656,7 @@ mod tests {
                     let above = (0..=i).rev().find_map(|j| table_at(j).map(|t| (i - j, t)));
 
                     let nearest = match (above, below) {
-                        (Some((da, ta)), Some((db, tb))) => {
-                            Some(if da <= db { ta } else { tb })
-                        }
+                        (Some((da, ta)), Some((db, tb))) => Some(if da <= db { ta } else { tb }),
                         (Some((_, t)), None) | (None, Some((_, t))) => Some(t),
                         (None, None) => None, // file-level remark, no table
                     };
@@ -718,9 +723,7 @@ mod tests {
         // the same ratchet discipline as the gen_random_uuid baseline.
         for (store, table, reason) in UNENFORCED_IMMUTABILITY_CLAIMS {
             assert!(
-                unenforced
-                    .iter()
-                    .any(|(s, t)| s == store && t == table),
+                unenforced.iter().any(|(s, t)| s == store && t == table),
                 "UNENFORCED_IMMUTABILITY_CLAIMS still lists {store}.{table} \
                  ({reason}), but it is now enforced or no longer claimed. \
                  Remove the entry so the list keeps meaning what it says."
@@ -762,8 +765,8 @@ mod tests {
         let mut found = 0usize;
         let mut files: Vec<String> = Vec::new();
 
-        for entry in std::fs::read_dir(&dir)
-            .unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()))
+        for entry in
+            std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()))
         {
             let entry = entry.expect("readable directory entry");
             if !entry

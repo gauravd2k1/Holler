@@ -252,7 +252,11 @@ fn main() {
             },
         )
         .expect("send to kitchen");
-    assert_eq!(created.len(), 1, "expected exactly one KOT from one item/one station");
+    assert_eq!(
+        created.len(),
+        1,
+        "expected exactly one KOT from one item/one station"
+    );
     let kot_id = created[0].id.clone();
 
     let db = Arc::new(Mutex::new(db));

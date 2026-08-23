@@ -60,9 +60,11 @@ impl OutletTimezone {
     /// see the module doc comment for exactly why that shape is the defect
     /// this type exists to make impossible to write by accident.
     pub(crate) fn parse(s: &str) -> Result<Self, DbError> {
-        s.parse::<Tz>()
-            .map(OutletTimezone)
-            .map_err(|_| DbError::InvalidInput(format!("outlet.timezone {s:?} is not a valid IANA timezone identifier")))
+        s.parse::<Tz>().map(OutletTimezone).map_err(|_| {
+            DbError::InvalidInput(format!(
+                "outlet.timezone {s:?} is not a valid IANA timezone identifier"
+            ))
+        })
     }
 }
 
@@ -121,7 +123,8 @@ mod tests {
             .expect("test fixture instant must parse")
             .with_timezone(&Utc);
         let tz = OutletTimezone::parse(timezone).expect("test fixture timezone must parse");
-        let ds = DayStartTime::parse(day_start_time).expect("test fixture day_start_time must parse");
+        let ds =
+            DayStartTime::parse(day_start_time).expect("test fixture day_start_time must parse");
         compute_business_date(occurred_at, &tz, &ds)
     }
 
@@ -131,20 +134,29 @@ mod tests {
         // midnight local, but '00:00' day-start (correct for any outlet that
         // closes before midnight, per the 0013 header) still books it to the
         // 22nd, the plain local calendar date.
-        assert_eq!(compute("2026-08-21T20:00:00Z", "Asia/Kolkata", "00:00"), "2026-08-22");
+        assert_eq!(
+            compute("2026-08-21T20:00:00Z", "Asia/Kolkata", "00:00"),
+            "2026-08-22"
+        );
     }
 
     #[test]
     fn a_late_night_sale_books_to_the_previous_business_day_with_a_day_start() {
         // The ADR-018 §9.2 worked example: 01:30 local with day_start_time
         // '04:00' books to the PREVIOUS date. Same instant as above.
-        assert_eq!(compute("2026-08-21T20:00:00Z", "Asia/Kolkata", "04:00"), "2026-08-21");
+        assert_eq!(
+            compute("2026-08-21T20:00:00Z", "Asia/Kolkata", "04:00"),
+            "2026-08-21"
+        );
     }
 
     #[test]
     fn a_sale_after_day_start_books_to_the_same_local_date() {
         // 2026-08-22T05:00:00Z = 10:30 IST, well after a 04:00 day-start.
-        assert_eq!(compute("2026-08-22T05:00:00Z", "Asia/Kolkata", "04:00"), "2026-08-22");
+        assert_eq!(
+            compute("2026-08-22T05:00:00Z", "Asia/Kolkata", "04:00"),
+            "2026-08-22"
+        );
     }
 
     #[test]
@@ -158,7 +170,10 @@ mod tests {
             compute("2026-08-21T02:00:00Z", "America/New_York", "00:00"),
             "2026-08-20"
         );
-        assert_eq!(compute("2026-08-21T02:00:00Z", "Asia/Kolkata", "00:00"), "2026-08-21");
+        assert_eq!(
+            compute("2026-08-21T02:00:00Z", "Asia/Kolkata", "00:00"),
+            "2026-08-21"
+        );
     }
 
     /// FALSIFICATION target for the structural fix: an unresolvable

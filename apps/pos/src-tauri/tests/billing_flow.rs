@@ -11,7 +11,9 @@ use holler_pos_lib::commands::billing::{
     issue_split_invoices_impl, list_invoices_for_order_impl, list_invoices_for_split_group_impl,
     open_cash_shift_impl, record_payment_impl, LineDiscountInput, SplitLineInput, SplitPartInput,
 };
-use holler_pos_lib::commands::kitchen::{list_failed_print_jobs_impl, retry_failed_print_jobs_impl};
+use holler_pos_lib::commands::kitchen::{
+    list_failed_print_jobs_impl, retry_failed_print_jobs_impl,
+};
 use holler_pos_lib::commands::orders::{create_order_impl, NewOrderItemRequest};
 use holler_pos_lib::dto::FailedPrintJobTarget;
 use holler_pos_lib::state::AppState;
@@ -275,8 +277,14 @@ fn a_line_discount_reduces_the_taxable_value_and_gst_is_computed_on_the_net() {
 
     let line = &invoice.lines[0];
     assert_eq!(line.gross_paise, 40_000, "gross is the undiscounted amount");
-    assert_eq!(line.discount_paise, 4_000, "discount reduces the taxable base, not the gross");
-    assert_eq!(line.taxable_value_paise, 36_000, "GST is computed on the post-discount net");
+    assert_eq!(
+        line.discount_paise, 4_000,
+        "discount reduces the taxable base, not the gross"
+    );
+    assert_eq!(
+        line.taxable_value_paise, 36_000,
+        "GST is computed on the post-discount net"
+    );
     assert_eq!(line.cgst_paise, 900);
     assert_eq!(line.sgst_paise, 900);
     assert_eq!(line.total_paise, 36_000 + 900 + 900);
@@ -287,10 +295,15 @@ fn a_line_discount_reduces_the_taxable_value_and_gst_is_computed_on_the_net() {
     assert_eq!(invoice.sgst_paise, 900);
     // Conservation: components sum to the tax total, and
     // grand_total = Σ(components) + round_off, |round_off| <= 50 (ADR-016 §3).
-    let pre_round =
-        invoice.taxable_value_paise + invoice.cgst_paise + invoice.sgst_paise + invoice.igst_paise
-            + invoice.cess_paise;
-    assert_eq!(invoice.grand_total_paise, pre_round + invoice.round_off_paise);
+    let pre_round = invoice.taxable_value_paise
+        + invoice.cgst_paise
+        + invoice.sgst_paise
+        + invoice.igst_paise
+        + invoice.cess_paise;
+    assert_eq!(
+        invoice.grand_total_paise,
+        pre_round + invoice.round_off_paise
+    );
     assert!(invoice.round_off_paise.abs() <= 50);
     assert_eq!(invoice.grand_total_paise, 37_800);
     assert_eq!(invoice.round_off_paise, 0);
@@ -334,7 +347,16 @@ fn a_discount_requiring_a_reason_is_rejected_without_one() {
     {
         let db = state.db.lock().expect("lock");
         seed_discount_definition(
-            &db, "disc-mgr", "MGR_COMP", "LINE", "AMOUNT", None, Some(5_000), None, None, true,
+            &db,
+            "disc-mgr",
+            "MGR_COMP",
+            "LINE",
+            "AMOUNT",
+            None,
+            Some(5_000),
+            None,
+            None,
+            true,
         );
     }
     let order = create_order_impl(
@@ -440,7 +462,16 @@ fn a_bill_scope_discount_is_rejected_as_unimplemented() {
     {
         let db = state.db.lock().expect("lock");
         seed_discount_definition(
-            &db, "disc-bill", "BILL_FLAT", "BILL", "AMOUNT", None, Some(1_000), None, None, false,
+            &db,
+            "disc-bill",
+            "BILL_FLAT",
+            "BILL",
+            "AMOUNT",
+            None,
+            Some(1_000),
+            None,
+            None,
+            false,
         );
     }
     let order = create_order_impl(
@@ -520,7 +551,15 @@ fn the_edges_own_discount_guard_fires_through_issue_invoice_for_an_excessive_dis
     {
         let db = state.db.lock().expect("lock");
         seed_discount_definition(
-            &db, "disc-huge", "TOO_BIG", "LINE", "AMOUNT", None, Some(1_000_000), None, None,
+            &db,
+            "disc-huge",
+            "TOO_BIG",
+            "LINE",
+            "AMOUNT",
+            None,
+            Some(1_000_000),
+            None,
+            None,
             false,
         );
     }
@@ -578,7 +617,8 @@ fn issuing_a_bill_computes_gst_and_the_grand_total_matches_the_line_total() {
     )
     .expect("create order");
 
-    let invoice = issue_invoice_impl(&state, &order.holler_order_id, USER_ID, &[]).expect("issue invoice");
+    let invoice =
+        issue_invoice_impl(&state, &order.holler_order_id, USER_ID, &[]).expect("issue invoice");
 
     // 2 x Rs.200 = Rs.400 taxable, +2.5% CGST +2.5% SGST = Rs.20 tax -> Rs.420.
     assert_eq!(invoice.taxable_value_paise, 40_000);
@@ -606,7 +646,8 @@ fn a_split_tender_across_two_methods_is_recorded_as_two_append_only_payments() {
         }],
     )
     .expect("create order");
-    let invoice = issue_invoice_impl(&state, &order.holler_order_id, USER_ID, &[]).expect("issue invoice");
+    let invoice =
+        issue_invoice_impl(&state, &order.holler_order_id, USER_ID, &[]).expect("issue invoice");
     assert_eq!(invoice.grand_total_paise, 21_000); // Rs.200 + 5% GST
 
     // Split: Rs.100 cash + Rs.110 UPI = Rs.210, matching the §35 shape.
@@ -641,7 +682,10 @@ fn a_split_tender_across_two_methods_is_recorded_as_two_append_only_payments() {
     )
     .expect("upi tender");
 
-    assert_eq!(cash.amount_paise + upi.amount_paise, invoice.grand_total_paise);
+    assert_eq!(
+        cash.amount_paise + upi.amount_paise,
+        invoice.grand_total_paise
+    );
     assert_eq!(cash.status, "CAPTURED");
     assert_eq!(upi.status, "CAPTURED");
     // UPI is never allowed to carry cash-drawer fields (PaymentSchema's own
@@ -763,7 +807,8 @@ fn a_failed_invoice_print_job_reaches_the_failed_jobs_view_with_its_invoice_numb
         }],
     )
     .expect("create order");
-    let invoice = issue_invoice_impl(&state, &order.holler_order_id, USER_ID, &[]).expect("issue invoice");
+    let invoice =
+        issue_invoice_impl(&state, &order.holler_order_id, USER_ID, &[]).expect("issue invoice");
 
     {
         let db = state.db.lock().expect("lock");
@@ -800,7 +845,10 @@ fn a_failed_invoice_print_job_reaches_the_failed_jobs_view_with_its_invoice_numb
     let failed = retry_failed_print_jobs_impl(&state).expect("retry sweep");
     assert_eq!(failed.len(), 1);
     assert_eq!(failed[0].target, FailedPrintJobTarget::Invoice);
-    assert_eq!(failed[0].invoice_number.as_deref(), Some(invoice.invoice_number.as_str()));
+    assert_eq!(
+        failed[0].invoice_number.as_deref(),
+        Some(invoice.invoice_number.as_str())
+    );
     assert_eq!(failed[0].invoice_id.as_deref(), Some(invoice.id.as_str()));
     assert!(failed[0].kot_id.is_none());
     assert!(failed[0].kot_station.is_none());
@@ -964,7 +1012,10 @@ fn a_correct_two_way_split_issues_two_independently_numbered_independently_payab
         .sum();
     assert_eq!(total_quantity, 2);
     let total_grand: i64 = invoices.iter().map(|inv| inv.grand_total_paise).sum();
-    assert_eq!(total_grand, 42_000, "matches the unsplit-order grand total exactly");
+    assert_eq!(
+        total_grand, 42_000,
+        "matches the unsplit-order grand total exactly"
+    );
 
     // Listable by split group, and both parts are visible as unpaid.
     let group_id = invoices[0].split_group_id.clone().unwrap();
@@ -1218,7 +1269,10 @@ fn a_split_part_with_a_discounted_line_prices_correctly() {
         let line = &invoice.lines[0];
         assert_eq!(line.quantity, 1);
         assert_eq!(line.gross_paise, 20_000);
-        assert_eq!(line.discount_paise, 2_000, "the 10% discount applies per part too");
+        assert_eq!(
+            line.discount_paise, 2_000,
+            "the 10% discount applies per part too"
+        );
         assert_eq!(line.taxable_value_paise, 18_000);
         assert_eq!(line.cgst_paise, 450);
         assert_eq!(line.sgst_paise, 450);

@@ -47,7 +47,10 @@ fn notify_kot(hub: Option<&Hub>, outlet_id: &str, kot: &holler_edge_database::mo
     }
     match WireKot::from_db(kot) {
         Ok(wire) => hub.notify_kot_upserted(outlet_id, &wire, &sent_at),
-        Err(e) => eprintln!("holler-pos: could not convert kot {} for LAN notify: {e}", kot.id),
+        Err(e) => eprintln!(
+            "holler-pos: could not convert kot {} for LAN notify: {e}",
+            kot.id
+        ),
     }
 }
 
@@ -240,9 +243,13 @@ pub fn send_order_to_kitchen_impl(state: &AppState, order_id: &str) -> AppResult
         // A station with no active printer routed is a config gap, not a
         // reason to hide the ticket from the kitchen screen — logged, not
         // propagated as a command failure.
-        if let Err(e) =
-            holler_edge_printer::adapter::queue_kot_for_print(db.connection(), &state.outlet_id, &kot.id, &now, new_id)
-        {
+        if let Err(e) = holler_edge_printer::adapter::queue_kot_for_print(
+            db.connection(),
+            &state.outlet_id,
+            &kot.id,
+            &now,
+            new_id,
+        ) {
             eprintln!("failed to queue KOT {} for print: {e}", kot.id);
         }
     }
@@ -295,9 +302,13 @@ pub fn cancel_kitchen_items_impl(
 
     let now = now_iso();
     for kot in &kots {
-        if let Err(e) =
-            holler_edge_printer::adapter::queue_kot_for_print(db.connection(), &state.outlet_id, &kot.id, &now, new_id)
-        {
+        if let Err(e) = holler_edge_printer::adapter::queue_kot_for_print(
+            db.connection(),
+            &state.outlet_id,
+            &kot.id,
+            &now,
+            new_id,
+        ) {
             eprintln!("failed to queue cancellation KOT {} for print: {e}", kot.id);
         }
     }

@@ -380,7 +380,11 @@ impl CanonicalOrder {
                     quantity: i.quantity,
                     unit_price_paise: i.unit_price_paise,
                     line_total_paise: i.line_total_paise,
-                    modifiers: modifiers.iter().cloned().map(OrderItemModifier::from).collect(),
+                    modifiers: modifiers
+                        .iter()
+                        .cloned()
+                        .map(OrderItemModifier::from)
+                        .collect(),
                     notes: i.notes.clone(),
                 })
                 .collect(),
@@ -766,7 +770,10 @@ impl Invoice {
     /// row here means the edge wrote something a GST invoice screen cannot
     /// show, and that must not pass silently (mirrors `Kot::try_from`'s
     /// discipline on `items_json`).
-    pub fn from_db(inv: db::Invoice, lines: Vec<db::InvoiceLine>) -> Result<Self, serde_json::Error> {
+    pub fn from_db(
+        inv: db::Invoice,
+        lines: Vec<db::InvoiceLine>,
+    ) -> Result<Self, serde_json::Error> {
         let tax_snapshot: serde_json::Value = serde_json::from_str(&inv.tax_snapshot_json)?;
         let fiscal_profile: serde_json::Value = serde_json::from_str(&inv.fiscal_profile_json)?;
         Ok(Self {
@@ -959,9 +966,7 @@ impl From<holler_edge_printer::model::FailedPrintJobView> for FailedPrintJob {
             .expect("print_job row violates its own kot_id/invoice_id CHECK");
         let target = match target {
             holler_edge_printer::model::PrintJobTarget::Kot(_) => FailedPrintJobTarget::Kot,
-            holler_edge_printer::model::PrintJobTarget::Invoice(_) => {
-                FailedPrintJobTarget::Invoice
-            }
+            holler_edge_printer::model::PrintJobTarget::Invoice(_) => FailedPrintJobTarget::Invoice,
         };
         Self {
             id: v.job.id,
@@ -1231,7 +1236,11 @@ impl From<db::StockCountVarianceReport> for StockCountVarianceReport {
         Self {
             stock_count_id: r.stock_count_id,
             business_date: r.business_date,
-            lines: r.lines.into_iter().map(StockCountVarianceLine::from).collect(),
+            lines: r
+                .lines
+                .into_iter()
+                .map(StockCountVarianceLine::from)
+                .collect(),
             sales_unaccounted: r.sales_unaccounted,
             schema_version: 1,
         }

@@ -29,10 +29,7 @@ use crate::deduction::business_date::compute_business_date;
 /// **Stock never blocks this write.** There is no balance check — negative
 /// stock after a wastage entry is a variance signal, not an error (ADR-018
 /// Rule 1), and this function never queries current stock at all.
-pub(crate) fn record_wastage(
-    tx: &Transaction,
-    req: NewWastageEntry,
-) -> DbResult<StockLedgerEntry> {
+pub(crate) fn record_wastage(tx: &Transaction, req: NewWastageEntry) -> DbResult<StockLedgerEntry> {
     if req.quantity_micro <= 0 {
         return Err(DbError::WastageQuantityNotPositive {
             quantity_micro: req.quantity_micro,
@@ -41,15 +38,13 @@ pub(crate) fn record_wastage(
     if req.reason_code.trim().is_empty() {
         return Err(DbError::WastageReasonRequired);
     }
-    let Some((name, dimension)) =
-        repo::get_inventory_item_snapshot(tx, &req.inventory_item_id)?
+    let Some((name, dimension)) = repo::get_inventory_item_snapshot(tx, &req.inventory_item_id)?
     else {
         return Err(DbError::NotFound("inventory_item"));
     };
 
     let occurred_at = crate::tax::parse_utc(&req.occurred_at)?;
-    let (timezone, day_start_time) =
-        repo::get_outlet_business_date_config(tx, &req.outlet_id)?;
+    let (timezone, day_start_time) = repo::get_outlet_business_date_config(tx, &req.outlet_id)?;
     let business_date = compute_business_date(occurred_at, &timezone, &day_start_time);
 
     let entry = NewStockLedgerEntry {
@@ -82,8 +77,7 @@ pub(crate) fn record_wastage(
         source_stock_count_id: None,
     };
 
-    let entry_seq =
-        repo::next_stock_ledger_sequence_value(tx, &req.outlet_id, &req.occurred_at)?;
+    let entry_seq = repo::next_stock_ledger_sequence_value(tx, &req.outlet_id, &req.occurred_at)?;
     let id = uuid::Uuid::now_v7().to_string();
     crate::deduction::ledger::insert_stock_ledger_entry(tx, &id, entry_seq, &entry)?;
 
@@ -155,10 +149,7 @@ mod tests {
 
         assert_eq!(stored.entry_type, "WASTAGE");
         assert_eq!(stored.origin, "WASTAGE");
-        assert_eq!(
-            stored.quantity_applied_micro,
-            -crate::inventory::grams(300)
-        );
+        assert_eq!(stored.quantity_applied_micro, -crate::inventory::grams(300));
         assert_eq!(stored.reason_code.as_deref(), Some("SPOILAGE"));
         assert_eq!(stored.inventory_item_name, "Paneer");
         assert_eq!(stored.dimension, "MASS");

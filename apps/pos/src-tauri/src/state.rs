@@ -184,7 +184,10 @@ impl AppState {
 /// create orders fully offline) must hold even if this LAN feature cannot
 /// bind its port — logs and returns `(None, None)` instead of propagating an
 /// error.
-fn start_lan_server(addr: SocketAddr, db: Arc<Mutex<Db>>) -> (Option<Arc<Hub>>, Option<LanServerHandle>) {
+fn start_lan_server(
+    addr: SocketAddr,
+    db: Arc<Mutex<Db>>,
+) -> (Option<Arc<Hub>>, Option<LanServerHandle>) {
     // Local-first verification, with NO cloud fallback (ADR-017 amendment).
     // The standalone kds-lan-server binary requires HOLLER_CLOUD_BASE_URL for a
     // fallback path; the POS deliberately does not, because requiring a cloud
@@ -208,7 +211,10 @@ fn start_lan_server(addr: SocketAddr, db: Arc<Mutex<Db>>) -> (Option<Arc<Hub>>, 
                     handle.local_addr()
                 );
             } else {
-                eprintln!("holler-pos: KDS LAN server listening on {}", handle.local_addr());
+                eprintln!(
+                    "holler-pos: KDS LAN server listening on {}",
+                    handle.local_addr()
+                );
             }
             let hub = handle.hub.clone();
             (Some(hub), Some(handle))
