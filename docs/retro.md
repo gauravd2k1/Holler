@@ -600,3 +600,192 @@ visible so it can be fixed, and stops the next reader from deleting the only
 thing holding the behaviour together. If it is not worth a line of explanation,
 fix the defect instead — that is usually the cheaper of the two anyway, as it
 was here (`COALESCE(?1, last_pushed_outbox_id)`, and the workaround deleted).
+
+## 2026-08-23 — A red formatter withdrew every Rust test verdict for four pushes
+
+**Severity:** high (no defect shipped; four pushes' worth of test results never existed).
+
+M4 acceptance criterion 1 was recorded UNPROVEN. The natural reading is that
+the test ran and failed. It had never run.
+
+The `edge` CI job was `fmt → clippy → test`, three steps of one job. Steps in a
+GitHub Actions job are fail-fast, so `cargo fmt --check` failing did not report
+a formatting problem — it **withdrew the verdict from every Rust test behind
+it**. Three of the four edge crates had simply never been formatted, so the job
+had been stopping at step one across `6f72ba6..8a2819e`. The run showed one red
+job, which is what it would have shown if the tests had failed, so nothing about
+the display distinguished "style broke" from "the code is wrong" from "nothing
+ran".
+
+Clearing `fmt` was not enough: `edge/printer` also failed `clippy -D warnings`
+(`manual_range_contains`, present since the file landed in `4a43c2c`). **Two
+unrelated breakages, one hiding behind the other**, both invisible, and fixing
+only the first would have moved the red one step right with the tests still
+unrun.
+
+### The lesson, stated for the next reader
+
+**A fail-fast job makes every later step unobservable when an earlier one
+breaks.** Independent checks queued in sequence are not "a job with several
+checks" — they are a chain in which only the first failure is ever reported.
+Style checks are the common offender because they are cheap, so they get put
+first, so they are the ones standing in front of everything expensive.
+
+Style (fmt, clippy, vet, lint, typecheck) now lives in `*-style` jobs beside
+the test jobs, never in front of them. Everything still gates the merge:
+making style non-blocking would have "fixed" the masking by letting the style
+rot, and the goal was never that formatting matters less — it is that a broken
+formatter stops deciding whether anyone finds out the tests passed.
+
+**When you add a check, ask what it makes invisible if it fails.** That
+question is now written at the top of `ci.yml`.
+
+### Two smaller rules that fell out
+
+**Pin the formatter.** `rust-toolchain.toml` pins the channel, so rustfmt's
+output cannot change under CI on a schedule nobody controls and turn a
+untouched repo red at the first step of a job whose real work is tests.
+
+**Install the CLI that reads your own CI.** The deeper cause is that nobody
+could see the Actions tab from where the work happened, so every push was
+fire-and-forget. Splitting jobs makes a failure legible; it does not make
+anyone look at it. `gh run list` after a push, reported in the same breath as
+the commit, is a five-minute install against a failure mode that cost a day.
+
+## 2026-08-23 — The same mirror image, one layer in: a healed hole that could never heal
+
+**Severity:** high (caught before the milestone closed; `resolved_at` was
+unreachable in shipped code).
+
+Fourth instance this week of "check the mirror image", and the first where the
+defect was inside the *fix* for an earlier instance of itself.
+
+0.5.8 corrected the blocking detector (see *The gap detector was the outage*,
+above): a hole is recorded in `ledger_replay_gap` and the entry is accepted.
+`resolved_at` was added in the same change, because a hole that later fills is
+not a loss. It could never fire.
+
+`checkContiguity` refused any `entry_seq` at or below the outlet's high-water
+mark as a reused mark. But **"below the cursor" and "already taken" are
+different questions**, and they differ in exactly one case: the late arrival
+that fills a recorded hole. Record 1, then 3 — cursor 3, hole open at 2. Then 2
+arrives, and is refused, because 2 ≤ 3. The blocking detector, one layer
+further in, inside the code written to remove blocking detectors.
+
+The comment above the function asserted the refusal was "unreachable through
+the edge's own path". It reasoned correctly that the edge never *reuses* a
+mark, and then treated that as proof that nothing below the cursor could be
+legitimate. The reasoning was sound and the conclusion was wrong, which is the
+worst combination a comment can have: it reads as having been thought about.
+
+### The distinction was already written down, in dead code
+
+`Repository.GetLedgerEntryBySeq` was declared, implemented, and called by
+nothing. Its doc comment: *"so a replayed envelope for an already-ingested
+entry_seq can be told apart from a genuine conflicting write."* That is exactly
+the distinction the caller was missing. Someone saw it, named it, built the
+tool for it, and never wired it up.
+
+**An unused method whose doc comment describes a distinction the callers do not
+make is a bug report.** Not dead weight to tidy away — evidence that the shape
+was understood and the wiring was forgotten. Deleting it silently would have
+removed the only written trace of the missing idea.
+
+### And: one stream tested, one stream trusted
+
+`checkContiguity` is shared by both ranged streams, so the defect was never
+ledger-specific. It survived because only the ledger side had tests at all —
+and 0.5.8 minted the two counters independently *precisely so the streams could
+diverge*. **A shared function tested through one caller has a reputation it has
+not earned.** Both streams are covered now.
+
+## 2026-08-23 — A test that was green in CI and red for every human
+
+**Severity:** medium (no product defect; a whole milestone of misleading local
+failures).
+
+`TestBuildRouter_SyncConfigEndToEnd` passed on a fresh PostgreSQL and failed on
+every subsequent run against the same one, with a duplicate key on
+`app_user_pkey`. CI never saw it, because CI's postgres service container is
+new on every run. Locally it failed on the second `go test` and read as a
+regression in whatever had just been changed — it cost this session real time
+before being traced.
+
+The cause is a *correct* change breaking a fixture in silence. The test used
+fixed ids plus a `t.Cleanup` deleting the fixture in FK-safe order, first
+statement `DELETE FROM audit_event`. Contracts 0.5.0 then made `audit_event`
+append-only — rightly — so that statement became one the database refuses
+forever. Every `Exec` in the block discarded its error, so the chain stopped at
+statement one and said nothing; `audit_event` went on pinning `app_user`
+through `actor_user_id`, and the fixed `userID` collided on the next run.
+
+### The lesson, stated for the next reader
+
+**A test whose correctness depends on a clean database passes forever in CI and
+fails for every human.** The freshness CI provides for free is a precondition
+nobody wrote down, so the test's real requirements were invisible until someone
+ran it twice. Anything that touches a persistent store must either mint unique
+ids or make its own isolated database — never assume the state it starts from.
+The criterion 6 test added the same day creates and drops a database per test
+for exactly this reason.
+
+**A cleanup that swallows its errors is worse than no cleanup**: it reads as
+tidiness that is happening. The repair here was to mint unique ids and delete
+the cleanup rather than fix it — unique ids remove the reason it existed, and
+no cleanup can ever delete an append-only table.
+
+**And the shape underneath, which this repo keeps paying for:** a guarantee was
+added on one side of a boundary while a fixture on the other side still assumed
+the old rule. The guarantee was right. What made it expensive was the discarded
+error that would have said so on day one.
+
+## 2026-08-24 — The falsification pass failed on the harness, not the assertion
+
+**Severity:** medium (no product defect; the criterion-6 test could not be
+falsified on demand, which is the only thing that makes it evidence).
+
+Criterion 6's test was green. To trust it, the round trip was broken
+deliberately — `entry.Note` replaced with a typed nil in the cloud's INSERT, so
+the row stored would differ from the row sent by exactly one field. The expected
+result was the storage-fidelity byte-compare failing and naming `note`.
+
+What happened instead was `os error 32` — the process cannot access the file
+because it is being used by another process — while spawning `cmd/api`.
+
+Both tests in the target call `start_cloud`, which ran `go build -o
+target/holler-api-e2e.exe` and then spawned it. Cargo runs the tests on parallel
+threads of one process, so two builds wrote the same output path while a third
+thread was executing it. **The race was invisible for as long as the Go sources
+did not change**: `go build` is a no-op against a warm cache, the write never
+happens, and the collision cannot occur. The one action that makes it fire is
+editing Go — which is to say, the falsification pass itself. A test harness that
+breaks precisely when you try to falsify it is indistinguishable from a test
+that cannot be falsified.
+
+`OnceLock::get_or_init` now serialises the build: it happens once per test
+binary, every other thread blocks until it finishes, and afterwards each test
+spawns an executable nobody is still writing. Concurrent reads of one exe were
+always fine; concurrent writes were never allowed.
+
+With that fixed the falsification landed as designed. The storage comparison
+failed, printed both objects, and named `note` as the difference — while the
+201-echo comparison **passed**, because the handler echoes the entry it was
+handed and never consults the database. That is the whole argument for keeping
+two checks: one field, dropped server-side after the echo, is invisible to wire
+fidelity and caught by storage fidelity. Had the test asserted only the echo, a
+GST-relevant column could go missing with a green tick.
+
+### The lessons, stated for the next reader
+
+**Run the falsification pass. Then check what actually failed.** A red test
+during falsification is not the confirmation you are looking for — the failure
+has to be the assertion under test, at the field you broke. Here the first red
+was the harness, and stopping at "it went red" would have recorded a proof that
+had not happened.
+
+**A `--all-targets` clippy does not lint a gated target.** `required-features`
+hides the target from the style job as thoroughly as from `cargo test`, so the
+criterion-6 test would have compiled for the first time inside the acceptance
+job, where a lint error reads as a failed acceptance criterion. The style job
+now passes `--features cloud-e2e`; `scripts/check-gated-tests.mjs` was already
+guarding the same blindness one job over, on the test side.
