@@ -434,11 +434,29 @@ describe("Milestone 4 inventory contracts", () => {
       ModifierIngredientDeltaSchema.parse(fixture("modifier_ingredient_delta.json")),
     ).not.toThrow();
     expect(() => StockLedgerEntrySchema.parse(fixture("stock_ledger_entry.json"))).not.toThrow();
+    expect(() =>
+      StockLedgerEntrySchema.parse(fixture("stock_ledger_entry_count_adjustment.json")),
+    ).not.toThrow();
     expect(() => StockCountSchema.parse(fixture("stock_count.json"))).not.toThrow();
     expect(() => StockCountLineSchema.parse(fixture("stock_count_line.json"))).not.toThrow();
     expect(() =>
       StockDeductionGapSchema.parse(fixture("stock_deduction_gap.json")),
     ).not.toThrow();
+  });
+
+  // A COUNT_ADJUSTMENT's link to the count that produced it, PARSED rather
+  // than merely accepted: Zod strips unknown keys silently, so a field missing
+  // from the schema makes `.parse` pass and the value vanish -- the same shape
+  // as the cloud's lenient json.Unmarshal, which dropped this field for two
+  // milestones. The recipe fixture cannot catch it: null round-trips through
+  // an absent field perfectly (contracts 0.5.9).
+  it("keeps a count-sourced entry's provenance through a parse", () => {
+    const parsed = StockLedgerEntrySchema.parse(
+      fixture("stock_ledger_entry_count_adjustment.json"),
+    );
+    expect(parsed.source_stock_count_id).toBe(
+      fixture("stock_ledger_entry_count_adjustment.json").source_stock_count_id,
+    );
   });
 
   it("assigns §50.1 authority the same way every milestone before it did", () => {

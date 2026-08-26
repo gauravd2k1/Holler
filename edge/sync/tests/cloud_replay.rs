@@ -23,6 +23,14 @@
 //!   2. The row, read straight out of PostgreSQL. That proves STORAGE
 //!      fidelity: what the INSERT actually persisted.
 //!
+//! THE FIXTURE MUST POPULATE THE FIELDS, TOO. Both comparisons are
+//! whole-object, and a whole-object comparison of a row whose optional fields
+//! are all null cannot tell a field that was carried from a field neither side
+//! has. That is how `source_stock_count_id` was dropped by the cloud for two
+//! milestones while this test was green (contracts 0.5.9). So the fixture is
+//! TWO entries -- a wastage row and a count-sourced COUNT_ADJUSTMENT -- and a
+//! provenance group added later needs its own entry here.
+//!
 //! Between them nothing in the round trip is unchecked. Both comparisons are
 //! whole-object and byte-exact against a canonical serialisation -- never a
 //! field-by-field spot check, because "identically" then quietly degrades to
@@ -533,6 +541,7 @@ fn edge_row_as_wire(e: &model::StockLedgerEntry) -> Value {
         "source_order_id": e.source_order_id,
         "source_order_item_id": e.source_order_item_id,
         "reason_code": e.reason_code,
+        "source_stock_count_id": e.source_stock_count_id,
         "note": e.note,
         "occurred_at": e.occurred_at,
         "business_date": e.business_date,
@@ -580,11 +589,6 @@ fn postgres_row_as_wire(pg: &mut PgClient, entry_id: &str) -> Value {
         None => Value::Null,
     };
 
-    // Pinned here rather than folded into the object below: this column is
-    // written by the edge and, today, is not on the cloud's map at all --
-    // see the assertion in the test that names it.
-    let _source_stock_count_id = str_or_null(23);
-
     json!({
         "id": str_or_null(0),
         "outlet_id": str_or_null(1),
@@ -601,6 +605,10 @@ fn postgres_row_as_wire(pg: &mut PgClient, entry_id: &str) -> Value {
         "source_order_id": str_or_null(12),
         "source_order_item_id": str_or_null(13),
         "reason_code": str_or_null(14),
+        // Contracts 0.5.9. Until then this column was read out here and
+        // deliberately NOT compared, because the cloud dropped it on decode
+        // and stored NULL for every row.
+        "source_stock_count_id": str_or_null(23),
         "note": str_or_null(15),
         "occurred_at": str_or_null(16),
         "business_date": str_or_null(17),
@@ -663,6 +671,61 @@ fn a_ledger_entry_created_at_the_edge_replays_to_the_real_cloud_and_reads_back_i
          outlet's first entry, permanently and silently"
     );
 
+    // --- a SECOND entry, carrying a provenance group the first cannot ------
+    //
+    // A wastage row leaves every count-provenance field null, and a null
+    // round-trips perfectly through a field the cloud does not declare. That
+    // is exactly how `source_stock_count_id` crossed this seam unnoticed for
+    // two milestones WHILE THIS TEST WAS GREEN: the fixture never populated
+    // it, so the comparison could not tell "carried" from "absent".
+    //
+    // So the fixture earns a COUNT_ADJUSTMENT through the shipping count API
+    // too. Any provenance group added later needs its own entry here for the
+    // same reason -- a fidelity test proves fidelity only for the fields its
+    // fixture populates, and it stays green while it proves nothing.
+    let count_id = new_id();
+    db.open_stock_count(model::NewStockCount {
+        id: count_id.clone(),
+        outlet_id: seed.outlet_id.clone(),
+        started_at: "2026-08-23T21:00:00Z".to_string(),
+        counted_by_user_id: None,
+        note: None,
+    })
+    .expect("open_stock_count");
+
+    // Counting zero against a shelf the ledger believes holds -2.5 g is a
+    // non-zero variance, which is what makes completion post an adjustment at
+    // all. `expected_quantity_micro` is snapshotted by the edge, never
+    // supplied from here.
+    db.add_or_update_stock_count_line(
+        &count_id,
+        &seed.outlet_id,
+        model::NewStockCountLine {
+            inventory_item_id: item_id.clone(),
+            counted_quantity_micro: 0,
+            note: None,
+        },
+    )
+    .expect("add_or_update_stock_count_line");
+
+    db.complete_stock_count(&count_id, &seed.outlet_id, "2026-08-23T21:05:00Z")
+        .expect("complete_stock_count");
+
+    // Read back through the SAME call the pump sends from, so what is compared
+    // is what was sent rather than a second opinion about it.
+    let edge_entries = repo::list_ledger_entries_after(db.connection(), &seed.outlet_id, 0, 100)
+        .expect("listing the edge's ledger entries");
+    assert_eq!(
+        edge_entries.len(),
+        2,
+        "the fixture is one wastage entry and one count-sourced adjustment"
+    );
+    assert_eq!(
+        edge_entries[1].source_stock_count_id.as_deref(),
+        Some(count_id.as_str()),
+        "the edge must stamp the adjustment with the count that produced it (contracts 0.5.5): if this is null, the comparison below is back to proving nothing about this field"
+    );
+
     // --- replay over the real seam ---------------------------------------
     let worker = SyncWorker::new(WorkerConfig {
         tenant_id: seed.tenant_id.clone(),
@@ -684,22 +747,33 @@ fn a_ledger_entry_created_at_the_edge_replays_to_the_real_cloud_and_reads_back_i
     );
     assert_eq!(
         report.ledger_acked,
-        vec![created.entry_seq],
-        "the cloud must acknowledge exactly the mark the edge minted"
+        vec![1, 2],
+        "the cloud must acknowledge exactly the marks the edge minted"
     );
 
-    // --- read back, twice, whole-object ----------------------------------
-    let sent = edge_row_as_wire(&created);
+    // --- read back, twice per entry, whole-object -------------------------
+    for (i, entry) in edge_entries.iter().enumerate() {
+        let sent = edge_row_as_wire(entry);
+        let seq = entry.entry_seq;
 
-    let (acked_seq, echo) = report
-        .acked_echo
-        .first()
-        .expect("an accepted entry must carry the cloud's echo of it");
-    assert_eq!(*acked_seq, created.entry_seq);
-    assert_identical("201 echo (wire fidelity, through Go's types)", &sent, echo);
+        let (acked_seq, echo) = report
+            .acked_echo
+            .get(i)
+            .expect("an accepted entry must carry the cloud's echo of it");
+        assert_eq!(*acked_seq, seq);
+        assert_identical(
+            &format!("201 echo, entry_seq {seq} (wire fidelity, through Go's types)"),
+            &sent,
+            echo,
+        );
 
-    let stored = postgres_row_as_wire(&mut pg, &created.id);
-    assert_identical("postgres row (storage fidelity)", &sent, &stored);
+        let stored = postgres_row_as_wire(&mut pg, &entry.id);
+        assert_identical(
+            &format!("postgres row, entry_seq {seq} (storage fidelity)"),
+            &sent,
+            &stored,
+        );
+    }
 
     // --- the deferred columns stay inert (ADR-018 §8) ---------------------
     let unit_cost: Option<String> = pg
@@ -726,95 +800,5 @@ fn a_ledger_entry_created_at_the_edge_replays_to_the_real_cloud_and_reads_back_i
         yield_ppm, 1_000_000,
         "yield_factor_ppm must be the identity in M4 (ADR-018 §8): anything else \
          silently rescales every deduction the moment M5 starts reading it"
-    );
-}
-
-/// KNOWN DIVERGENCE, pinned so it cannot be rediscovered as a mystery.
-///
-/// `source_stock_count_id` (contracts 0.5.5) exists as a column in BOTH
-/// stores, is on the edge model, and IS SENT on the wire by
-/// `ranged.rs::ledger_entry_payload`. The cloud has no idea it exists: it is
-/// absent from `contracts.StockLedgerEntry`, from the INSERT, and from the
-/// SELECT. The payload decode is lenient `json.Unmarshal`, so the field is
-/// silently discarded rather than rejected.
-///
-/// So an adjustment entry born of a physical stock count replays to the cloud
-/// with its provenance stripped, and the Postgres column added by migration
-/// 0024 is NULL for every row that will ever exist -- "a column nothing reads
-/// is a column that does not exist" (CLAUDE.md), with the aggravation that
-/// something DOES write it, one hop upstream.
-///
-/// This asserts today's behaviour rather than the behaviour we want, because
-/// the repair is a contracts change (Go struct + repository + OpenAPI, version
-/// bump, ADR note) and `packages/contracts/` is not a builder's to edit
-/// (ADR-008). WHEN THAT LANDS, THIS TEST MUST FAIL -- and the fix is to fold
-/// the column into the two comparisons above and delete this test.
-#[test]
-fn source_stock_count_id_is_sent_by_the_edge_and_dropped_by_the_cloud() {
-    let root = repo_root();
-    // Declaration order IS teardown order, reversed: `pg` closes, then the
-    // backend is killed, then the database is dropped. Any other order leaves
-    // a connection open against a database something is trying to drop.
-    let temp = TempDatabase::create(&require_database_url());
-    let db_url = temp.url.clone();
-
-    let cloud = start_cloud(&root, &db_url);
-    let mut pg = PgClient::connect(&db_url, NoTls).expect("connecting to the test database");
-    let seed = devseed(&root, &db_url);
-    grant_permissions(&mut pg, &seed.tenant_id);
-    let access_token = login(&cloud.base_url, &seed);
-    let (device_id, device_token) = enroll_device(&cloud.base_url, &seed, &access_token);
-
-    let item_id = new_id();
-    let sku = format!("INV-SCID-{item_id}");
-    create_inventory_item(&cloud.base_url, &seed, &access_token, &item_id, &sku);
-
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let mut db = open_edge_db(tmp.path(), &seed, &item_id, &sku);
-
-    let count_id = new_id();
-    let entry_id = new_id();
-    db.connection()
-        .execute(
-            "INSERT INTO stock_ledger_entry
-               (id, outlet_id, entry_seq, inventory_item_id, inventory_item_name,
-                dimension, entry_type, origin, quantity_applied_micro,
-                occurred_at, business_date, source_stock_count_id)
-             VALUES (?1, ?2, 1, ?3, 'Onion', 'MASS', 'ADJUSTMENT', 'COUNT_ADJUSTMENT',
-                     -1000000, '2026-08-23T10:20:00Z', '2026-08-23', ?4)",
-            rusqlite::params![entry_id, seed.outlet_id, item_id, count_id],
-        )
-        .expect("placing a count-sourced adjustment");
-
-    let worker = SyncWorker::new(WorkerConfig {
-        tenant_id: seed.tenant_id.clone(),
-        outlet_id: seed.outlet_id.clone(),
-        device_id,
-        base_url: cloud.base_url.clone(),
-        device_token,
-    });
-    let report = worker
-        .pump_ranged_streams(&mut db, 100)
-        .expect("pumping ranged streams");
-    assert_eq!(report.ledger_acked, vec![1], "the entry must be accepted");
-
-    // Accepted, not rejected: the decode is lenient, so an unknown field is
-    // dropped in silence. A strict decode here would instead 400 EVERY ledger
-    // entry, which is the louder and far less likely failure -- worth knowing
-    // that this test would have caught that too.
-    let stored: Option<String> = pg
-        .query_one(
-            "SELECT source_stock_count_id::text FROM stock_ledger_entry WHERE id::text = $1",
-            &[&uuid_param(&entry_id)],
-        )
-        .expect("the entry must be stored")
-        .get(0);
-
-    assert_eq!(
-        stored, None,
-        "TODAY the cloud drops source_stock_count_id. If this assertion now fails \
-         because the column arrives, the contracts change has landed: fold the \
-         field into the two byte-comparisons in the criterion 6 test above and \
-         delete this one."
     );
 }

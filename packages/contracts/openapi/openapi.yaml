@@ -2845,6 +2845,15 @@ components:
         source_order_id: { type: string, format: uuid, nullable: true }
         source_order_item_id: { type: string, format: uuid, nullable: true }
         reason_code: { type: string, nullable: true }
+        source_stock_count_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            The count that produced a COUNT_ADJUSTMENT — typed, no FK, like the
+            rest of the provenance group. A column in both stores since 0.5.5
+            and carried on the wire since 0.5.9; before that the cloud dropped
+            it on decode and the Postgres column was NULL for every row.
         note: { type: string, nullable: true }
         occurred_at: { type: string, format: date-time }
         business_date:

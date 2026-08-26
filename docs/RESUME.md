@@ -104,25 +104,36 @@ acceptance, not M4's. Listed for completeness, not as M4 blockers.
 
 ---
 
-## 3. Open defect found while proving criterion 6
+## 3. Closed: `source_stock_count_id` reaches the cloud (contracts 0.5.9)
 
-**`source_stock_count_id` replays with its provenance stripped.** Contracts
-0.5.5 added the column; it exists in **both** stores, is on the edge model, and
-**is sent** by `ledger_entry_payload`. The cloud has never heard of it — absent
-from `contracts.StockLedgerEntry`, from the INSERT, from the SELECT — and the
-payload decode is a lenient `json.Unmarshal`, so it is **silently discarded
-rather than refused**. Every count-sourced adjustment therefore replays without
-its provenance, and migration 0024's column is NULL for every row that will ever
-exist.
+**Found while proving criterion 6, fixed the same week.** Contracts 0.5.5 added
+the column; it existed in **both** stores, was on the edge model, and **was
+sent** by `ledger_entry_payload`. The cloud had never heard of it — absent from
+`contracts.StockLedgerEntry`, from the INSERT, from the SELECT — and the payload
+decode is a lenient `json.Unmarshal`, so it was **silently discarded rather than
+refused**. Every count-sourced adjustment replayed without its provenance, and
+migration 0024's column was NULL for every row.
 
-This is CLAUDE.md's own rule with something writing the column one hop upstream:
-*a column nothing reads is a column that does not exist*.
+**0.5.9 landed the field** — Go struct, Zod schema, OpenAPI, fixture, and both
+halves of `backend/internal/inventory/repository.go`. No migration: the column
+has been in both stores since 0.5.5. It was **not** deferred to 0.6.0, because
+the ledger is append-only: every adjustment replaying before the fix loses its
+provenance permanently, and no later pass can recover it. See the ADR-018
+addendum dated 2026-08-27.
 
-**It is not a builder's to fix** — the repair is a contracts change (ADR-008),
-which only the orchestrator/architect session makes. It is pinned instead by
-`source_stock_count_id_is_sent_by_the_edge_and_dropped_by_the_cloud` in
-`edge/sync/tests/cloud_replay.rs`, which asserts **today's** behaviour and is
-written to fail the day the repair lands, saying so in the assertion message.
+**Why criterion 6 was green while this was broken, which is the part worth
+keeping.** The echo comparison could not see it: the handler returns the struct
+it decoded, so a field the struct lacks is missing from *both* sides. The
+storage comparison could not see it either — its fixture was a wastage entry,
+on which every count-provenance field is legitimately null, and a null
+round-trips through a nonexistent field perfectly. **Green on absent data, in
+the test written to prove fidelity.** So the fixture now carries a
+count-sourced COUNT_ADJUSTMENT earned through the shipping count API, and
+`packages/contracts/fixtures/` gained a second ledger fixture populated where
+the first is null, round-tripped in both drift suites. The pinning test is
+deleted, having done its job.
+
+> A fidelity test proves fidelity only for the fields its fixture populates.
 
 ---
 
@@ -191,14 +202,13 @@ never repeats for any index up to `i64::MAX`, plus a per-business-day counter
 reset. Regression test `formatter_never_repeats_past_the_old_wrap_point` drives
 past the old collision point (25975, where `#Z999` rolled to `#A1`).
 
-**Contracts are FROZEN at v0.5.8.** Cross-checked against
+**Contracts are FROZEN at v0.5.9.** Cross-checked against
 `packages/contracts/package.json` by `scripts/check-milestone-marker.mjs`, which
 fails the build on disagreement — this line was written at 0.4.7 and went stale
 within two days.
 
 | Where | What |
 |---|---|
-| `backend/internal/inventory` | **`source_stock_count_id` dropped on ingest** — see §3. Contracts change; pinned by a test. |
 | `backend/internal/{auth,menu,tables}` | Never call `postgres.Migrate`; they seed into an assumed schema. CI works around it with a `go run ./cmd/devseed` step. Real fix: have them migrate. |
 | `packages/contracts/openapi/openapi.yaml` | **Nothing machine-checks it** against handlers or TS/Go types. Drift check is TS↔Go only. It silently drifted on three `MenuItem` fields for two versions. |
 | `edge/database/src/lib.rs` | `Db::connection()` is plain `pub`; three sibling crates hold it. `payment` is trigger-protected (0.4.5); `cash_shift` is not and cannot be — OPEN→CLOSED is a legitimate UPDATE. |

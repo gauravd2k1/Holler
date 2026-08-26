@@ -490,6 +490,20 @@ func TestMilestone4FixturesRoundTrip(t *testing.T) {
 	roundTrip(t, "modifier_ingredient_delta.json", &delta)
 	var entry StockLedgerEntry
 	roundTrip(t, "stock_ledger_entry.json", &entry)
+	// A SECOND ledger fixture, populated where the first is null. The first
+	// carries a RECIPE deduction, so every count-provenance field on it is
+	// null — and a field absent from the struct round-trips a null perfectly.
+	// That is exactly how source_stock_count_id crossed two milestones on the
+	// wire unnoticed: green on absent data, in the test written to catch it
+	// (contracts 0.5.9). Any provenance group added later needs its own row
+	// here for the same reason.
+	var adjustment StockLedgerEntry
+	roundTrip(t, "stock_ledger_entry_count_adjustment.json", &adjustment)
+	if adjustment.SourceStockCountID == nil {
+		t.Fatal("stock_ledger_entry.source_stock_count_id was dropped on decode: a " +
+			"COUNT_ADJUSTMENT that loses the count it came from is an append-only row " +
+			"whose provenance is gone permanently (contracts 0.5.9, ADR-018)")
+	}
 	var count StockCount
 	roundTrip(t, "stock_count.json", &count)
 	var line StockCountLine

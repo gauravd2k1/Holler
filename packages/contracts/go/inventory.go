@@ -255,8 +255,14 @@ type StockLedgerEntry struct {
 	SourceOrderID        *string `json:"source_order_id"`
 	SourceOrderItemID    *string `json:"source_order_item_id"`
 	ReasonCode           *string `json:"reason_code"`
-	Note                 *string `json:"note"`
-	OccurredAt           string  `json:"occurred_at"`
+	// The count that produced a COUNT_ADJUSTMENT, typed and with no FK like
+	// the rest of this group (contracts 0.5.5 in the two schemas, 0.5.9 on
+	// the wire). Before it, the link lived in `note` as "stock_count:{id}" —
+	// provenance in free text is provenance nothing can check, and the ledger
+	// is append-only, so a severed link is permanent.
+	SourceStockCountID *string `json:"source_stock_count_id"`
+	Note               *string `json:"note"`
+	OccurredAt         string  `json:"occurred_at"`
 	// Outlet-local business day, computed once at write time from
 	// outlet.timezone and outlet.day_start_time, never recomputed on read. The
 	// cloud replays this value; it does not own the inputs as they were.

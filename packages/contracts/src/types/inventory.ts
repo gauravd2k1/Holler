@@ -311,6 +311,11 @@ export const StockLedgerEntrySchema = z
     source_order_id: z.string().uuid().nullable(),
     source_order_item_id: z.string().uuid().nullable(),
     reason_code: z.string().nullable(),
+    // The count that produced a COUNT_ADJUSTMENT — typed, no FK, like the rest
+    // of this group. Present in both schemas since 0.5.5; on the wire since
+    // 0.5.9. Nullable rather than required-on-COUNT_ADJUSTMENT: entries
+    // written before 0.5.5 carry the link in `note` and must still replay.
+    source_stock_count_id: z.string().uuid().nullable(),
     note: z.string().nullable(),
     occurred_at: z.string().datetime(),
     // Outlet-local business day, computed once at write time from

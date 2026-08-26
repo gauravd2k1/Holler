@@ -442,3 +442,24 @@ Transient conditions — transport failure, 5xx, 401/403, 408, 429 — never spe
 ### Idempotency comes first
 
 The same id arriving twice is an ordinary retry — a dropped ack, a resumed batch — and returns the stored row quietly. That check runs **before** contiguity deliberately: the mark it carries is already stored, so reaching the contiguity check would read an ordinary retry as a reused mark and refuse it, manufacturing a false alarm on every reconnect.
+
+## Addendum — `source_stock_count_id` reaches the wire (contracts 0.5.9, 2026-08-27)
+
+0.5.5 gave `stock_ledger_entry` a typed `source_stock_count_id` in **both** stores, to replace the `"stock_count:{id}"` string in `note` that a COUNT_ADJUSTMENT used to be linked by. The edge writes it (`edge/database/src/stock/count.rs`) and sends it (`edge/sync/src/ranged.rs::ledger_entry_payload`). The cloud never learned it existed: absent from `contracts.StockLedgerEntry`, from the INSERT, and from the SELECT. The payload decode is `json.Unmarshal`, which is lenient, so the field was **discarded in silence** and the PostgreSQL column added by `0024` was NULL for every row that would ever exist.
+
+**0.5.9 is one additive field** — Go struct, Zod schema, OpenAPI, fixture, and the two halves of the backend repository. No migration: the column has existed in both stores since 0.5.5. Nullable rather than required-on-`COUNT_ADJUSTMENT`, because entries written before 0.5.5 carry the link in `note` and must still replay.
+
+### Why not defer it to 0.6.0
+
+The same argument that settled `recipe_version`, `modifier_delta_id` and `quantity_dimension`, and the stopping rule's second clause: **the ledger is append-only, so every count adjustment that replays before the fix loses its provenance permanently.** There is no later pass that can repair it — the count that produced the row is knowable only at the moment the row is written. Deferring costs history; landing it costs one field.
+
+### How it survived a test written to prove replay fidelity
+
+Criterion 6 compares the edge's row against the 201 echo and against the stored PostgreSQL bytes. It passed while this field was being dropped, for a reason worth keeping:
+
+- **The echo comparison cannot see a dropped field at all.** The handler returns the struct it decoded, so a field the struct lacks is absent from both sides of that comparison. The same mechanism was caught once before in this test's own development, when `note` was dropped server-side: the *storage* compare failed, the *echo* compare passed. An echo is a test of the handler's serialiser, never of what was stored.
+- **The storage comparison was green on absent data.** Its fixture recorded a wastage entry, on which every count-provenance field is legitimately null — and a null round-trips through a field that does not exist, perfectly.
+
+So the criterion 6 fixture now also carries a **count-sourced adjustment**, and `packages/contracts/fixtures/` gained a second ledger fixture (`stock_ledger_entry_count_adjustment.json`) populated where the first is null, round-tripped in both drift suites. The pinning test that asserted today's drop is deleted, having done its job.
+
+> **A fidelity test proves fidelity only for the fields its fixture populates.** A provenance group added later needs its own populated row, or the same hole reopens under a new name — and it will look green while it does.
