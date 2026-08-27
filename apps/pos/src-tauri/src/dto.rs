@@ -78,6 +78,16 @@ pub struct MenuItem {
     pub name: String,
     pub base_price_paise: i64,
     pub is_available: bool,
+    // tax_profile_id (contracts 0.4.2) and hsn_sac (0.4.5) are NULLABLE in
+    // MenuItemSchema but NOT optional, and Zod treats those differently: a
+    // missing key fails `.parse` exactly like a wrong type. Omitting them
+    // here rejected every list_menu_items call, and PosScreen renders
+    // "Loading menu…" on `!hydrated`, so a rejected query is indistinguishable
+    // from a slow one. Both are inputs to resolution only — billing snapshots
+    // what it applied onto invoice_line, so passing them to the UI never
+    // affects an issued bill (§31).
+    pub tax_profile_id: Option<String>,
+    pub hsn_sac: Option<String>,
     pub config_version: i64,
     pub schema_version: u8,
 }
@@ -91,6 +101,8 @@ impl From<db::MenuItem> for MenuItem {
             name: m.name,
             base_price_paise: m.base_price_paise,
             is_available: m.is_available,
+            tax_profile_id: m.tax_profile_id,
+            hsn_sac: m.hsn_sac,
             config_version: m.config_version,
             schema_version: 1,
         }
@@ -103,7 +115,13 @@ pub struct MenuItemVariant {
     pub menu_item_id: String,
     pub name: String,
     pub price_delta_paise: i64,
+    // is_default (contracts 0.5.0) and schema_version are both required by
+    // MenuItemVariantSchema. No POS caller parses variants today, so this was
+    // latent rather than broken — but it is the same drift that took the menu
+    // down, and a wire type is not "fine because nothing reads it yet".
+    pub is_default: bool,
     pub config_version: i64,
+    pub schema_version: u8,
 }
 
 impl From<db::MenuItemVariant> for MenuItemVariant {
@@ -113,7 +131,9 @@ impl From<db::MenuItemVariant> for MenuItemVariant {
             menu_item_id: v.menu_item_id,
             name: v.name,
             price_delta_paise: v.price_delta_paise,
+            is_default: v.is_default,
             config_version: v.config_version,
+            schema_version: 1,
         }
     }
 }
