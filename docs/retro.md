@@ -825,3 +825,33 @@ The deeper pattern is the one this log keeps recording in new costumes: the repo
 - **A failed query must not render as a loading state.** Keying a spinner off `!loaded` rather than `isError` converts every failure into an infinite wait, which is the hardest possible symptom to diagnose and the easiest to ship.
 - **Nullable is not optional.** In Zod, `.nullable()` requires the key to be *present* and null. A Rust `Option<T>` that is simply absent from the struct fails the parse — it does not serialise as `null`, it does not serialise at all.
 - **An unreachable screen is an unmet criterion, no matter what is behind it.** Check that the seeded principal can actually reach every surface a criterion names, before claiming the surface works.
+
+---
+
+## 2026-08-27 — A test assertion that defended a bug for two milestones
+
+**Severity:** medium. Every VOLUME quantity in the POS was displayed 1000x understated, under a green test.
+
+### What happened
+
+`formatMicroQuantity` divided every dimension by 1e6 and labelled VOLUME "ml". The edge stores micro-units of a BASE unit and the base differs -- gram, LITRE, piece -- so a VOLUME value divided by 1e6 is LITRES. Every volume on every stock screen read 1000x low: Soda Water's `litres(5)` reorder level rendered as "5ml", and a 20ml cream deduction rendered as "0.02ml".
+
+It was found by a human reading the low-stock banner and asking why soda water had a five-millilitre reorder point.
+
+The formatter had a test. The test asserted:
+
+    expect(formatMicroQuantity(1_500_000, "VOLUME")).toBe("1.5ml");
+
+1,500,000 micro-litres is 1500ml. The assertion was wrong, and it was wrong in exactly the direction of the defect, so it passed. The module's own doc comment carried the same error in its worked example.
+
+### Root cause
+
+The unit convention is genuinely asymmetric and the asymmetry is correct: `grams(n)` and `pieces(n)` multiply by 1e6, `litres(n)` by 1e6, `millilitres(n)` by 1e3. Whoever wrote the formatter read "VOLUME in millilitres" from the surrounding comment, applied the mass scale, and wrote a test that agreed with the code rather than with the unit system. Test, implementation and documentation were mutually consistent and all three were wrong.
+
+Storage, entry and recipe authoring were correct throughout, so no deduction was ever affected. Only what a human read was wrong -- which is the half that criterion 4 and the variance report depend on.
+
+### Rules
+
+- **A wrong assertion is worse than no test, because it makes the defect look verified.** A missing test leaves a known gap; a wrong one closes the gap on paper and redirects everyone who might have looked. This one survived two milestones and was found by reading a number on a screen, not by any suite.
+- **When a test and an implementation are written together, they share the author's misunderstanding.** Derive the expected value from the SPEC -- here, the unit definitions in `edge/database/src/inventory/units.rs` -- not from what the function currently returns. An assertion whose expected value was obtained by running the code proves only that the code is deterministic.
+- **A unit is not a scale.** "VOLUME in millilitres" and "VOLUME stored as micro-litres" differ by 1000 and read almost identically in a comment. Where a base unit differs across dimensions, name the base unit at every boundary that converts.
