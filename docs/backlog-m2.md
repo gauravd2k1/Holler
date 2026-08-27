@@ -226,6 +226,50 @@ screen by hand since M1.
   in the POS would be a patch over a modelling gap that will recur the moment a
   second internal category exists.
 
+## Found on the gaps screen (2026-08-27, M4 criterion 5 pass)
+
+- **THE POS NEVER ATTACHES A VARIANT, so no sale from the shipped till ever
+  deducts stock.** `variantId: null` is hardcoded at both `addItem` call sites
+  in `apps/pos/src/components/PosScreen.tsx` (lines 131 and 233) — the only
+  file in the POS that mentions variants at all. There is no picker. A recipe
+  binds to `menu_item_variant_id` (NOT NULL, migration 0015), so resolution
+  returns `GapReason::NoVariant` for *every* dish, including the 22 that carry
+  recipes. Nothing falls back to `menu_item_variant.is_default`, which
+  contracts 0.5.0 added and no code reads — CLAUDE.md's own rule: a column
+  nothing reads is a column that does not exist.
+  **This contradicts M4 acceptance criterion 1** as an observed behaviour.
+  Criterion 1's evidence is `edge/database/tests/seed_offline_sale.rs`, which
+  selects a variant directly and therefore cannot see this; the milestone's own
+  rule is that no criterion may be evidenced by a test harness. Found because
+  Palak Paneer and Paneer Butter Masala appeared as `NO_VARIANT` on the gaps
+  screen despite both carrying `["Half", "Full"]` and a recipe on "Full".
+
+- **The gaps screen is titled "Items Sold With No Recipe" and every row says
+  `NO_VARIANT`.** Different problems with different fixes: `NO_VARIANT` means
+  no sellable variant exists and the *menu* is wrong; `NO_RECIPE` means the
+  variant exists and a *recipe* must be written. A manager acting on this
+  screen needs to know which, and today the title asserts the answer while the
+  data contradicts it. Same name-asserts-a-property class as the M2-era
+  entries above. Either split the screen by reason or retitle it to something
+  reason-neutral ("Sales With No Stock Deduction") and group by reason.
+
+- **Timestamps render as raw UTC ISO on a screen a restaurant manager reads.**
+  `2026-08-27T08:47:10.615Z` is 14:17 IST. CLAUDE.md is explicit: UTC storage,
+  outlet timezone stored separately, rendered local. The gaps screen renders
+  the stored value verbatim. Outlet-local and human-formatted, and check the
+  sibling inventory screens for the same.
+
+- **Confirm the deliberate no-variant seed items are actually the ones
+  appearing.** T0b leaves 11 items with no variant on purpose (Samosa, Pani
+  Puri, Aloo Tikki Chaat, Seekh Kebab, Egg Bhurji, Jeera Rice, Steamed Rice,
+  Laccha Paratha, Filter Coffee, Gulab Jamun, Gajar Halwa) and 6 with a variant
+  but deliberately no recipe (Chana Masala, Mixed Veg Curry, Fish Curry, Mutton
+  Biryani, Sweet Lassi, Packaged Fruit Juice). Verified 2026-08-27: Palak
+  Paneer, Paneer Butter Masala and Fish Curry are **not** in either list as
+  no-variant items — Palak Paneer and Paneer Butter Masala carry recipes, Fish
+  Curry should have read `NO_RECIPE`. The seed's recipe coverage is as
+  reported; the defect is the hardcoded null above, not thin seed data.
+
 ## Testing
 
 - **Postgres integration tests never clean up their rows.** Every tenant/brand/outlet/order row these suites insert stays forever. Harmless today — ids are minted per run since `1cc087c`, so nothing collides — but the database grows without bound across CI runs. Pre-existing, and deliberately left alone during the fixture repair to keep that change to one concern. Worth a `t.Cleanup` or a per-run schema before CI runs these on every push.

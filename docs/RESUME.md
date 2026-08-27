@@ -16,17 +16,17 @@ CLAUDE.md's rule for this milestone: *every item is an observed behaviour, not
 an implemented API, and none may be evidenced by a test harness* — an acceptance
 run exercises the binaries that ship (`docs/retro.md`, 2026-08-11).
 
-**Six of seven are met. One — criterion 5 — is met at the edge and unobserved at
-the surface the criterion actually names.** The table says which is which; do not read
+**Six of seven are met and observed. Criterion 1 is CONTESTED: it passes in a
+harness and provably does not hold through the shipped POS.** M4 is NOT tagged. The table says which is which; do not read
 "green" as "accepted".
 
 | # | Criterion | Verdict | Evidence — where, and what it exercises |
 |---|---|---|---|
-| 1 | Offline sale from the **real seed menu** deducts every ingredient at recipe × line quantity, plus chosen-modifier deltas, and nothing for modifiers with no delta row | **MET** | `edge/database/tests/seed_offline_sale.rs` — drives `cmd/devseed`'s real catalogue, not a fixture. No network is on the path by construction: SQLite and Rust only. CI job `edge`. 1/1, 2026-08-24. |
+| 1 | Offline sale from the **real seed menu** deducts every ingredient at recipe × line quantity, plus chosen-modifier deltas, and nothing for modifiers with no delta row | **CONTESTED — see §2a** | `edge/database/tests/seed_offline_sale.rs` — drives `cmd/devseed`'s real catalogue, not a fixture. No network is on the path by construction: SQLite and Rust only. CI job `edge`. 1/1, 2026-08-24. **But the test selects a variant directly, and the shipped POS never does** — `variantId` is hardcoded `null`, so no sale from the till deducts anything. The harness cannot see it, and the milestone's own rule forbids evidencing a criterion by a harness. See §2a. |
 | 2 | Kill the POS between confirm and deduction → order and ledger agree on reopen | **MET** | `edge/database/tests/crash_durability.rs` against `src/bin/crashpoint.rs` — a **real `abort()` of a real child process** at `after_confirm_before_deduct`, judged on reopen. Gated behind `--features crash-points`; CI job `crash-durability`, on **windows-latest**, because WAL recovery is OS-specific and outlets run Windows (ADR-013). 2/2, 2026-08-24. |
 | 3 | Physical count produces a variance report whose arithmetic is checked against an **independently computed figure** | **MET** | `edge/database/src/stock/variance.rs::variance_matches_an_independently_computed_figure` — the report's numbers recomputed by a second route and compared, not spot-checked. Surface `apps/pos/src/components/StockCountScreen.tsx`, routed at `router.tsx:101`. TypeScript formats `variance_percentage_bps`; it never recomputes it. |
 | 4 | An ingredient crossing its reorder level is **visible to a human on the POS** | **MET** | `LowStockBanner` is mounted in `PosScreen.tsx:160` and `OrderListScreen.tsx:94` — the two screens a till is actually on — and `CurrentStockScreen` is routed at `router.tsx:80`. `isLowStock` / `lowStockLines` unit-tested in `apps/pos/src/domain/__tests__/inventory.test.ts`, including the rule that a null `reorder_level_micro` is *unconfigured, not zero*. **Observed rendering in the running POS 2026-08-27** — `pnpm tauri dev` / WebView2, banner listing 28 items with its View-stock link, screenshot filed. Reaching it required two fixes: the dev principal lacked `inventory.manage`/`inventory.count` (`a6e02d7`), and the Tauri `MenuItem` DTO was missing `tax_profile_id` and `hsn_sac`, which rejected every menu load. |
-| 5 | An item sold with no recipe completes the sale, records a gap, and appears on the "items sold with no recipe" report | **EDGE MET / SURFACE UNOBSERVED** | Sale completion and `stock_deduction_gap` are edge-side and tested (`edge/database/src/deduction/ledger.rs`, `apps/pos/src-tauri/src/commands/inventory.rs`). The report is `StockDeductionGapsScreen.tsx`, routed at `router.tsx:108`. Same gap as criterion 4: the screen is reachable in code and has not been seen rendering. |
+| 5 | An item sold with no recipe completes the sale, records a gap, and appears on the "items sold with no recipe" report | **MET** | Sale completion and `stock_deduction_gap` are edge-side and tested (`edge/database/src/deduction/ledger.rs`, `apps/pos/src-tauri/src/commands/inventory.rs`). The report is `StockDeductionGapsScreen.tsx`, routed at `router.tsx:108`. **Observed rendering in the running POS 2026-08-27** — `pnpm tauri dev` / WebView2, rows carrying item, quantity, reason and timestamp, screenshot filed. Caveat recorded honestly: every row read `NO_VARIANT`, never `NO_RECIPE`, because of the criterion-1 defect below — the sale completing and the gap being reported is the criterion and it held, but the `NO_RECIPE` path itself was not the one exercised. |
 | 6 | Ledger entries created at the edge replay to the cloud and **read back identically** | **MET, AND FALSIFIED** | `edge/sync/tests/cloud_replay.rs`. Builds and spawns the real `cmd/api` against real PostgreSQL, logs in, enrolls a device through the real ADR-017 route, and drives `SyncWorker::pump_ranged_streams` at it over a real socket — no `tiny_http` stand-in anywhere. The entry is *earned* through `Db::record_wastage`, so `entry_seq` comes from the real counter (asserted to be 1, not 0). Read back **twice**: the 201 echo (wire fidelity, through Go's types) and the PostgreSQL row re-serialised (storage fidelity), both whole-object byte-compares against a key-sorted canonical form. Gated `--features cloud-e2e`; CI job `cloud-replay`. 2/2, green twice, 2026-08-24. |
 | 7 | Stock reads stay bounded after a sealed snapshot — **measured, not asserted** | **MET** | `edge/database/src/stock/snapshot.rs::stock_reads_stay_bounded_after_a_sealed_snapshot` — counts **SQLite VM steps** taken by the shipped read over 5 sealed days vs 400, same unsealed tail. No clock is timed, so the figure is identical on a fast laptop and a 4GB spinning-disk till and no regression can hide behind a generous margin. A dropped `entry_seq >` term makes the number climb with history, and the test fails naming both figures. |
 
@@ -78,27 +78,30 @@ linked cleanly.
 
 ## 2. What still blocks M4 acceptance
 
-**(a) Criterion 5 has never been observed in a running POS.** It names a human
-seeing something. What exists is: the component mounted, the route registered,
-and the pure logic unit-tested — none of which is the criterion. `apps/pos` has
-**no dev-server smoke test** (`.github/workflows/ci.yml` says so in a comment at
-the `pos` job), so the two runtimes this repo has already been burned by twice —
-the dev server and the browser — are unguarded for the POS. CLAUDE.md's rule
-applies verbatim: build-green ≠ dev-works, and a frontend change must be
-reported with the runtime it was observed in.
+**(a) No sale from the shipped POS deducts any stock. Criterion 1 does not hold
+through the till.** `variantId: null` is hardcoded at both `addItem` call sites
+in `apps/pos/src/components/PosScreen.tsx` (131, 233) — the only file in the POS
+that mentions variants, and there is no picker. A recipe binds to
+`menu_item_variant_id` (NOT NULL, migration 0015), so resolution returns
+`GapReason::NoVariant` for **every** dish, the 22 with recipes included, and
+writes no ledger rows. Nothing falls back to `menu_item_variant.is_default` —
+contracts 0.5.0 added that field and no code reads it, which is CLAUDE.md's own
+"a column nothing reads is a column that does not exist".
 
-Closing it needs `.\scripts\dev-up.ps1`, an order for a seeded no-recipe item
-(Chana Masala, Fish Curry, Mutton Biryani, Mixed Veg Curry, Sweet Lassi or
-Packaged Fruit Juice — all carry a variant and deliberately no recipe) and a
-look at `/inventory/gaps`. Order a Samosa too: no variant at all, so it lands
-under `NoVariant` rather than `NoRecipe`, and one reason observed is not two.
+Criterion 1's evidence, `edge/database/tests/seed_offline_sale.rs`, selects a
+variant directly and therefore cannot see this. The milestone rule it violates
+is stated at the top of §1: *none may be evidenced by a test harness.* The
+harness is green and correct; it is testing a path the product does not take.
 
-**Criterion 4 closed this way on 2026-08-27, and cost two fixes nobody had
-predicted** — the dev principal could not reach the screens for want of
-`inventory.manage`/`inventory.count`, and the Tauri `MenuItem` DTO was missing
-`tax_profile_id`/`hsn_sac`, which rejected every menu load and rendered as a
-permanent "Loading menu…". Neither was visible to any suite. Expect criterion 5
-to surface its own.
+Found on 2026-08-27 because Palak Paneer and Paneer Butter Masala showed as
+`NO_VARIANT` on the gaps screen while both carry `["Half", "Full"]` and a recipe
+on "Full". Fish Curry, which should read `NO_RECIPE`, read `NO_VARIANT` too.
+
+**This blocks the `m4-complete` tag.** The milestone's headline behaviour —
+selling a dish deducts its ingredients — has never happened through the binary
+that ships. Closing it needs a variant selector on the ordering screen (or a
+deliberate, documented `is_default` fallback), then criterion 1 re-observed by
+hand: sell Palak Paneer "Full" offline and read the `stock_ledger_entry` rows.
 
 **(b) `gh` is installed but not authenticated.** `gh auth login` has not been run
 on this machine, so `gh run list` still cannot read this repo's CI. The whole
