@@ -1359,7 +1359,8 @@ const CASHIER_EMAIL: &str = "cashier@holler.test";
 /// Permissions for the seeded cashier, from the `Permission` enum in
 /// packages/contracts/src/types/identity.ts. The edge stores the flattened
 /// list for THIS outlet (§50.1, replace-not-merge).
-const CASHIER_PERMISSIONS: &str = r#"["order.create","order.modify","table.manage"]"#;
+const CASHIER_PERMISSIONS: &str =
+    r#"["order.create","order.modify","table.manage","inventory.manage","inventory.count"]"#;
 
 /// Fixed timestamp for seeded rows. A constant rather than "now" so re-running
 /// the seeder produces an identical database — this crate has no clock

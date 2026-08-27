@@ -187,7 +187,15 @@ func seed(ctx context.Context, pool postgres.Pool, passwordHash string) error {
 	}
 
 	// role_permission is a composite-key table with no single id to conflict on.
-	for _, p := range []string{"order.create", "order.modify", "table.manage"} {
+	// inventory.manage / inventory.count are here so the dev principal can
+	// reach the M4 surfaces (current stock, counts, wastage, the
+	// items-sold-with-no-recipe report). Keep this list identical to
+	// CASHIER_PERMISSIONS in edge/database/src/bin/devseed.rs — the edge
+	// stores the flattened list and a config pull replaces, not merges.
+	for _, p := range []string{
+		"order.create", "order.modify", "table.manage",
+		"inventory.manage", "inventory.count",
+	} {
 		if _, err := pool.Exec(ctx,
 			`INSERT INTO role_permission (role_id, permission) VALUES ($1, $2)
 			 ON CONFLICT DO NOTHING`, roleID, p); err != nil {
