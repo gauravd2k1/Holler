@@ -146,6 +146,12 @@ jobs:
       # if any such target is not invoked by a run line above.
       - name: gated tests are actually invoked
         run: node scripts/check-gated-tests.mjs
+      # A field declared in the frozen contracts and read or written by no
+      # consumer is a field that does not exist (CLAUDE.md). Five instances in
+      # M4 alone, each found by hand. This catches the absent-everywhere class
+      # only -- the header says plainly what it does not catch.
+      - name: contract fields have consumers
+        run: node scripts/check-contract-field-consumers.mjs
 
   # The Rust edge crates carry the majority of Milestone 1's test coverage —
   # including the offline order-creation test that IS the milestone acceptance
