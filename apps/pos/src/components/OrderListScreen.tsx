@@ -61,6 +61,17 @@ export function OrderListScreen() {
       // its actual status, and a successful one should reflect exactly
       // what the edge persisted (including `confirmed_at`).
       await queryClient.invalidateQueries({ queryKey: queryKeys.orders });
+      // Confirm is the moment stock moves: deduction runs INSIDE
+      // confirm_order's transaction (edge/database/src/lib.rs, the single
+      // call site of deduct_stock_for_confirmed_order), so by the time this
+      // resolves the ledger rows are committed and every stock read is
+      // stale. Nothing invalidated them before 2026-08-27, so a cashier who
+      // checked stock, sold, and checked again saw no change — and a number
+      // that does not move after a sale is a number that stops being
+      // trusted. The gaps report moves for the same reason: a line with no
+      // recipe lands there at confirm too.
+      await queryClient.invalidateQueries({ queryKey: queryKeys.currentStock });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.stockDeductionGaps });
     } catch (err) {
       setConfirmError(confirmErrorMessage(err));
     } finally {

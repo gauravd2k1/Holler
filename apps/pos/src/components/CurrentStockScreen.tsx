@@ -1,6 +1,6 @@
 import { useNavigate } from "@tanstack/react-router";
 import { useCurrentStockQuery } from "../lib/queries";
-import { formatMicroQuantity, isLowStock } from "../domain/inventory";
+import { formatMicroQuantity, isLowStock, isNegativeStock } from "../domain/inventory";
 
 // The bounded current-stock read (`list_current_stock`) — what
 // `LowStockBanner` summarises. Deliberately NOT gated behind
@@ -44,16 +44,34 @@ export function CurrentStockScreen() {
         </thead>
         <tbody>
           {lines.map((line) => {
-            const low = isLowStock(line);
+            const negative = isNegativeStock(line);
+            // A negative line is not ALSO tagged LOW: below zero is the
+            // stronger statement and two tags on one row teach a cashier to
+            // skim. Negative is reported with no reorder level configured,
+            // which is the whole point (domain/inventory.ts).
+            const low = !negative && isLowStock(line);
             return (
               // Rows are visually marked, not merely present — the second
               // half of acceptance criterion 4 alongside `LowStockBanner`.
               <tr
                 key={line.inventory_item_id}
-                className={low ? "current-stock-row-low" : undefined}
+                className={
+                  negative
+                    ? "current-stock-row-negative"
+                    : low
+                      ? "current-stock-row-low"
+                      : undefined
+                }
               >
                 <td>{line.inventory_item_name}</td>
-                <td>{formatMicroQuantity(line.current_quantity_micro, line.dimension)}</td>
+                <td className={negative ? "current-stock-quantity-negative" : undefined}>
+                  {formatMicroQuantity(line.current_quantity_micro, line.dimension)}
+                  {negative && (
+                    <span className="current-stock-negative-tag" role="alert">
+                      BELOW ZERO
+                    </span>
+                  )}
+                </td>
                 <td>
                   {line.reorder_level_micro === null
                     ? "—"

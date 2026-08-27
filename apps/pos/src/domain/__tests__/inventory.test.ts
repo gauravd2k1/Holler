@@ -5,6 +5,9 @@ import {
   formatVarianceBps,
   isLowStock,
   lowStockLines,
+  isNegativeStock,
+  negativeStockLines,
+  stockAttentionLines,
 } from "../inventory";
 import type { CurrentStockLine } from "../../lib/tauri";
 
@@ -27,7 +30,13 @@ describe("formatMicroQuantity", () => {
   });
 
   it("formats a value with a fractional part, trimmed of trailing zeros", () => {
-    expect(formatMicroQuantity(1_500_000, "VOLUME")).toBe("1.5ml");
+    // Was `expect(...1_500_000, "VOLUME").toBe("1.5ml")` until 2026-08-27 —
+    // an assertion that ENCODED the 1000x VOLUME display bug and is why it
+    // survived. 1_500_000 micro-litres is 1500ml. The fractional-trim
+    // behaviour this case exists for is checked on MASS below and on VOLUME
+    // at sub-millilitre scale in the dimension-scale suite.
+    expect(formatMicroQuantity(1_500_000, "VOLUME")).toBe("1500ml");
+    expect(formatMicroQuantity(1_500_000, "MASS")).toBe("1.5g");
     expect(formatMicroQuantity(333_333, "COUNT")).toBe("0.333333pcs");
   });
 
@@ -108,5 +117,95 @@ describe("formatVarianceBps", () => {
 
   it("rejects a non-integer bps value", () => {
     expect(() => formatVarianceBps(2.5)).toThrow();
+  });
+});
+
+// The defect this locks out, found by hand on 2026-08-27: Red Chilli Powder
+// at -1.6 g was flagged LOW while Salt at -1.2 g was flagged NOTHING, purely
+// because nobody had configured a reorder level for salt. A real failure with
+// an absent signal, in the feature built to prevent absent signals.
+describe("isNegativeStock", () => {
+  it("is true below zero with NO reorder level configured — the Salt case", () => {
+    expect(isNegativeStock(line({ current_quantity_micro: -1_200_000, reorder_level_micro: null })))
+      .toBe(true);
+  });
+
+  it("is true below zero with a reorder level configured — the Red Chilli case", () => {
+    expect(
+      isNegativeStock(line({ current_quantity_micro: -1_600_000, reorder_level_micro: 2_000_000 })),
+    ).toBe(true);
+  });
+
+  it("is false at exactly zero — nothing left is not the same as books wrong", () => {
+    expect(isNegativeStock(line({ current_quantity_micro: 0, reorder_level_micro: null }))).toBe(
+      false,
+    );
+  });
+
+  it("never consults the reorder level", () => {
+    // Same quantity, every possible threshold: the answer must not move.
+    for (const reorder of [null, 0, 5_000_000, -5_000_000]) {
+      expect(
+        isNegativeStock(line({ current_quantity_micro: -1, reorder_level_micro: reorder })),
+      ).toBe(true);
+    }
+  });
+});
+
+describe("stockAttentionLines", () => {
+  it("reports a negative line once, under negative, never also as low", () => {
+    const salt = line({
+      inventory_item_id: "salt",
+      current_quantity_micro: -1_200_000,
+      reorder_level_micro: null,
+    });
+    const chilli = line({
+      inventory_item_id: "chilli",
+      current_quantity_micro: -1_600_000,
+      reorder_level_micro: 2_000_000,
+    });
+    const paneer = line({
+      inventory_item_id: "paneer",
+      current_quantity_micro: 1_000_000,
+      reorder_level_micro: 2_000_000,
+    });
+
+    const { negative, low } = stockAttentionLines([salt, chilli, paneer]);
+    expect(negative.map((l) => l.inventory_item_id).sort()).toEqual(["chilli", "salt"]);
+    // chilli is under its reorder level too, and must NOT appear twice.
+    expect(low.map((l) => l.inventory_item_id)).toEqual(["paneer"]);
+  });
+
+  it("surfaces a negative item that no low-stock rule would ever catch", () => {
+    const salt = line({ current_quantity_micro: -1, reorder_level_micro: null });
+    expect(lowStockLines([salt])).toEqual([]);
+    expect(negativeStockLines([salt])).toHaveLength(1);
+  });
+});
+
+// VOLUME is stored in micro-LITRES, not micro-millilitres: edge units.rs has
+// litres(n) = n*1e6 and millilitres(n) = n*1e3. Dividing every dimension by
+// 1e6 and printing "ml" understated every volume 1000-fold, which is how Soda
+// Water's litres(5) reorder level rendered as "5ml". Storage and recipe
+// authoring were correct throughout; only the formatter was wrong.
+describe("formatMicroQuantity — VOLUME is micro-litres", () => {
+  it("renders a 5 litre reorder level as 5000ml, not 5ml — the Soda Water case", () => {
+    expect(formatMicroQuantity(5_000_000, "VOLUME")).toBe("5000ml");
+  });
+
+  it("renders recipe-scale volumes correctly", () => {
+    expect(formatMicroQuantity(20_000, "VOLUME")).toBe("20ml"); // 20ml cream
+    expect(formatMicroQuantity(15_000, "VOLUME")).toBe("15ml"); // 15ml oil
+  });
+
+  it("keeps sub-millilitre precision without padding to the mass scale", () => {
+    expect(formatMicroQuantity(250, "VOLUME")).toBe("0.25ml");
+    expect(formatMicroQuantity(-250, "VOLUME")).toBe("-0.25ml");
+  });
+
+  it("leaves MASS and COUNT on the 1e6 scale", () => {
+    expect(formatMicroQuantity(1_500_000, "MASS")).toBe("1.5g");
+    expect(formatMicroQuantity(10_000_000_000, "MASS")).toBe("10000g");
+    expect(formatMicroQuantity(0, "COUNT")).toBe("0pcs");
   });
 });

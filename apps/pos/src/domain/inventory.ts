@@ -16,8 +16,33 @@ import type { CurrentStockLine, StockCount, StockCountVarianceReport } from "../
 
 const MICRO_PER_UNIT = 1_000_000;
 
+/**
+ * Micro-units per DISPLAYED unit, which is not the same for every dimension.
+ *
+ * The edge stores micro-units of a BASE unit, and the base unit differs:
+ * gram, LITRE and piece, each x10^6 (CLAUDE.md, edge/database/src/inventory/
+ * units.rs — `grams`/`pieces` multiply by 1e6, `litres` by 1e6, `millilitres`
+ * by 1e3).
+ *
+ * So dividing every dimension by 1e6 and printing "ml" — which this module did
+ * until 2026-08-27 — reported every VOLUME quantity as LITRES under a
+ * millilitre label, understating it 1000-fold. Soda Water's `litres(5)`
+ * reorder level rendered as "5ml", which read as an absurd threshold rather
+ * than as the display bug it was. Deduction was never affected: storage and
+ * recipe authoring were consistent throughout, and only this formatter was
+ * wrong.
+ *
+ * Entry uses the same units these print, so the two agree:
+ * `human_quantity_to_micro` (apps/pos/src-tauri/src/commands/inventory.rs)
+ * reads MASS as grams, VOLUME as millilitres, COUNT as pieces.
+ */
+function microPerDisplayUnit(dimension: string): number {
+  return (dimension as InventoryDimension) === "VOLUME" ? 1_000 : MICRO_PER_UNIT;
+}
+
 /** The three inventory dimensions the edge stores on `inventory_item.dimension`
- * (ADR-018) — MASS in grams, VOLUME in millilitres, COUNT in pieces. Any
+ * (ADR-018) — MASS in micro-grams, VOLUME in micro-LITRES, COUNT in
+ * micro-pieces; displayed as g / ml / pcs respectively. Any
  * other string is a contract drift the frontend has never seen, so callers
  * fall back to a neutral label rather than guessing. */
 export type InventoryDimension = "MASS" | "VOLUME" | "COUNT";
@@ -47,7 +72,7 @@ function assertIntegerMicro(micro: number): void {
 /**
  * Formats an integer micro-quantity plus its dimension as a human quantity
  * with a unit suffix, e.g. `formatMicroQuantity(1_500_000, "MASS")` ->
- * "1.5g", `formatMicroQuantity(-250_000, "VOLUME")` -> "-0.25ml",
+ * "1.5g", `formatMicroQuantity(-250_000, "VOLUME")` -> "-250ml",
  * `formatMicroQuantity(0, "COUNT")` -> "0pcs".
  *
  * Uses only integer arithmetic (div/mod by 1_000_000) and string
@@ -63,14 +88,19 @@ export function formatMicroQuantity(micro: number, dimension: string): string {
   assertIntegerMicro(micro);
   const negative = micro < 0;
   const abs = Math.abs(micro);
-  const whole = Math.trunc(abs / MICRO_PER_UNIT);
-  const remainder = abs % MICRO_PER_UNIT;
+  const perUnit = microPerDisplayUnit(dimension);
+  const whole = Math.trunc(abs / perUnit);
+  const remainder = abs % perUnit;
   const sign = negative ? "-" : "";
   const unit = unitLabel(dimension);
   if (remainder === 0) {
     return `${sign}${whole}${unit}`;
   }
-  const remainderStr = remainder.toString().padStart(6, "0").replace(/0+$/, "");
+  // Pad to the scale actually in use — 6 digits for gram/piece micro-units,
+  // 3 for the micro-litres a millilitre is made of. Padding to 6 for VOLUME
+  // would print 250 micro-litres as ".000250ml" instead of ".25ml".
+  const width = String(perUnit).length - 1;
+  const remainderStr = remainder.toString().padStart(width, "0").replace(/0+$/, "");
   return `${sign}${whole}.${remainderStr}${unit}`;
 }
 
@@ -104,6 +134,50 @@ export function isLowStock(line: CurrentStockLine): boolean {
 
 export function lowStockLines(lines: readonly CurrentStockLine[]): CurrentStockLine[] {
   return lines.filter(isLowStock);
+}
+
+/**
+ * `true` when the books say you hold less than nothing.
+ *
+ * UNCONDITIONAL — a reorder level is not consulted, and must never be. The
+ * two are different signals with different audiences: a reorder level answers
+ * "should I buy more", which needs a threshold somebody chose, while a
+ * negative balance answers "my books are wrong — I sold what I do not have",
+ * which needs no configuration to be worth saying.
+ *
+ * Before 2026-08-27 negatives borrowed the low-stock threshold, so Red Chilli
+ * Powder at -1.6 g was flagged and Salt at -1.2 g was flagged NOTHING, purely
+ * because nobody had configured salt. A real failure with an absent signal, in
+ * the feature built to prevent exactly that.
+ *
+ * Negative stock remains PERMITTED (ADR-018 Rule 1: stock never blocks a
+ * sale). Surfacing it is not blocking it.
+ */
+export function isNegativeStock(line: CurrentStockLine): boolean {
+  return line.current_quantity_micro < 0;
+}
+
+export function negativeStockLines(lines: readonly CurrentStockLine[]): CurrentStockLine[] {
+  return lines.filter(isNegativeStock);
+}
+
+/**
+ * Lines needing a human's attention, negatives first.
+ *
+ * A negative line is reported ONCE even when it also sits under a configured
+ * reorder level — it is the stronger statement, and listing an item twice
+ * teaches a cashier to skim the banner.
+ */
+export function stockAttentionLines(lines: readonly CurrentStockLine[]): {
+  negative: CurrentStockLine[];
+  low: CurrentStockLine[];
+} {
+  const negative = negativeStockLines(lines);
+  const negativeIds = new Set(negative.map((l) => l.inventory_item_id));
+  return {
+    negative,
+    low: lowStockLines(lines).filter((l) => !negativeIds.has(l.inventory_item_id)),
+  };
 }
 
 // ------------------------------------------------------------ permissions --

@@ -270,6 +270,26 @@ screen by hand since M1.
   Curry should have read `NO_RECIPE`. The seed's recipe coverage is as
   reported; the defect is the hardcoded null above, not thin seed data.
 
+## Found in the M4 manual deduction pass (2026-08-27)
+
+- **The stock-count quantity input never names its unit.** The label reads
+  "Counted quantity (whole units)". The unit is grams for MASS, millilitres for
+  VOLUME and pieces for COUNT (`human_quantity_to_micro`,
+  `apps/pos/src-tauri/src/commands/inventory.rs`). A manager counting 10 kg of
+  spinach types `10` and records 10 grams; one counting in kilograms out of
+  habit is off by 1000 with no feedback. Label the actual unit per item and
+  echo it beside the input. Contributing factor to a 90,000 g spinach entry
+  during this pass, which was data entry rather than arithmetic — the ledger
+  showed three adjustments (3000 g, 7000 g, 90,000 g), each an exact x10^6 of
+  what was typed.
+
+- **Seeded reorder levels are arbitrary and make the banner meaningless.** With
+  every item near zero, 28 of 32 read LOW, so the signal that criterion 4 exists
+  to prove is buried the first time anybody looks. Soda Water's `litres(5)`
+  reads correctly as 5000ml now, but a 5-litre reorder point on soda in a
+  restaurant is a placeholder, not a threshold. Sanity-check the whole seeded
+  set against plausible restaurant pars before anyone else sees that screen.
+
 ## Testing
 
 - **Postgres integration tests never clean up their rows.** Every tenant/brand/outlet/order row these suites insert stays forever. Harmless today — ids are minted per run since `1cc087c`, so nothing collides — but the database grows without bound across CI runs. Pre-existing, and deliberately left alone during the fixture repair to keep that change to one concern. Worth a `t.Cleanup` or a per-run schema before CI runs these on every push.

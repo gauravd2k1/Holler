@@ -264,12 +264,20 @@ button {
    `.print-failure-banner` but sits above it (higher z-index) so both can be
    visible at once without one hiding the other, and is itself a button —
    tapping it goes straight to the stock detail screen. */
-.low-stock-banner {
+/* The two stock banners stack in one fixed container. Each was `position:
+   fixed; bottom: 48px` on its own, so rendering both would have overlapped
+   them exactly -- the negative-stock message would have been invisible
+   underneath the low-stock one, which is the failure it exists to prevent. */
+.stock-banners {
   position: fixed;
   left: 0;
   right: 0;
   bottom: 48px;
   z-index: 1001;
+  display: flex;
+  flex-direction: column;
+}
+.low-stock-banner {
   display: flex;
   align-items: center;
   gap: 1rem;
@@ -313,6 +321,48 @@ button {
 }
 .current-stock-row-low {
   background: #431;
+}
+/* Below zero reads LOUDER than low: red against the low banner's amber, and
+   its own wording. "Order more soon" and "your books are wrong" are different
+   statements and must not look alike. */
+.negative-stock-banner {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  width: 100%;
+  padding: 0.5rem 1rem;
+  background: #611;
+  border-top: 3px solid #f44;
+  color: #fff;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.negative-stock-summary {
+  font-weight: bold;
+}
+.negative-stock-names {
+  flex: 1;
+}
+.negative-stock-action {
+  text-decoration: underline;
+}
+.current-stock-row-negative {
+  background: #411;
+}
+.current-stock-quantity-negative {
+  color: #f88;
+  font-weight: bold;
+}
+.current-stock-negative-tag {
+  margin-left: 0.5rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: 3px;
+  background: #f44;
+  color: #000;
+  font-weight: bold;
+  font-size: 0.75rem;
 }
 .current-stock-low-tag {
   margin-left: 0.5rem;
