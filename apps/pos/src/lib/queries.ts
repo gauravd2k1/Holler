@@ -12,6 +12,7 @@ import {
   listKotsForOrder,
   listMenuCategories,
   listMenuItems,
+  listMenuItemVariants,
   listOrders,
   listPaymentsForOrder,
   listStations,
@@ -25,6 +26,7 @@ import {
 export const queryKeys = {
   menuItems: ["menu-items"] as const,
   menuCategories: ["menu-categories"] as const,
+  menuItemVariants: ["menu-item-variants"] as const,
   tables: ["tables"] as const,
   orders: ["orders"] as const,
   order: (orderId: string) => ["order", orderId] as const,
@@ -46,6 +48,10 @@ export const queryKeys = {
 
 export function useMenuItemsQuery() {
   return useQuery({ queryKey: queryKeys.menuItems, queryFn: listMenuItems });
+}
+
+export function useMenuItemVariantsQuery() {
+  return useQuery({ queryKey: queryKeys.menuItemVariants, queryFn: listMenuItemVariants });
 }
 
 export function useMenuCategoriesQuery() {

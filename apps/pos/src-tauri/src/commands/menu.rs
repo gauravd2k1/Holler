@@ -8,7 +8,7 @@
 
 use tauri::State;
 
-use crate::dto::{MenuCategory, MenuItem, MenuItemModifier};
+use crate::dto::{MenuCategory, MenuItem, MenuItemModifier, MenuItemVariant};
 use crate::error::{AppError, AppResult};
 use crate::state::AppState;
 
@@ -55,6 +55,26 @@ pub fn list_menu_item_modifiers_impl(state: &AppState) -> AppResult<Vec<MenuItem
     Ok(modifiers.into_iter().map(MenuItemModifier::from).collect())
 }
 
+/// Variant catalogue for this outlet — read-only.
+///
+/// The ordering screen needs this to decide whether a tap can resolve without
+/// a choice. It must NOT be used to auto-resolve a multi-variant item: Half at
+/// 18000 paise and Full at 32000 are a PRICE decision, and picking one on the
+/// cashier's behalf is a revenue defect, not a convenience. `is_default`
+/// preselects in the picker and never resolves — see `VariantPicker`.
+pub fn list_menu_item_variants_impl(state: &AppState) -> AppResult<Vec<MenuItemVariant>> {
+    let db = state.db.lock().map_err(|_| AppError {
+        code: "LOCK_POISONED",
+        message: "database lock poisoned".into(),
+    })?;
+
+    let variants = holler_edge_database::repo::list_menu_item_variants_for_outlet(
+        db.connection(),
+        &state.outlet_id,
+    )?;
+    Ok(variants.into_iter().map(MenuItemVariant::from).collect())
+}
+
 #[tauri::command]
 pub fn list_menu_items(state: State<'_, AppState>) -> AppResult<Vec<MenuItem>> {
     list_menu_items_impl(&state)
@@ -68,4 +88,9 @@ pub fn list_menu_categories(state: State<'_, AppState>) -> AppResult<Vec<MenuCat
 #[tauri::command]
 pub fn list_menu_item_modifiers(state: State<'_, AppState>) -> AppResult<Vec<MenuItemModifier>> {
     list_menu_item_modifiers_impl(&state)
+}
+
+#[tauri::command]
+pub fn list_menu_item_variants(state: State<'_, AppState>) -> AppResult<Vec<MenuItemVariant>> {
+    list_menu_item_variants_impl(&state)
 }

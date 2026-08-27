@@ -37,6 +37,7 @@ pub fn run() {
             commands::menu::list_menu_items,
             commands::menu::list_menu_categories,
             commands::menu::list_menu_item_modifiers,
+            commands::menu::list_menu_item_variants,
             commands::tables::list_tables,
             commands::tables::get_open_table_session,
             commands::orders::create_order,

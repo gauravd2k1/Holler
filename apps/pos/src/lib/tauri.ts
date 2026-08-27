@@ -13,6 +13,7 @@ import {
   InvoiceSchema,
   KotSchema,
   MenuItemSchema,
+  MenuItemVariantSchema,
   PaymentSchema,
   PrintJobSchema,
   RestaurantTableSchema,
@@ -27,6 +28,7 @@ import {
   type Invoice,
   type Kot,
   type MenuItem,
+  type MenuItemVariant,
   type OrderType,
   type Payment,
   type PaymentMethod,
@@ -87,6 +89,15 @@ export async function login(email: string, password: string): Promise<Authentica
   try {
     const raw = await invoke("login", { email, password });
     return AuthenticatedPrincipalSchema.parse(raw);
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
+
+export async function listMenuItemVariants(): Promise<MenuItemVariant[]> {
+  try {
+    const raw = await invoke<unknown[]>("list_menu_item_variants");
+    return raw.map((v) => MenuItemVariantSchema.parse(v));
   } catch (err) {
     throw toCommandError(err);
   }

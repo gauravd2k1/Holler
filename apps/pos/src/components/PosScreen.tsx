@@ -1,9 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
-import type { MenuItem } from "@holler/contracts";
-import { useMenuCategoriesQuery, useMenuItemsQuery, useTablesQuery, queryKeys } from "../lib/queries";
-import { groupItemsByCategory } from "../domain/menu";
+import type { MenuItem, MenuItemVariant } from "@holler/contracts";
+import {
+  useMenuCategoriesQuery,
+  useMenuItemsQuery,
+  useMenuItemVariantsQuery,
+  useTablesQuery,
+  queryKeys,
+} from "../lib/queries";
+import { groupItemsByCategory, resolveVariantForTap, variantPricePaise } from "../domain/menu";
 import { SUPPORTED_ORDER_TYPES, cartSubtotalPaise, canSendOrder, requiresTable, lineTotal } from "../domain/cart";
 import { formatPaiseAsRupees, parseRupeesToPaise } from "../domain/money";
 import { hasPermission } from "../domain/permissions";
@@ -26,6 +32,7 @@ export function PosScreen() {
   const principal = useAuthStore((s) => s.principal);
   const menuItemsQuery = useMenuItemsQuery();
   const menuCategoriesQuery = useMenuCategoriesQuery();
+  const menuItemVariantsQuery = useMenuItemVariantsQuery();
   const tablesQuery = useTablesQuery();
 
   const orderId = useCartStore((s) => s.orderId);
@@ -102,6 +109,59 @@ export function PosScreen() {
   // out of correcting its type/table before Send.
   const canEditOrderShape = orderId === null || orderStatus === "DRAFT";
 
+  const menuItemVariants = menuItemVariantsQuery.data ?? [];
+  // Which item is showing its variant picker, and what is selected in it.
+  // `null` = no picker open. Opening one preselects `is_default` if exactly
+  // one row claims it -- a preselection the cashier can change, never a
+  // resolution taken on their behalf (domain/menu.ts explains why).
+  const [variantPickerItemId, setVariantPickerItemId] = useState<string | null>(null);
+  const [chosenVariantId, setChosenVariantId] = useState<string | null>(null);
+
+  function addResolvedLine(item: MenuItem, variantId: string | null, pricePaise: number) {
+    void addItem(
+      {
+        menuItemId: item.id,
+        variantId,
+        unitPricePaise: pricePaise,
+        quantity: 1,
+        notes: null,
+      },
+      menuItems,
+    );
+  }
+
+  /**
+   * A plain tap on the grid. Resolves without asking ONLY when the item has
+   * zero or one variant; anything else opens the picker. Before 2026-08-27
+   * this passed `variantId: null` unconditionally, so no sale the POS ever
+   * took deducted any stock (docs/RESUME.md §2a).
+   */
+  function handleTapItem(item: MenuItem) {
+    const resolution = resolveVariantForTap(item, menuItemVariants);
+    if (resolution.kind === "RESOLVED") {
+      addResolvedLine(item, resolution.variantId, resolution.pricePaise);
+      return;
+    }
+    setVariantPickerItemId(item.id);
+    setChosenVariantId(resolution.preselectedId);
+  }
+
+  function resolveVariantForTapOptions(item: MenuItem): MenuItemVariant[] {
+    const r = resolveVariantForTap(item, menuItemVariants);
+    return r.kind === "MUST_CHOOSE" ? r.options : [];
+  }
+
+  function confirmVariantChoice(item: MenuItem) {
+    const chosen = menuItemVariants.find((v) => v.id === chosenVariantId);
+    // Defensive: the Add button is disabled until something is chosen, so
+    // this cannot normally fire. Adding at the base price would be a silent
+    // wrong bill, which is the failure this whole path exists to prevent.
+    if (!chosen) return;
+    addResolvedLine(item, chosen.id, variantPricePaise(item, chosen));
+    setVariantPickerItemId(null);
+    setChosenVariantId(null);
+  }
+
   function openModifierForm(itemId: string) {
     setModifierFormItemId(itemId);
     setModifierGroupName("");
@@ -125,11 +185,19 @@ export function PosScreen() {
       setModifierFormError("Price must be a number like 25 or 12.50.");
       return;
     }
+    // A modifier line resolves its variant by the same rule as a plain tap.
+    // A multi-variant item must be chosen through the picker first, so the
+    // modifier form refuses rather than silently billing the base price.
+    const resolution = resolveVariantForTap(item, menuItemVariants);
+    if (resolution.kind !== "RESOLVED") {
+      setModifierFormError("Choose a size for this item first, then add the modifier.");
+      return;
+    }
     void addItem(
       {
         menuItemId: item.id,
-        variantId: null,
-        unitPricePaise: item.base_price_paise,
+        variantId: resolution.variantId,
+        unitPricePaise: resolution.pricePaise,
         quantity: 1,
         notes: null,
         modifiers: [
@@ -226,17 +294,9 @@ export function PosScreen() {
                 // A plain tap: no modifiers. If a plain line for this item
                 // already exists, the store raises its quantity instead of
                 // adding a second line (docs/backlog-m2.md "No quantity
-                // control on a cart line").
-                void addItem(
-                  {
-                    menuItemId: item.id,
-                    variantId: null,
-                    unitPricePaise: item.base_price_paise,
-                    quantity: 1,
-                    notes: null,
-                  },
-                  menuItems,
-                )
+                // control on a cart line"). Multi-variant items open the
+                // picker instead of resolving -- see handleTapItem.
+                handleTapItem(item)
               }
             >
               <span className="name">{item.name}</span>
@@ -252,6 +312,45 @@ export function PosScreen() {
             >
               + Modifier
             </button>
+            {variantPickerItemId === item.id && (
+              <div className="pos-variant-picker" role="group" aria-label={`Choose a size for ${item.name}`}>
+                <p className="pos-variant-picker-prompt">Choose a size</p>
+                {resolveVariantForTapOptions(item).map((v) => (
+                  <label key={v.id} className="pos-variant-option">
+                    <input
+                      type="radio"
+                      name={`variant-${item.id}`}
+                      value={v.id}
+                      checked={chosenVariantId === v.id}
+                      onChange={() => setChosenVariantId(v.id)}
+                    />
+                    <span className="name">{v.name}</span>
+                    <span className="price">{formatPaiseAsRupees(variantPricePaise(item, v))}</span>
+                  </label>
+                ))}
+                <div className="pos-variant-picker-actions">
+                  <button
+                    type="button"
+                    // Disabled until a size is chosen. There is deliberately
+                    // no "just add it" escape: an unchosen size is an unpriced
+                    // line, and billing one at the base price is a wrong bill.
+                    disabled={chosenVariantId === null || cartPending}
+                    onClick={() => confirmVariantChoice(item)}
+                  >
+                    Add
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setVariantPickerItemId(null);
+                      setChosenVariantId(null);
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
             {modifierFormItemId === item.id && (
               <div className="pos-modifier-form">
                 <input
