@@ -172,6 +172,60 @@ M2 ships kitchen features to this same target, so validating the target before a
 
 - **`POST /kots/{kotId}/status` has no HTTP-level 422 assertion.** The create route asserts the envelope-mismatch status code directly; the status route shares the identical `requireKotEnvelope` path and is covered at service level only. The code path is proven, the wire contract is not. Cheap to close on the next backend touch.
 
+## Found during the M4 manual POS pass (2026-08-27)
+
+Four defects found in roughly twenty minutes of driving the shipped POS by
+hand, while observing M4 acceptance criterion 4. **None block M4** — all four
+are M1/M2 ordering surface, filed rather than fixed mid-milestone.
+
+Every suite in the repo passes over all four. Nobody had driven the ordering
+screen by hand since M1.
+
+- **DINE_IN accepts an order with NO TABLE SELECTED.** This is not an
+  online-order provision — online is DELIVERY or an aggregator channel, both of
+  which have their own order types. A dine-in order with no table cannot be
+  found by a waiter, cannot be added to, and at billing nobody knows which
+  table to close. It also strands the `table_session` aggregate that ADR-011
+  deliberately split out from `restaurant_table` for exactly this purpose.
+  Either DINE_IN requires a table, or there is an explicit, named
+  "counter / no table" option the cashier chooses deliberately. **Silently
+  accepting an empty selector is the worst of the three.** Unlike a stock
+  block, refusing here costs nothing: it is one tap on a channel that
+  inherently has a table.
+
+- **The cart does not clear after a successful send, and the line sticks.** The
+  REFUSAL itself is correct and must stay — `SENT_TO_KITCHEN` must not be
+  silently amendable. Three things around it are wrong:
+  a. the cart should empty when the order goes to the kitchen;
+  b. the `-`, `+` and Remove controls stay enabled on a non-amendable order
+     while Send correctly greys out — the screen knows the order state, the
+     per-item controls do not read it;
+  c. the error is developer text. `order <uuid> is not amendable: status is
+     SENT_TO_KITCHEN` in small red type at the bottom of the screen is not
+     something a cashier reads or can act on. §64 is binding here: every error
+     must say whether intervention is needed and what it is.
+
+- **"Beverages" appears TWICE in the category list.** Both rows are real and
+  seeded on purpose, which is why no test caught it: `CATEGORY_ID`
+  (sort_order 1) is the legacy fixture whose exact ids, price and routing
+  `tests/e2e-scenario/harness` pins, and the T0b seed menu carries its own
+  "Beverages" (sort_order 8) from `HOLLER_DEV_MENU_SPEC.md`. The seeder
+  documents the collision at `edge/database/src/bin/devseed.rs:62-75`. Merging
+  them would break the harness, so the fix is to disambiguate — rename the
+  legacy fixture category, or scope the harness to its ids rather than a name.
+  A cashier seeing one category name twice cannot tell which to tap.
+
+- **"Kitchen Prep (internal — not sold)" appears in the ORDERING screen.** Its
+  own name says it is not sold. The category exists because
+  `recipe.menu_item_variant_id` is NOT NULL (migration 0015), so even a pure
+  sub-recipe must bind to a menu item/variant — see `INTERNAL_CATEGORY_ID`,
+  `devseed.rs:126`. Nothing in the contract marks a category or item
+  non-sellable, so the till lists prep components as orderable food. Fixing it
+  properly is a **contract change** (an `is_sellable` or equivalent on the
+  category or item) and therefore orchestrator-only; filtering the one known id
+  in the POS would be a patch over a modelling gap that will recur the moment a
+  second internal category exists.
+
 ## Testing
 
 - **Postgres integration tests never clean up their rows.** Every tenant/brand/outlet/order row these suites insert stays forever. Harmless today — ids are minted per run since `1cc087c`, so nothing collides — but the database grows without bound across CI runs. Pre-existing, and deliberately left alone during the fixture repair to keep that change to one concern. Worth a `t.Cleanup` or a per-run schema before CI runs these on every push.

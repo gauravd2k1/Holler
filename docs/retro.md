@@ -789,3 +789,39 @@ criterion-6 test would have compiled for the first time inside the acceptance
 job, where a lint error reads as a failed acceptance criterion. The style job
 now passes `--features cloud-e2e`; `scripts/check-gated-tests.mjs` was already
 guarding the same blindness one job over, on the test side.
+
+---
+
+## 2026-08-27 — Twenty minutes of manual clicking found what every suite passes over
+
+**Severity:** medium. Six defects, none caught by any test, two of them blocking the acceptance criterion they sat behind.
+
+### What happened
+
+M4 acceptance criterion 4 — "an ingredient crossing its reorder level is visible to a human on the POS" — had stood at *EDGE MET / SURFACE UNOBSERVED* for days. The component was mounted on the right screens, the route was registered, the pure logic was unit-tested. Closing it needed one person to launch the shipped POS and look.
+
+Launching it took three fixes, none predicted:
+
+1. **The seeded dev principal could not reach the screens.** `StockDeductionGapsScreen` is gated on `inventory.manage` and the count/wastage screens on `inventory.count`; the seeded cashier carried neither, so the criterion's own surface rendered a not-permitted panel.
+2. **The Tauri `MenuItem` DTO was missing `tax_profile_id` and `hsn_sac`.** `MenuItemSchema` marks both `.nullable()`, which in Zod is *not* `.optional()` — a missing key fails `.parse` exactly like a wrong type. Every `list_menu_items` call rejected.
+3. **A rejected menu query is indistinguishable from a slow one.** `PosScreen` renders "Loading menu…" on `!hydrated`, and `hydrate` only runs on `isSuccess`. The query's `isError` is never surfaced, so the DTO bug presented as a permanent spinner with no error anywhere.
+
+Then, with the POS finally usable, roughly twenty minutes of ordinary clicking found four more: DINE_IN accepts an order with no table selected; the cart does not clear after a successful send and its per-item controls stay enabled on a non-amendable order while Send correctly greys out; "Beverages" appears twice in the category list; and "Kitchen Prep (internal — not sold)" is orderable from the till despite its own name. All four are M1/M2 ordering surface. All four are filed in `docs/backlog-m2.md`, not fixed mid-milestone.
+
+### Root cause
+
+Nobody had driven the ordering screen by hand since M1. Every one of these is invisible to the suites by construction:
+
+- The DTO drift is a **cross-language wire type with no drift check**. The TS↔Go drift suite covers `packages/contracts`; nothing compares the Tauri DTOs in `apps/pos/src-tauri/src/dto.rs` against the Zod schemas they must satisfy. This is the 0.4.6 OpenAPI drift — *the same three `MenuItem` fields* — one layer further out. A shape that crosses a language boundary with no machine check will drift, and it will drift at exactly the field most recently added.
+- The permission gap needed a **specific principal reaching a specific screen**; unit tests construct their own principals and never ask whether the seeded one can log in and navigate.
+- The four ordering defects are **judgement about what a cashier sees**. A test asserting "DINE_IN order created" passes whether or not a table was chosen; only a person asks who is going to close that table at billing.
+
+The deeper pattern is the one this log keeps recording in new costumes: the repo is well defended against regressions in things someone once looked at, and undefended against things nobody has ever looked at. Criterion 4's evidence chain was component-mounted, route-registered, logic-unit-tested — three true statements that together still did not mean a human could see a low-stock warning.
+
+### Rules
+
+- **Drive the shipped surface by hand at every milestone boundary, not only at the end.** Twenty minutes found six defects here. The cost of not doing it is not the defects — it is that they are found by whoever finally looks, at whatever moment that happens to be, which was the eve of an acceptance sign-off.
+- **A wire type that crosses a language boundary needs a machine check, or it is drift waiting to happen.** `dto.rs` ↔ Zod schemas is now the second instance of the identical failure on the identical three fields. Add the check or expect a third.
+- **A failed query must not render as a loading state.** Keying a spinner off `!loaded` rather than `isError` converts every failure into an infinite wait, which is the hardest possible symptom to diagnose and the easiest to ship.
+- **Nullable is not optional.** In Zod, `.nullable()` requires the key to be *present* and null. A Rust `Option<T>` that is simply absent from the struct fails the parse — it does not serialise as `null`, it does not serialise at all.
+- **An unreachable screen is an unmet criterion, no matter what is behind it.** Check that the seeded principal can actually reach every surface a criterion names, before claiming the surface works.
