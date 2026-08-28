@@ -11,13 +11,16 @@
 //! per row and persists the result; nothing re-derives a `business_date`
 //! from a stored `occurred_at` later.
 //!
-//! **This is the corrected implementation the 0013 migration header names.**
-//! `apps/pos/src-tauri/src/commands/billing.rs::business_date_from` takes the
-//! first ten characters of a UTC instant, which mis-buckets any IST outlet
-//! trading between midnight and 05:30. That function is NOT called from here
-//! and is out of this crate's authority to fix (a POS-side defect, filed in
-//! `docs/retro.md`) — this module exists so the M4 stock ledger never
-//! inherits it.
+//! **This is the corrected implementation the 0013 migration header names,
+//! and since M5 T7b it is the ONLY one.** `apps/pos/src-tauri/src/commands/
+//! billing.rs::business_date_from` used to take the first ten characters of
+//! a UTC instant, which mis-buckets any IST outlet trading between midnight
+//! and 05:30 — so an invoice and the stock ledger row for the same sale
+//! could land on different business dates. It is deleted; the POS now
+//! reaches this function through the one public entry point,
+//! [`crate::repo::compute_outlet_business_date`]. `repo.rs`'s display-number
+//! reset still buckets by UTC calendar day (filed to M6, `docs/backlog.md`)
+//! — that is a separate call site, not a second implementation.
 //!
 //! ============================================================================
 //! INFALLIBLE BY CONSTRUCTION, NOT BY `unwrap_or`
@@ -26,7 +29,7 @@
 //! An earlier version of this module resolved a malformed `outlet.timezone`
 //! with `.parse::<Tz>().unwrap_or(chrono_tz::UTC)`. That is the exact defect
 //! this milestone exists to remove, one layer down: `business_date_from`
-//! (above) computes a UTC date while claiming outlet-local, and a silent
+//! (above) computed a UTC date while claiming outlet-local, and a silent
 //! `unwrap_or` reintroduces the same failure — a STORED, PLAUSIBLE-LOOKING,
 //! WRONG business date, with no signal anywhere that it happened. **A silent
 //! fallback to a different valid value is worse than a panic**: a panic is

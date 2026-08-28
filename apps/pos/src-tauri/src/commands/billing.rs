@@ -63,13 +63,26 @@ fn lock_db(state: &AppState) -> AppResult<std::sync::MutexGuard<'_, Db>> {
     })
 }
 
-/// Outlet-local business day. Truncates the UTC invoice moment to its date
-/// part rather than resolving `outlet.timezone` — the same known limitation
-/// already disclosed on `edge/database/src/repo.rs`'s display-number reset
-/// bucketing (docs/RESUME.md "Display-number reset buckets by UTC calendar
-/// day, not outlet-local business day"), not a new one introduced here.
-fn business_date_from(instant_iso: &str) -> String {
-    instant_iso.get(0..10).unwrap_or(instant_iso).to_string()
+/// Outlet-local business day (ADR-018 §9.2), resolved by the edge.
+///
+/// This crate no longer computes a business date of its own. The former
+/// `business_date_from` took the first ten characters of the UTC instant,
+/// so an IST outlet still serving at 01:00 local booked its invoices and
+/// its cash shift to the NEXT business date while the stock ledger — which
+/// already used `compute_business_date` — booked the same sale to the
+/// current one, and a `DAILY` invoice series reset mid-service. One
+/// implementation now: `holler_edge_database::repo::compute_outlet_business_date`,
+/// which honours `outlet.timezone` and `outlet.day_start_time`.
+fn business_date_for(
+    db: &Db,
+    outlet_id: &str,
+    instant_iso: &str,
+) -> AppResult<String> {
+    Ok(holler_edge_database::repo::compute_outlet_business_date(
+        db.connection(),
+        outlet_id,
+        instant_iso,
+    )?)
 }
 
 /// `discounts_by_item` carries each line's already-resolved
@@ -244,12 +257,13 @@ pub fn issue_invoice_impl(
         ),
     })?;
 
+    let business_date = business_date_for(&db, &state.outlet_id, &now)?;
     let header = IssueInvoiceHeader {
         outlet_id: state.outlet_id.clone(),
         order_id: order.id.clone(),
         series_code: series.code,
         invoice_date: now.clone(),
-        business_date: business_date_from(&now),
+        business_date: business_date.clone(),
         customer_name: None,
         customer_phone: None,
         customer_gstin: None,
@@ -456,12 +470,13 @@ pub fn issue_split_invoices_impl(
         ),
     })?;
 
+    let business_date = business_date_for(&db, &state.outlet_id, &now)?;
     let header = IssueInvoiceHeader {
         outlet_id: state.outlet_id.clone(),
         order_id: order.id.clone(),
         series_code: series.code,
         invoice_date: now.clone(),
-        business_date: business_date_from(&now),
+        business_date: business_date.clone(),
         customer_name: None,
         customer_phone: None,
         customer_gstin: None,
@@ -604,6 +619,12 @@ pub fn open_cash_shift_impl(
     opening_cash_paise: i64,
 ) -> AppResult<CashShift> {
     let now = now_iso();
+    // Scoped read lock: `open_cash_shift_with_outbox` below takes the same
+    // mutex mutably, so this guard must be dropped before then.
+    let business_date = {
+        let db = lock_db(state)?;
+        business_date_for(&db, &state.outlet_id, &now)?
+    };
     let new_shift = NewCashShift {
         id: new_id(),
         outlet_id: state.outlet_id.clone(),
@@ -611,7 +632,7 @@ pub fn open_cash_shift_impl(
         cashier_user_id: cashier_user_id.to_string(),
         opened_at: now.clone(),
         opening_cash_paise,
-        business_date: business_date_from(&now),
+        business_date: business_date.clone(),
         created_at: now.clone(),
         updated_at: now.clone(),
     };
@@ -848,4 +869,77 @@ pub fn find_open_cash_shift(
     cashier_user_id: String,
 ) -> AppResult<Option<CashShift>> {
     find_open_cash_shift_impl(&state, &cashier_user_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// M5 T7b FALSIFICATION TEST. This asserts the exact case the deleted
+    /// `business_date_from` got wrong: an outlet whose service runs past
+    /// midnight LOCAL, at an instant that has already crossed midnight UTC
+    /// but has NOT yet reached the outlet's `day_start_time`. The old
+    /// implementation truncated the UTC instant, so it returned
+    /// "2026-08-22"; the correct answer is the PREVIOUS business date,
+    /// "2026-08-21", because 05:30 IST on the 22nd is still the night of
+    /// the 21st for an outlet whose day starts at 06:00.
+    ///
+    /// Falsified before it was trusted: pointed at the old
+    /// first-ten-characters expression it fails with
+    /// `left: "2026-08-22", right: "2026-08-21"`.
+    #[test]
+    fn an_instant_after_utc_midnight_but_before_day_start_books_to_the_previous_business_date() {
+        let db = holler_edge_database::Db::open_in_memory_for_tests().expect("open db");
+        holler_edge_database::repo::upsert_outlet(
+            db.connection(),
+            &holler_edge_database::model::Outlet {
+                id: "outlet-bd".to_string(),
+                brand_id: "brand-1".to_string(),
+                name: "Late Night Outlet".to_string(),
+                timezone: "Asia/Kolkata".to_string(),
+                config_version: 1,
+                created_at: "2026-08-01T00:00:00Z".to_string(),
+                updated_at: "2026-08-01T00:00:00Z".to_string(),
+            },
+        )
+        .expect("seed outlet");
+        holler_edge_database::repo::upsert_outlet_day_start_time(
+            db.connection(),
+            "outlet-bd",
+            "06:00",
+            2,
+        )
+        .expect("seed day_start_time");
+
+        // Assert the fixture actually landed before asserting anything
+        // about it -- a rejected write would leave the migration default
+        // '00:00' in place and this test would then pass on absent data.
+        assert_eq!(
+            holler_edge_database::repo::get_outlet_day_start_time(db.connection(), "outlet-bd")
+                .expect("read day_start_time"),
+            Some("06:00".to_string()),
+            "fixture did not apply: day_start_time was not stored"
+        );
+
+        // 2026-08-22T00:00:00Z == 05:30 IST on the 22nd, past midnight UTC,
+        // an hour and a half short of the 06:00 day start.
+        let business_date = business_date_for(&db, "outlet-bd", "2026-08-22T00:00:00Z")
+            .expect("business date must resolve");
+        assert_eq!(business_date, "2026-08-21");
+
+        // And the same instant one hour later, past the day start, rolls
+        // over -- so the assertion above is a real boundary, not a constant.
+        let after = business_date_for(&db, "outlet-bd", "2026-08-22T01:00:00Z")
+            .expect("business date must resolve");
+        assert_eq!(after, "2026-08-22");
+    }
+
+    /// An unresolvable outlet is a typed, propagated error -- never a
+    /// substituted "today", which is what a `unwrap_or(now)` shaped fix
+    /// would silently produce.
+    #[test]
+    fn a_missing_outlet_is_an_error_not_a_substituted_date() {
+        let db = holler_edge_database::Db::open_in_memory_for_tests().expect("open db");
+        assert!(business_date_for(&db, "no-such-outlet", "2026-08-22T00:00:00Z").is_err());
+    }
 }

@@ -108,14 +108,19 @@ pub fn get_outlet(conn: &Connection, id: &str) -> DbResult<Option<Outlet>> {
 /// `DbError` rather than a silent default — an outlet that has vanished out
 /// from under a confirm is a genuine data-integrity failure, not a config
 /// gap `business_date` should paper over.
+///
+/// Takes a `&Connection` rather than a `&Transaction` so the one PUBLIC
+/// entry point below ([`compute_outlet_business_date`]) can share it;
+/// `&Transaction` still coerces here, so every in-transaction caller is
+/// unchanged.
 pub(crate) fn get_outlet_business_date_config(
-    tx: &Transaction,
+    conn: &Connection,
     outlet_id: &str,
 ) -> DbResult<(
     crate::deduction::business_date::OutletTimezone,
     crate::deduction::business_date::DayStartTime,
 )> {
-    let (timezone_str, day_start_str): (String, String) = tx
+    let (timezone_str, day_start_str): (String, String) = conn
         .query_row(
             "SELECT timezone, day_start_time FROM outlet WHERE id = ?1",
             params![outlet_id],
@@ -126,6 +131,35 @@ pub(crate) fn get_outlet_business_date_config(
     let timezone = crate::deduction::business_date::OutletTimezone::parse(&timezone_str)?;
     let day_start_time = crate::deduction::business_date::DayStartTime::parse(&day_start_str)?;
     Ok((timezone, day_start_time))
+}
+
+/// The ONE business-date entry point for callers outside this crate
+/// (M5 T7b). `apps/pos/src-tauri` previously carried its own
+/// `business_date_from`, which truncated a UTC instant to its first ten
+/// characters — that mis-buckets any outlet whose trading night crosses
+/// midnight local, splitting one service across two business dates and
+/// resetting a `DAILY` invoice series mid-shift. It is deleted; this
+/// function is what replaced it, so there is exactly ONE implementation of
+/// ADR-018 §9.2 in the tree and the invoice, cash shift and stock ledger
+/// all bucket identically.
+///
+/// `occurred_at_utc` is an RFC3339 instant; a malformed one is a typed,
+/// propagated `DbError`, never a substituted "today". An outlet with a
+/// missing row or an unparseable `timezone`/`day_start_time` fails the same
+/// way — see [`get_outlet_business_date_config`] for why no arm of this
+/// path is allowed to silently fall back to a different valid date.
+pub fn compute_outlet_business_date(
+    conn: &Connection,
+    outlet_id: &str,
+    occurred_at_utc: &str,
+) -> DbResult<String> {
+    let occurred_at = crate::tax::parse_utc(occurred_at_utc)?;
+    let (timezone, day_start_time) = get_outlet_business_date_config(conn, outlet_id)?;
+    Ok(crate::deduction::business_date::compute_business_date(
+        occurred_at,
+        &timezone,
+        &day_start_time,
+    ))
 }
 
 /// Applies `outlet.day_start_time` from a config bundle (ADR-018 §9.2,
