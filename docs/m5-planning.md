@@ -2,7 +2,7 @@
 
 Written 2026-08-28 at the `m4-complete` tag. Inputs: `docs/RESUME.md`,
 `docs/M5_HANDOFF.md`, `docs/spec/procurement.md`, `docs/spec/inventory.md`,
-`HOLLER_MASTER_PROMPT.md` §27/§28/§81, `docs/backlog-m2.md`.
+`HOLLER_MASTER_PROMPT.md` §27/§28/§81, `docs/backlog.md`.
 
 This document carries two things: the **M4 backlog triage** (§1), and the **M5
 plan** (§2). §1 exists because the milestone was replanned on its evidence.
@@ -188,34 +188,18 @@ configured, and each fails correctly and loudly by design:
 > plan. Setting real reorder pars in `devseed.rs` rides with T4, which is the
 > track that will be looking at that screen anyway.
 
-### 1.6 Everything else open in `docs/RESUME.md` §6
+### 1.6 Everything else — MOVED TO `docs/backlog.md`
 
-| Item | Verdict |
-|---|---|
-| `backend/internal/{auth,menu,tables}` never call `postgres.Migrate`; CI works around it with a `devseed` step | **M5 for the new context only** — T1 does it correctly for `procurement`. Fixing the other three → **M6**. |
-| **OpenAPI machine-checked against nothing**; drift check is TS↔Go only; drifted silently on three `MenuItem` fields for two versions | **M6, trigger: the next OpenAPI drift found by hand.** M5 adds ~8 shapes to that file, which raises the odds. **This is the item the orchestrator is least comfortable deferring** — recorded so the discomfort survives the milestone boundary. |
-| `Db::connection()` is plain `pub`, held by three sibling crates; `cash_shift` not trigger-protected | **Partly closed as unfixable:** no append-only trigger can exist on `cash_shift`, because OPEN→CLOSED is a legitimate UPDATE. Narrowing `Db::connection()` to `pub(crate)` with explicit accessors → **M6**. |
-| `cashShift.ts` recovery runs on `BillingScreen` mount, not app-global startup | **M6** — same file cluster as §1.3. |
-| `payment_allocation` assumes one payment settles at most one invoice | **M7 (Payments), trigger: the first real split-tender-across-invoices requirement.** Genuinely unmodelled. |
-| `PAID_IN`/`PAID_OUT` emit no outbox event; they ride inside `CashShiftOpened`/`Closed` | **M7.** Visibility latency, not a money defect. |
-| `edge/sync/src/config.rs`: empty `device_credentials` is not an error, unlike empty `users` — "none enrolled" and "cloud forgot" are indistinguishable | **M6.** A silent-outage shape this repo has been bitten by three times; it is not procurement. |
-| `{OUTLET}` invoice token derives from `outlet.name`; no `outlet.code` in the contract — a rename changes invoice numbers | **M6, with its consumer.** See §2.2 for why the field was **dropped from v0.6.0**. |
-| A non-`NEVER` `reset_policy` whose prefix lacks a matching date token yields duplicate invoice numbers across periods; caught by the UNIQUE index, not validated at config-write time | **M6**, with §1.2 — same surface, same fixture work. |
-| `cargo fmt --check` diffs in `apps/pos/src-tauri/tests` and the two bridges under `tests/`; not CI-enforced (crate is not built on Linux, ADR-013) | **M6.** |
-| e2e HSN check folded into `9_tax_reconciliation`, so a tax arithmetic error and a missing compliance field share one invariant id | **M6.** One invariant id for two failures means one of them can never be seen. |
-| **No POS dev-server smoke test** | **M6. The constraint is load-bearing and must be carried with the item:** it must drive `pnpm dev`, **not** `pnpm build`. `optimizeDeps` prebundling is a dev-server-only mechanism that `vite build` never reads, so a build-based smoke test — including the headless-Chromium one used to *diagnose* the incident — cannot catch this class **at all**. |
-| `seed_offline_sale.rs` proves the resolver, not the caller | **M6.** Product fixed at `7e88d1c`; the test that drives the resolution the ordering screen actually performs still does not exist. |
-| Nothing machine-checks the Tauri DTOs (`apps/pos/src-tauri/src/dto.rs`) against the Zod schemas | **M6.** The same three `MenuItem` fields drifted twice, one layer apart (0.4.6 OpenAPI, then the DTO). M5 adds a receiving DTO, so the exposure grows. |
-| `PosScreen.tsx`: a **failed** menu query renders "Loading menu…" forever — `isError` is never surfaced | **M6.** This is *why* the DTO drift went unnoticed: a rejection is indistinguishable from a slow load. |
-| `cancel_kitchen_items_with_outbox` has no Tauri command; `#132-C` cancellation unreachable from the shipped surface | **M6.** Real gap, kitchen context. |
-| Postgres integration tests never clean up their rows; the database grows without bound across CI runs | **M6, trigger: CI runtime or storage becomes a problem.** Harmless today — ids are minted per run since `1cc087c`. |
-| `make test` covers only Go; the Rust and TS suites are run directly | **M6.** Either extend the target or stop calling it the project test command — it is quoted as the integration gate in the milestone workflow itself. |
-| Six permitted-but-unwritten `entry_type` values | **Three → M5** (`PURCHASE`, `RETURN_TO_VENDOR`, `TRANSFER_OUT` written this milestone). **`TRANSFER_IN` → M8** with the destination receipt. **Two `PRODUCTION_*` → M8.** Mechanism in §1.4. |
-| `gh` installed but not authenticated (§2a) | **Cleared 2026-08-28** — `gh auth login` run. A push whose CI verdict nobody read is not a push. |
-| `m4-complete` tag is local, not pushed (§2b) | **M5, T0** — pushed with the contracts commit. |
-| Two ADR-013 hardware gates (§4) | **PARKED, unchanged.** They block **M3** acceptance, not M5. Revisit ~2 September 2026. Not re-litigated. |
-| CLAUDE.md does not record the period M2 item 5 was falsely green (§5) | **Closed, T0** — now in the Completed-milestones note. |
-| Batch/expiry alerting | **M6.** Deferred a second time, deliberately: it depends on GRN existing, it is not procurement, and M5 was over-scoped. |
+The verdict table that lived here is now rows in `docs/backlog.md`, the single
+register, with the same landing milestones and triggers. This file keeps the
+REASONING for the M5/M6 cut (§1.1–§1.5 above); the register keeps the STATUS.
+
+**One correction carried across in the move:** this table recorded `gh` as
+"Cleared 2026-08-28 — `gh auth login` run." It is not. Checked 2026-08-29:
+`gh auth status` reports "You are not logged into any GitHub hosts." Pushing works
+(the remote is SSH and the key authenticates), but **no agent session can read a
+CI verdict**, which is the condition this entry existed to clear. It is open in
+`docs/backlog.md` and needs one interactive command from a human.
 
 ---
 

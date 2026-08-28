@@ -164,7 +164,7 @@ is done (`bundle.windows`, offline WebView2 embed, static CRT, NSIS-only); the V
 run itself needs a machine nobody has provisioned yet. Untested: the installer
 completing **offline**, memory headroom under WebView2 at 4GB, SQLite
 open/decrypt latency on a spinning disk, cold start, and crash recovery after a
-real power cut. Full checklist in `docs/backlog-m2.md` "Clean Windows 10 VM
+real power cut. Full checklist in `docs/backlog.md` "Clean Windows 10 VM
 validation"; `docs/adr/ADR-013-outlet-deployment-target.md` carries the addendum
 and the named fallback.
 
@@ -195,47 +195,30 @@ proves nothing about its callers — this had broken nine times.
 
 ---
 
-## 6. Open defects a new session must not lose
+## 6. Open defects — MOVED
+
+**The register is `docs/backlog.md`, and it is the only one.** This section held
+one of four overlapping lists; the table that lived here moved there wholesale on
+2026-08-29, along with `docs/backlog.md` (deleted) and the M5 planning triage.
+Nothing was dropped in the move — items were carried with their provenance.
+
+**Do not re-open a list here.** Four registers is how an item gets triaged twice
+and scheduled never, which is the failure that prompted the consolidation.
 
 Closed since the last resume: invoice enqueue path, split-bill unreachable,
 per-line discounts unreachable, `devseed` seeds no printer, the blocking
 contiguity check on both ranged streams, the sync-config test that needed a clean
-database, the fail-fast CI job shape that hid four pushes of verdicts, and the
-five items listed at the end of §2.
+database, and the fail-fast CI job shape that hid four pushes of verdicts.
 
 **Mint-counter wrap: FIXED, not open.** `format_order_display_number`
-(`edge/database/src/repo.rs`) uses bijective base-26 blocks, so the formatter
-never repeats for any index up to `i64::MAX`, plus a per-business-day counter
-reset. Regression test `formatter_never_repeats_past_the_old_wrap_point` drives
-past the old collision point (25975, where `#Z999` rolled to `#A1`).
+(`edge/database/src/repo.rs`) uses bijective base-26 blocks plus a per-business-day
+counter reset; `formatter_never_repeats_past_the_old_wrap_point` drives past the
+old collision point (25975).
 
-**Contracts are FROZEN at v0.6.0.** Cross-checked against
-`packages/contracts/package.json` by `scripts/check-milestone-marker.mjs`, which
-fails the build on disagreement — this line was written at 0.4.7 and went stale
-within two days.
+**Contracts are FROZEN at v0.6.0**, cross-checked against
+`packages/contracts/package.json` by `scripts/check-milestone-marker.mjs`.
 
-| Where | What |
-|---|---|
-| `backend/internal/{auth,menu,tables}` | Never call `postgres.Migrate`; they seed into an assumed schema. CI works around it with a `go run ./cmd/devseed` step. Real fix: have them migrate. |
-| `packages/contracts/openapi/openapi.yaml` | **Nothing machine-checks it** against handlers or TS/Go types. Drift check is TS↔Go only. It silently drifted on three `MenuItem` fields for two versions. |
-| `edge/database/src/lib.rs` | `Db::connection()` is plain `pub`; three sibling crates hold it. `payment` is trigger-protected (0.4.5); `cash_shift` is not and cannot be — OPEN→CLOSED is a legitimate UPDATE. |
-| `apps/pos/src/store/cashShift.ts` | Shift recovery runs on `BillingScreen` mount, not app-global startup. |
-| `edge/database` (`payment_allocation`) | Assumes one payment settles at most one invoice. A tender spanning two invoices is unmodelled. |
-| `edge/database` | `PAID_IN`/`PAID_OUT` emit no outbox event; they ride inside `CashShiftOpened`/`Closed`. Visibility latency, not a money defect. |
-| `edge/sync/src/config.rs` | Empty `device_credentials` is not an error, unlike empty `users` — "none enrolled" and "cloud forgot" are indistinguishable. |
-| `edge/database/src/invoice/numbering.rs` | `{OUTLET}` token derives from `outlet.name`; no `outlet.code` in the frozen contract. |
-| `edge/database/src/repo.rs` | Display-number reset buckets by **UTC** day, not outlet-local business day. Same limitation in `business_date_from` (`commands/billing.rs`). |
-| config authoring | A non-`NEVER` `reset_policy` whose prefix lacks the matching date token yields duplicate invoice numbers across periods. Caught by the UNIQUE index; not validated at config-write time. |
-| `backend/internal/compliance` | Writes gate on `outlet.manage`; **no `billing.manage`** exists in the frozen `Permission` enum. Whoever may rename a table may set the GSTIN printed on every invoice. |
-| `apps/pos/src-tauri/tests` | `cargo fmt --check` reports pre-existing diffs; not CI-enforced (crate is not built on Linux, ADR-013). Same for the two test bridges under `tests/`. |
-| `tests/e2e-scenario` | The HSN check is folded into `9_tax_reconciliation`, so a tax arithmetic error and a missing compliance field share one invariant id. |
-| `apps/pos` | **No dev-server smoke test.** Filed in `docs/backlog-m2.md` with the constraint that matters: it must drive `pnpm dev`, not the build — `optimizeDeps` is dev-server-only and `vite build` never reads it. |
-| `scripts/check-contract-field-consumers.mjs` | **Catches the absent-everywhere class only, and does not cover enum values at all.** Measured, not assumed: `is_default` appeared 3x in `edge/database/src/model.rs` before the POS fix, so this check was green while no sale deducted stock. Widening it to enums **must narrow the corpus first** — see 6.1. Follow-up for fields: per-surface check — the field must appear in each required surface AND in at least one file that is not a model, DTO or fixture. |
-| `edge/database/tests/seed_offline_sale.rs` | **Proves the resolver, not the caller.** It selects a variant directly; the POS passed `variantId: null`, and the defect lived in that gap. Fixed in the product (`7e88d1c`); the missing test that drives the resolution the ordering screen performs is not. |
-| `apps/pos/src-tauri/src/dto.rs` | **Nothing machine-checks the Tauri DTOs against the Zod schemas.** `MenuItem` was missing `tax_profile_id`/`hsn_sac` and `MenuItemVariant` still lacked `is_default`/`schema_version` — the 0.4.6 OpenAPI drift, same three fields, one layer out. Zod `.nullable()` is not `.optional()`, so a missing key fails `.parse` like a wrong type. Fixed 2026-08-27; the missing guard is not. |
-| `apps/pos/src/components/PosScreen.tsx` | A **failed** menu query renders "Loading menu…" forever — the banner keys off `!hydrated`, and `hydrate` only runs on `isSuccess`. `isError` is never surfaced, so a rejection is indistinguishable from a slow load. This is why the DTO drift above went unnoticed. |
-| `apps/pos` ordering surface | **Four defects found by twenty minutes of manual clicking, 2026-08-27** — DINE_IN accepts no table; the cart does not clear after send and its per-item controls ignore the non-amendable state; "Beverages" appears twice; the internal "Kitchen Prep (internal — not sold)" category is orderable. All M1/M2 surface. Full entries in `docs/backlog-m2.md`. |
-| `tests/e2e-scenario` | `cancel_kitchen_items_with_outbox` still has no Tauri command; `#132-C` cancellation is unreachable from the shipped surface. |
+---
 
 ### 6.1 Six permitted-but-unwritten `entry_type` values — M5's first schema task
 

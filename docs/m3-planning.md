@@ -8,7 +8,7 @@ These are inputs to the M3 task graph, not the graph itself.
 
 ## 1. Device enrollment is the first track, or a pre-track
 
-**It blocks any pilot deployment.** Not a hardening nicety — three separate holes that are one missing mechanism, all recorded under "Device enrollment" in `docs/backlog-m2.md`:
+**It blocks any pilot deployment.** Not a hardening nicety — three separate holes that are one missing mechanism, all recorded under "Device enrollment" in `docs/backlog.md`:
 
 - The edge sync worker takes `tenant_id`/`device_id` at construction with nothing to verify them against, so a mis-enrolled node silently mislabels every outbound envelope.
 - `GET /sync/config` — the one route that ships Argon2id password and PIN hashes — is gated on an ordinary human bearer token with `user.manage`. An enrolled edge node and a logged-in browser session are indistinguishable to the backend.

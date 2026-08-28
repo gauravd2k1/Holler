@@ -1,0 +1,71 @@
+# Holler backlog — the single register
+
+**This is the only backlog.** One table, one row per deferred item. It replaced four
+overlapping registers on 2026-08-29 (`docs/RESUME.md` §6, `docs/backlog-m2.md`,
+scattered ADR "filed" notes, and the M5 planning triage). `docs/backlog-m2.md` is
+deleted; `RESUME.md` §6 and `m5-planning.md` §1.6 now point here.
+
+Two rules, because four registers is how an item gets triaged twice and scheduled
+never:
+
+- **A deferred item lives here and nowhere else.** ADRs keep the *reasoning* for a
+  deferral — that is what an ADR is for — but the *status* is this table. If they
+  disagree, this table is wrong and should be fixed, not forked.
+- **Triage files an item; it does not schedule it.** A landing milestone here is a
+  filing, not a commitment, until it appears in that milestone's track graph in
+  `CLAUDE.md`.
+
+**Not in this register:** M5's own scope and acceptance criteria (`CLAUDE.md`), and
+anything already closed (closed items stay struck through in git history, not here).
+
+| Item | Why it matters | Landing / trigger | Where it was found |
+|---|---|---|---|
+| **Batch/expiry alerting** (`grn_line.batch_code`, `expiry_date`) | Fields are captured at receipt or never, and both are EXEMPT in `check-contract-field-consumers.mjs` with M6 named. **Both exemptions come out when this lands** — an exemption that outlives its reason is a silenced failure. | **M6** | ADR-019 §8; M5 scope cut |
+| **Four M1/M2 POS ordering defects** — DINE_IN accepts no table; cart does not clear after send and per-item controls ignore the non-amendable state; "Beverages" listed twice; internal "Kitchen Prep" category is orderable | Twenty minutes of manual clicking found all four. Every one is reachable from the shipped till today. | **M6** | `backlog-m2.md` "M4 manual POS pass", 2026-08-27 |
+| **`PosScreen.tsx` never surfaces `isError`** | A failed menu query renders "Loading menu…" forever — `hydrate` runs only on `isSuccess`, so a rejection is indistinguishable from a slow load. This is why the Tauri DTO drift went unnoticed. | **M6** | RESUME §6 |
+| **Cash-shift recovery mounts on `BillingScreen`, not app startup** | Shift recovery depends on which screen the cashier happens to open first. | **M6** | RESUME §6 (`apps/pos/src/store/cashShift.ts`) |
+| **Guard-rail track: narrow the field-consumer corpus** (exclude doc comments and `#[cfg(test)]`) | **Ordering is load-bearing: narrow the corpus BEFORE extending to enums, or the check ships inert.** Measured — the six unwritten `entry_type` values appear only in a doc comment and one test fixture. | **M6** | RESUME §6.1; `M5_HANDOFF.md` 2.2 |
+| **Guard-rail track: extend the field-consumer check to enum members** | It does not cover enum values at all. `is_default` appeared 3× in `model.rs` while no sale deducted stock — green check, broken product. Then declare the six `entry_type` values exempt with M5/M8 named. | **M6**, after corpus narrowing | RESUME §6.1 |
+| **Guard-rail track: machine-check Tauri DTOs against the Zod schemas** | Nothing checks `apps/pos/src-tauri/src/dto.rs` against the contracts. `MenuItem` was missing `tax_profile_id`/`hsn_sac`; `MenuItemVariant` lacked `is_default`/`schema_version` — the 0.4.6 OpenAPI drift, same three fields, one layer out. Fixed 2026-08-27; **the guard is not**. | **M6** | RESUME §6 |
+| **Guard-rail track: `make test` covers only Go** | The Rust and TypeScript suites are run directly, so the project's named test command does not run the project's tests. | **M6** | `backlog-m2.md` Testing |
+| **Guard-rail track: `cargo fmt --check` diffs in `apps/pos/src-tauri/tests`** | Pre-existing, not CI-enforced (the crate is not built on Linux, ADR-013), so it drifts silently. | **M6** | RESUME §6 |
+| **Append-only claim lint attributes by line distance** | A long table's claim lands on the *next* table; a triggers-only file's claim attaches to nothing and is **silently dropped**. 0027–0029 pass only because **the comments were written to suit it** — a documented obligation, not verification. The strict fix (prefer the table a claim NAMES) was prototyped and reverted: it surfaces pre-existing M1–M4 claims that each need a ruling. | **M6** | ADR-019; found landing contracts 0.6.0 |
+| **POS dev-server smoke test** | **It must drive `pnpm dev`, not the build.** `optimizeDeps` is a dev-server mechanism `vite build` never reads, so the build cannot fail on the defect this catches. Two incidents, both invisible to every green suite. | **M6** | `backlog-m2.md` Testing; retro 2026-08-11 / 08-20 |
+| **HSN invariant folded into `9_tax_reconciliation`** | A tax arithmetic error and a missing compliance field share one invariant id, so the e2e verdict cannot say which failed. | **M6** | RESUME §6 (`tests/e2e-scenario`) |
+| **`seed_offline_sale.rs` proves the resolver, not the caller** | It selects a variant directly; the POS passed `variantId: null` and the defect lived in that gap. **A deduction test proves deduction only for the path its caller takes.** Product fixed (`7e88d1c`); the missing test is not. | **M6** | RESUME §6; M4 criterion 1 |
+| **`Db::connection()` is plain `pub`** | Three sibling crates hold it, so any of them can bypass the repository layer. `payment` is trigger-protected; `cash_shift` is not and cannot be (OPEN→CLOSED is a legitimate UPDATE). | **M6** | RESUME §6 (`edge/database/src/lib.rs`) |
+| **`cancel_kitchen_items` has no Tauri command** | `#132-C` cancellation is unreachable from the shipped surface — the e2e harness exercises a path no operator can reach. | **M6** | RESUME §6 |
+| **Postgres integration tests never clean up** | Every tenant/brand/outlet/order row stays forever. Harmless today, and the reason `TestBuildRouter_SyncConfigEndToEnd` needed a clean database. | **M6** | `backlog-m2.md` Testing |
+| **Nothing machine-checks `openapi.yaml` against the handlers** | `check-openapi-go-drift.mjs` now closes SQL → Go/TS → OpenAPI **and runs in CI as of 0.6.0**. The remaining hop — spec vs. actual routes — is still unchecked. | **M6** | RESUME §6 |
+| **`payment_allocation` assumes one payment settles one invoice** | A tender spanning two invoices is unmodelled. Money-shaped, so it waits for the milestone that touches supplier/settlement money. | **M7** | RESUME §6 |
+| **`PAID_IN`/`PAID_OUT` emit no outbox event** | They ride inside `CashShiftOpened`/`Closed`. Visibility latency, not a money defect. | **M7** | RESUME §6 |
+| **Supplier accounts posting, credit application, settlement** | `supplier_invoice`/`supplier_credit` are modelled at 0.6.0 and only created/listed in M5. `status` accepts `RECEIVED` only. | **M7** | ADR-019 §8 |
+| **Row-level security / cross-tenant isolation in the database** | Isolation rests on per-query convention, not the database. One missing `WHERE tenant_id` is a cross-tenant read. | **M8, OR BEFORE A SECOND PRODUCTION TENANT — whichever comes first** | `backlog-m2.md` Deferred-with-trigger |
+| **`TRANSFER_IN`, goods-in-transit, central kitchen `semi_finished_batch`** | A transfer spans two edge databases; half-building it is worse than not. `destination_outlet_id` is recorded now so no migration hunts for it later. | **M8** | ADR-019 §8 |
+| **`DEFAULT gen_random_uuid()` retrofit — 8 columns in `postgres/0001_init.sql`** | §74 requires app-generated UUIDv7/ULID. A migrations lint holds the line (the count may only decrease), so this cannot get worse. | **M8** | `backlog-m2.md` Deferred-with-trigger |
+| **Config deletion is unrepresentable across every delta-synced join table** | Every `*Since` export ships per-row deltas with no tombstone, so a removed row never reaches an edge. | **M8** | `backlog-m2.md`, found by T4b/T4c |
+| **Device enrollment flow — HARD TRIGGER: blocks any pilot** | The contract shapes exist (ADR-017, 0.4.3); no operator-facing flow does. | **Trigger: any pilot deployment** | `backlog-m2.md` Security |
+| **Redis-backed rate limiter** | The login limiter is in-memory: it does not survive restart and shares no budget across instances. | **Trigger: more than one API instance** | `backlog-m2.md` Security |
+| **Edge DB key provisioning via `HOLLER_DB_KEY_HEX`** | Fail-fast on absence is right; an environment variable is not key management. | **Trigger: first real deployment** | `backlog-m2.md` Security |
+| **MSI/WiX installer** | Dropped, not failed — two half-verified installers are worse than one verified one. Returns with its own clean-VM verification, never by flipping `targets` back to `"all"`. | **Trigger: a deployment requiring MSI** (Group Policy / SCCM, or IT that will not run NSIS) | `backlog-m2.md` Deferred-with-trigger |
+| **Air-gapped build machine** | The WebView2 offline package is fetched from `go.microsoft.com` at *build* time. The installer is offline; the build is not. | **Trigger: a build host without internet** | `backlog-m2.md` Deferred-with-trigger |
+| **Rust binding for `packages/contracts`** | Until a fourth Rust consumer exists, `check-event-type-drift.mjs` greps literals instead. | **Trigger: a fourth Rust consumer** | `backlog-m2.md` Contracts |
+| **USB and Bluetooth printing unproven on hardware** | Only `NetworkTransport` (TCP) is exercised against a real listener. | **Trigger: an outlet using either** | `backlog-m2.md` M2 execution |
+| **ESC/POS on paper** | An **M3 exit gate**. The file-sink transport proves the byte stream, not that a device accepts it. No printer exists in this environment; one is being sourced. | **PARKED — revisit ~2 September 2026** | ADR-013 / M3 acceptance |
+| **Bare 4GB Windows 10 VM run** | An **M3 exit gate** and the ADR-013 validation. The installer half is done (`bundle.windows`, offline WebView2, static CRT, NSIS-only); the VM run needs a machine nobody has provisioned. | **PARKED — revisit ~2 September 2026** | ADR-013 addendum |
+| **Seeded reorder levels are placeholders** | 28 of 32 items read LOW, so the banner trains people to ignore it. Data, not code. | **Trigger: any rollout or demo** | RESUME §2(d); M4 manual pass |
+| **`menu_item.hsn_sac` is NULL on every existing edge database** | The edge **rejects invoice issuance** on a NULL/blank code, so no outlet can bill until its catalogue is configured. Correct and deliberate; it is a rollout step, not a defect. | **Trigger: any rollout** — operational gate | RESUME §6 operational gate |
+| **An outlet with no `BILL`-role printer cannot print** | `print_invoice` fails loudly by name rather than queueing into nothing. Same shape as the HSN gate. | **Trigger: any rollout** — operational gate | RESUME §6 operational gate |
+| **`gh` is installed but not authenticated** | `gh run list` cannot read this repo's CI, so **a push is fire-and-forget** — the root cause of four pushes that spent a day producing no verdict. One interactive command (`gh auth login`) fixes it; an agent cannot run it. | **Trigger: next session with a human at the keyboard** | RESUME §2(a) |
+| **`backend/internal/{auth,menu,tables}` never call `postgres.Migrate`** | They seed into an assumed schema; CI works around it with a `go run ./cmd/devseed` step. | **M6** | RESUME §6 |
+| **`edge/sync/src/config.rs`: empty `device_credentials` is not an error** | Unlike empty `users`. "None enrolled" and "cloud forgot" are indistinguishable. | **M6** | RESUME §6 |
+| **`{OUTLET}` numbering token derives from `outlet.name`** | No `outlet.code` exists in the frozen contract, so a rename changes invoice numbers. | **M6** | RESUME §6 |
+| **`reset_policy` without a matching date token yields duplicate invoice numbers** | Caught by the UNIQUE index at issue time; not validated at config-write time, which is where a human could still fix it. | **M6** | RESUME §6 |
+| **Display-number reset buckets by UTC day** | `edge/database/src/repo.rs`. The same UTC-vs-business-day split T7b fixes for `business_date_from`; this is the second caller. | **M6** — after T7b lands the shared function | RESUME §6 |
+| **Three `unwrap_or`-on-a-parse defects in `edge/`** | Each substitutes a plausible valid value for an invalid stored one, so corruption reads as data. | **M6** | `backlog-m2.md`, directed sweep |
+| **A mixed order sends silently when one line has no station** | Found on ~30% of randomized e2e runs and confirmed in production code. | **M6** | `backlog-m2.md` Correctness |
+| **The e2e harness's CI job cannot go red on an invariant failure** | `scenario.test.ts:32` asserts only that the harness ran. An invariant failure is reported and passes. | **M6** | `backlog-m2.md` Correctness |
+| **Tauri commands enforce no backend permissions** | Authorization on the POS is frontend-only gating; `confirm_order` and every kitchen command trust the caller. | **M6** | `backlog-m2.md` M2 execution |
+| **Gaps screen: title and rows say "no recipe" for every gap reason** | Six reasons render as one sentence, so a `DIMENSION_MISMATCH` reads as a missing recipe. M5 adds eight more gap reasons on the inbound side. | **M6** | `backlog-m2.md` gaps screen, 2026-08-27 |
+| **Timestamps render as raw UTC ISO on manager-facing screens** | The outlet timezone is stored and not used at the point a human reads the number. | **M6** | `backlog-m2.md` gaps screen |
+| **`chrono-tz` — do NOT narrow with `filter-by-regex`** | Decided 2026-08-21 and recorded so nobody re-proposes it. Not a task; a standing decision. | **Decided — do not re-raise** | `backlog-m2.md` Deferred-with-trigger |

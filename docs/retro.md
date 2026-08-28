@@ -50,7 +50,7 @@ Reconstructed from the builder agent's JSONL transcript: one base `Write` plus n
 
 ### What happened
 
-`docs/backlog-m2.md` carried a Milestone 1 item titled **POS cart persistence**. Its text read, in order: the cart lives in browser memory until Send, so a crash mid-order loses it; `add_order_item`/`remove_order_item` return `UNSUPPORTED_DB_OPERATION` at the Tauri layer even though the `edge/database` API exists; **wire them through**; this is about in-progress work on a system whose premise is that the shop floor never loses work.
+`docs/backlog.md` carried a Milestone 1 item titled **POS cart persistence**. Its text read, in order: the cart lives in browser memory until Send, so a crash mid-order loses it; `add_order_item`/`remove_order_item` return `UNSUPPORTED_DB_OPERATION` at the Tauri layer even though the `edge/database` API exists; **wire them through**; this is about in-progress work on a system whose premise is that the shop floor never loses work.
 
 Milestone 2's POS track was handed that item. It wired both commands through to the real `edge/database` calls, tested them at the Tauri layer, and reported the item closed. That was accurate: the imperative sentence in the entry — "wire them through" — was fully satisfied.
 
@@ -70,13 +70,13 @@ The builder volunteered the limitation instead of reporting a clean close. The v
 
 ### Rules adopted
 
-1. **A backlog entry states the condition that makes it closed, not the step someone guessed at.** Where an entry names both, the condition governs. Entries that only name a step get rewritten when they are picked up, before dispatch. — `docs/backlog-m2.md`
+1. **A backlog entry states the condition that makes it closed, not the step someone guessed at.** Where an entry names both, the condition governs. Entries that only name a step get rewritten when they are picked up, before dispatch. — `docs/backlog.md`
 2. **Acceptance criteria are observable failures, not implemented APIs.** Milestone 2's acceptance gains: *crash mid-order → the cart survives.* An API that could prevent the loss does not count; the loss not happening counts. — `CLAUDE.md`
 3. **A dispatch brief carries the purpose, not just the task text.** When an orchestrator forwards a backlog item, it forwards why the item exists, so a builder can tell when the literal instruction falls short. — `.claude/commands/milestone.md`
 
 ### Note
 
-The item is reopened in `docs/backlog-m2.md` with the distinction written into it, so the next reader judges it against the crash rather than the API surface.
+The item is reopened in `docs/backlog.md` with the distinction written into it, so the next reader judges it against the crash rather than the API surface.
 
 ---
 
@@ -806,7 +806,7 @@ Launching it took three fixes, none predicted:
 2. **The Tauri `MenuItem` DTO was missing `tax_profile_id` and `hsn_sac`.** `MenuItemSchema` marks both `.nullable()`, which in Zod is *not* `.optional()` — a missing key fails `.parse` exactly like a wrong type. Every `list_menu_items` call rejected.
 3. **A rejected menu query is indistinguishable from a slow one.** `PosScreen` renders "Loading menu…" on `!hydrated`, and `hydrate` only runs on `isSuccess`. The query's `isError` is never surfaced, so the DTO bug presented as a permanent spinner with no error anywhere.
 
-Then, with the POS finally usable, roughly twenty minutes of ordinary clicking found four more: DINE_IN accepts an order with no table selected; the cart does not clear after a successful send and its per-item controls stay enabled on a non-amendable order while Send correctly greys out; "Beverages" appears twice in the category list; and "Kitchen Prep (internal — not sold)" is orderable from the till despite its own name. All four are M1/M2 ordering surface. All four are filed in `docs/backlog-m2.md`, not fixed mid-milestone.
+Then, with the POS finally usable, roughly twenty minutes of ordinary clicking found four more: DINE_IN accepts an order with no table selected; the cart does not clear after a successful send and its per-item controls stay enabled on a non-amendable order while Send correctly greys out; "Beverages" appears twice in the category list; and "Kitchen Prep (internal — not sold)" is orderable from the till despite its own name. All four are M1/M2 ordering surface. All four are filed in `docs/backlog.md`, not fixed mid-milestone.
 
 ### Root cause
 

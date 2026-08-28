@@ -172,7 +172,7 @@ jobs:
   # apps/pos/src-tauri is deliberately NOT built here: Tauri needs Windows
   # (MSVC) plus WebView2 (ADR-013), and a Linux runner cannot honestly stand in
   # for the outlet target. Validating it belongs with the clean Windows 10 VM
-  # item in docs/backlog-m2.md, not with a green tick on ubuntu-latest.
+  # item in docs/backlog.md, not with a green tick on ubuntu-latest.
   # Style only. These four crates' fmt and clippy checks used to be the first
   # two steps of the `edge` job below, which is exactly how four pushes went by
   # with no Rust test verdict at all. They gate the merge from here instead,

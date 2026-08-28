@@ -297,7 +297,7 @@ Three further findings from reading the rubric's neighbours in CLAUDE.md:
 9. `packages/contracts/package.json` → `0.5.0`.
 10. **CLAUDE.md line 61** → `FROZEN at v0.5.0 … migrations through 0017`, plus a v0.5.0 paragraph in the contracts-status block stating the four rules.
 11. ~~Outlet day-start time and the `business_date` definition~~ — **decided, §9.2.** Implementation of the corrected `business_date_from` follows in T2/T3 against that definition.
-12. ~~`docs/retro.md` entry and M3 acceptance-record correction~~ — **done 2026-08-20**: `docs/retro.md` "A function named for outlet-local time, computing UTC"; `docs/RESUME.md` §2 correction block; the stale `device_token` item in `docs/backlog-m2.md` closed in the same pass.
+12. ~~`docs/retro.md` entry and M3 acceptance-record correction~~ — **done 2026-08-20**: `docs/retro.md` "A function named for outlet-local time, computing UTC"; `docs/RESUME.md` §2 correction block; the stale `device_token` item in `docs/backlog.md` closed in the same pass.
 13. `make check-seams`.
 
 ---

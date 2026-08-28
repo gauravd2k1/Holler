@@ -132,7 +132,7 @@ enrollment and sync startup are wired up, it should be deleted, not extended.
 reachable from anywhere on the LAN — and `edge/device/src/server.rs`'s
 `handle_connection` accepts any `outlet_id`/`device_id` pair that is simply
 non-empty. There is no device lookup, no token, no TLS. `device_id` is
-identity, not a credential (see `docs/backlog-m2.md`, "Device enrollment" —
+identity, not a credential (see `docs/backlog.md`, "Device enrollment" —
 a HARD TRIGGER that blocks any pilot deployment, not just a dev nicety).
 Concretely: anyone on the same LAN who can reach this port can read every
 kitchen ticket for the outlet and can call `set_kot_status` — marking food
@@ -285,7 +285,7 @@ two are fixed in the product (4, 6), and two remain open (1, 7).
    cached Argon2id hashes on disk, against ADR-011. Fixed in the product
    (`RunEvent::Exit` hook plus seal-on-drop), not worked around here.
 7. **The KDS LAN port has no authentication (T12, open).** Documented at the
-   top of the Milestone 2 section above and in `docs/backlog-m2.md`, "Device
+   top of the Milestone 2 section above and in `docs/backlog.md`, "Device
    enrollment" — a HARD TRIGGER against any pilot deployment, not something
    this dev setup works around. Also open: nothing calls
    `cancel_kitchen_items_with_outbox` from the POS or its frontend, so a

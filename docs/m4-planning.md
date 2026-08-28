@@ -178,7 +178,7 @@ concrete case; the rule is general and applies to any gate, build or suite that
 can run long.
 
 Note for the record: this was believed to be an existing entry in
-`docs/backlog-m2.md`, carried through two milestones. It is not there — a
+`docs/backlog.md`, carried through two milestones. It is not there — a
 repo-wide search finds "heartbeat" only in `docs/DEV_SETUP.md`, describing the
 unrelated KDS LAN protocol heartbeat. So it is filed here as new work rather than
 promoted, which is the same outcome by a different route: it is now in a track,

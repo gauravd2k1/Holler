@@ -52,7 +52,7 @@ New frozen event, spelled `KOT-` to match its sibling `KOTCreated`. It carries `
 
 ### 5. Routability fixes
 
-`POST /orders/{id}/kots` gives `KOTCreated` an ingest route. `DELETE /orders/{id}/items/{itemId}` gives `ItemRemoved` one, closing the item filed in `docs/backlog-m2.md` under **Contracts** ("`ItemRemoved` is unroutable").
+`POST /orders/{id}/kots` gives `KOTCreated` an ingest route. `DELETE /orders/{id}/items/{itemId}` gives `ItemRemoved` one, closing the item filed in `docs/backlog.md` under **Contracts** ("`ItemRemoved` is unroutable").
 
 That backlog entry also named the real limitation it exposed: `scripts/check-event-type-drift.mjs` verifies that an event type *appears* in Rust, not that it is *deliverable*. This ADR does not fix that — both holes were found by reading, not by the check. Cross-referencing frozen event types against OpenAPI routes remains open, and is the stronger argument for generating a Rust binding rather than grepping for one.
 
@@ -82,4 +82,4 @@ Round-trip fixtures exist for every new boundary-crossing table — `station`, `
 
 **`print_job` as a synced aggregate.** Rejected: gives the cloud a replay path into outlet hardware state it cannot act on. Print failures are actionable only at the outlet.
 
-**KDS writing KOT status directly to the edge database.** Rejected: makes every screen a writer of an edge-authoritative aggregate. `docs/backlog-m2.md` already flags that `ReplayTransition` treats `version <= stored` as a duplicate and silently returns current state — correct under single-writer monotonic versioning, a silent-drop risk the moment a second writer exists. Keeping KDS to intent-only avoids creating that second writer. **That backlog item remains open**: the waiter app and multi-POS outlets will still force it, and it needs its own ADR before either lands.
+**KDS writing KOT status directly to the edge database.** Rejected: makes every screen a writer of an edge-authoritative aggregate. `docs/backlog.md` already flags that `ReplayTransition` treats `version <= stored` as a duplicate and silently returns current state — correct under single-writer monotonic versioning, a silent-drop risk the moment a second writer exists. Keeping KDS to intent-only avoids creating that second writer. **That backlog item remains open**: the waiter app and multi-POS outlets will still force it, and it needs its own ADR before either lands.

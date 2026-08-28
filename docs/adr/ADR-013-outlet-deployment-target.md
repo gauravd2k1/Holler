@@ -56,4 +56,4 @@ Tauri's bundler has **no** configuration for the Visual C++ redistributable; con
 
 ### NSIS is the only supported installer
 
-`bundle.targets` is `["nsis"]`, not `"all"`. The MSI/WiX target was never verified end to end — the WiX toolchain download timed out twice — and **two half-verified installers are worse than one verified one**. If MSI is ever required, it returns with its own verification, tracked in `docs/backlog-m2.md`.
+`bundle.targets` is `["nsis"]`, not `"all"`. The MSI/WiX target was never verified end to end — the WiX toolchain download timed out twice — and **two half-verified installers are worse than one verified one**. If MSI is ever required, it returns with its own verification, tracked in `docs/backlog.md`.

@@ -6,7 +6,7 @@
 
 ## Context
 
-`docs/backlog-m2.md` carries device enrollment as a **hard trigger: blocks any pilot deployment**. Three holes are one missing mechanism:
+`docs/backlog.md` carries device enrollment as a **hard trigger: blocks any pilot deployment**. Three holes are one missing mechanism:
 
 1. **Edge sync worker** — `tenant_id` and `device_id` are supplied at construction with nothing to verify them against, so a mis-enrolled node silently mislabels every outbound envelope.
 2. **`GET /sync/config`** — the one route carrying Argon2id password and PIN hashes is gated on an ordinary human bearer token with `user.manage`. An enrolled edge node and a logged-in browser session are indistinguishable to the backend. The frozen OpenAPI description for `EdgeUserCacheEntry` already claims delivery is "only over TLS, only to an enrolled edge node"; two thirds of that sentence is currently aspirational.
