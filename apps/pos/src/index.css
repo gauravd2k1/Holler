@@ -455,3 +455,23 @@ button {
   padding: 0.6rem 0.75rem;
   border-radius: 4px;
 }
+
+/* -------------------------------------------------- stock quantity entry -- */
+/* The unit is named in the label AND echoed beside the field: a label is read
+   once when the screen opens, the suffix is visible while typing. An
+   unlabelled quantity field is a silent 1000x waiting to happen. */
+.stock-entry-input-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.stock-entry-unit {
+  color: #aaa;
+  font-size: 0.85rem;
+}
+.stock-entry-echo {
+  display: block;
+  margin-top: 0.25rem;
+  color: #8c8;
+  font-size: 0.85rem;
+}

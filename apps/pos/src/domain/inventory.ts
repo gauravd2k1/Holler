@@ -47,6 +47,69 @@ function microPerDisplayUnit(dimension: string): number {
  * fall back to a neutral label rather than guessing. */
 export type InventoryDimension = "MASS" | "VOLUME" | "COUNT";
 
+/**
+ * The unit a human TYPES for this dimension, spelled out.
+ *
+ * Entry is grams / millilitres / pieces -- `human_quantity_to_micro`
+ * (apps/pos/src-tauri/src/commands/inventory.rs) is the authority, and this
+ * must not drift from it. An unlabelled quantity field is a 1000x error
+ * waiting to happen: someone counting oil in litres types 5, records five
+ * millilitres, and a mis-entered count feeds the variance report directly.
+ * Every quantity input names its unit for the SELECTED item, because the unit
+ * depends on that item's dimension and not on the screen.
+ */
+export function entryUnitName(dimension: string): string {
+  switch (dimension as InventoryDimension) {
+    case "MASS":
+      return "grams";
+    case "VOLUME":
+      return "millilitres";
+    case "COUNT":
+      return "pieces";
+    default:
+      return dimension;
+  }
+}
+
+/**
+ * The one-line restatement shown live under a quantity field.
+ *
+ * The failure this catches is INTENT, not reading: someone counting oil in
+ * litres types 5 whatever the field is labelled, because they are counting,
+ * not reading a form. A label is read once when the screen opens; this line
+ * changes under the cursor as the digits land, and reads back the number in
+ * the unit it will actually be stored as, naming the item so the wrong row
+ * is caught in the same glance.
+ *
+ * Deliberately NOT a converted micro-unit figure. Re-deriving the edge's
+ * conversion in TypeScript is how the two drift, and the edge is the
+ * authority on quantity exactly as it is on money. This restates what was
+ * typed -- no arithmetic beyond digit grouping, which is itself part of the
+ * signal: 5000 renders "5,000 millilitres", not an undifferentiated run of
+ * zeroes.
+ *
+ * The unit word is spelled out rather than symbolised ("millilitres", not
+ * "ml") because a symbol is glanceable-past and this line exists to be read.
+ *
+ * `qualifier` exists because the two callers capture semantically different
+ * quantities and a parallel verb hides it. Wastage is a MOVEMENT, and
+ * "Wasting 5 millilitres" is unambiguous. A count is a BALANCE, and
+ * "Counting 5 millilitres" reads just as easily as "recording that 5ml was
+ * used" -- someone reading it that way enters a consumption figure into a
+ * balance field, which is a 100% variance error that looks entirely
+ * reasonable on screen. The count screen closes that with "on hand".
+ */
+export function entryIntentEcho(
+  verb: string,
+  quantity: number,
+  dimension: string,
+  itemName: string,
+  qualifier?: string,
+): string {
+  const line = `${verb} ${quantity.toLocaleString("en-IN")} ${entryUnitName(dimension)} of ${itemName}`;
+  return qualifier ? `${line} ${qualifier}` : line;
+}
+
 function unitLabel(dimension: string): string {
   switch (dimension as InventoryDimension) {
     case "MASS":

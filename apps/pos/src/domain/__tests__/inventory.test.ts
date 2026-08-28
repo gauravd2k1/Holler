@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  entryIntentEcho,
+  entryUnitName,
   formatGapQuantity,
   formatMicroQuantity,
   formatVarianceBps,
@@ -207,5 +209,44 @@ describe("formatMicroQuantity — VOLUME is micro-litres", () => {
     expect(formatMicroQuantity(1_500_000, "MASS")).toBe("1.5g");
     expect(formatMicroQuantity(10_000_000_000, "MASS")).toBe("10000g");
     expect(formatMicroQuantity(0, "COUNT")).toBe("0pcs");
+  });
+});
+
+describe("entryUnitName / entryIntentEcho — the unit a human types", () => {
+  it("names the entry unit per dimension, matching human_quantity_to_micro", () => {
+    expect(entryUnitName("MASS")).toBe("grams");
+    expect(entryUnitName("VOLUME")).toBe("millilitres");
+    expect(entryUnitName("COUNT")).toBe("pieces");
+  });
+
+  it("falls back to the raw string on a dimension the frontend has never seen", () => {
+    expect(entryUnitName("LENGTH")).toBe("LENGTH");
+  });
+
+  it("restates the intent in the unit it will be stored as — the litres-vs-millilitres trap", () => {
+    expect(entryIntentEcho("Counting", 5, "VOLUME", "Sunflower Oil", "on hand")).toBe(
+      "Counting 5 millilitres of Sunflower Oil on hand",
+    );
+  });
+
+  it("groups digits, so a five-litre count is legible as five thousand", () => {
+    expect(entryIntentEcho("Counting", 5000, "VOLUME", "Sunflower Oil", "on hand")).toBe(
+      "Counting 5,000 millilitres of Sunflower Oil on hand",
+    );
+  });
+
+  it("echoes wastage the same way, item name included", () => {
+    expect(entryIntentEcho("Wasting", 250, "MASS", "Paneer")).toBe("Wasting 250 grams of Paneer");
+  });
+
+  // A count is a BALANCE and wastage is a MOVEMENT. The parallel verbs hide
+  // that; "on hand" is what separates "there is 5ml on the shelf" from
+  // "5ml was used", and reading it the second way puts a consumption figure
+  // in a balance field.
+  it("qualifies a balance and leaves a movement bare", () => {
+    expect(entryIntentEcho("Counting", 12, "COUNT", "Lemon", "on hand")).toBe(
+      "Counting 12 pieces of Lemon on hand",
+    );
+    expect(entryIntentEcho("Wasting", 12, "COUNT", "Lemon")).toBe("Wasting 12 pieces of Lemon");
   });
 });

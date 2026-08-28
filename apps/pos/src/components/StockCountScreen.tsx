@@ -11,6 +11,8 @@ import {
 import { addOrUpdateStockCountLine, completeStockCount, openStockCount } from "../lib/tauri";
 import {
   canCountInventory,
+  entryIntentEcho,
+  entryUnitName,
   formatMicroQuantity,
   formatVarianceBps,
   inventoryErrorMessage,
@@ -127,6 +129,11 @@ export function StockCountScreen() {
   const parsedQuantity = Number.parseInt(quantity, 10);
   const quantityValid = quantity.trim() !== "" && Number.isInteger(parsedQuantity) && parsedQuantity >= 0;
   const canOfferLineSubmit = canCount && open && itemId !== "" && quantityValid && !submitting;
+  // The unit belongs to the SELECTED ITEM, not the screen: entry is grams for
+  // MASS, millilitres for VOLUME, pieces for COUNT. The field used to read
+  // "whole units" and name none of them, so counting oil in litres recorded
+  // millilitres -- a silent 1000x that lands straight in the variance report.
+  const selectedLine = (stockQuery.data ?? []).find((l) => l.inventory_item_id === itemId);
 
   async function handleAddLine() {
     if (!canOfferLineSubmit) return;
@@ -196,13 +203,39 @@ export function StockCountScreen() {
             </select>
           </label>
           <label>
-            Counted quantity (whole units)
-            <input
-              inputMode="numeric"
-              value={quantity}
-              onChange={(e) => setQuantity(e.target.value)}
-              disabled={!canCount}
-            />
+            {selectedLine
+              ? `Counted quantity (whole ${entryUnitName(selectedLine.dimension)})`
+              : "Counted quantity — select an item first"}
+            <span className="stock-entry-input-row">
+              <input
+                inputMode="numeric"
+                value={quantity}
+                onChange={(e) => setQuantity(e.target.value)}
+                disabled={!canCount || !selectedLine}
+              />
+              {/* Echoed beside the field as well as in the label: the label is
+                  read once, the suffix is visible while typing. */}
+              {selectedLine && (
+                <span className="stock-entry-unit">{entryUnitName(selectedLine.dimension)}</span>
+              )}
+            </span>
+            {selectedLine && quantityValid && (
+              // Live restatement of the intent, not a second label: see
+              // `entryIntentEcho`. Catches the wrong unit -- and the wrong
+              // row -- at the moment the intent forms.
+              <span className="stock-entry-echo">
+                {entryIntentEcho(
+                  "Counting",
+                  parsedQuantity,
+                  selectedLine.dimension,
+                  selectedLine.inventory_item_name,
+                  // A count is a balance, not a movement -- see
+                  // `entryIntentEcho`. Without this the line reads as a
+                  // consumption figure and the variance is 100% wrong.
+                  "on hand",
+                )}
+              </span>
+            )}
           </label>
           <label>
             Note (optional)

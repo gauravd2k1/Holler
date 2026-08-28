@@ -4,7 +4,13 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useCurrentStockQuery } from "../lib/queries";
 import { queryKeys } from "../lib/queries";
 import { recordWastage } from "../lib/tauri";
-import { canCountInventory, formatMicroQuantity, inventoryErrorMessage } from "../domain/inventory";
+import {
+  canCountInventory,
+  entryIntentEcho,
+  entryUnitName,
+  formatMicroQuantity,
+  inventoryErrorMessage,
+} from "../domain/inventory";
 import { useAuthStore } from "../store/auth";
 
 // Wastage reason codes — mirrors `stock_ledger_entry.reason_code`'s own
@@ -94,13 +100,37 @@ export function WastageScreen() {
         </label>
 
         <label>
-          Quantity {selectedLine ? `(whole ${selectedLine.dimension === "MASS" ? "grams" : selectedLine.dimension === "VOLUME" ? "millilitres" : "pieces"})` : ""}
-          <input
-            inputMode="numeric"
-            value={quantity}
-            onChange={(e) => setQuantity(e.target.value)}
-            disabled={!canSubmit}
-          />
+          {selectedLine
+            ? `Quantity (whole ${entryUnitName(selectedLine.dimension)})`
+            : "Quantity — select an item first"}
+          <span className="stock-entry-input-row">
+            <input
+              inputMode="numeric"
+              value={quantity}
+              onChange={(e) => setQuantity(e.target.value)}
+              disabled={!canSubmit || !selectedLine}
+            />
+            {/* Named beside the field as well as in the label: the label is
+                read once, the suffix is visible while typing. */}
+            {selectedLine && (
+              <span className="stock-entry-unit">{entryUnitName(selectedLine.dimension)}</span>
+            )}
+          </span>
+          {selectedLine && quantityValid && (
+            // Live restatement of the intent, not a second label: see
+            // `entryIntentEcho`. Wastage is the same 1000x trap as a count --
+            // "5" meaning five litres of oil writes five millilitres -- and
+            // unlike a count it is a ledger entry that no later count
+            // reconciles against an expected figure.
+            <span className="stock-entry-echo">
+              {entryIntentEcho(
+                "Wasting",
+                parsedQuantity,
+                selectedLine.dimension,
+                selectedLine.inventory_item_name,
+              )}
+            </span>
+          )}
         </label>
 
         <label>
