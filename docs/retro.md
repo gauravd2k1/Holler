@@ -855,3 +855,54 @@ Storage, entry and recipe authoring were correct throughout, so no deduction was
 - **A wrong assertion is worse than no test, because it makes the defect look verified.** A missing test leaves a known gap; a wrong one closes the gap on paper and redirects everyone who might have looked. This one survived two milestones and was found by reading a number on a screen, not by any suite.
 - **When a test and an implementation are written together, they share the author's misunderstanding.** Derive the expected value from the SPEC -- here, the unit definitions in `edge/database/src/inventory/units.rs` -- not from what the function currently returns. An assertion whose expected value was obtained by running the code proves only that the code is deterministic.
 - **A unit is not a scale.** "VOLUME in millilitres" and "VOLUME stored as micro-litres" differ by 1000 and read almost identically in a comment. Where a base unit differs across dimensions, name the base unit at every boundary that converts.
+
+---
+
+## 2026-08-28 — Two quantity fields that named no unit
+
+**Severity:** medium. Every physical count and wastage entry was typed into a field whose unit was 1000x off for VOLUME items, with no indication anywhere on screen.
+
+### What happened
+
+`StockCountScreen` labelled its input "Counted quantity (whole units)" and named no unit. `WastageScreen` named the unit only in a label. Entry is grams for MASS, millilitres for VOLUME, pieces for COUNT (`human_quantity_to_micro`, `apps/pos/src-tauri/src/commands/inventory.rs`).
+
+Someone counting oil in litres types 5 and records five millilitres. That figure goes straight into the variance report as a real variance, and a `COUNT_ADJUSTMENT` ledger entry posts against it.
+
+Found by driving the shipped POS by hand — the same way the previous three entries in this log were found. A 90,000 g entry made through the count field is what prompted the question.
+
+### Root cause
+
+Two distinct errors were being conflated as one, and only the first is a labelling problem.
+
+1. **Reading.** The field named no unit, so a correct reading was unavailable.
+2. **Intent.** A person counting stock is counting, not reading a form. They type the number they hold in their head, in the unit they are holding it in. A label they have stopped reading does not stop them — and labels stop being read on the second use of a screen.
+
+The fix therefore is not a better label. It is a live restatement under the input that changes as the digits land: `Counting 5,000 millilitres of Sunflower Oil on hand`. It costs one line, restricts nothing, and is legible at the moment the intent forms rather than at the moment the screen opens.
+
+A third error surfaced only when the two screens were put side by side. Wastage is a **movement** and a count is a **balance**; parallel verbs hide that. "Counting 5 millilitres" reads just as naturally as "recording that 5ml was used", and someone reading it that way enters a consumption figure into a balance field. That is a 100% variance error that looks entirely reasonable on screen, and nothing downstream distinguishes it from a real one. Two words — "on hand" — separate the two.
+
+### Rules
+
+- **A quantity input must state the unit it will record, and restate the value in that unit as it is typed.** The label is for the first use of the screen; the echo is for every use after that. Where a dimension's entry unit is 1000x from the unit a human thinks in, the echo is the only thing standing between intent and the ledger.
+- **Echo, do not convert.** The restatement repeats what was typed and does no arithmetic beyond digit grouping. Re-deriving the edge's micro-unit conversion in TypeScript is how the two drift — the edge is the authority on quantity exactly as it is on money.
+- **Group the digits.** Magnitude is itself a signal: five litres entered correctly reads "5,000", entered wrongly it reads "5". A run of zeroes that a human must count is a worse check than one they can see.
+- **Spell the unit out.** "millilitres", not "ml". A symbol is glanceable-past, and this line exists specifically to be read by someone who has stopped reading.
+- **Name what kind of quantity a field holds when a screen has siblings.** Balance and movement are different questions with identical-looking answers. The distinction is invisible in the number and invisible in the verb.
+
+### Method that came out of it — enumerate sinks, not surfaces
+
+Confirming the fix required proving no third quantity-entry screen existed. Listing screens is recall plus confirmation bias; listing write paths is a search over a closed set:
+
+- Two Tauri commands accept a human quantity: `record_wastage`, `add_or_update_stock_count_line`.
+- Exactly one non-test `INSERT INTO stock_ledger_entry` exists (`edge/database/src/deduction/ledger.rs`).
+- Four origins reach it: `RECIPE`, `MODIFIER_DELTA` (automatic, from confirm), `WASTAGE`, `COUNT_ADJUSTMENT`.
+
+The same enumeration answered a question nobody had asked: `devseed.rs` writes no ledger rows at all, so a stocked item can only have been stocked by a count — which located the incident's entry point without relying on anyone's memory of it. Now in CLAUDE.md; applies to permission checks, audit writes, print paths and sync emitters identically.
+
+### The eleventh instance of "the contract permits it, nothing produces it"
+
+`scripts/check-contract-field-consumers.mjs` was written on 2026-08-27 against five instances. M4 closes at **eleven**: `stock_ledger_entry.entry_type` permits six values no path writes — `PURCHASE`, `TRANSFER_IN`, `TRANSFER_OUT`, `RETURN_TO_VENDOR`, `PRODUCTION_CONSUMPTION`, `PRODUCTION_OUTPUT`.
+
+Measured, not assumed: all six appear in the consumer roots only in a doc comment enumerating the CHECK constraint (`edge/database/src/model.rs:1248-1250`), plus `"PURCHASE"` once in a test fixture (`edge/database/src/stock/variance.rs:150`).
+
+That measurement is the finding. **Widening the consumer check to enum values without first narrowing its corpus would report all six green** — a doc comment listing the permitted values is indistinguishable from a branch acting on one, under a grep. This is the DECLARED-versus-ACTED-ON gap the script's own header admits to, arriving a second time from a different direction, and it means the check must be built in a specific order or it ships inert. Carried into the M5 handoff as such.
