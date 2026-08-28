@@ -1,0 +1,12 @@
+{
+  "id": "0192f0a1-1400-7000-8000-000000000001",
+  "outlet_id": "0192f0a1-0000-7000-8000-0000000000a1",
+  "grn_id": "0192f0a1-1310-7000-8000-000000000001",
+  "grn_line_id": "0192f0a1-1311-7000-8000-000000000001",
+  "inventory_item_id": "0192f0a1-2000-7000-8000-000000000002",
+  "reason": "NO_PURCHASE_ORDER",
+  "detail": "Received 3 CRATE of tomatoes with no purchase order. Receipt accepted; raise a retrospective PO or confirm the delivery was ours.",
+  "occurred_at": "2026-08-29T04:05:02.000Z",
+  "business_date": "2026-08-29",
+  "schema_version": 1
+}

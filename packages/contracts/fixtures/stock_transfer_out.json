@@ -1,0 +1,22 @@
+{
+  "id": "0192f0a1-1600-7000-8000-000000000001",
+  "outlet_id": "0192f0a1-0000-7000-8000-0000000000a1",
+  "destination_outlet_id": "0192f0a1-0000-7000-8000-0000000000b2",
+  "transfer_number": "TRO/FY26/PNQ/000007",
+  "dispatched_at": "2026-08-29T06:20:00.000Z",
+  "dispatched_by_user_id": "0192f0a1-0100-7000-8000-000000000004",
+  "business_date": "2026-08-29",
+  "notes": "Kalyani Nagar ran short before lunch service.",
+  "lines": [
+    {
+      "id": "0192f0a1-1601-7000-8000-000000000001",
+      "stock_transfer_out_id": "0192f0a1-1600-7000-8000-000000000001",
+      "inventory_item_id": "0192f0a1-2000-7000-8000-000000000001",
+      "line_number": 1,
+      "base_quantity_micro": 10000000000,
+      "quantity_dimension": "MASS",
+      "unit_cost_paise": 5
+    }
+  ],
+  "schema_version": 1
+}

@@ -152,6 +152,15 @@ jobs:
       # only -- the header says plainly what it does not catch.
       - name: contract fields have consumers
         run: node scripts/check-contract-field-consumers.mjs
+      # SQL -> Go/TS -> OpenAPI: this closes the last hop, and it had never
+      # run here. The script has existed since 0.5.0 and says in its own header
+      # that it exists because nothing machine-checked openapi.yaml — while
+      # nothing machine-ran the script either, which is the same defect one
+      # level out and the same one the milestone-marker step above records. On
+      # its first CI run it found openapi.yaml missing all three
+      # stock_ledger_entry provenance columns added at 0.6.0.
+      - name: openapi matches the go mirrors
+        run: node scripts/check-openapi-go-drift.mjs
 
   # The Rust edge crates carry the majority of Milestone 1's test coverage —
   # including the offline order-creation test that IS the milestone acceptance

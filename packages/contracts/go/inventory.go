@@ -261,14 +261,35 @@ type StockLedgerEntry struct {
 	// provenance in free text is provenance nothing can check, and the ledger
 	// is append-only, so a severed link is permanent.
 	SourceStockCountID *string `json:"source_stock_count_id"`
-	Note               *string `json:"note"`
-	OccurredAt         string  `json:"occurred_at"`
+	// Procurement provenance, added at 0.6.0 (ADR-019) WITH the wire, the
+	// INSERT and the SELECT in the same version — which is the whole lesson of
+	// SourceStockCountID above. That field sat in both schemas from 0.5.5 and
+	// the cloud never heard of it until 0.5.9; json.Unmarshal is lenient, so
+	// it was silently discarded and the PostgreSQL column was NULL for every
+	// row. A column nothing reads is a column that does not exist.
+	//
+	// Exactly one of these is populated, keyed on EntryType — PURCHASE,
+	// RETURN_TO_VENDOR and TRANSFER_OUT respectively. Three of the six
+	// previously-dead entry_type CHECK branches finally have a writer.
+	//
+	// There is NO SourceStockTransferInID: TRANSFER_IN is M8, and a field with
+	// no consumer is the defect this comment is about.
+	SourceGrnID              *string `json:"source_grn_id"`
+	SourcePurchaseReturnID   *string `json:"source_purchase_return_id"`
+	SourceStockTransferOutID *string `json:"source_stock_transfer_out_id"`
+	Note                     *string `json:"note"`
+	OccurredAt               string  `json:"occurred_at"`
 	// Outlet-local business day, computed once at write time from
 	// outlet.timezone and outlet.day_start_time, never recomputed on read. The
 	// cloud replays this value; it does not own the inputs as they were.
 	BusinessDate    string  `json:"business_date"`
 	CreatedByUserID *string `json:"created_by_user_id"`
-	UnitCostPaise   *int64  `json:"unit_cost_paise"` // DEFERRED M5
+	// Cost per BASE unit. NO LONGER DEFERRED as of 0.6.0: GrnLine.UnitCostPaise
+	// is what populates it, and weighted average cost is derived from these
+	// entries. Its exemption in scripts/check-contract-field-consumers.mjs is
+	// removed in the same change — an exemption that outlives its reason is a
+	// silenced failure.
+	UnitCostPaise *int64 `json:"unit_cost_paise"`
 	SchemaVersion   int     `json:"schema_version"`
 }
 

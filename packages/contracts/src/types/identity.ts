@@ -54,6 +54,31 @@ export const PermissionSchema = z.enum([
   // approval flag on an append-only row is a contradiction. Wastage RECORDING
   // ships in M4 under inventory.manage.
   "billing.manage",
+  // Milestone 5 additions (ADR-019). BOTH land WITH their enforced checks in
+  // backend/internal/procurement, in this same milestone — see the note on
+  // billing.manage above, which was approved on exactly that condition at
+  // v0.5.0 and shipped as an enum member with no check behind it for a whole
+  // milestone. RESUME.md then recorded it as absent from this enum entirely,
+  // because a stale comment in the compliance service said so.
+  //
+  // A PERMISSION NOTHING CHECKS IS A PERMISSION THAT DOES NOT EXIST, and the
+  // drift suites cannot tell the difference: they assert the member is
+  // present, which is not enforcement.
+  //
+  // procurement.manage — create suppliers, raise POs, receive goods, record
+  // returns and dispatch transfers.
+  // procurement.approve — approve a purchase order. SEPARATE FROM THE AMOUNT:
+  // role.po_approval_limit_paise (postgres/0029) decides up to what value, and
+  // NULL there means "may not approve any amount". A permission alone would
+  // make every approver unlimited, which is not how any restaurant group
+  // delegates spend.
+  //
+  // wastage.approve is STILL deliberately absent, for the second milestone
+  // running. The v0.5.0 comment assigned it to M5; it moves to M6 with the
+  // append-only approval row that enforces it, because adding it now would
+  // repeat the billing.manage defect verbatim in the same change that fixes it.
+  "procurement.manage",
+  "procurement.approve",
 ]);
 export type Permission = z.infer<typeof PermissionSchema>;
 

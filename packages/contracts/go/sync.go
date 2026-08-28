@@ -51,6 +51,19 @@ const (
 	AggregateTypeStockLedgerEntry  AggregateType = "stock_ledger_entry"
 	AggregateTypeStockCount        AggregateType = "stock_count"
 	AggregateTypeStockDeductionGap AggregateType = "stock_deduction_gap"
+
+	// Milestone 5 additions (ADR-019). SupplierItem, PurchaseOrderLine,
+	// GrnLine, PurchaseReturnLine and StockTransferLine are deliberately
+	// absent — child rows travelling inside their parent's payload or config
+	// bundle. grn_sequence is absent for the invoice_sequence reason
+	// (edge-local counter). supplier_invoice and supplier_credit are absent
+	// for the refresh_token reason (cloud-only).
+	AggregateTypeSupplier         AggregateType = "supplier"
+	AggregateTypePurchaseOrder    AggregateType = "purchase_order"
+	AggregateTypeGoodsReceiptNote AggregateType = "goods_receipt_note"
+	AggregateTypeGrnGap           AggregateType = "grn_gap"
+	AggregateTypePurchaseReturn   AggregateType = "purchase_return"
+	AggregateTypeStockTransferOut AggregateType = "stock_transfer_out"
 )
 
 type SyncDirection string
@@ -112,6 +125,27 @@ var AggregateAuthority = map[AggregateType]SyncDirection{
 	// see it and the person who can fix it are different people in different
 	// places. Shares the ledger ingest route rather than taking its own.
 	AggregateTypeStockDeductionGap: SyncDirectionEdgeToCloud,
+
+	// Milestone 5 (ADR-019). Who we buy from and what we ordered are
+	// management decisions; what physically arrived at the door, what went
+	// back, and what was dispatched are shop-floor transactions the outlet
+	// performs with the uplink down.
+	AggregateTypeSupplier: SyncDirectionCloudToEdge,
+	// NO RECEIPT STATE on this aggregate. Receipt progress is derived on both
+	// sides and the two derivations legitimately differ — the edge sees only
+	// its own GRN lines, the cloud sees every outlet's. Storing it would make
+	// the outlet a second writer of a cloud row (§50.1).
+	AggregateTypePurchaseOrder: SyncDirectionCloudToEdge,
+	// The outlet receives goods with the uplink down and the cloud replays.
+	AggregateTypeGoodsReceiptNote: SyncDirectionEdgeToCloud,
+	// The stock_deduction_gap argument, inbound. PLAIN ENVELOPE OUTBOX, not a
+	// ranged stream: a gap is a discrete event a buyer acts on, not a per-sale
+	// row arriving all day, so it has no entry_seq and needs none of the 0.5.8
+	// contiguity machinery.
+	AggregateTypeGrnGap:         SyncDirectionEdgeToCloud,
+	AggregateTypePurchaseReturn: SyncDirectionEdgeToCloud,
+	// Outbound half only. TRANSFER_IN and goods-in-transit are M8.
+	AggregateTypeStockTransferOut: SyncDirectionEdgeToCloud,
 }
 
 type SyncEnvelope struct {

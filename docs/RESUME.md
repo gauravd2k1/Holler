@@ -209,7 +209,7 @@ never repeats for any index up to `i64::MAX`, plus a per-business-day counter
 reset. Regression test `formatter_never_repeats_past_the_old_wrap_point` drives
 past the old collision point (25975, where `#Z999` rolled to `#A1`).
 
-**Contracts are FROZEN at v0.5.9.** Cross-checked against
+**Contracts are FROZEN at v0.6.0.** Cross-checked against
 `packages/contracts/package.json` by `scripts/check-milestone-marker.mjs`, which
 fails the build on disagreement — this line was written at 0.4.7 and went stale
 within two days.

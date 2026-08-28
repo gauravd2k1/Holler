@@ -629,3 +629,167 @@ func TestMilestone4Permissions(t *testing.T) {
 		t.Fatalf("wastage.approve must not exist in 0.5.0 (ADR-018 §11)")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Milestone 5 — procurement (0.6.0, ADR-019)
+// ---------------------------------------------------------------------------
+
+func TestSupplierFixtureRoundTrip(t *testing.T) {
+	var v Supplier
+	roundTrip(t, "supplier.json", &v)
+}
+
+func TestSupplierItemFixtureRoundTrip(t *testing.T) {
+	var v SupplierItem
+	roundTrip(t, "supplier_item.json", &v)
+}
+
+func TestPurchaseOrderFixtureRoundTrip(t *testing.T) {
+	var v PurchaseOrder
+	roundTrip(t, "purchase_order.json", &v)
+}
+
+func TestGoodsReceiptNoteFixtureRoundTrip(t *testing.T) {
+	var v GoodsReceiptNote
+	roundTrip(t, "goods_receipt_note.json", &v)
+}
+
+// A GRN NEVER BLOCKS ON A PO. The nullability is load-bearing, not laxity.
+func TestGoodsReceiptNoteWithoutPurchaseOrderRoundTrips(t *testing.T) {
+	var v GoodsReceiptNote
+	roundTrip(t, "goods_receipt_note_no_po.json", &v)
+	if v.PurchaseOrderID != nil || v.SupplierID != nil {
+		t.Fatalf("a receipt with no order must keep both links nil")
+	}
+	if len(v.Lines) != 1 || v.Lines[0].PurchaseOrderLineID != nil {
+		t.Fatalf("a line with no matching PO line must keep the link nil")
+	}
+}
+
+func TestGrnGapFixtureRoundTrip(t *testing.T) {
+	var v GrnGap
+	roundTrip(t, "grn_gap.json", &v)
+}
+
+func TestPurchaseReturnFixtureRoundTrip(t *testing.T) {
+	var v PurchaseReturn
+	roundTrip(t, "purchase_return.json", &v)
+}
+
+func TestStockTransferOutFixtureRoundTrip(t *testing.T) {
+	var v StockTransferOut
+	roundTrip(t, "stock_transfer_out.json", &v)
+}
+
+// Contracts 0.5.9's lesson, mirrored: json.Unmarshal is LENIENT, so a field
+// missing from this struct is discarded in silence and the round-trip compare
+// still passes when the fixture's value for it is null. Every provenance field
+// is therefore populated here, and every one is asserted non-zero.
+func TestGrnLineProvenanceIsFullyPopulated(t *testing.T) {
+	var v GoodsReceiptNote
+	roundTrip(t, "goods_receipt_note.json", &v)
+	line := v.Lines[0]
+	switch {
+	case line.PurchaseOrderLineID == nil:
+		t.Fatalf("purchase_order_line_id must be populated, or it is untested")
+	case line.BatchCode == nil || line.ExpiryDate == nil:
+		t.Fatalf("batch_code and expiry_date must be populated, or they are untested")
+	case line.EnteredPurchaseUnit == "" || line.EnteredQuantityMicro == 0:
+		t.Fatalf("the entered side of the conversion must be populated")
+	case line.PackSizeMicroApplied == 0 || line.BaseQuantityMicro == 0:
+		t.Fatalf("the converted side of the conversion must be populated")
+	case line.UnitCostPaise == 0:
+		t.Fatalf("unit_cost_paise must be populated — this is the field ADR-018 deferred to M5")
+	}
+
+	// The conversion happens exactly once, at the edge, and both sides are
+	// stored so "what did they actually type?" survives a later pack-size edit.
+	if want := line.EnteredQuantityMicro * line.PackSizeMicroApplied / 1_000_000; line.BaseQuantityMicro != want {
+		t.Fatalf("base_quantity_micro = %d, want %d from the stored entered quantity and pack size",
+			line.BaseQuantityMicro, want)
+	}
+}
+
+// PLAIN OUTBOX. A grn_gap is a discrete event a buyer acts on, not a per-sale
+// row arriving all day, so it gets none of stock_deduction_gap's 0.5.8
+// ranged-stream machinery: no entry_seq, no counter, no cursor, no contiguity
+// check. stock_deduction_gap still has one, which is the contrast that makes
+// this a decision rather than an omission.
+func TestGrnGapHasNoSequenceField(t *testing.T) {
+	if _, ok := reflect.TypeOf(GrnGap{}).FieldByName("EntrySeq"); ok {
+		t.Fatalf("grn_gap must not carry an entry_seq — it is a plain outbox (ADR-019)")
+	}
+	if _, ok := reflect.TypeOf(StockDeductionGap{}).FieldByName("EntrySeq"); !ok {
+		t.Fatalf("stock_deduction_gap must still carry entry_seq (0.5.8)")
+	}
+}
+
+// NO RECEIPT STATE on the PO. Receipt progress is derived on both sides and the
+// two derivations LEGITIMATELY DIFFER — the edge sees only its own GRN lines,
+// the cloud sees every outlet's. Show both and label them; never reconcile
+// them. A status member or a received-quantity column here would make the
+// outlet a second writer of a cloud-owned row (§50.1).
+func TestPurchaseOrderCarriesNoReceiptState(t *testing.T) {
+	for _, forbidden := range []string{"ReceiptStatus", "ReceivedQuantityMicro", "ReceivedLines"} {
+		if _, ok := reflect.TypeOf(PurchaseOrder{}).FieldByName(forbidden); ok {
+			t.Fatalf("purchase_order must not carry %s — receipt progress is derived, not stored (ADR-019)", forbidden)
+		}
+	}
+	// Go cannot enumerate a const block at runtime, so the members are pinned
+	// by value here and the closed set is enforced by the CHECK constraint in
+	// both stores. A new receipt-driven member would have to pass all three.
+	declared := []PurchaseOrderStatus{
+		PurchaseOrderStatusDraft, PurchaseOrderStatusPendingApproval,
+		PurchaseOrderStatusApproved, PurchaseOrderStatusSent,
+		PurchaseOrderStatusCancelled, PurchaseOrderStatusClosed,
+	}
+	for _, status := range declared {
+		if status == "PARTIALLY_RECEIVED" || status == "RECEIVED" {
+			t.Fatalf("%s must not be a purchase order status — receipt progress is derived (ADR-019)", status)
+		}
+	}
+}
+
+func TestMilestone5AggregateAuthority(t *testing.T) {
+	cases := map[AggregateType]SyncDirection{
+		AggregateTypeSupplier:         SyncDirectionCloudToEdge,
+		AggregateTypePurchaseOrder:    SyncDirectionCloudToEdge,
+		AggregateTypeGoodsReceiptNote: SyncDirectionEdgeToCloud,
+		AggregateTypeGrnGap:           SyncDirectionEdgeToCloud,
+		AggregateTypePurchaseReturn:   SyncDirectionEdgeToCloud,
+		AggregateTypeStockTransferOut: SyncDirectionEdgeToCloud,
+	}
+	for aggregate, want := range cases {
+		if got := AggregateAuthority[aggregate]; got != want {
+			t.Fatalf("AggregateAuthority[%s] = %s, want %s per §50.1", aggregate, got, want)
+		}
+	}
+
+	// Child rows travel inside their parent (menu_item_variant precedent).
+	// Counters never leave the outlet (invoice_sequence). Supplier accounts are
+	// cloud-only (refresh_token). None of these is an AggregateType.
+	for _, absent := range []AggregateType{
+		"supplier_item", "purchase_order_line", "grn_line",
+		"purchase_return_line", "stock_transfer_line",
+		"grn_sequence", "supplier_invoice", "supplier_credit",
+	} {
+		if _, ok := AggregateAuthority[absent]; ok {
+			t.Fatalf("%s must not be an AggregateType (ADR-019)", absent)
+		}
+	}
+}
+
+// Both land WITH their enforced checks in this milestone. wastage.approve does
+// not, for the second milestone running — adding it here would repeat the
+// billing.manage defect verbatim in the change that fixes it.
+func TestMilestone5Permissions(t *testing.T) {
+	if PermissionProcurementManage != "procurement.manage" {
+		t.Fatalf("procurement.manage must exist")
+	}
+	if PermissionProcurementApprove != "procurement.approve" {
+		t.Fatalf("procurement.approve must exist")
+	}
+	if PermissionProcurementApprove == PermissionProcurementManage {
+		t.Fatalf("approving a spend and managing procurement are two gates, not one")
+	}
+}

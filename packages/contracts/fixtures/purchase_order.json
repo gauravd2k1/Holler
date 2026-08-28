@@ -1,0 +1,28 @@
+{
+  "id": "0192f0a1-1200-7000-8000-000000000001",
+  "outlet_id": "0192f0a1-0000-7000-8000-0000000000a1",
+  "supplier_id": "0192f0a1-1000-7000-8000-000000000001",
+  "po_number": "PO/FY26/PNQ/000117",
+  "status": "SENT",
+  "expected_date": "2026-08-29",
+  "notes": "Deliver before 09:00, service starts 11:30.",
+  "total_paise": 1250000,
+  "approved_by_user_id": "0192f0a1-0100-7000-8000-000000000009",
+  "approved_at": "2026-08-28T06:02:11.000Z",
+  "created_at": "2026-08-28T05:44:03.000Z",
+  "config_version": 88,
+  "lines": [
+    {
+      "id": "0192f0a1-1201-7000-8000-000000000001",
+      "purchase_order_id": "0192f0a1-1200-7000-8000-000000000001",
+      "inventory_item_id": "0192f0a1-2000-7000-8000-000000000001",
+      "line_number": 1,
+      "purchase_unit": "SACK",
+      "ordered_quantity_micro": 5000000,
+      "quantity_dimension": "MASS",
+      "unit_price_paise": 250000,
+      "line_total_paise": 1250000
+    }
+  ],
+  "schema_version": 1
+}

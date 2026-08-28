@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Holler API — Vertical Slice
-  version: "0.4.6"
+  version: "0.6.0"
   description: >
     Covers only the §70 order endpoints needed for the Milestone 1–2 vertical
     slice (Menu → POS Order → Local SQLite → KOT → KDS → Cloud sync). Frozen
@@ -1518,6 +1518,208 @@ paths:
             ml. Rejected rather than converted: a recipe is not an inventory
             item, so no density row exists to convert through.
 
+  # ---------------------------------------------------------------------------
+  # Milestone 5 — procurement (0.6.0, ADR-019)
+  # ---------------------------------------------------------------------------
+
+  /procurement/suppliers:
+    post:
+      summary: >
+        Create or update a supplier and its supplier_item price list. CONFIG,
+        cloud→edge, so an ordinary unwrapped cloud write — envelopes are the
+        edge→cloud replay pattern and appear on no config route. Requires
+        procurement.manage.
+
+        supplier_item travels inside this payload rather than on its own route:
+        it is a CHILD ROW, the menu_item_variant precedent, and it has no sync
+        direction of its own.
+
+        quantity_dimension ON EACH supplier_item IS THE UNIT THE AUTHOR CHOSE,
+        NEVER DERIVED FROM THE REFERENT. This handler compares it against
+        inventory_item.dimension and rejects a mismatch. IF THIS ROUTE (OR THE
+        ADMIN UI IN FRONT OF IT) AUTO-FILLS THE FIELD FROM THE ITEM, THE
+        COMPARISON BECOMES x == x, THE GUARD CAN NEVER FIRE, AND IT WILL LOOK
+        CORRECT IN REVIEW. That is contracts 0.5.2's rule, on the purchase side.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [supplier]
+              properties:
+                supplier: { $ref: "#/components/schemas/Supplier" }
+                items:
+                  type: array
+                  items: { $ref: "#/components/schemas/SupplierItem" }
+      responses:
+        "200":
+          description: Supplier stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Supplier"
+        "422":
+          description: >
+            A supplier_item whose quantity_dimension differs from the
+            referenced inventory_item.dimension. Rejected, never converted:
+            reclassifying an item is a migration, not an edit.
+
+  /procurement/purchase-orders:
+    post:
+      summary: >
+        Raise or amend a purchase order. CONFIG, cloud→edge — the edge holds it
+        READ-ONLY so a receiving screen can prefill from it, and never writes
+        it. Requires procurement.manage. Lines travel inside the payload.
+
+        THIS ROW CARRIES NO RECEIPT STATE, and no write here ever sets one.
+        Receipt progress is DERIVED, on both sides, from grn_line rows, and THE
+        TWO DERIVATIONS LEGITIMATELY DIFFER: the edge sees only its own outlet's
+        receipts, the cloud sees every outlet's. A shared PO reads "40 of 100"
+        at one till and "90 of 100" in the admin at the same moment, and both
+        are correct. Show both, label which is which, and NEVER reconcile them
+        — a reconciled figure needs one authority, and choosing one puts a
+        second writer back on this aggregate (§50.1). See ADR-019 §4.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [purchase_order]
+              properties:
+                purchase_order: { $ref: "#/components/schemas/PurchaseOrder" }
+      responses:
+        "200":
+          description: Purchase order stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PurchaseOrder"
+
+  /procurement/purchase-orders/{purchaseOrderId}/approve:
+    post:
+      summary: >
+        Approve a purchase order. TWO GATES, BOTH REQUIRED: the caller's role
+        must carry procurement.approve, AND role.po_approval_limit_paise must be
+        non-null and at least purchase_order.total_paise.
+
+        THE LIMIT IS ON THE ROLE, NOT THE USER. A per-person ceiling is a
+        different shape, and the first request for one is the trigger to add it
+        — not this milestone (ADR-019 §5). NULL means "may not approve any
+        amount": absence is never read as unlimited, the printer_role rule.
+
+        approved_by_user_id and approved_at are written TOGETHER or not at all.
+        An approval is whole or it did not happen, which is what makes "who
+        authorised this spend" answerable a year later.
+      parameters:
+        - name: purchaseOrderId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Purchase order approved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PurchaseOrder"
+        "403":
+          description: >
+            The caller lacks procurement.approve, or the order exceeds their
+            role's limit. THE MESSAGE MUST SAY WHAT TO DO NEXT (§64) — the
+            order total, the caller's ceiling, and who can approve it instead.
+            "Forbidden" alone leaves a buyer with a delivery due and nothing to
+            act on. M5 acceptance criterion 5 is observed IN THE ADMIN UI, not
+            on this route.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code: { type: string, example: po_exceeds_approval_limit }
+                  message: { type: string }
+                  total_paise: { type: integer }
+                  limit_paise: { type: integer, nullable: true }
+
+  /procurement/goods-receipts:
+    post:
+      summary: >
+        Replay a goods receipt recorded at the edge. Added at 0.6.0 (ADR-019).
+
+        Accepts TWO aggregate types on one route — goods_receipt_note and
+        grn_gap — for the reason /inventory/ledger-entries accepts two: a gap is
+        the record of what could not be matched about THIS receipt, and it
+        belongs beside the receipt it explains. A gap that arrived by another
+        path could not be joined to it. Anything outside the set is 422.
+
+        A GRN NEVER BLOCKS ON A PO, AND NEITHER DOES THIS ROUTE.
+        purchase_order_id, supplier_id and every line's purchase_order_line_id
+        are nullable, no CHECK ties a receipt to an order, and the cloud MUST
+        NOT add one: goods arrive against a PO that never synced, against one
+        amended after dispatch, and with no PO at all. Refusing the receipt is
+        the outage; recording the gap is the protection.
+
+        The purchase-unit conversion HAPPENED AT THE EDGE, exactly once. The
+        cloud stores both sides as received and RECOMPUTES NEITHER — recomputing
+        against a since-edited supplier_item would silently restate history.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: "#/components/schemas/GoodsReceiptNoteEnvelope"
+                - $ref: "#/components/schemas/GrnGapEnvelope"
+      responses:
+        "201":
+          description: Receipt or gap recorded
+        "422":
+          $ref: "#/components/responses/EnvelopeRouteMismatch"
+
+  /procurement/purchase-returns:
+    post:
+      summary: >
+        Replay a purchase return recorded at the edge. Posts RETURN_TO_VENDOR
+        ledger entries AT THE EDGE; the cloud replays and computes nothing.
+        Immutable once recorded — a return is corrected by another movement,
+        never by mutation (the payment precedent).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PurchaseReturnEnvelope"
+      responses:
+        "201":
+          description: Return recorded
+        "422":
+          $ref: "#/components/responses/EnvelopeRouteMismatch"
+
+  /procurement/stock-transfers-out:
+    post:
+      summary: >
+        Replay an outbound inter-outlet transfer. OUTBOUND HALF ONLY: posts
+        TRANSFER_OUT at the source outlet. TRANSFER_IN, the destination receipt
+        and goods-in-transit reconciliation are M8 — a transfer spans two edge
+        databases, which is multi-outlet machinery and not something to
+        half-build here.
+
+        destination_outlet_id is recorded now so M8 has its link without a
+        migration hunting for it, and the cloud reads it in M5 for the transfer
+        list — so it is not an unconsumed field.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StockTransferOutEnvelope"
+      responses:
+        "201":
+          description: Transfer recorded
+        "422":
+          $ref: "#/components/responses/EnvelopeRouteMismatch"
+
 components:
   responses:
     EnvelopeRouteMismatch:
@@ -2854,6 +3056,24 @@ components:
             rest of the provenance group. A column in both stores since 0.5.5
             and carried on the wire since 0.5.9; before that the cloud dropped
             it on decode and the Postgres column was NULL for every row.
+        source_grn_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            Added at 0.6.0 (ADR-019). Exactly one of the three below is
+            populated, keyed on entry_type — PURCHASE, RETURN_TO_VENDOR and
+            TRANSFER_OUT respectively. They reached this spec in the same
+            version they reached the Go struct, which is what
+            source_stock_count_id above did not manage.
+        source_purchase_return_id: { type: string, format: uuid, nullable: true }
+        source_stock_transfer_out_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            There is no source_stock_transfer_in_id: TRANSFER_IN is M8, and a
+            field with no consumer is a field that does not exist.
         note: { type: string, nullable: true }
         occurred_at: { type: string, format: date-time }
         business_date:
@@ -2991,3 +3211,356 @@ components:
                     lines:
                       type: array
                       items: { $ref: "#/components/schemas/StockCountLine" }
+
+    # -------------------------------------------------------------------------
+    # Milestone 5 — procurement (0.6.0, ADR-019)
+    # -------------------------------------------------------------------------
+
+    Supplier:
+      type: object
+      required: [id, outlet_id, code, name, gstin, phone, email, address, payment_terms_days, is_active, config_version, created_at, updated_at, schema_version]
+      properties:
+        id: { type: string, format: uuid }
+        outlet_id: { type: string, format: uuid }
+        code: { type: string }
+        name: { type: string }
+        gstin:
+          type: string
+          nullable: true
+          description: >
+            Nullable because unregistered suppliers are ordinary in this market.
+            No fallback and no synthesised placeholder, for the reason
+            menu_item.hsn_sac has none: a wrong code that looks configured is
+            worse than a missing one.
+        phone: { type: string, nullable: true }
+        email: { type: string, nullable: true }
+        address: { type: string, nullable: true }
+        payment_terms_days: { type: integer, minimum: 0 }
+        is_active: { type: boolean }
+        config_version: { type: integer }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        schema_version: { type: integer, enum: [1] }
+
+    SupplierItem:
+      type: object
+      description: CHILD ROW of supplier. Not an aggregate, no sync direction.
+      required: [id, supplier_id, inventory_item_id, purchase_unit, pack_size_micro, quantity_dimension, last_price_paise, is_preferred, schema_version]
+      properties:
+        id: { type: string, format: uuid }
+        supplier_id: { type: string, format: uuid }
+        inventory_item_id: { type: string, format: uuid }
+        purchase_unit:
+          type: string
+          description: >
+            The supplier's own unit off their delivery note — SACK, CRATE, TIN.
+            Free text on purpose: it is their label, not an enum this product
+            owns.
+        pack_size_micro:
+          type: integer
+          minimum: 1
+          description: >
+            Base-dimension quantity in one purchase_unit. One 50 kg sack = 5e10.
+        quantity_dimension:
+          $ref: "#/components/schemas/Dimension"
+        last_price_paise:
+          type: integer
+          nullable: true
+          minimum: 0
+          description: >
+            Advisory only: prefills a PO line, never the price a GRN posts. What
+            was invoiced is a fact; what was expected is a guess.
+        is_preferred: { type: boolean }
+        schema_version: { type: integer, enum: [1] }
+
+    PurchaseOrderStatus:
+      type: string
+      description: >
+        NO RECEIPT STATE. PARTIALLY_RECEIVED and RECEIVED are deliberately
+        absent: receiving happens at the edge, this is a cloud-owned config row,
+        and a receipt-driven status would make the outlet a second writer of a
+        cloud aggregate (§50.1). Progress is derived on both sides and the two
+        derivations legitimately differ. CLOSED is a buyer's decision, never a
+        consequence of a receipt.
+      enum: [DRAFT, PENDING_APPROVAL, APPROVED, SENT, CANCELLED, CLOSED]
+
+    PurchaseOrderLine:
+      type: object
+      description: CHILD ROW of purchase_order. Not an aggregate.
+      required: [id, purchase_order_id, inventory_item_id, line_number, purchase_unit, ordered_quantity_micro, quantity_dimension, unit_price_paise, line_total_paise]
+      properties:
+        id: { type: string, format: uuid }
+        purchase_order_id: { type: string, format: uuid }
+        inventory_item_id: { type: string, format: uuid }
+        line_number: { type: integer, minimum: 1 }
+        purchase_unit: { type: string }
+        ordered_quantity_micro: { type: integer, minimum: 1 }
+        quantity_dimension:
+          allOf:
+            - $ref: "#/components/schemas/Dimension"
+          description: >
+            The unit the author chose, NEVER auto-filled from the referent
+            (0.5.2's rule).
+        unit_price_paise: { type: integer, minimum: 0 }
+        line_total_paise: { type: integer, minimum: 0 }
+
+    PurchaseOrder:
+      type: object
+      required: [id, outlet_id, supplier_id, po_number, status, expected_date, notes, total_paise, approved_by_user_id, approved_at, created_at, config_version, lines, schema_version]
+      properties:
+        id: { type: string, format: uuid }
+        outlet_id: { type: string, format: uuid }
+        supplier_id: { type: string, format: uuid }
+        po_number: { type: string }
+        status: { $ref: "#/components/schemas/PurchaseOrderStatus" }
+        expected_date: { type: string, format: date, nullable: true }
+        notes: { type: string, nullable: true }
+        total_paise: { type: integer, minimum: 0 }
+        approved_by_user_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            Both null or both set with approved_at — an approval is whole or it
+            did not happen, which is what makes "who authorised this spend"
+            answerable.
+        approved_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+        config_version: { type: integer }
+        lines:
+          type: array
+          items: { $ref: "#/components/schemas/PurchaseOrderLine" }
+        schema_version: { type: integer, enum: [1] }
+
+    GrnLine:
+      type: object
+      description: CHILD ROW of goods_receipt_note. Not an aggregate.
+      required: [id, grn_id, inventory_item_id, line_number, purchase_order_line_id, entered_purchase_unit, entered_quantity_micro, quantity_dimension, base_quantity_micro, pack_size_micro_applied, unit_cost_paise, line_total_paise, batch_code, expiry_date]
+      properties:
+        id: { type: string, format: uuid }
+        grn_id: { type: string, format: uuid }
+        inventory_item_id: { type: string, format: uuid }
+        line_number: { type: integer, minimum: 1 }
+        purchase_order_line_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            NULLABLE AND LOAD-BEARING: a line with no matching PO line is
+            received and gapped, never refused.
+        entered_purchase_unit:
+          type: string
+          description: >
+            What the operator typed against, stored beside what it became. BOTH
+            SIDES OF THE CONVERSION ARE STORED, and this is not redundancy: when
+            a receipt turns out 1000x wrong, "what did they actually type?" must
+            be answerable from the row, not reconstructed from a pack size that
+            may since have been edited.
+        entered_quantity_micro: { type: integer, minimum: 1 }
+        quantity_dimension: { $ref: "#/components/schemas/Dimension" }
+        base_quantity_micro:
+          type: integer
+          minimum: 1
+          description: >
+            What the ledger receives. Converted ONCE, at the edge. The binding
+            range limit is JavaScript's 2^53, not i64.
+        pack_size_micro_applied:
+          type: integer
+          minimum: 1
+          description: >
+            The rate actually applied, snapshotted, so this receipt's arithmetic
+            stays reproducible after supplier_item is edited.
+        unit_cost_paise:
+          type: integer
+          minimum: 0
+          description: >
+            Cost per BASE unit — the field that finally consumes
+            stock_ledger_entry.unit_cost_paise, which ADR-018 deferred to here.
+        line_total_paise: { type: integer, minimum: 0 }
+        batch_code:
+          type: string
+          nullable: true
+          description: >
+            MODELLED NOW, ALERTED IN M6. Batch identity is captured at receipt or
+            never — you cannot retrofit which crate a chicken came out of.
+        expiry_date: { type: string, format: date, nullable: true }
+
+    GoodsReceiptNote:
+      type: object
+      required: [id, outlet_id, purchase_order_id, supplier_id, grn_number, delivery_note_ref, received_at, received_by_user_id, business_date, notes, lines, schema_version]
+      properties:
+        id: { type: string, format: uuid }
+        outlet_id: { type: string, format: uuid }
+        purchase_order_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            NULLABLE, AND THIS IS THE POINT. A GRN NEVER BLOCKS ON A PO.
+        supplier_id: { type: string, format: uuid, nullable: true }
+        grn_number: { type: string }
+        delivery_note_ref:
+          type: string
+          nullable: true
+          description: >
+            The supplier's own reference off the delivery note. No format
+            assumed and no uniqueness enforced — it is their number, not ours.
+        received_at: { type: string, format: date-time }
+        received_by_user_id: { type: string, format: uuid }
+        business_date:
+          type: string
+          format: date
+          description: >
+            Outlet-local business day from compute_business_date(), NOT the
+            first ten characters of a UTC instant.
+        notes: { type: string, nullable: true }
+        lines:
+          type: array
+          items: { $ref: "#/components/schemas/GrnLine" }
+        schema_version: { type: integer, enum: [1] }
+
+    GrnGapReason:
+      type: string
+      enum:
+        - NO_PURCHASE_ORDER
+        - PURCHASE_ORDER_NOT_FOUND
+        - PO_LINE_NOT_FOUND
+        - QUANTITY_EXCEEDS_ORDERED
+        - NO_SUPPLIER_ITEM
+        - NO_UNIT_CONVERSION
+        - DIMENSION_MISMATCH
+        - SUPPLIER_NOT_FOUND
+
+    GrnGap:
+      type: object
+      description: >
+        PLAIN ENVELOPE OUTBOX, deliberately not a ranged stream: no entry_seq,
+        no counter, no cursor, no contiguity check. A grn_gap is a discrete
+        event a buyer acts on, not a per-sale row arriving all day like
+        stock_deduction_gap — which is why that one earned 0.5.8's machinery and
+        this one does not.
+      required: [id, outlet_id, grn_id, grn_line_id, inventory_item_id, reason, detail, occurred_at, business_date, schema_version]
+      properties:
+        id: { type: string, format: uuid }
+        outlet_id: { type: string, format: uuid }
+        grn_id: { type: string, format: uuid }
+        grn_line_id: { type: string, format: uuid, nullable: true }
+        inventory_item_id: { type: string, format: uuid, nullable: true }
+        reason: { $ref: "#/components/schemas/GrnGapReason" }
+        detail:
+          type: string
+          nullable: true
+          description: >
+            Human-readable, and it is read by a human: M5 acceptance criterion 3
+            requires the gap VISIBLE ON THE POS, not merely present in a table.
+        occurred_at: { type: string, format: date-time }
+        business_date: { type: string, format: date }
+        schema_version: { type: integer, enum: [1] }
+
+    PurchaseReturnReason:
+      type: string
+      enum: [DAMAGED, EXPIRED, WRONG_ITEM, QUALITY, OVER_DELIVERY, OTHER]
+
+    PurchaseReturnLine:
+      type: object
+      description: CHILD ROW of purchase_return. Not an aggregate.
+      required: [id, purchase_return_id, inventory_item_id, grn_line_id, line_number, entered_purchase_unit, entered_quantity_micro, quantity_dimension, base_quantity_micro, unit_cost_paise]
+      properties:
+        id: { type: string, format: uuid }
+        purchase_return_id: { type: string, format: uuid }
+        inventory_item_id: { type: string, format: uuid }
+        grn_line_id: { type: string, format: uuid, nullable: true }
+        line_number: { type: integer, minimum: 1 }
+        entered_purchase_unit: { type: string }
+        entered_quantity_micro: { type: integer, minimum: 1 }
+        quantity_dimension: { $ref: "#/components/schemas/Dimension" }
+        base_quantity_micro: { type: integer, minimum: 1 }
+        unit_cost_paise: { type: integer, minimum: 0 }
+
+    PurchaseReturn:
+      type: object
+      required: [id, outlet_id, supplier_id, grn_id, return_number, reason, returned_at, returned_by_user_id, business_date, notes, lines, schema_version]
+      properties:
+        id: { type: string, format: uuid }
+        outlet_id: { type: string, format: uuid }
+        supplier_id: { type: string, format: uuid, nullable: true }
+        grn_id: { type: string, format: uuid, nullable: true }
+        return_number: { type: string }
+        reason: { $ref: "#/components/schemas/PurchaseReturnReason" }
+        returned_at: { type: string, format: date-time }
+        returned_by_user_id: { type: string, format: uuid }
+        business_date: { type: string, format: date }
+        notes: { type: string, nullable: true }
+        lines:
+          type: array
+          items: { $ref: "#/components/schemas/PurchaseReturnLine" }
+        schema_version: { type: integer, enum: [1] }
+
+    StockTransferLine:
+      type: object
+      description: CHILD ROW of stock_transfer_out. Not an aggregate.
+      required: [id, stock_transfer_out_id, inventory_item_id, line_number, base_quantity_micro, quantity_dimension, unit_cost_paise]
+      properties:
+        id: { type: string, format: uuid }
+        stock_transfer_out_id: { type: string, format: uuid }
+        inventory_item_id: { type: string, format: uuid }
+        line_number: { type: integer, minimum: 1 }
+        base_quantity_micro: { type: integer, minimum: 1 }
+        quantity_dimension: { $ref: "#/components/schemas/Dimension" }
+        unit_cost_paise: { type: integer, minimum: 0 }
+
+    StockTransferOut:
+      type: object
+      description: >
+        OUTBOUND HALF ONLY (M5). Posts TRANSFER_OUT at the source outlet; the
+        destination receipt and goods-in-transit are M8.
+      required: [id, outlet_id, destination_outlet_id, transfer_number, dispatched_at, dispatched_by_user_id, business_date, notes, lines, schema_version]
+      properties:
+        id: { type: string, format: uuid }
+        outlet_id: { type: string, format: uuid }
+        destination_outlet_id: { type: string, format: uuid }
+        transfer_number: { type: string }
+        dispatched_at: { type: string, format: date-time }
+        dispatched_by_user_id: { type: string, format: uuid }
+        business_date: { type: string, format: date }
+        notes: { type: string, nullable: true }
+        lines:
+          type: array
+          items: { $ref: "#/components/schemas/StockTransferLine" }
+        schema_version: { type: integer, enum: [1] }
+
+    GoodsReceiptNoteEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/SyncEnvelope"
+        - type: object
+          properties:
+            aggregate_type: { enum: [goods_receipt_note] }
+            direction: { enum: [EDGE_TO_CLOUD] }
+            payload: { $ref: "#/components/schemas/GoodsReceiptNote" }
+
+    GrnGapEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/SyncEnvelope"
+        - type: object
+          properties:
+            aggregate_type: { enum: [grn_gap] }
+            direction: { enum: [EDGE_TO_CLOUD] }
+            payload: { $ref: "#/components/schemas/GrnGap" }
+
+    PurchaseReturnEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/SyncEnvelope"
+        - type: object
+          properties:
+            aggregate_type: { enum: [purchase_return] }
+            direction: { enum: [EDGE_TO_CLOUD] }
+            payload: { $ref: "#/components/schemas/PurchaseReturn" }
+
+    StockTransferOutEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/SyncEnvelope"
+        - type: object
+          properties:
+            aggregate_type: { enum: [stock_transfer_out] }
+            direction: { enum: [EDGE_TO_CLOUD] }
+            payload: { $ref: "#/components/schemas/StockTransferOut" }

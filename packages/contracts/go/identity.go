@@ -53,11 +53,32 @@ const (
 	// invoice. A permission defined and never checked is a documented
 	// obligation dressed as structural enforcement.
 	//
-	// PermissionWastageApprove is deliberately absent: the approval workflow
-	// moves to M5 with the append-only approval row that enforces it, because
-	// a mutable approval flag on an append-only row is a contradiction.
-	// Wastage RECORDING ships in M4 under inventory.manage.
+	// IT DID NOT LAND WITH ITS CHECK. The enum member shipped at 0.5.0; the
+	// check did not, and the compliance service still gated every config write
+	// on PermissionOutletManage through the whole of M4 — with a comment at
+	// service.go:19 asserting no such permission existed in this enum, which
+	// is how the error reached docs/RESUME.md. The drift suites stayed green
+	// throughout, because they assert the member is PRESENT, and presence is
+	// not enforcement. M5 T1 lands the check. See docs/m5-planning.md §1.1.
 	PermissionBillingManage Permission = "billing.manage"
+
+	// Milestone 5 additions (ADR-019). BOTH land WITH their enforced checks in
+	// backend/internal/procurement, in this same milestone — written that way
+	// deliberately, because the entry immediately above is what happens
+	// otherwise.
+	//
+	// PermissionProcurementApprove is SEPARATE FROM THE AMOUNT:
+	// role.po_approval_limit_paise (postgres/0029) decides up to what value,
+	// and NULL there means "may not approve any amount". A permission alone
+	// would make every approver unlimited, which is not how any restaurant
+	// group delegates spend. Two gates, both required.
+	//
+	// PermissionWastageApprove is STILL absent, for the second milestone
+	// running. The 0.5.0 comment assigned it to M5; it moves to M6 with the
+	// append-only approval row that enforces it, because adding it here would
+	// repeat the billing.manage defect verbatim in the change that fixes it.
+	PermissionProcurementManage  Permission = "procurement.manage"
+	PermissionProcurementApprove Permission = "procurement.approve"
 )
 
 type Role struct {

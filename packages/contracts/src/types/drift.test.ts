@@ -42,6 +42,17 @@ import {
   DIMENSIONAL_CONVERSIONS,
   YIELD_FACTOR_PPM_IDENTITY,
 } from "./inventory";
+// Milestone 5 additions (0.6.0, ADR-019).
+import {
+  SupplierSchema,
+  SupplierItemSchema,
+  PurchaseOrderSchema,
+  PurchaseOrderStatusSchema,
+  GoodsReceiptNoteSchema,
+  GrnGapSchema,
+  PurchaseReturnSchema,
+  StockTransferOutSchema,
+} from "./procurement";
 
 function loadFixture(name: string): unknown {
   return JSON.parse(readFileSync(resolve(__dirname, "../../fixtures", name), "utf-8"));
@@ -584,6 +595,155 @@ describe("Milestone 4 inventory contracts", () => {
     expect(PermissionSchema.options).toContain("inventory.count");
     expect(PermissionSchema.options).toContain("recipe.manage");
     expect(PermissionSchema.options).toContain("billing.manage");
+    expect(PermissionSchema.options).not.toContain("wastage.approve");
+  });
+
+  // -------------------------------------------------------------------------
+  // Milestone 5 — procurement (0.6.0, ADR-019)
+  // -------------------------------------------------------------------------
+
+  it("supplier.json round-trips through SupplierSchema", () => {
+    const raw = loadFixture("supplier.json");
+    expect(JSON.parse(JSON.stringify(SupplierSchema.parse(raw)))).toEqual(raw);
+  });
+
+  it("supplier_item.json round-trips through SupplierItemSchema", () => {
+    const raw = loadFixture("supplier_item.json");
+    expect(JSON.parse(JSON.stringify(SupplierItemSchema.parse(raw)))).toEqual(raw);
+  });
+
+  it("purchase_order.json round-trips through PurchaseOrderSchema", () => {
+    const raw = loadFixture("purchase_order.json");
+    expect(JSON.parse(JSON.stringify(PurchaseOrderSchema.parse(raw)))).toEqual(raw);
+  });
+
+  it("goods_receipt_note.json round-trips through GoodsReceiptNoteSchema", () => {
+    const raw = loadFixture("goods_receipt_note.json");
+    expect(JSON.parse(JSON.stringify(GoodsReceiptNoteSchema.parse(raw)))).toEqual(raw);
+  });
+
+  it("goods_receipt_note_no_po.json round-trips through GoodsReceiptNoteSchema", () => {
+    const raw = loadFixture("goods_receipt_note_no_po.json");
+    expect(JSON.parse(JSON.stringify(GoodsReceiptNoteSchema.parse(raw)))).toEqual(raw);
+  });
+
+  it("grn_gap.json round-trips through GrnGapSchema", () => {
+    const raw = loadFixture("grn_gap.json");
+    expect(JSON.parse(JSON.stringify(GrnGapSchema.parse(raw)))).toEqual(raw);
+  });
+
+  it("purchase_return.json round-trips through PurchaseReturnSchema", () => {
+    const raw = loadFixture("purchase_return.json");
+    expect(JSON.parse(JSON.stringify(PurchaseReturnSchema.parse(raw)))).toEqual(raw);
+  });
+
+  it("stock_transfer_out.json round-trips through StockTransferOutSchema", () => {
+    const raw = loadFixture("stock_transfer_out.json");
+    expect(JSON.parse(JSON.stringify(StockTransferOutSchema.parse(raw)))).toEqual(raw);
+  });
+
+  // A GRN NEVER BLOCKS ON A PO. This nullability is load-bearing, not laxity:
+  // goods arrive against an unsynced PO, against one amended after dispatch,
+  // and with no PO at all, and the receipt is accepted every time. If someone
+  // tidies the schema up by requiring a link, this is what stops them.
+  it("accepts a receipt with no purchase order, no PO line and no supplier", () => {
+    const grn = GoodsReceiptNoteSchema.parse(loadFixture("goods_receipt_note_no_po.json"));
+    expect(grn.purchase_order_id).toBeNull();
+    expect(grn.supplier_id).toBeNull();
+    expect(grn.lines[0].purchase_order_line_id).toBeNull();
+  });
+
+  // Contracts 0.5.9's lesson, applied before the hole exists rather than after:
+  // a fidelity test proves fidelity only for the fields its fixture POPULATES,
+  // and a null round-trips through a nonexistent field perfectly. Every
+  // provenance field is therefore non-null in the linked fixture, and the null
+  // case lives in its own fixture above rather than hiding inside this one.
+  it("populates every provenance field on the linked GRN fixture", () => {
+    const line = GoodsReceiptNoteSchema.parse(loadFixture("goods_receipt_note.json")).lines[0];
+    const provenance = [
+      "purchase_order_line_id",
+      "entered_purchase_unit",
+      "entered_quantity_micro",
+      "quantity_dimension",
+      "base_quantity_micro",
+      "pack_size_micro_applied",
+      "unit_cost_paise",
+      "batch_code",
+      "expiry_date",
+    ] as const;
+    for (const field of provenance) {
+      expect(line[field], field + " must be populated, or it is untested").not.toBeNull();
+    }
+  });
+
+  // The conversion happens exactly once, at the edge, and BOTH sides are
+  // stored. When a receipt turns out 1000x wrong, "what did they actually
+  // type?" must be answerable from the row, not reconstructed from a pack size
+  // that may since have been edited.
+  it("stores both sides of the purchase-unit conversion, consistently", () => {
+    const line = GoodsReceiptNoteSchema.parse(loadFixture("goods_receipt_note.json")).lines[0];
+    expect(line.base_quantity_micro).toBe(
+      (line.entered_quantity_micro * line.pack_size_micro_applied) / 1_000_000,
+    );
+    // The binding range limit is JavaScript's 2^53, not i64 (0.5.0's rule).
+    expect(line.base_quantity_micro).toBeLessThan(Number.MAX_SAFE_INTEGER);
+  });
+
+  // PLAIN OUTBOX. A grn_gap is a discrete event a buyer acts on, not a
+  // per-sale row arriving all day — so it gets none of stock_deduction_gap's
+  // 0.5.8 ranged-stream machinery, and an entry_seq here would be transport
+  // cost cargo-culted onto a shape that does not pay it.
+  it("keeps grn_gap a plain outbox with no sequence field", () => {
+    const raw = loadFixture("grn_gap.json") as Record<string, unknown>;
+    expect(raw).not.toHaveProperty("entry_seq");
+    expect(Object.keys(GrnGapSchema.parse(raw))).not.toContain("entry_seq");
+    // stock_deduction_gap, by contrast, still carries one.
+    expect(loadFixture("stock_deduction_gap.json")).toHaveProperty("entry_seq");
+  });
+
+  // NO RECEIPT STATE on the PO. Receipt progress is derived on both sides and
+  // the two derivations LEGITIMATELY DIFFER — the edge sees only its own GRN
+  // lines, the cloud sees every outlet's. A status member here would make the
+  // outlet a second writer of a cloud-owned row (§50.1).
+  it("keeps receipt state off purchase_order", () => {
+    expect(PurchaseOrderStatusSchema.options).not.toContain("PARTIALLY_RECEIVED");
+    expect(PurchaseOrderStatusSchema.options).not.toContain("RECEIVED");
+    const po = loadFixture("purchase_order.json") as Record<string, unknown>;
+    expect(po).not.toHaveProperty("received_quantity_micro");
+    expect(po).not.toHaveProperty("receipt_status");
+  });
+
+  it("gives the M5 aggregates their §50.1 authority, and no others", () => {
+    expect(AGGREGATE_AUTHORITY.supplier).toBe("CLOUD_TO_EDGE");
+    expect(AGGREGATE_AUTHORITY.purchase_order).toBe("CLOUD_TO_EDGE");
+    expect(AGGREGATE_AUTHORITY.goods_receipt_note).toBe("EDGE_TO_CLOUD");
+    expect(AGGREGATE_AUTHORITY.grn_gap).toBe("EDGE_TO_CLOUD");
+    expect(AGGREGATE_AUTHORITY.purchase_return).toBe("EDGE_TO_CLOUD");
+    expect(AGGREGATE_AUTHORITY.stock_transfer_out).toBe("EDGE_TO_CLOUD");
+
+    // Child rows travel inside their parent. Counters never leave the outlet
+    // (invoice_sequence). Supplier accounts are cloud-only (refresh_token).
+    const absent = [
+      "supplier_item",
+      "purchase_order_line",
+      "grn_line",
+      "purchase_return_line",
+      "stock_transfer_line",
+      "grn_sequence",
+      "supplier_invoice",
+      "supplier_credit",
+    ];
+    for (const name of absent) {
+      expect(AggregateTypeSchema.options).not.toContain(name);
+    }
+  });
+
+  // Both land WITH their enforced checks in this milestone. wastage.approve
+  // does not, for the second milestone running — adding it here would repeat
+  // the billing.manage defect verbatim in the change that fixes it.
+  it("adds the M5 permissions and still not wastage.approve", () => {
+    expect(PermissionSchema.options).toContain("procurement.manage");
+    expect(PermissionSchema.options).toContain("procurement.approve");
     expect(PermissionSchema.options).not.toContain("wastage.approve");
   });
 });

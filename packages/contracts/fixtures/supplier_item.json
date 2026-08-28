@@ -1,0 +1,11 @@
+{
+  "id": "0192f0a1-1100-7000-8000-000000000001",
+  "supplier_id": "0192f0a1-1000-7000-8000-000000000001",
+  "inventory_item_id": "0192f0a1-2000-7000-8000-000000000001",
+  "purchase_unit": "SACK",
+  "pack_size_micro": 50000000000,
+  "quantity_dimension": "MASS",
+  "last_price_paise": 250000,
+  "is_preferred": true,
+  "schema_version": 1
+}

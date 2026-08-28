@@ -1,0 +1,27 @@
+{
+  "id": "0192f0a1-1500-7000-8000-000000000001",
+  "outlet_id": "0192f0a1-0000-7000-8000-0000000000a1",
+  "supplier_id": "0192f0a1-1000-7000-8000-000000000001",
+  "grn_id": "0192f0a1-1300-7000-8000-000000000001",
+  "return_number": "PR/FY26/PNQ/000012",
+  "reason": "DAMAGED",
+  "returned_at": "2026-08-29T05:40:19.000Z",
+  "returned_by_user_id": "0192f0a1-0100-7000-8000-000000000004",
+  "business_date": "2026-08-29",
+  "notes": "One sack torn in transit, contents wet.",
+  "lines": [
+    {
+      "id": "0192f0a1-1501-7000-8000-000000000001",
+      "purchase_return_id": "0192f0a1-1500-7000-8000-000000000001",
+      "inventory_item_id": "0192f0a1-2000-7000-8000-000000000001",
+      "grn_line_id": "0192f0a1-1301-7000-8000-000000000001",
+      "line_number": 1,
+      "entered_purchase_unit": "SACK",
+      "entered_quantity_micro": 1000000,
+      "quantity_dimension": "MASS",
+      "base_quantity_micro": 50000000000,
+      "unit_cost_paise": 5
+    }
+  ],
+  "schema_version": 1
+}

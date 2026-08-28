@@ -16,3 +16,5 @@ export * from "./types/invoice";
 export * from "./types/payment";
 // Milestone 4 additions (0.5.0, ADR-018).
 export * from "./types/inventory";
+// Milestone 5 additions (0.6.0, ADR-019).
+export * from "./types/procurement";

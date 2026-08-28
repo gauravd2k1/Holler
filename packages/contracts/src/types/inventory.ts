@@ -316,6 +316,18 @@ export const StockLedgerEntrySchema = z
     // 0.5.9. Nullable rather than required-on-COUNT_ADJUSTMENT: entries
     // written before 0.5.5 carry the link in `note` and must still replay.
     source_stock_count_id: z.string().uuid().nullable(),
+    // Procurement provenance, added at 0.6.0 (ADR-019) WITH the Go struct, the
+    // OpenAPI shape and both halves of the repository's INSERT/SELECT in the
+    // same version — the lesson of source_stock_count_id directly above, which
+    // existed in both schemas from 0.5.5 while the cloud discarded it in
+    // silence until 0.5.9.
+    //
+    // Exactly one is populated, keyed on entry_type: PURCHASE,
+    // RETURN_TO_VENDOR, TRANSFER_OUT. No transfer-IN field — that is M8, and a
+    // field with no consumer is the defect this comment is about.
+    source_grn_id: z.string().uuid().nullable(),
+    source_purchase_return_id: z.string().uuid().nullable(),
+    source_stock_transfer_out_id: z.string().uuid().nullable(),
     note: z.string().nullable(),
     occurred_at: z.string().datetime(),
     // Outlet-local business day, computed once at write time from

@@ -137,6 +137,19 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0026_gap_entry_seq.sql",
         include_str!("../../../packages/contracts/sqlite/0026_gap_entry_seq.sql"),
     ),
+    // 0027 (ADR-019, contracts 0.6.0) — M5 procurement. Registered in the same
+    // change that created it, deliberately: 0005 and 0009-0011 each sat on
+    // disk unregistered and therefore NEVER APPLIED, which is invisible until
+    // something reads a table that does not exist. Verify the runner, not the
+    // file.
+    (
+        "0027_m5_procurement.sql",
+        include_str!("../../../packages/contracts/sqlite/0027_m5_procurement.sql"),
+    ),
+    (
+        "0028_grn_sequence.sql",
+        include_str!("../../../packages/contracts/sqlite/0028_grn_sequence.sql"),
+    ),
 ];
 
 /// Applies any migrations not yet reflected in `PRAGMA user_version`. Safe
@@ -873,6 +886,30 @@ mod tests {
             "postgres",
             "ledger_replay_gap.sql",
             "ADR-018 0.5.8: a record of what the CLOUD observed about a              stream it received -- a hole between its high-water mark and an              arriving entry_seq. Cloud-only, the refresh_token precedent: the              edge cannot author it, and an edge reporting on its own losses              would be the wrong authority for the fact.",
+        ),
+        (
+            "sqlite",
+            "grn_sequence.sql",
+            "ADR-019 0.6.0: the GRN counter is EDGE-LOCAL, the \
+             invoice_sequence precedent. Mirroring it would make the cloud a \
+             second minter of a number the outlet issues (§33). The issued \
+             number travels on the goods_receipt_note; the counter never \
+             leaves the outlet. It ships as its own file precisely so this \
+             lint can see it -- inside 0027 the pair would match by stem and \
+             the asymmetry would be undeclarable.",
+        ),
+        (
+            "postgres",
+            "supplier_accounts.sql",
+            "ADR-019 0.6.0: supplier_invoice and supplier_credit are \
+             CLOUD-ONLY (the refresh_token precedent) -- an outlet does not \
+             reconcile a supplier ledger with the uplink down, and an edge \
+             copy would be a second authority over money owed. \
+             role.po_approval_limit_paise rides in the same file because there \
+             is NO role TABLE IN SQLITE AT ALL: the edge flattens permissions \
+             into app_user.permissions_json and never models a role. PO \
+             approval happens in the admin, against the cloud; the edge must \
+             not be able to approve a purchase order.",
         ),
         (
             "postgres",

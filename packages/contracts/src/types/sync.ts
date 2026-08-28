@@ -45,6 +45,25 @@ export const AggregateTypeSchema = z.enum([
   "stock_ledger_entry",
   "stock_count",
   "stock_deduction_gap",
+  // Milestone 5 additions (ADR-019). supplier_item, purchase_order_line,
+  // grn_line, purchase_return_line and stock_transfer_line are deliberately
+  // absent — child rows travelling inside their parent's payload or config
+  // bundle, the menu_item_variant / station_printer / invoice_line precedent.
+  //
+  // grn_sequence is absent for the invoice_sequence reason: edge-local, and
+  // mirroring a counter would make the cloud a second minter of a number the
+  // outlet issues (§33).
+  //
+  // supplier_invoice and supplier_credit are absent for the refresh_token /
+  // device_credential reason: cloud-only. An outlet does not reconcile a
+  // supplier ledger with the uplink down, and an edge copy would be a second
+  // authority over money owed.
+  "supplier",
+  "purchase_order",
+  "goods_receipt_note",
+  "grn_gap",
+  "purchase_return",
+  "stock_transfer_out",
 ]);
 export type AggregateType = z.infer<typeof AggregateTypeSchema>;
 
@@ -93,6 +112,30 @@ export const AGGREGATE_AUTHORITY: Record<AggregateType, SyncDirection> = {
   // see it and the person who can fix it are different people in different
   // places. Shares the ledger ingest route rather than taking its own.
   stock_deduction_gap: "EDGE_TO_CLOUD",
+
+  // Milestone 5 (ADR-019). The same cut every milestone before it has made:
+  // who we buy from and what we ordered are management decisions; what
+  // physically arrived at the door, what went back, and what was dispatched
+  // are shop-floor transactions the outlet performs with the uplink down.
+  supplier: "CLOUD_TO_EDGE",
+  // NO RECEIPT STATE on this aggregate — receipt progress is derived on both
+  // sides and the two derivations legitimately differ (the edge sees only its
+  // own GRN lines). Storing it would make the outlet a second writer of a
+  // cloud row. See postgres/0028 and ADR-019.
+  purchase_order: "CLOUD_TO_EDGE",
+  // THE OUTLET RECEIVES GOODS WITH THE UPLINK DOWN and the cloud only
+  // replays — the invoice / payment / cash_shift split exactly.
+  goods_receipt_note: "EDGE_TO_CLOUD",
+  // A signal, not a correction, and cloud-visible because the person who can
+  // see it and the person who can fix it are different people in different
+  // places — the stock_deduction_gap argument, inbound. Plain envelope
+  // outbox, NOT a ranged stream: a gap is a discrete event a buyer acts on,
+  // not a per-sale row arriving all day.
+  grn_gap: "EDGE_TO_CLOUD",
+  purchase_return: "EDGE_TO_CLOUD",
+  // Outbound half only. TRANSFER_IN and goods-in-transit are M8: a transfer
+  // spans two edge databases, which is multi-outlet machinery.
+  stock_transfer_out: "EDGE_TO_CLOUD",
 };
 
 export const SyncEnvelopeSchema = z

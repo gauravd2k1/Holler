@@ -1,0 +1,31 @@
+{
+  "id": "0192f0a1-1310-7000-8000-000000000001",
+  "outlet_id": "0192f0a1-0000-7000-8000-0000000000a1",
+  "purchase_order_id": null,
+  "supplier_id": null,
+  "grn_number": "GRN/FY26/PNQ/000205",
+  "delivery_note_ref": null,
+  "received_at": "2026-08-29T04:05:02.000Z",
+  "received_by_user_id": "0192f0a1-0100-7000-8000-000000000004",
+  "business_date": "2026-08-29",
+  "notes": "Walk-in vegetable delivery, no order raised.",
+  "lines": [
+    {
+      "id": "0192f0a1-1311-7000-8000-000000000001",
+      "grn_id": "0192f0a1-1310-7000-8000-000000000001",
+      "inventory_item_id": "0192f0a1-2000-7000-8000-000000000002",
+      "line_number": 1,
+      "purchase_order_line_id": null,
+      "entered_purchase_unit": "CRATE",
+      "entered_quantity_micro": 3000000,
+      "quantity_dimension": "MASS",
+      "base_quantity_micro": 60000000000,
+      "pack_size_micro_applied": 20000000000,
+      "unit_cost_paise": 3,
+      "line_total_paise": 180000,
+      "batch_code": null,
+      "expiry_date": null
+    }
+  ],
+  "schema_version": 1
+}

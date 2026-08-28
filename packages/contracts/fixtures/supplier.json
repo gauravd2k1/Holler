@@ -1,0 +1,16 @@
+{
+  "id": "0192f0a1-1000-7000-8000-000000000001",
+  "outlet_id": "0192f0a1-0000-7000-8000-0000000000a1",
+  "code": "SUP-ANNAPURNA",
+  "name": "Annapurna Wholesale Foods",
+  "gstin": "27AAECA1234F1Z5",
+  "phone": "+919822011223",
+  "email": "orders@annapurna.example.in",
+  "address": "Gala 4, Market Yard, Pune 411037",
+  "payment_terms_days": 30,
+  "is_active": true,
+  "config_version": 41,
+  "created_at": "2026-08-01T04:30:00.000Z",
+  "updated_at": "2026-08-27T11:15:00.000Z",
+  "schema_version": 1
+}

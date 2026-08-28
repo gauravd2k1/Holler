@@ -39,6 +39,23 @@ const GO_DIR = join(repoRoot, "packages/contracts/go");
 // cost is that adding a pair is a manual step — which is why UNPAIRED_SCHEMAS
 // below must account for every schema this list does not cover.
 const PAIRS = {
+  // Milestone 5 (0.6.0, ADR-019). Added WITH the schemas rather than after
+  // them: this file's whole point is that an unpaired schema drifts silently.
+  //
+  // SupplierInvoice and SupplierCredit are deliberately unpaired — cloud-only,
+  // modelled but not acted on until M7, and they appear on no route, so there
+  // is no OpenAPI schema to pair. They join this list when M7 gives them one.
+  Supplier: "Supplier",
+  SupplierItem: "SupplierItem",
+  PurchaseOrder: "PurchaseOrder",
+  PurchaseOrderLine: "PurchaseOrderLine",
+  GoodsReceiptNote: "GoodsReceiptNote",
+  GrnLine: "GrnLine",
+  GrnGap: "GrnGap",
+  PurchaseReturn: "PurchaseReturn",
+  PurchaseReturnLine: "PurchaseReturnLine",
+  StockTransferOut: "StockTransferOut",
+  StockTransferLine: "StockTransferLine",
   // Milestone 4 (0.5.0, ADR-018) — the milestone that added this check.
   InventoryItem: "InventoryItem",
   ItemUnitConversion: "ItemUnitConversion",
@@ -110,7 +127,7 @@ function goStructFields(source) {
   return structs;
 }
 
-const goSources = ["identity", "invoice", "inventory", "kot", "menu", "order", "payment", "printer", "station", "sync", "table", "tax"]
+const goSources = ["identity", "invoice", "inventory", "kot", "menu", "order", "payment", "printer", "procurement", "station", "sync", "table", "tax"]
   .map((name) => read(join(GO_DIR, `${name}.go`)))
   .join("\n");
 const goStructs = goStructFields(goSources);
