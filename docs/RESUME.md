@@ -1,118 +1,118 @@
-# M4 resume state — 2026-08-24
+# M5 resume state — 2026-08-28
 
-`main` is at **`75801c1`**. Read this file first, then
-`docs/adr/ADR-018-m4-inventory-contracts.md`, `docs/m4-planning.md`, and the
-2026-08-23 / 2026-08-24 entries in `docs/retro.md`.
+`main` is at **`6ecbb20`**, tagged **`m4-complete`**. Read this file first, then
+`docs/M5_HANDOFF.md`, `docs/adr/ADR-018-m4-inventory-contracts.md`, and the
+2026-08-27 / 2026-08-28 entries in `docs/retro.md`.
 
-**This file replaced an "M3 resume state" header that was four days and one
-milestone stale.** Its M3 content is carried forward below rather than deleted:
-M3 is still not acceptance-complete, and the defects it listed are still open.
+**This file replaced an "M4 resume state" header dated 2026-08-24.** M4 content
+that is now closed has been collapsed to a line; everything still open is carried
+forward verbatim. M3 is still not acceptance-complete and its defects are still
+listed.
 
 ---
 
-## 1. M4 acceptance — the seven criteria, with evidence named per row
+## 1. M4 is ACCEPTED and tagged — all seven criteria observed
 
 CLAUDE.md's rule for this milestone: *every item is an observed behaviour, not
 an implemented API, and none may be evidenced by a test harness* — an acceptance
 run exercises the binaries that ship (`docs/retro.md`, 2026-08-11).
 
-**Six of seven are met and observed. Criterion 1 is CONTESTED: it passes in a
-harness and provably does not hold through the shipped POS.** M4 is NOT tagged. The table says which is which; do not read
-"green" as "accepted".
+**Seven of seven met.** Criterion 1 was the last to close and was CONTESTED for
+four days; the history is worth keeping and is below the table.
 
 | # | Criterion | Verdict | Evidence — where, and what it exercises |
 |---|---|---|---|
-| 1 | Offline sale from the **real seed menu** deducts every ingredient at recipe × line quantity, plus chosen-modifier deltas, and nothing for modifiers with no delta row | **CONTESTED — see §2a** | `edge/database/tests/seed_offline_sale.rs` — drives `cmd/devseed`'s real catalogue, not a fixture. No network is on the path by construction: SQLite and Rust only. CI job `edge`. 1/1, 2026-08-24. **But the test selects a variant directly, and the shipped POS never does** — `variantId` is hardcoded `null`, so no sale from the till deducts anything. The harness cannot see it, and the milestone's own rule forbids evidencing a criterion by a harness. See §2a. |
-| 2 | Kill the POS between confirm and deduction → order and ledger agree on reopen | **MET** | `edge/database/tests/crash_durability.rs` against `src/bin/crashpoint.rs` — a **real `abort()` of a real child process** at `after_confirm_before_deduct`, judged on reopen. Gated behind `--features crash-points`; CI job `crash-durability`, on **windows-latest**, because WAL recovery is OS-specific and outlets run Windows (ADR-013). 2/2, 2026-08-24. |
+| 1 | Offline sale from the **real seed menu** deducts every ingredient at recipe × line quantity, plus chosen-modifier deltas, and nothing for modifiers with no delta row | **MET** | Closed by `7e88d1c` — the till now resolves a variant by **cardinality** (0 → null, 1 → silent, 2+ → mandatory picker), so a sale through the shipping binary writes ledger rows. Re-observed by hand in the running POS. Harness `edge/database/tests/seed_offline_sale.rs` still covers the resolver; it is corroboration, not the evidence. |
+| 2 | Kill the POS between confirm and deduction → order and ledger agree on reopen | **MET** | `edge/database/tests/crash_durability.rs` against `src/bin/crashpoint.rs` — a **real `abort()` of a real child process** at `after_confirm_before_deduct`, judged on reopen. Gated behind `--features crash-points`; CI job `crash-durability`, on **windows-latest**, because WAL recovery is OS-specific and outlets run Windows (ADR-013). 2/2, 2026-08-24. Premise re-confirmed structurally on 2026-08-27: `deduct_stock_for_confirmed_order` is `pub(crate)` with exactly one call site, inside `confirm_order`'s transaction before `tx.commit()`. No serve path can insert. |
 | 3 | Physical count produces a variance report whose arithmetic is checked against an **independently computed figure** | **MET** | `edge/database/src/stock/variance.rs::variance_matches_an_independently_computed_figure` — the report's numbers recomputed by a second route and compared, not spot-checked. Surface `apps/pos/src/components/StockCountScreen.tsx`, routed at `router.tsx:101`. TypeScript formats `variance_percentage_bps`; it never recomputes it. |
-| 4 | An ingredient crossing its reorder level is **visible to a human on the POS** | **MET** | `LowStockBanner` is mounted in `PosScreen.tsx:160` and `OrderListScreen.tsx:94` — the two screens a till is actually on — and `CurrentStockScreen` is routed at `router.tsx:80`. `isLowStock` / `lowStockLines` unit-tested in `apps/pos/src/domain/__tests__/inventory.test.ts`, including the rule that a null `reorder_level_micro` is *unconfigured, not zero*. **Observed rendering in the running POS 2026-08-27** — `pnpm tauri dev` / WebView2, banner listing 28 items with its View-stock link, screenshot filed. Reaching it required two fixes: the dev principal lacked `inventory.manage`/`inventory.count` (`a6e02d7`), and the Tauri `MenuItem` DTO was missing `tax_profile_id` and `hsn_sac`, which rejected every menu load. |
-| 5 | An item sold with no recipe completes the sale, records a gap, and appears on the "items sold with no recipe" report | **MET** | Sale completion and `stock_deduction_gap` are edge-side and tested (`edge/database/src/deduction/ledger.rs`, `apps/pos/src-tauri/src/commands/inventory.rs`). The report is `StockDeductionGapsScreen.tsx`, routed at `router.tsx:108`. **Observed rendering in the running POS 2026-08-27** — `pnpm tauri dev` / WebView2, rows carrying item, quantity, reason and timestamp, screenshot filed. Caveat recorded honestly: every row read `NO_VARIANT`, never `NO_RECIPE`, because of the criterion-1 defect below — the sale completing and the gap being reported is the criterion and it held, but the `NO_RECIPE` path itself was not the one exercised. |
-| 6 | Ledger entries created at the edge replay to the cloud and **read back identically** | **MET, AND FALSIFIED** | `edge/sync/tests/cloud_replay.rs`. Builds and spawns the real `cmd/api` against real PostgreSQL, logs in, enrolls a device through the real ADR-017 route, and drives `SyncWorker::pump_ranged_streams` at it over a real socket — no `tiny_http` stand-in anywhere. The entry is *earned* through `Db::record_wastage`, so `entry_seq` comes from the real counter (asserted to be 1, not 0). Read back **twice**: the 201 echo (wire fidelity, through Go's types) and the PostgreSQL row re-serialised (storage fidelity), both whole-object byte-compares against a key-sorted canonical form. Gated `--features cloud-e2e`; CI job `cloud-replay`. 2/2, green twice, 2026-08-24. |
-| 7 | Stock reads stay bounded after a sealed snapshot — **measured, not asserted** | **MET** | `edge/database/src/stock/snapshot.rs::stock_reads_stay_bounded_after_a_sealed_snapshot` — counts **SQLite VM steps** taken by the shipped read over 5 sealed days vs 400, same unsealed tail. No clock is timed, so the figure is identical on a fast laptop and a 4GB spinning-disk till and no regression can hide behind a generous margin. A dropped `entry_seq >` term makes the number climb with history, and the test fails naming both figures. |
+| 4 | An ingredient crossing its reorder level is **visible to a human on the POS** | **MET** | `LowStockBanner` mounted in `PosScreen.tsx` and `OrderListScreen.tsx`; `CurrentStockScreen` routed at `router.tsx:80`. **Observed rendering in the running POS 2026-08-27** — `pnpm tauri dev` / WebView2, screenshot filed. Reaching it required two fixes: the dev principal lacked `inventory.manage`/`inventory.count` (`a6e02d7`), and the Tauri `MenuItem` DTO was missing `tax_profile_id`/`hsn_sac`, which rejected every menu load. |
+| 5 | An item sold with no recipe completes the sale, records a gap, and appears on the "items sold with no recipe" report | **MET** | Sale completion and `stock_deduction_gap` are edge-side and tested (`edge/database/src/deduction/ledger.rs`, `apps/pos/src-tauri/src/commands/inventory.rs`). Report is `StockDeductionGapsScreen.tsx`, routed at `router.tsx:108`. **Observed rendering in the running POS 2026-08-27.** The `NO_RECIPE` path itself became exercisable only after `7e88d1c`; before it every row read `NO_VARIANT`. |
+| 6 | Ledger entries created at the edge replay to the cloud and **read back identically** | **MET, AND FALSIFIED** | `edge/sync/tests/cloud_replay.rs`. Builds and spawns the real `cmd/api` against real PostgreSQL, logs in, enrolls a device through the real ADR-017 route, and drives `SyncWorker::pump_ranged_streams` at it over a real socket. The entry is *earned* through `Db::record_wastage`, so `entry_seq` comes from the real counter (asserted to be 1, not 0). Read back **twice**: the 201 echo and the PostgreSQL row re-serialised, both whole-object byte-compares. Gated `--features cloud-e2e`; CI job `cloud-replay`. 2/2, 2026-08-24. |
+| 7 | Stock reads stay bounded after a sealed snapshot — **measured, not asserted** | **MET** | `edge/database/src/stock/snapshot.rs::stock_reads_stay_bounded_after_a_sealed_snapshot` — counts **SQLite VM steps** taken by the shipped read over 5 sealed days vs 400, same unsealed tail. No clock is timed, so the figure is identical on a fast laptop and a 4GB spinning-disk till, and no regression can hide behind a generous margin. |
+
+### Criterion 1 — why it stood CONTESTED for four days
+
+`variantId` was hardcoded `null` at both `addItem` call sites in `PosScreen.tsx`.
+A recipe binds to `menu_item_variant_id` (NOT NULL, migration 0015), so
+resolution returned `GapReason::NoVariant` for **every** dish and no sale the POS
+ever took wrote a ledger row. The milestone's headline behaviour had never
+happened through the binary that ships.
+
+The harness could not see it: `seed_offline_sale.rs` selects a variant directly.
+Green and correct, testing a path the product does not take.
+
+Resolution is by **cardinality, not by default**. `is_default` **preselects** in
+the picker and never **resolves** — the naive fallback turns a stock defect into
+a revenue defect, since Half at 18000 paise against Full at 32000 would sell as
+Full whenever nobody chose, and print a wrong bill. **A wrong bill is worse than
+a missing deduction.**
+
+> A deduction test proves deduction only for the path its caller takes.
 
 ### Criterion 6 was falsified, not merely observed
 
-Green is not evidence until you have watched it go red for the right reason.
 `entry.Note` was replaced with a typed nil in the cloud's INSERT — one field
-dropped **server-side, after the echo** — and:
-
-- the **storage** comparison failed, printed both objects whole, and named `note`;
-- the **201 echo** comparison **passed**, because the handler echoes the entry it
-  was handed and never reads the row back.
-
-That is the entire argument for keeping two checks rather than one. Had the test
-asserted only the echo, a GST-relevant column could go missing under a green
-tick. Restored, green twice.
+dropped **server-side, after the echo** — and the **storage** comparison failed
+and named `note`, while the **201 echo** comparison **passed**, because the
+handler echoes the entry it was handed and never reads the row back. That is the
+entire argument for keeping two checks rather than one.
 
 The falsification pass also found a defect in the harness itself — both tests
 built `cmd/api` to one path on parallel threads, a race that can only fire when
 the Go sources change, i.e. only during falsification. Fixed with
 `OnceLock::get_or_init`; written up in `docs/retro.md` 2026-08-24.
 
-### Test counts, all measured on this machine on 2026-08-24
+### Test counts — command and date, or it is not a number
 
-| Suite | Result | Command |
-|---|---|---|
-| `edge/database` | **262** | `cargo test` |
-| `edge/database` crash durability (criterion 2) | **2** | `cargo test --features crash-points --test crash_durability` |
-| `edge/sync` | **42** | `cargo test` |
-| `edge/sync` cloud replay (criterion 6) | **2** | `cargo test --features cloud-e2e --test cloud_replay` |
-| `edge/printer` | **45** | `cargo test` |
-| `edge/device` | **11** | `cargo test` |
-| `apps/pos/src-tauri` | **70** | `cargo test` |
-| `apps/pos` | **182** | `pnpm test` |
-| `backend` | **13 packages ok, 0 fail** (267 top-level test funcs across 19 pkgs) | `go test -count=1 ./...` with `HOLLER_TEST_DATABASE_URL` set |
+| Suite | Result | Command | Measured |
+|---|---|---|---|
+| `apps/pos` | **206** | `pnpm test` | **2026-08-28** |
+| `edge/database` | 262 | `cargo test` | 2026-08-24 |
+| `edge/database` crash durability (criterion 2) | 2 | `cargo test --features crash-points --test crash_durability` | 2026-08-24 |
+| `edge/sync` | 42 | `cargo test` | 2026-08-24 |
+| `edge/sync` cloud replay (criterion 6) | 2 | `cargo test --features cloud-e2e --test cloud_replay` | 2026-08-24 |
+| `edge/printer` | 45 | `cargo test` | 2026-08-24 |
+| `edge/device` | 11 | `cargo test` | 2026-08-24 |
+| `apps/pos/src-tauri` | 70 | `cargo test` | 2026-08-24 |
+| `backend` | 13 packages ok, 0 fail (267 top-level test funcs across 19 pkgs) | `go test -count=1 ./...` with `HOLLER_TEST_DATABASE_URL` set | 2026-08-24 |
 
-**NOT re-run on 2026-08-24, and therefore not evidence:** `apps/kds`,
-`packages/contracts` (TS + Go), and the e2e scenario harness. Their last known
-figures are in git history; treat them as stale until someone runs them and
-writes the date next to the number.
+`apps/pos` moved 182 → 190 (`7e88d1c`) → 200 (`d1881b1`) → 206 (`afb5aa0`).
+
+**Every Rust and Go figure above predates the M4 close and should be re-run
+before it is quoted again.** **NOT re-run at all since 2026-08-24, and therefore
+not evidence:** `apps/kds`, `packages/contracts` (TS + Go), and the e2e scenario
+harness.
 
 **The `LNK1104` retry is expected on this box and is not a code error.** McAfee
 holds a lock on each freshly-linked test binary; compilation has already
 succeeded when it fires, and two or three re-runs reach green because cargo
-caches every binary that did link. Every figure above was taken from a run that
-linked cleanly.
+caches every binary that did link.
 
 ---
 
-## 2. What still blocks M4 acceptance
+## 2. What is open right now
 
-**(a) No sale from the shipped POS deducts any stock. Criterion 1 does not hold
-through the till.** `variantId: null` is hardcoded at both `addItem` call sites
-in `apps/pos/src/components/PosScreen.tsx` (131, 233) — the only file in the POS
-that mentions variants, and there is no picker. A recipe binds to
-`menu_item_variant_id` (NOT NULL, migration 0015), so resolution returns
-`GapReason::NoVariant` for **every** dish, the 22 with recipes included, and
-writes no ledger rows. Nothing falls back to `menu_item_variant.is_default` —
-contracts 0.5.0 added that field and no code reads it, which is CLAUDE.md's own
-"a column nothing reads is a column that does not exist".
-
-Criterion 1's evidence, `edge/database/tests/seed_offline_sale.rs`, selects a
-variant directly and therefore cannot see this. The milestone rule it violates
-is stated at the top of §1: *none may be evidenced by a test harness.* The
-harness is green and correct; it is testing a path the product does not take.
-
-Found on 2026-08-27 because Palak Paneer and Paneer Butter Masala showed as
-`NO_VARIANT` on the gaps screen while both carry `["Half", "Full"]` and a recipe
-on "Full". Fish Curry, which should read `NO_RECIPE`, read `NO_VARIANT` too.
-
-**This blocks the `m4-complete` tag.** The milestone's headline behaviour —
-selling a dish deducts its ingredients — has never happened through the binary
-that ships. Closing it needs a variant selector on the ordering screen (or a
-deliberate, documented `is_default` fallback), then criterion 1 re-observed by
-hand: sell Palak Paneer "Full" offline and read the `stock_ledger_entry` rows.
-
-**(b) `gh` is installed but not authenticated.** `gh auth login` has not been run
+**(a) `gh` is installed but not authenticated.** `gh auth login` has not been run
 on this machine, so `gh run list` still cannot read this repo's CI. The whole
-point of installing it — see `docs/retro.md` 2026-08-23, *"Install the CLI that
-reads your own CI"* — is unmet until that one interactive command is run. Until
-then a push is still fire-and-forget, which is the root cause of the four pushes
-that spent a day producing no verdict. **Report the CI verdict in the same
-message as the commit; a push whose result nobody read is not a push.**
+point of installing it — `docs/retro.md` 2026-08-23, *"Install the CLI that reads
+your own CI"* — is unmet until that one interactive command is run. Until then a
+push is fire-and-forget, which is the root cause of the four pushes that spent a
+day producing no verdict. **Report the CI verdict in the same message as the
+commit; a push whose result nobody read is not a push.**
 
-**(c) The two ADR-013 hardware gates in §4 are still open.** They block M3's
-acceptance, not M4's. Listed for completeness, not as M4 blockers.
+**(b) The `m4-complete` tag is local and has not been pushed.**
+
+**(c) The two ADR-013 hardware gates in §4 remain open.** They block **M3**
+acceptance, not M4.
+
+**(d) Seeded reorder levels are placeholders** that make 28 of 32 items read LOW.
+Criterion 4's surface is correct; the data behind it is not meaningful. Set real
+levels before any rollout or demo, or the banner trains people to ignore it.
+
+**Closed since the last resume:** criterion 1 through the till (`7e88d1c`), stale
+stock queries after a sale, negative stock never surfacing without a configured
+reorder level, the 1000x VOLUME display defect and the test assertion that
+encoded it (`d1881b1`), and the two unlabelled quantity inputs (`afb5aa0`).
 
 ---
 
@@ -130,20 +130,14 @@ migration 0024's column was NULL for every row.
 halves of `backend/internal/inventory/repository.go`. No migration: the column
 has been in both stores since 0.5.5. It was **not** deferred to 0.6.0, because
 the ledger is append-only: every adjustment replaying before the fix loses its
-provenance permanently, and no later pass can recover it. See the ADR-018
-addendum dated 2026-08-27.
+provenance permanently, and no later pass can recover it.
 
-**Why criterion 6 was green while this was broken, which is the part worth
-keeping.** The echo comparison could not see it: the handler returns the struct
-it decoded, so a field the struct lacks is missing from *both* sides. The
-storage comparison could not see it either — its fixture was a wastage entry,
-on which every count-provenance field is legitimately null, and a null
-round-trips through a nonexistent field perfectly. **Green on absent data, in
-the test written to prove fidelity.** So the fixture now carries a
-count-sourced COUNT_ADJUSTMENT earned through the shipping count API, and
-`packages/contracts/fixtures/` gained a second ledger fixture populated where
-the first is null, round-tripped in both drift suites. The pinning test is
-deleted, having done its job.
+**Why criterion 6 was green while this was broken.** The echo comparison could
+not see it: the handler returns the struct it decoded, so a field the struct
+lacks is missing from *both* sides. The storage comparison could not see it
+either — its fixture was a wastage entry, on which every count-provenance field
+is legitimately null, and a null round-trips through a nonexistent field
+perfectly. **Green on absent data, in the test written to prove fidelity.**
 
 > A fidelity test proves fidelity only for the fields its fixture populates.
 
@@ -206,7 +200,8 @@ proves nothing about its callers — this had broken nine times.
 Closed since the last resume: invoice enqueue path, split-bill unreachable,
 per-line discounts unreachable, `devseed` seeds no printer, the blocking
 contiguity check on both ranged streams, the sync-config test that needed a clean
-database, and the fail-fast CI job shape that hid four pushes of verdicts.
+database, the fail-fast CI job shape that hid four pushes of verdicts, and the
+five items listed at the end of §2.
 
 **Mint-counter wrap: FIXED, not open.** `format_order_display_number`
 (`edge/database/src/repo.rs`) uses bijective base-26 blocks, so the formatter
@@ -234,13 +229,31 @@ within two days.
 | `backend/internal/compliance` | Writes gate on `outlet.manage`; **no `billing.manage`** exists in the frozen `Permission` enum. Whoever may rename a table may set the GSTIN printed on every invoice. |
 | `apps/pos/src-tauri/tests` | `cargo fmt --check` reports pre-existing diffs; not CI-enforced (crate is not built on Linux, ADR-013). Same for the two test bridges under `tests/`. |
 | `tests/e2e-scenario` | The HSN check is folded into `9_tax_reconciliation`, so a tax arithmetic error and a missing compliance field share one invariant id. |
-| `apps/pos` | **No dev-server smoke test.** Blocks criterion 5 (§2a). Filed in `docs/backlog-m2.md` with the constraint that matters: it must drive `pnpm dev`, not the build — `optimizeDeps` is dev-server-only and `vite build` never reads it. |
-| `scripts/check-contract-field-consumers.mjs` | **Catches the absent-everywhere class only.** Measured, not assumed: `is_default` appeared 3× in `edge/database/src/model.rs` before the POS fix, so this check was green while no sale deducted stock. It cannot distinguish DECLARED from ACTED ON. Follow-up: per-surface check — the field must appear in each required surface AND in at least one file that is not a model, DTO or fixture. |
-| `edge/database/tests/seed_offline_sale.rs` | **Proves the resolver, not the caller.** It selects a variant directly; the POS passed `variantId: null`, and the defect lived in that gap. The criterion-6 fixture hole in the shape of a caller: *a deduction test proves deduction only for the path its caller takes.* Needs a test that drives the resolution the ordering screen actually performs. |
+| `apps/pos` | **No dev-server smoke test.** Filed in `docs/backlog-m2.md` with the constraint that matters: it must drive `pnpm dev`, not the build — `optimizeDeps` is dev-server-only and `vite build` never reads it. |
+| `scripts/check-contract-field-consumers.mjs` | **Catches the absent-everywhere class only, and does not cover enum values at all.** Measured, not assumed: `is_default` appeared 3x in `edge/database/src/model.rs` before the POS fix, so this check was green while no sale deducted stock. Widening it to enums **must narrow the corpus first** — see 6.1. Follow-up for fields: per-surface check — the field must appear in each required surface AND in at least one file that is not a model, DTO or fixture. |
+| `edge/database/tests/seed_offline_sale.rs` | **Proves the resolver, not the caller.** It selects a variant directly; the POS passed `variantId: null`, and the defect lived in that gap. Fixed in the product (`7e88d1c`); the missing test that drives the resolution the ordering screen performs is not. |
 | `apps/pos/src-tauri/src/dto.rs` | **Nothing machine-checks the Tauri DTOs against the Zod schemas.** `MenuItem` was missing `tax_profile_id`/`hsn_sac` and `MenuItemVariant` still lacked `is_default`/`schema_version` — the 0.4.6 OpenAPI drift, same three fields, one layer out. Zod `.nullable()` is not `.optional()`, so a missing key fails `.parse` like a wrong type. Fixed 2026-08-27; the missing guard is not. |
 | `apps/pos/src/components/PosScreen.tsx` | A **failed** menu query renders "Loading menu…" forever — the banner keys off `!hydrated`, and `hydrate` only runs on `isSuccess`. `isError` is never surfaced, so a rejection is indistinguishable from a slow load. This is why the DTO drift above went unnoticed. |
-| `apps/pos` ordering surface | **Four defects found by twenty minutes of manual clicking, 2026-08-27** — DINE_IN accepts no table; the cart does not clear after send and its per-item controls ignore the non-amendable state; "Beverages" appears twice; the internal "Kitchen Prep (internal — not sold)" category is orderable. All M1/M2 surface, none blocking M4. Full entries in `docs/backlog-m2.md`. |
+| `apps/pos` ordering surface | **Four defects found by twenty minutes of manual clicking, 2026-08-27** — DINE_IN accepts no table; the cart does not clear after send and its per-item controls ignore the non-amendable state; "Beverages" appears twice; the internal "Kitchen Prep (internal — not sold)" category is orderable. All M1/M2 surface. Full entries in `docs/backlog-m2.md`. |
 | `tests/e2e-scenario` | `cancel_kitchen_items_with_outbox` still has no Tauri command; `#132-C` cancellation is unreachable from the shipped surface. |
+
+### 6.1 Six permitted-but-unwritten `entry_type` values — M5's first schema task
+
+`stock_ledger_entry.entry_type` permits `PURCHASE`, `TRANSFER_IN`,
+`TRANSFER_OUT`, `RETURN_TO_VENDOR`, `PRODUCTION_CONSUMPTION`,
+`PRODUCTION_OUTPUT`. **Nothing writes any of them.** That takes the "contract
+permits it, nothing produces it" class to **eleven** across M4, from the five
+`check-contract-field-consumers.mjs` was written against.
+
+Measured 2026-08-28: all six appear in the consumer roots **only** in a doc
+comment enumerating the CHECK constraint (`edge/database/src/model.rs:1248-1250`),
+plus `"PURCHASE"` once in a test fixture
+(`edge/database/src/stock/variance.rs:150`).
+
+**Order matters, or the check ships inert:** narrow the corpus (exclude doc
+comments and `#[cfg(test)]`) **first**, then extend the check to enum values,
+**then** declare the six as exempt with `M5` (procurement, transfer) and `M8`
+(central kitchen) named. Full item in `docs/M5_HANDOFF.md` 2.2.
 
 ### Operational gate — read before any rollout
 
@@ -265,6 +278,9 @@ Carried forward, all still binding:
   withdraws the verdict from everything behind it. Style lives in `*-style` jobs
   beside the test jobs, never in front of them. That question is now written at
   the top of `ci.yml`.
+- **Enumerate the sinks, not the surfaces**, to prove a UI-level concern is
+  covered. A screen can be missed; a write path cannot. Now in CLAUDE.md; worked
+  example in `docs/retro.md` 2026-08-28.
 - **A gated target nothing invokes is a target that does not exist.**
   `required-features` hides a target from `cargo test` *and* from
   `cargo clippy --all-targets`, and it is not reported as skipped.
@@ -274,20 +290,23 @@ Carried forward, all still binding:
 - **Falsify before trusting, then check what actually failed.** A red test during
   falsification is not confirmation — the failure must be the assertion under
   test, at the field you broke. Twice now the first red was the harness.
+- **A wrong assertion is worse than no test**, because it makes the defect look
+  verified. Derive the expected value from the spec, never from what the function
+  currently returns.
 - **A contract change is a multi-crate change.** Enumerate consumers, build them,
   list them in the ADR. Run `make check-seams`.
-- **Build-green ≠ dev-works for the Tauri/web apps.** The build output, the dev
-  server and the browser are three runtimes; a failure in one is invisible from
-  the others. Say which runtime a frontend change was observed in. First move on
-  a blank Tauri window: check `node_modules/.vite` mtime against its source, and
-  check the Network tab, not only the console.
+- **Build-green is not dev-works for the Tauri/web apps.** The build output, the
+  dev server and the browser are three runtimes; a failure in one is invisible
+  from the others. Say which runtime a frontend change was observed in. First
+  move on a blank Tauri window: check `node_modules/.vite` mtime against its
+  source, and check the Network tab, not only the console.
 - **Anything touching a persistent store must mint unique ids or make its own
   database.** CI's fresh service container supplies a clean state that no test
   states as a requirement, so such a test is green in CI and red for every human.
 - **An invariant nobody has watched fail is not a gate**, and a green invariant
   whose subject never occurred is worse than no invariant. Count the shapes.
 - **Verify the runner, not the file.** A migration on disk but absent from
-  `MIGRATIONS` never applies (0009–0011 sat dead; 0005 before them).
+  `MIGRATIONS` never applies (0009-0011 sat dead; 0005 before them).
 - **Never quote a number without the command and the date.**
 
 Docker is not started automatically after a restart. On this box Docker Desktop
