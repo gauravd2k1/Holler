@@ -116,27 +116,29 @@ v0.5.0 also closed four M2/M3-era defects that shared one shape — structural g
 
 Two cross-cutting rules the 0.4.x line established the hard way: contract-shaped changes cascade across crates that do not share a cargo workspace (see `docs/retro.md` 2026-08-15), so run `make check-seams` after changing any `pub` signature in `edge/` or `apps/pos/src-tauri`; and a migration that exists on disk but is absent from `edge/database/src/migrations.rs`'s `MIGRATIONS` list **never applies** — 0009–0011 sat dead for exactly that reason, and 0005 before them.
 
-## Current milestone: MILESTONE 4 — Inventory & Recipes
-<!-- MILESTONE-MARKER: 4 -->
+## Current milestone: MILESTONE 5 — Procurement
+<!-- MILESTONE-MARKER: 5 -->
 <!-- Checked by scripts/check-milestone-marker.mjs against .claude/current-milestone.
      This block said "MILESTONE 2 — Kitchen" for the whole of M3: every M3 builder
      loaded M2's scope and M2's EXCLUDES as primary context and nothing noticed for
      an entire milestone. The marker exists so that cannot recur silently. -->
 
-Scope: raw materials with units and conversions, recipes and sub-recipes, modifier-driven ingredient deltas, an append-only stock ledger, automatic recipe-level consumption on order confirm, wastage recording, physical stock counts, theoretical-vs-actual variance, and low-stock surfacing at the POS. Built against the frozen `packages/contracts/` v0.5.0 shapes (ADR-018). Planning inputs: `docs/m4-planning.md`.
+Scope: suppliers and supplier pricing, purchase orders with approval limits, **edge-capable goods receipt (GRN)**, purchase returns, and the outbound half of inter-outlet stock transfer. GRN is the milestone's centre of gravity: it is the first inbound write path, it posts `PURCHASE` ledger entries, and it is the first path to put a **cost** on a ledger entry. Built against `packages/contracts/` v0.6.0 (ADR-019). Planning inputs and the full M4 backlog triage: `docs/m5-planning.md`.
 
-Track graph: **T0** Windows-10 installer gate + heartbeat output · **T0b** real seed menu (done) · **T1** units, integer conversion, recipe resolution with cycle/depth guards · **T2** ledger + deduction inside the `confirm_order` transaction · **T3** wastage, counts, variance, snapshot sealing · **T4** `backend/internal/inventory` + envelope-wrapped ingest + cross-tenant isolation tests for the three new tables · **T5** POS surfaces · **T6** e2e invariants.
+Track graph (6 tracks): **T0** contracts v0.6.0 + ADR-019 + this block (orchestrator, serialized) · **T1** `backend/internal/procurement` — supplier, PO lifecycle, approval limits, config push, envelope-wrapped ingest, cross-tenant isolation, **and the `billing.manage` check that v0.5.0 approved but never landed** · **T2** `edge/database/src/procurement/` — GRN → `PURCHASE` ledger inside one transaction, purchase-unit conversion, `yield_factor_ppm`, weighted average cost · **T3** `edge/sync` — GRN / return / transfer-out replay streams, cursors, per-entry retry budget · **T4** POS receiving and returns surfaces · **T5** admin supplier management and PO raise/approve · **T6** e2e invariants and acceptance.
 
 Acceptance — every item is an observed behaviour, not an implemented API, and **none may be evidenced by a test harness**: an acceptance run exercises the binaries that ship (`docs/retro.md`, 2026-08-11).
-1. Sell a dish **from the real seed menu** with the network disconnected → `stock_ledger_entry` rows for every ingredient at recipe quantity × line quantity, plus the deltas for modifiers actually chosen, and nothing for modifiers with no delta row.
-2. Kill the POS between confirm and deduction → order and ledger agree on reopen. Judged against the crash, not the API.
-3. A physical count produces a variance report whose arithmetic is checked against an independently computed figure.
-4. An ingredient crossing its reorder level is **visible to a human on the POS**, not merely present in a table.
-5. An item sold with no recipe completes the sale, records a deduction gap, and appears on the "items sold with no recipe" report.
-6. Ledger entries created at the edge replay to the cloud and read back identically.
-7. Stock reads stay bounded after a sealed snapshot — measured, not asserted.
+1. Receive a delivery **with the network disconnected** → GRN recorded, `PURCHASE` ledger entries at the converted base-unit quantity with `unit_cost_paise` set, and stock rises by the received amount.
+2. Kill the POS between the GRN write and the ledger post → GRN and ledger agree on reopen. Judged against the crash, not the API.
+3. Receive against a PO **that never synced to the edge** → the receipt completes, a gap is recorded, and the gap is visible to a human on the POS.
+4. A receiving quantity entered in the **supplier's purchase unit** converts correctly to base units, and the screen **echoes what it will record** before the operator commits (`entryIntentEcho`).
+5. A PO exceeding the approver's limit is refused **in the admin UI**, with a message that says what to do next (§64).
+6. A GRN created at the edge replays to the cloud and reads back identically — with a fixture that **populates every provenance field**, not a null-heavy one (contracts 0.5.9's lesson).
+7. Weighted average cost after two receipts at different prices matches an **independently computed** figure.
 
-**EXCLUDES:** procurement / PO / GRN / suppliers; central kitchen; `semi_finished_batch` and batch/expiry **alerting** (model the fields, act in M5); aggregator auto-snooze on stock-out; food-cost dashboards; the menu-engineering matrix; the waiter app (M9).
+**EXCLUDES:** central kitchen and `semi_finished_batch` production (M8); `TRANSFER_IN` destination receipt and goods-in-transit (M8); batch/expiry **alerting** (M6 — the fields stay modelled, deferred a second time deliberately: it depends on GRN existing and is not procurement); supplier accounts posting, supplier credit application and payment settlement (M7 — model the fields, act later); RFQ and purchase requisition; aggregator auto-snooze on stock-out; food-cost dashboards; the menu-engineering matrix; the waiter app (M9).
+
+**Also excluded, and this is the whole point of the exclusion:** the M1–M4 repair backlog. `docs/m5-planning.md` triages every open item to a landing milestone or a trigger, and the ones that do not bear on whether procurement works are filed to M6, not scheduled here. **Triage files items; it does not schedule them all into the next milestone.** M5 was replanned from ten tracks to six on exactly that ground.
 
 ### PARKED — decided, do not re-raise
 
@@ -146,8 +148,11 @@ Both are hardware gates. **Parked 2026-08-20, revisit ~2 September 2026.** A fre
 
 ### Completed milestones
 
-**M1 Core POS** and **M2 Kitchen** are complete. M2's acceptance item 5 — one real KDS↔edge socket session — **is met**, re-evidenced 4/4 against a real socket after ADR-017; note honestly that it was recorded as met while silently failing to compile for a period (`docs/RESUME.md` §4). **M3 Billing** is code-complete and functionally exercised, but **not acceptance-complete**: it is untagged and blocked on the two PARKED gates above, and `docs/RESUME.md` §2 carries the correction covering four defects found in it after the fact.
+**M1 Core POS** and **M2 Kitchen** are complete. M2's acceptance item 5 — one real KDS↔edge socket session — **is met**, re-evidenced 4/4 against a real socket after ADR-017. Record it honestly: it stood recorded as met while its test bridge silently failed to **compile** for a period, so the `lan-integration` CI job was failing at `cargo build` and proving no socket session at all (`docs/RESUME.md` §5). The `rust-seams` job and `make check-seams` exist so a tenth such break fails fast.
 
+**M3 Billing** is code-complete and functionally exercised, but **NOT acceptance-complete**: it is untagged and blocked on the two PARKED hardware gates above. `docs/RESUME.md` §2 and §6 carry the corrections. Two M3 defects are filed to M6 rather than fixed here, and a builder should not treat either as settled behaviour: `invoice.business_date` is bucketed by **UTC calendar day** (`business_date_from`, `apps/pos/src-tauri/src/commands/billing.rs`), which splits one trading night across two business dates and can reset a `DAILY` invoice series mid-service; and a `reset_policy` whose prefix lacks a matching date token yields duplicate invoice numbers, caught only by the UNIQUE index. `compute_business_date` (`edge/database/src/deduction/business_date.rs`) is the correct function and the stock ledger already uses it.
+
+**M4 Inventory & Recipes** is **complete and tagged `m4-complete`** — all seven acceptance criteria observed against the shipping binaries, none evidenced by a test harness. Criterion 1 was CONTESTED for four days and closed by `7e88d1c`: the till hardcoded `variantId: null`, so no sale the POS ever took wrote a ledger row, while the harness that evidenced the criterion selected a variant directly. **A deduction test proves deduction only for the path its caller takes.** Criterion 6 was falsified, not merely observed, and the falsification found a dropped field the 201-echo comparison structurally could not see.
 ## Response rules for agents
 Inspect repo first, output a concise plan, then edit real files. If a task touches >15 files, stop and present the plan instead of proceeding. Report per milestone: Implemented / Verified / Performance / Remaining / Next.
 
