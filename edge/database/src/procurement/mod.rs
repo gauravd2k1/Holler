@@ -41,6 +41,7 @@ pub(crate) mod convert;
 pub(crate) mod cost;
 pub(crate) mod movement;
 pub(crate) mod numbering;
+pub(crate) mod read;
 pub(crate) mod receipt;
 
 pub use convert::GrnGapReason;

@@ -1941,3 +1941,94 @@ pub struct PurchaseOrderReceiptProgress {
     /// Received AT THIS OUTLET only. See the struct doc comment.
     pub received_base_quantity_micro_at_this_outlet: i64,
 }
+
+// ------------------------------------- Milestone 5: procurement READS (T3) --
+//
+// The picker surface. `supplier`, `supplier_item`, `purchase_order` and
+// `purchase_order_line` are CLOUD-OWNED CONFIG at the edge (ADR-019, sec.50.1)
+// and are read-only here: nothing in this crate writes them outside test
+// fixtures and the config apply path.
+//
+// WHY THESE EXIST AT ALL. Without a read the receiving screen can only take a
+// typed UUID for a supplier and a purchase order, which is a screen that
+// exists and nobody can use -- the M4 missing-variant-picker defect exactly
+// (`variantId: null` hardcoded at the till, while the harness that "proved"
+// the criterion selected a variant directly). A receiving clerk cannot type a
+// UUID.
+
+/// A `supplier` row, enough to render a picker and show credit terms.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Supplier {
+    pub id: String,
+    pub outlet_id: String,
+    pub code: String,
+    pub name: String,
+    pub gstin: Option<String>,
+    pub phone: Option<String>,
+    pub email: Option<String>,
+    pub address: Option<String>,
+    pub payment_terms_days: i64,
+    pub is_active: bool,
+}
+
+/// A `supplier_item` row: what this supplier sells, IN THE UNIT THEY SELL IT
+/// IN, and the pack size that converts it.
+///
+/// `quantity_dimension` is **the unit the author chose, never derived from
+/// `inventory_item.dimension`** (contracts 0.5.2, ADR-019 sec.6). A caller
+/// rendering a receiving line must carry this value through as it is read: if
+/// the UI re-derives it from the item, the comparison the write path makes
+/// becomes `x == x`, the `DIMENSION_MISMATCH` guard can never fire, and it
+/// will look correct in review.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SupplierItem {
+    pub id: String,
+    pub supplier_id: String,
+    pub inventory_item_id: String,
+    pub inventory_item_name: String,
+    pub purchase_unit: String,
+    pub pack_size_micro: i64,
+    pub quantity_dimension: String,
+    /// Advisory prefill only. **Never the price a GRN posts** -- what was
+    /// invoiced is a fact, what was expected is a guess.
+    pub last_price_paise: Option<i64>,
+    pub is_preferred: bool,
+}
+
+/// A `purchase_order` header plus its lines, enough to pick one and prefill a
+/// receipt.
+///
+/// **Carries no receipt state, deliberately** (ADR-019 sec.4). Progress is
+/// derived on demand by [`crate::Db::purchase_order_receipt_progress`], and
+/// the cloud's figure for the same PO legitimately differs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PurchaseOrderSummary {
+    pub id: String,
+    pub outlet_id: String,
+    pub supplier_id: String,
+    pub supplier_name: String,
+    pub po_number: String,
+    pub status: String,
+    pub expected_date: Option<String>,
+    pub notes: Option<String>,
+    pub total_paise: i64,
+    pub created_at: String,
+    pub lines: Vec<PurchaseOrderLineRow>,
+}
+
+/// A `purchase_order_line` as stored, plus the item's name so a picker does
+/// not need a second read to be legible.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PurchaseOrderLineRow {
+    pub id: String,
+    pub purchase_order_id: String,
+    pub inventory_item_id: String,
+    pub inventory_item_name: String,
+    pub line_number: i64,
+    pub purchase_unit: String,
+    pub ordered_quantity_micro: i64,
+    /// See [`SupplierItem::quantity_dimension`] -- same rule, same trap.
+    pub quantity_dimension: String,
+    pub unit_price_paise: i64,
+    pub line_total_paise: i64,
+}

@@ -865,6 +865,69 @@ impl Db {
         procurement::list_grn_gaps_for_outlet(self.connection(), outlet_id)
     }
 
+    // ------------------------------- the procurement READ surface (T3) --
+    //
+    // Pickers, not typed UUIDs. `edge/database` exposed no read for
+    // `supplier`, `supplier_item` or `purchase_order`, and the POS crate has
+    // no `rusqlite` dependency by design, so the receiving screen could only
+    // take a typed reference -- a screen that exists and nobody can use. That
+    // is the M4 missing-variant defect exactly. A receiving clerk cannot type
+    // a UUID.
+    //
+    // READS ONLY. Every table below is cloud-owned config (ADR-019, sec.50.1)
+    // and nothing here writes, converts or infers. `quantity_dimension` in
+    // particular comes back exactly as stored.
+
+    /// Active suppliers at one outlet, for the receiving screen's supplier
+    /// picker.
+    ///
+    /// An inactive or absent supplier is **not** a refusal to receive: the
+    /// GRN path accepts the receipt and records a `SUPPLIER_NOT_FOUND` gap.
+    pub fn list_suppliers(&self, outlet_id: &str) -> DbResult<Vec<model::Supplier>> {
+        procurement::read::list_suppliers(self.connection(), outlet_id)
+    }
+
+    /// What one supplier sells, in the unit they sell it in -- the rows that
+    /// resolve a purchase unit and pack size for a receiving line. Pass
+    /// `inventory_item_id` to narrow to one item; several rows for one item
+    /// (one per purchase unit) are normal.
+    ///
+    /// **Carry `quantity_dimension` through as read.** Re-deriving it from
+    /// `inventory_item.dimension` in the UI makes the write path's comparison
+    /// `x == x` and disarms the `DIMENSION_MISMATCH` gap (contracts 0.5.2,
+    /// ADR-019 sec.6).
+    pub fn list_supplier_items(
+        &self,
+        supplier_id: &str,
+        inventory_item_id: Option<&str>,
+    ) -> DbResult<Vec<model::SupplierItem>> {
+        procurement::read::list_supplier_items(self.connection(), supplier_id, inventory_item_id)
+    }
+
+    /// Purchase orders a delivery can arrive against (`APPROVED`, `SENT`),
+    /// newest first, each with its lines, so the receiving screen can pick one
+    /// and prefill.
+    ///
+    /// **No receipt state travels with them** (ADR-019 sec.4) -- ask
+    /// [`Db::purchase_order_receipt_progress`] for this outlet's figure, and
+    /// expect the cloud's to differ.
+    pub fn list_open_purchase_orders(
+        &self,
+        outlet_id: &str,
+    ) -> DbResult<Vec<model::PurchaseOrderSummary>> {
+        procurement::read::list_open_purchase_orders(self.connection(), outlet_id)
+    }
+
+    /// One purchase order's lines, in line order. Separate from
+    /// [`Db::list_open_purchase_orders`] for the caller that already holds an
+    /// id -- including one whose PO is no longer open.
+    pub fn list_purchase_order_lines(
+        &self,
+        purchase_order_id: &str,
+    ) -> DbResult<Vec<model::PurchaseOrderLineRow>> {
+        procurement::read::list_purchase_order_lines(self.connection(), purchase_order_id)
+    }
+
     /// **THIS OUTLET's** receipt progress for one purchase order, derived on
     /// demand from local `grn_line` rows.
     ///
