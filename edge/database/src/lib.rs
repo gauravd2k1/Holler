@@ -865,6 +865,20 @@ impl Db {
         procurement::list_grn_gaps_for_outlet(self.connection(), outlet_id)
     }
 
+    /// Procurement outbox rows this outlet has GIVEN UP on sending -- a
+    /// receipt, return or dispatch the cloud refused
+    /// `repo::OUTBOX_PERMANENT_REJECTION_BUDGET` times, on that many separate
+    /// passes, for a reason that was the row's own fault.
+    ///
+    /// **Nothing at the outlet depends on the uplink, so halting replay for
+    /// one row is survivable -- halting it silently is not** (contracts
+    /// 0.5.8). This read is the "not silently" half: the POS shows these to a
+    /// human. The rows are never deleted and never marked published, so a
+    /// fixed cloud plus a manual retry can still land them.
+    pub fn list_over_budget_procurement_replays(&self) -> DbResult<Vec<model::OutboxEntry>> {
+        repo::list_over_budget_procurement_outbox(self.connection())
+    }
+
     // ------------------------------- the procurement READ surface (T3) --
     //
     // Pickers, not typed UUIDs. `edge/database` exposed no read for

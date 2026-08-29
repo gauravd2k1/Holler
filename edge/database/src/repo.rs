@@ -3195,10 +3195,18 @@ pub(crate) fn insert_outbox_entry(tx: &Transaction, e: &NewOutboxEntry) -> DbRes
 /// Unpublished outbox entries, oldest first — what the (separate) sync
 /// worker pushes next. This crate provides the accessor only; HTTP push,
 /// retry and cursor logic belong to `edge/sync`.
+///
+/// EXCLUDES the procurement aggregates, which have their own pump and their
+/// own per-entry retry budget ([`list_unpublished_procurement_outbox`]). The
+/// exclusion is here rather than in the caller so a row is drained by exactly
+/// one pump: two pumps over one row would send it twice, and neither reading
+/// the other's classification of a rejection would make the budget meaningless.
 pub fn list_unpublished_outbox(conn: &Connection, limit: i64) -> DbResult<Vec<OutboxEntry>> {
     let mut stmt = conn.prepare(
         "SELECT id, aggregate_type, aggregate_id, event_type, payload_json, created_at, published_at, attempt_count
-         FROM local_outbox WHERE published_at IS NULL ORDER BY created_at ASC LIMIT ?1",
+         FROM local_outbox WHERE published_at IS NULL
+           AND aggregate_type NOT IN ('goods_receipt_note','grn_gap','purchase_return','stock_transfer_out')
+         ORDER BY created_at ASC LIMIT ?1",
     )?;
     let rows = stmt
         .query_map(params![limit], |row| {
@@ -3212,6 +3220,110 @@ pub fn list_unpublished_outbox(conn: &Connection, limit: i64) -> DbResult<Vec<Ou
                 published_at: row.get(6)?,
                 attempt_count: row.get(7)?,
             })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+// ------------------------------- Milestone 5: the procurement outbox (T3) --
+//
+// The four procurement aggregates ride the PLAIN outbox (ADR-019 sec.2, and
+// contracts 0.6.1's addendum for the event types): discrete, individually
+// meaningful, low-volume facts a buyer acts on, not rows in a per-sale stream.
+// No `entry_seq`, no private counter, no cursor, no contiguity check --
+// `stock_deduction_gap` earned that machinery because of its volume, and
+// importing it here would import its entire failure surface to protect a
+// handful of rows a week.
+//
+// They are drained by their OWN pump (`edge/sync::procurement`) rather than
+// the general one, because they carry a PER-ENTRY retry budget the general
+// outbox does not (0.5.8's rule: an edge that retries one permanently-rejected
+// row forever strands every row behind it). So `list_unpublished_outbox`
+// excludes them and this reads them -- one row is drained by exactly one pump,
+// never both.
+
+/// The aggregate types the procurement pump owns. A row whose aggregate_type
+/// is in this set is invisible to [`list_unpublished_outbox`], and vice versa.
+pub const PROCUREMENT_OUTBOX_AGGREGATES: [&str; 4] = [
+    "goods_receipt_note",
+    "grn_gap",
+    "purchase_return",
+    "stock_transfer_out",
+];
+
+/// How many PERMANENT rejections one procurement outbox row gets before it is
+/// abandoned and left for a human.
+///
+/// Lives here, not in `edge/sync`, because the POS surface that shows a
+/// receiving clerk "this receipt never reached the cloud" reads it through
+/// this crate -- `apps/pos/src-tauri` does not depend on `edge/sync` at all.
+/// One definition, two readers; two definitions would drift the moment either
+/// moved.
+///
+/// TRANSIENT FAILURES NEVER SPEND IT (`edge/sync::ranged::is_permanent_rejection`
+/// is the single classifier): the uplink being down, the cloud restarting, a
+/// rate limit or an expired credential are not this row's fault, and charging
+/// them to it would abandon good receipts during an outage -- data loss dressed
+/// as resilience.
+pub const OUTBOX_PERMANENT_REJECTION_BUDGET: i64 = 5;
+
+fn outbox_entry_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OutboxEntry> {
+    Ok(OutboxEntry {
+        id: row.get(0)?,
+        aggregate_type: row.get(1)?,
+        aggregate_id: row.get(2)?,
+        event_type: row.get(3)?,
+        payload_json: row.get(4)?,
+        created_at: row.get(5)?,
+        published_at: row.get(6)?,
+        attempt_count: row.get(7)?,
+    })
+}
+
+/// Unpublished procurement outbox rows, oldest first, INCLUDING rows already
+/// over budget.
+///
+/// The over-budget ones are returned rather than filtered out in SQL so the
+/// pump reports them every pass instead of silently skipping them: an
+/// abandoned receipt that nothing mentions again is the silent halt 0.5.8
+/// exists to prevent. Halting sync for one row is survivable; halting it
+/// silently is not.
+pub fn list_unpublished_procurement_outbox(
+    conn: &Connection,
+    limit: i64,
+) -> DbResult<Vec<OutboxEntry>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, aggregate_type, aggregate_id, event_type, payload_json, created_at, published_at, attempt_count
+         FROM local_outbox
+         WHERE published_at IS NULL
+           AND aggregate_type IN ('goods_receipt_note','grn_gap','purchase_return','stock_transfer_out')
+         ORDER BY created_at ASC, id ASC LIMIT ?1",
+    )?;
+    let rows = stmt
+        .query_map(params![limit], outbox_entry_from_row)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Procurement rows this outlet has given up on sending -- the human-visible
+/// half of the per-entry bound, and the read behind the POS surface that says
+/// so.
+///
+/// `attempt_count` here counts PERMANENT rejections only: the procurement pump
+/// increments it for nothing else, which is what makes the comparison against
+/// [`OUTBOX_PERMANENT_REJECTION_BUDGET`] mean what it says.
+pub fn list_over_budget_procurement_outbox(conn: &Connection) -> DbResult<Vec<OutboxEntry>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, aggregate_type, aggregate_id, event_type, payload_json, created_at, published_at, attempt_count
+         FROM local_outbox
+         WHERE published_at IS NULL
+           AND aggregate_type IN ('goods_receipt_note','grn_gap','purchase_return','stock_transfer_out')
+           AND attempt_count >= ?1
+         ORDER BY created_at ASC, id ASC",
+    )?;
+    let rows = stmt
+        .query_map(params![OUTBOX_PERMANENT_REJECTION_BUDGET], |row| {
+            outbox_entry_from_row(row)
         })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)

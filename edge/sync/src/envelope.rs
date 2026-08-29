@@ -39,6 +39,20 @@ pub fn authority_for(aggregate_type: &str) -> Option<SyncDirection> {
         "stock_ledger_entry" | "stock_deduction_gap" | "stock_count" => {
             Some(SyncDirection::EdgeToCloud)
         }
+        // M5, contracts 0.6.0/0.6.1 (ADR-019). The four procurement
+        // aggregates ride the PLAIN outbox — no entry_seq, no cursor, no
+        // contiguity check — with a per-entry retry budget (crate::
+        // procurement). `grn_gap` is EDGE_TO_CLOUD like the receipt it
+        // explains, and travels the same route for that reason.
+        "goods_receipt_note" | "grn_gap" | "purchase_return" | "stock_transfer_out" => {
+            Some(SyncDirection::EdgeToCloud)
+        }
+        // `supplier` and `purchase_order` are CONFIG, cloud→edge: the edge
+        // reads them and NEVER writes one, and it must never approve a
+        // purchase order. Named here rather than left to the `None` arm so
+        // that an attempt to push one is refused as the authority violation
+        // it is, not as an unknown string.
+        "supplier" | "purchase_order" => Some(SyncDirection::CloudToEdge),
         "menu_item" | "app_user" | "role" | "restaurant_table" => Some(SyncDirection::CloudToEdge),
         _ => None,
     }
@@ -116,6 +130,45 @@ mod tests {
     #[test]
     fn app_user_is_cloud_to_edge() {
         assert_eq!(authority_for("app_user"), Some(SyncDirection::CloudToEdge));
+    }
+
+    /// A receipt is edge-authoritative; the purchase order it arrived
+    /// against is cloud config. Pushing a `purchase_order` from the outlet
+    /// must be refused as an authority violation, not accepted — the edge
+    /// never approves a purchase order and must never be able to.
+    #[test]
+    fn procurement_splits_receipts_from_the_orders_they_arrive_against() {
+        for edge_owned in [
+            "goods_receipt_note",
+            "grn_gap",
+            "purchase_return",
+            "stock_transfer_out",
+        ] {
+            assert_eq!(
+                authority_for(edge_owned),
+                Some(SyncDirection::EdgeToCloud),
+                "{edge_owned} is edge-authoritative"
+            );
+        }
+        for cloud_owned in ["supplier", "purchase_order"] {
+            assert_eq!(
+                authority_for(cloud_owned),
+                Some(SyncDirection::CloudToEdge),
+                "{cloud_owned} is config"
+            );
+            assert!(build_edge_to_cloud_envelope(
+                cloud_owned,
+                "r1",
+                "t1",
+                "o1",
+                "d1",
+                "2026-08-30T00:00:00Z",
+                "2026-08-30T00:00:00Z",
+                1,
+                serde_json::json!({}),
+            )
+            .is_err());
+        }
     }
 
     #[test]

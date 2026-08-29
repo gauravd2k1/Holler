@@ -11,6 +11,11 @@
 //!   high-volume stock streams. Not the outbox: a ledger entry is a row in a
 //!   stream, not an event with its own identity (ADR-018's transport rule).
 //!   Sends `entry_seq > cursor` in order and advances the cursor on ack.
+//! - [`procurement::SyncWorker::pump_procurement`] — edge→cloud, for the M5
+//!   procurement aggregates. The PLAIN outbox (ADR-019 §2: no entry_seq, no
+//!   cursor, no contiguity check) carrying 0.5.8's PER-ENTRY retry budget: a
+//!   receipt the cloud will never accept must not strand the receipts behind
+//!   it.
 //! - [`config::pull_and_apply_config`] — cloud→edge. Pulls the config bundle
 //!   and applies it as a wholesale replace, transactionally, only at a
 //!   strictly newer `config_version`.
@@ -25,11 +30,16 @@ pub mod client;
 pub mod config;
 pub mod envelope;
 pub mod error;
+pub mod procurement;
 pub mod ranged;
 pub mod route;
 pub mod worker;
 
 pub use client::HttpClient;
 pub use error::{SyncError, SyncResult};
+pub use procurement::{
+    BlockedProcurementEntry, ProcurementReport, MAX_PROCUREMENT_REPLAY_ATTEMPTS,
+    PROCUREMENT_BATCH_LIMIT,
+};
 pub use ranged::{BlockedEntry, RangedReport, MAX_ENTRY_REPLAY_ATTEMPTS, RANGED_BATCH_LIMIT};
 pub use worker::{PumpReport, StopReason, SyncWorker, WorkerConfig};

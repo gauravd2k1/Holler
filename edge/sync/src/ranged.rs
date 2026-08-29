@@ -92,13 +92,18 @@ pub struct RangedReport {
 
 /// Whether a rejection is the ENTRY's fault, and so spends its budget.
 ///
+/// **The single classifier for both edge→cloud pumps that keep a budget** —
+/// [`crate::procurement`] shares it rather than restating it. Two copies of
+/// this decision would drift, and the drift would be invisible until the day
+/// one of them abandoned a row during an outage.
+///
 /// Transient and device-level conditions must not: the uplink being down, the
 /// cloud restarting, a rate limit, an expired credential — none of those are
 /// caused by this row, and spending a per-entry budget on them would abandon
 /// perfectly good entries during an outage, which is data loss dressed as
 /// resilience. Those stop the stream and are retried indefinitely, which is
 /// safe precisely because nothing at the outlet depends on the uplink.
-fn is_permanent_rejection(status: u16) -> bool {
+pub(crate) fn is_permanent_rejection(status: u16) -> bool {
     match status {
         // Unauthorized / forbidden: this device's credential, not this row.
         401 | 403 => false,
