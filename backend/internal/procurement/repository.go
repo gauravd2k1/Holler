@@ -365,6 +365,20 @@ func (r *pgRepository) UpsertPurchaseOrder(ctx context.Context, tx pgx.Tx, po Pu
 const purchaseOrderColumns = `id, outlet_id, supplier_id, po_number, status, expected_date, notes,
 	       total_paise, approved_by_user_id, approved_at, created_at, config_version`
 
+// purchaseOrderColumnsQualified is the SAME column list carrying the `po.`
+// alias, for the tenant-scoped read that joins outlet and brand.
+//
+// IT IS A SEPARATE CONSTANT BECAUSE THE UNQUALIFIED ONE IS A RUNTIME ERROR IN
+// A JOIN. purchase_order, outlet and brand each have id / created_at, and
+// outlet also has outlet-side columns, so an unqualified `id` in that query is
+// "column reference is ambiguous" (SQLSTATE 42702) — every call fails, always.
+// It shipped that way and no amount of static checking found it: the string
+// was internally consistent and every column name really did exist. It took
+// one query against a live server.
+const purchaseOrderColumnsQualified = `po.id, po.outlet_id, po.supplier_id, po.po_number, po.status,
+	       po.expected_date, po.notes, po.total_paise, po.approved_by_user_id, po.approved_at,
+	       po.created_at, po.config_version`
+
 func scanPurchaseOrder(row rowScanner) (PurchaseOrder, bool, error) {
 	var po PurchaseOrder
 	var status string
@@ -401,7 +415,7 @@ func (r *pgRepository) GetPurchaseOrder(ctx context.Context, tenantID, purchaseO
 	// Tenancy is IN the query. A tenant-blind fetch followed by a Go-side
 	// comparison is one forgotten `if` away from a cross-tenant read.
 	po, found, err := scanPurchaseOrder(r.pool.QueryRow(ctx,
-		`SELECT `+purchaseOrderColumns+`
+		`SELECT `+purchaseOrderColumnsQualified+`
 		 FROM purchase_order po
 		 JOIN outlet o ON o.id = po.outlet_id
 		 JOIN brand b ON b.id = o.brand_id
