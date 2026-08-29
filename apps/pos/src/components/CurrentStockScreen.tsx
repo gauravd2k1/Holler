@@ -27,6 +27,18 @@ export function CurrentStockScreen() {
           <button type="button" onClick={() => void navigate({ to: "/inventory/gaps" })}>
             Items Sold With No Recipe
           </button>
+          {/* Procurement (M5, ADR-019). Reachable from here because stock is
+              where a receiver already is: receiving is the inbound half of the
+              same ledger this screen reads. */}
+          <button type="button" onClick={() => void navigate({ to: "/procurement/receive" })}>
+            Receive Delivery
+          </button>
+          <button type="button" onClick={() => void navigate({ to: "/procurement/returns" })}>
+            Return to Supplier
+          </button>
+          <button type="button" onClick={() => void navigate({ to: "/procurement/gaps" })}>
+            Delivery Problems
+          </button>
         </nav>
         <button type="button" onClick={() => void navigate({ to: "/" })}>
           Back to POS
