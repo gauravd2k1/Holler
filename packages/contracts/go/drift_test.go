@@ -206,6 +206,11 @@ func TestOutboxEventTypes(t *testing.T) {
 		// ledger rides the entry_seq cursor.
 		"StockCountOpened",
 		"StockCountCompleted",
+		// Milestone 5 (0.6.1) procurement facts.
+		"GoodsReceived",
+		"GrnGapRecorded",
+		"PurchaseReturned",
+		"StockDispatched",
 	}
 	if !reflect.DeepEqual(OutboxEventTypes, want) {
 		t.Fatalf("OutboxEventTypes drifted from TypeScript: got %v want %v", OutboxEventTypes, want)

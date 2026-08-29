@@ -186,3 +186,32 @@ Four were open when the shape was reviewed; all four are ruled on above.
 2. **PO approval limit siting** — role or user? → **Role** (§5), on two confirmed conditions: `role` is tenant-scoped, and the per-person ceiling is a filed trigger.
 3. **`batch_code` / `expiry_date`** — model now or defer to M6? → **Keep, exempt, M6 named** (§8). Batch identity is captured at receipt or never.
 4. **PO receipt state** — store or derive? → **Derive, on both sides, and say plainly that the two derivations differ** (§4). This addition to the decision is the whole point of it: an unexplained discrepancy gets "fixed" into a second writer.
+
+---
+
+## Addendum — 0.6.1: four event types frozen, and the guard that could not see three of them (2026-08-30)
+
+### The shapes
+
+`GoodsReceived`, `GrnGapRecorded`, `PurchaseReturned` and `StockDispatched` join `OUTBOX_EVENT_TYPES` in both mirrors. Purely additive: the four aggregates were approved at 0.6.0 and `edge/database` already writes these rows and emits these events. **Nothing replays without them** — `edge/sync` cannot carry a type the contract does not name, so T3 was blocked on this and on nothing else.
+
+They are events rather than a ranged cursor for the reason `StockCountCompleted` is (0.5.5): the outbox earns its cost for **individually meaningful, low-volume facts**, while a ledger entry is a row in a stream. A receipt is a business event a buyer acts on. This is the same cut §2 of this ADR drew when it kept `grn_gap` a plain outbox.
+
+### The guard reported one miss out of four, and that is worse than reporting none
+
+`check-event-type-drift.mjs` flagged `StockDispatched` and stayed silent on the other three. Its forward pass only flagged literals matching `^(Order|Item|KOT|Table|Sent|Payment|Stock|Invoice)` — eight hard-coded prefixes — so `StockDispatched` was caught **by the accident of its `Stock-` prefix** and `GoodsReceived`, `GrnGapRecorded` and `PurchaseReturned` were invisible.
+
+**A guard that reports 1 of 4 reads as "one typo to fix", not "the contract is three types short."** That is the more dangerous failure, because it looks like the guard worked.
+
+The root cause generalises past this instance: **a prefix list can only recognise the vocabulary already frozen, so it is blind to exactly the case it exists for — a new milestone's new nouns.** Procurement brought Goods, Grn, Purchase. M6 will bring its own, and hard-coding those now would rebuild the same hole one milestone later.
+
+**The fix is to classify by CONTEXT, not by vocabulary:** flag a PascalCase literal on a line that also mentions an outbox/event API (`outbox`, `event_type`, `EventType`, `enqueue`, `emit`, `OutboxEvent`). That is a property of how the literal is *used*, and it does not go stale when the domain grows a noun.
+
+**The wording of the contract was not adjusted to suit the matcher.** Naming an event to fit a broken checker is the append-only lint's mistake from §"Rules written into the contract" — where comments were placed and worded around an attribution heuristic — and repeating it here, in the change that fixes a checker, would have been worse than the original.
+
+Two smaller defects the broader matcher exposed, both pre-existing and both masked by the prefix filter:
+
+- **`EVENT_SHAPED` matched ALL-CAPS constants.** `[A-Z][a-z0-9]*` accepts a bare capital, so `"TAKEAWAY"` parsed as eight one-letter words. Each word now needs a lowercase tail; `KOT` stays an explicit alternative because it is the one acronym the contract froze.
+- **Deliberate negative fixtures needed declaring.** `NotAFrozenEvent` and `NotAFrozenOrderEvent` are edge/sync tests asserting an unknown type is *refused*, so they must never be frozen. They are now a declared list with a reason each — the `SINGLE_STORE_MIGRATIONS` / `NOT_YET_EMITTED` discipline — rather than filtered by a pattern, so a real miss cannot hide behind "it looked like a test".
+
+**The fix was falsified, not merely observed to pass:** removing `GoodsReceived` from the frozen list makes the check fire on `edge/database/src/repo.rs:6301`, where before it passed silently.

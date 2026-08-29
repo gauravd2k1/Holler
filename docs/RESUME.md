@@ -215,7 +215,7 @@ database, and the fail-fast CI job shape that hid four pushes of verdicts.
 counter reset; `formatter_never_repeats_past_the_old_wrap_point` drives past the
 old collision point (25975).
 
-**Contracts are FROZEN at v0.6.0**, cross-checked against
+**Contracts are FROZEN at v0.6.1**, cross-checked against
 `packages/contracts/package.json` by `scripts/check-milestone-marker.mjs`.
 
 ---

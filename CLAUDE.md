@@ -60,7 +60,7 @@ The split that matters: WSL2 hosts the **cloud** dependencies for local developm
 - POS: `pnpm test` / `pnpm tauri dev` inside `apps/pos/`.
 - CI: lint, format, unit, integration, contract-drift check, build, security scan.
 
-## Contracts status: FROZEN at v0.6.0 (Milestone 5 procurement applied; migrations through sqlite 0028 / postgres 0029)
+## Contracts status: FROZEN at v0.6.1 (Milestone 5 procurement applied; migrations through sqlite 0028 / postgres 0029)
 <!-- The version and migration numbers on the heading above are checked by
      scripts/check-milestone-marker.mjs against packages/contracts/package.json
      and the migration files on disk. Third staleness of this line (0.4.7,

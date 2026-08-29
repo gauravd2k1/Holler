@@ -247,5 +247,26 @@ export const OUTBOX_EVENT_TYPES = [
   // count, a handful a week -- so it belongs on the side that names things.
   "StockCountOpened",
   "StockCountCompleted",
+  // Milestone 5 (0.6.1, ADR-019 addendum). The four procurement facts the edge
+  // already emits. They are frozen here because NOTHING REPLAYS WITHOUT THEM:
+  // edge/database writes these rows and events today, and edge/sync cannot
+  // carry a type the contract does not name.
+  //
+  // Discrete, individually meaningful, low-volume -- the same cut that put
+  // StockCountCompleted on the outbox rather than a ranged cursor. A receipt is
+  // a business event a buyer acts on, not a row in a per-sale stream.
+  //
+  // NAMED FOR WHAT HAPPENED, NOT TO SUIT THE CHECKER. Three of these four
+  // (GoodsReceived, GrnGapRecorded, PurchaseReturned) slipped past
+  // check-event-type-drift.mjs entirely, because its forward pass only flagged
+  // literals starting with one of eight hard-coded prefixes; only
+  // StockDispatched was caught, by the accident of its Stock- prefix. The
+  // regex is fixed in the same commit that freezes these. Wording a contract to
+  // suit a broken matcher is the append-only lint's mistake, and it is not
+  // repeated here.
+  "GoodsReceived",
+  "GrnGapRecorded",
+  "PurchaseReturned",
+  "StockDispatched",
 ] as const;
 export type OutboxEventType = (typeof OUTBOX_EVENT_TYPES)[number];

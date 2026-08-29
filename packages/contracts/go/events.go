@@ -148,6 +148,15 @@ const (
 	// low-volume fact -- the same cut the ranged-sync decision drew.
 	EventTypeStockCountOpened    = "StockCountOpened"
 	EventTypeStockCountCompleted = "StockCountCompleted"
+
+	// Milestone 5 (0.6.1, ADR-019 addendum). Frozen because nothing replays
+	// without them: edge/database emits these today and edge/sync cannot carry
+	// a type the contract does not name. Discrete, individually meaningful,
+	// low-volume -- the StockCountCompleted cut, not the ranged-cursor one.
+	EventTypeGoodsReceived    = "GoodsReceived"
+	EventTypeGrnGapRecorded   = "GrnGapRecorded"
+	EventTypePurchaseReturned = "PurchaseReturned"
+	EventTypeStockDispatched  = "StockDispatched"
 )
 
 // OutboxEventTypes mirrors OUTBOX_EVENT_TYPES in src/types/events.ts, in the
@@ -172,4 +181,8 @@ var OutboxEventTypes = []string{
 	EventTypeCashShiftClosed,
 	EventTypeStockCountOpened,
 	EventTypeStockCountCompleted,
+	EventTypeGoodsReceived,
+	EventTypeGrnGapRecorded,
+	EventTypePurchaseReturned,
+	EventTypeStockDispatched,
 }

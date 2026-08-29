@@ -213,6 +213,12 @@ describe("contract drift", () => {
       // rides the entry_seq cursor.
       "StockCountOpened",
       "StockCountCompleted",
+      // Milestone 5 (0.6.1): the four procurement facts. Same cut as the
+      // stocktake above -- discrete, individually meaningful, low-volume.
+      "GoodsReceived",
+      "GrnGapRecorded",
+      "PurchaseReturned",
+      "StockDispatched",
     ]);
   });
 
