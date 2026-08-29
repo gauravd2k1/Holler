@@ -340,9 +340,9 @@ jobs:
       # stored on a field without `.bind` â€” verified directly against the
       # sibling KDS bug: `lib.dom.d.ts` declares those globals as functions,
       # not interface methods, so the rule has no receiver to reason about.
-      # See apps/pos/eslint.config.js for the full explanation. This app has
-      # no browser smoke test, so that failure class is currently unguarded
-      # here.
+      # See apps/pos/eslint.config.js for the full explanation. The
+      # `pos-dev-server-smoke` job below is what guards that class here --
+      # this step does not.
       - name: lint
         run: cd apps/pos && pnpm lint
 
@@ -440,6 +440,41 @@ jobs:
         run: cd apps/kds && pnpm exec playwright install --with-deps chromium
       - name: browser smoke test
         run: cd apps/kds && pnpm test:e2e
+
+  # Real-browser smoke test against the DEV SERVER, which is a different
+  # runtime from everything else in this file.
+  #
+  # TWO STRIKES, both invisible to tsc, vitest AND vite build: the 2026-08-20
+  # POS white screen, and the 2026-08-30 stale `@holler/contracts` prebundle
+  # that threw "does not provide an export" in the browser while every suite
+  # stayed green. `optimizeDeps` is a dev-server mechanism `vite build` never
+  # reads, so a build-based smoke test -- including the headless-Chromium one
+  # used to DIAGNOSE the first incident -- cannot catch this class at all.
+  #
+  # It deliberately does NOT pass `--force`: forcing a re-optimise every run is
+  # exactly what hides a stale prebundle. The test must run the dev server the
+  # way a developer does, or it cannot see what a developer sees.
+  #
+  # The whole test is: drive `pnpm dev`, load the page, assert no console
+  # error, assert the app actually rendered (a white screen throws nothing).
+  # Falsified twice before landing -- against a doctored prebundle export and
+  # against a throw on mount.
+  pos-dev-server-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - name: install
+        run: cd apps/pos && pnpm install --frozen-lockfile
+      - name: install chromium
+        run: cd apps/pos && pnpm exec playwright install --with-deps chromium
+      - name: dev-server smoke test
+        run: cd apps/pos && pnpm smoke
 
   # The KDS and the edge node are written in different languages and are
   # otherwise tested only against their own fakes. They already failed to
