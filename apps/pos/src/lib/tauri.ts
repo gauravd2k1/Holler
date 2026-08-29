@@ -974,3 +974,277 @@ export async function getStockCountVarianceReport(
     throw toCommandError(err);
   }
 }
+
+// ------------------------------------------------ procurement (M5, ADR-019) --
+//
+// Every shape below is parsed with a Zod schema before the app sees it, the
+// same discipline the rest of this file applies. Where `packages/contracts`
+// carries the shape (`GrnLineSchema`, `GrnGapSchema`,
+// `GoodsReceiptNoteSchema`, `PurchaseReturnSchema`) the local schema mirrors
+// its field set verbatim, plus the `schema_version` literal the Tauri DTO
+// adds and minus nothing.
+//
+// Two shapes have NO contract mirror and are reported rather than invented
+// around — `GrnEntryIntentEcho` and `PurchaseOrderReceiptProgress` are edge
+// READ shapes that cross no sync boundary. See
+// `apps/pos/src-tauri/src/dto.rs`'s procurement section.
+//
+// QUANTITY SCALES DIFFER WITHIN ONE ROW AND THAT IS DELIBERATE:
+// `entered_quantity_micro` and `pack_size_micro_applied` count the SUPPLIER's
+// purchase unit and the item's base unit respectively. `domain/procurement.ts`
+// has a separate formatter for each so a call site cannot pick the wrong one.
+
+const GrnLineSchema = z.object({
+  id: z.string(),
+  grn_id: z.string(),
+  inventory_item_id: z.string(),
+  line_number: z.number().int(),
+  purchase_order_line_id: z.string().nullable(),
+  entered_purchase_unit: z.string(),
+  entered_quantity_micro: z.number().int(),
+  quantity_dimension: z.string(),
+  base_quantity_micro: z.number().int(),
+  pack_size_micro_applied: z.number().int(),
+  unit_cost_paise: z.number().int(),
+  line_total_paise: z.number().int(),
+  batch_code: z.string().nullable(),
+  expiry_date: z.string().nullable(),
+  schema_version: z.literal(1),
+});
+export type GrnLine = z.infer<typeof GrnLineSchema>;
+
+/** One `grn_gap`. **No `entry_seq`, deliberately** — a GRN gap rides the
+ * plain envelope outbox, not a ranged stream (ADR-019 §2). The contrast with
+ * `StockDeductionGapSchema` above, which does carry one, is the decision
+ * rather than an omission. */
+const GrnGapSchema = z.object({
+  id: z.string(),
+  outlet_id: z.string(),
+  grn_id: z.string(),
+  grn_line_id: z.string().nullable(),
+  inventory_item_id: z.string().nullable(),
+  reason: z.string(),
+  detail: z.string().nullable(),
+  occurred_at: z.string(),
+  business_date: z.string(),
+  schema_version: z.literal(1),
+});
+export type GrnGap = z.infer<typeof GrnGapSchema>;
+
+const GoodsReceiptNoteSchema = z.object({
+  id: z.string(),
+  outlet_id: z.string(),
+  purchase_order_id: z.string().nullable(),
+  supplier_id: z.string().nullable(),
+  grn_number: z.string(),
+  delivery_note_ref: z.string().nullable(),
+  received_at: z.string(),
+  received_by_user_id: z.string(),
+  business_date: z.string(),
+  notes: z.string().nullable(),
+  lines: z.array(GrnLineSchema),
+  gaps: z.array(GrnGapSchema),
+  schema_version: z.literal(1),
+});
+export type GoodsReceiptNote = z.infer<typeof GoodsReceiptNoteSchema>;
+
+const GrnEntryIntentEchoSchema = z.object({
+  inventory_item_id: z.string(),
+  inventory_item_name: z.string(),
+  entered_purchase_unit: z.string(),
+  entered_quantity_micro: z.number().int(),
+  quantity_dimension: z.string(),
+  pack_size_micro_applied: z.number().int(),
+  base_quantity_micro: z.number().int(),
+  item_dimension: z.string(),
+  unit_cost_paise: z.number().int(),
+  line_total_paise: z.number().int(),
+  gap_reasons: z.array(z.string()),
+  schema_version: z.literal(1),
+});
+export type GrnEntryIntentEcho = z.infer<typeof GrnEntryIntentEchoSchema>;
+
+const PurchaseReturnLineSchema = z.object({
+  id: z.string(),
+  purchase_return_id: z.string(),
+  inventory_item_id: z.string(),
+  grn_line_id: z.string().nullable(),
+  line_number: z.number().int(),
+  entered_purchase_unit: z.string(),
+  entered_quantity_micro: z.number().int(),
+  quantity_dimension: z.string(),
+  base_quantity_micro: z.number().int(),
+  unit_cost_paise: z.number().int(),
+  schema_version: z.literal(1),
+});
+export type PurchaseReturnLine = z.infer<typeof PurchaseReturnLineSchema>;
+
+const PurchaseReturnSchema = z.object({
+  id: z.string(),
+  outlet_id: z.string(),
+  supplier_id: z.string().nullable(),
+  grn_id: z.string().nullable(),
+  return_number: z.string(),
+  reason: z.string(),
+  returned_at: z.string(),
+  returned_by_user_id: z.string(),
+  business_date: z.string(),
+  notes: z.string().nullable(),
+  lines: z.array(PurchaseReturnLineSchema),
+  schema_version: z.literal(1),
+});
+export type PurchaseReturn = z.infer<typeof PurchaseReturnSchema>;
+
+/** THIS OUTLET's receipt progress for one PO. The cloud's figure for the same
+ * PO will differ and BOTH ARE RIGHT (ADR-019 §4) — never reconcile them. */
+const PurchaseOrderReceiptProgressSchema = z.object({
+  purchase_order_id: z.string(),
+  purchase_order_line_id: z.string(),
+  inventory_item_id: z.string(),
+  ordered_base_quantity_micro: z.number().int(),
+  received_base_quantity_micro_at_this_outlet: z.number().int(),
+  schema_version: z.literal(1),
+});
+export type PurchaseOrderReceiptProgress = z.infer<typeof PurchaseOrderReceiptProgressSchema>;
+
+/** One receiving line as the screen submits it.
+ *
+ * `enteredQuantity` is the operator's typed DECIMAL STRING ("4", "12.5"),
+ * parsed to exact integer micro-units on the Rust side
+ * (`parse_purchase_quantity_micro`). It is a string precisely so no float
+ * ever touches a receipt quantity in JavaScript.
+ *
+ * `quantityDimension` IS THE UNIT THE OPERATOR CHOSE. It is required, and no
+ * caller may fill it from the selected inventory item's dimension — that
+ * would make the edge's `DIMENSION_MISMATCH` comparison `x == x` and the
+ * guard could never fire (ADR-019 §6). */
+export interface NewGrnLineRequest {
+  inventory_item_id: string;
+  entered_purchase_unit: string;
+  entered_quantity: string;
+  quantity_dimension: string;
+  purchase_price_paise: number;
+  batch_code: string | null;
+  expiry_date: string | null;
+  purchase_order_line_id: string | null;
+}
+
+export interface NewPurchaseReturnLineRequest {
+  inventory_item_id: string;
+  grn_line_id: string | null;
+  entered_purchase_unit: string;
+  entered_quantity: string;
+  quantity_dimension: string;
+  /** `null` values the return at what this outlet actually paid — the edge's
+   * weighted average cost. Never coerce it to 0: a blank field and a zero
+   * cost are different statements. */
+  unit_cost_paise: number | null;
+}
+
+/** The `entryIntentEcho` behind M5 acceptance criterion 4. Runs the edge's
+ * OWN resolution — the same one the write runs — so the echo cannot disagree
+ * with what gets recorded. */
+export async function grnEntryIntentEcho(
+  supplierId: string | null,
+  line: NewGrnLineRequest,
+): Promise<GrnEntryIntentEcho> {
+  try {
+    const raw = await invoke("grn_entry_intent_echo", { supplierId, line });
+    return GrnEntryIntentEchoSchema.parse(raw);
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
+
+/** Records a goods receipt, its gaps and its `PURCHASE` ledger entries in one
+ * edge transaction.
+ *
+ * `purchaseOrderId` and `supplierId` may be `null`, and a receipt with both
+ * null is ORDINARY: it lands with a `NO_PURCHASE_ORDER` gap attached. No
+ * caller may refuse to submit for a missing PO — refusing a delivery standing
+ * in the kitchen doorway is the outage, not the protection (ADR-019 §1). */
+export async function recordGoodsReceipt(args: {
+  purchaseOrderId: string | null;
+  supplierId: string | null;
+  deliveryNoteRef: string | null;
+  notes: string | null;
+  receivedByUserId: string;
+  lines: NewGrnLineRequest[];
+}): Promise<GoodsReceiptNote> {
+  try {
+    const raw = await invoke("record_goods_receipt", {
+      purchaseOrderId: args.purchaseOrderId,
+      supplierId: args.supplierId,
+      deliveryNoteRef: args.deliveryNoteRef,
+      notes: args.notes,
+      receivedByUserId: args.receivedByUserId,
+      lines: args.lines,
+    });
+    return GoodsReceiptNoteSchema.parse(raw);
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
+
+/** Records a purchase return and its `RETURN_TO_VENDOR` ledger entries.
+ * `returnNumber` is the operator's own paperwork reference — contracts 0.6.0
+ * mints a counter for the GRN and none for this document, reported rather
+ * than invented. */
+export async function recordPurchaseReturn(args: {
+  supplierId: string | null;
+  grnId: string | null;
+  returnNumber: string;
+  reason: string;
+  notes: string | null;
+  returnedByUserId: string;
+  lines: NewPurchaseReturnLineRequest[];
+}): Promise<PurchaseReturn> {
+  try {
+    const raw = await invoke("record_purchase_return", {
+      supplierId: args.supplierId,
+      grnId: args.grnId,
+      returnNumber: args.returnNumber,
+      reason: args.reason,
+      notes: args.notes,
+      returnedByUserId: args.returnedByUserId,
+      lines: args.lines,
+    });
+    return PurchaseReturnSchema.parse(raw);
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
+
+/** The GRN gap report behind M5 acceptance criterion 3 — the gap must be
+ * VISIBLE TO A HUMAN ON THE POS. Bounded and newest-first at the edge. */
+export async function listGrnGaps(): Promise<GrnGap[]> {
+  try {
+    const raw = await invoke<unknown[]>("list_grn_gaps");
+    return raw.map((g) => GrnGapSchema.parse(g));
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
+
+export async function purchaseOrderReceiptProgress(
+  purchaseOrderId: string,
+): Promise<PurchaseOrderReceiptProgress[]> {
+  try {
+    const raw = await invoke<unknown[]>("purchase_order_receipt_progress", { purchaseOrderId });
+    return raw.map((p) => PurchaseOrderReceiptProgressSchema.parse(p));
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
+
+/** Weighted average cost per BASE unit, in paise. `null` means this outlet
+ * has never recorded a costed receipt for the item — **not zero**, and no
+ * caller may render it as ₹0.00. */
+export async function weightedAverageCostPaise(inventoryItemId: string): Promise<number | null> {
+  try {
+    const raw = await invoke("weighted_average_cost_paise", { inventoryItemId });
+    return z.number().int().nullable().parse(raw);
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}

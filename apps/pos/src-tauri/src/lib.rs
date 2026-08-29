@@ -79,6 +79,14 @@ pub fn run() {
             commands::inventory::get_stock_count,
             commands::inventory::complete_stock_count,
             commands::inventory::get_stock_count_variance_report,
+            // Milestone 5 procurement (ADR-019, T4). Receiving, returns
+            // and the human-visible gap report; a GRN never blocks on a PO.
+            commands::procurement::list_grn_gaps,
+            commands::procurement::purchase_order_receipt_progress,
+            commands::procurement::weighted_average_cost_paise,
+            commands::procurement::grn_entry_intent_echo,
+            commands::procurement::record_goods_receipt,
+            commands::procurement::record_purchase_return,
         ])
         .build(tauri::generate_context!())
         .expect("error while building the Holler POS application")

@@ -17,8 +17,10 @@ import {
   listPaymentsForOrder,
   listStations,
   listStockCountLines,
+  listGrnGaps,
   listStockDeductionGaps,
   listTables,
+  purchaseOrderReceiptProgress,
 } from "./tauri";
 
 // Query keys centralised here so cache invalidation after a write stays
@@ -44,6 +46,9 @@ export const queryKeys = {
   stockCountLines: (stockCountId: string) => ["stock-count-lines", stockCountId] as const,
   stockCountVarianceReport: (stockCountId: string) =>
     ["stock-count-variance-report", stockCountId] as const,
+  grnGaps: ["grn-gaps"] as const,
+  purchaseOrderReceiptProgress: (purchaseOrderId: string) =>
+    ["purchase-order-receipt-progress", purchaseOrderId] as const,
 };
 
 export function useMenuItemsQuery() {
@@ -183,5 +188,32 @@ export function useStockCountVarianceReportQuery(stockCountId: string | null) {
     queryKey: queryKeys.stockCountVarianceReport(stockCountId ?? "none"),
     queryFn: () => getStockCountVarianceReport(stockCountId as string),
     enabled: stockCountId !== null,
+  });
+}
+
+// --------------------------------------------------------- procurement (M5) --
+
+/** The GRN gap report (M5 acceptance criterion 3). Polled on the same cadence
+ * as the other back-of-house signals: a gap is a discrete event a buyer acts
+ * on, not urgent to the second, but it must not require anyone to go looking
+ * for it either. */
+export function useGrnGapsQuery() {
+  return useQuery({
+    queryKey: queryKeys.grnGaps,
+    queryFn: listGrnGaps,
+  });
+}
+
+/** THIS OUTLET's receipt progress for one purchase order.
+ *
+ * The cloud's figure for the same PO will differ and BOTH ARE RIGHT
+ * (ADR-019 §4). Nothing here or downstream may reconcile the two — that
+ * reintroduces the second writer keeping receipt state off `purchase_order`
+ * exists to avoid. */
+export function usePurchaseOrderReceiptProgressQuery(purchaseOrderId: string | null) {
+  return useQuery({
+    queryKey: queryKeys.purchaseOrderReceiptProgress(purchaseOrderId ?? "none"),
+    queryFn: () => purchaseOrderReceiptProgress(purchaseOrderId as string),
+    enabled: purchaseOrderId !== null,
   });
 }

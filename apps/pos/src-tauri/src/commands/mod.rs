@@ -9,4 +9,5 @@ pub mod inventory;
 pub mod kitchen;
 pub mod menu;
 pub mod orders;
+pub mod procurement;
 pub mod tables;

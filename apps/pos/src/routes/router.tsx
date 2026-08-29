@@ -10,6 +10,9 @@ import { CurrentStockScreen } from "../components/CurrentStockScreen";
 import { WastageScreen } from "../components/WastageScreen";
 import { StockCountListScreen, StockCountScreen } from "../components/StockCountScreen";
 import { StockDeductionGapsScreen } from "../components/StockDeductionGapsScreen";
+import { ReceivingScreen } from "../components/ReceivingScreen";
+import { PurchaseReturnScreen } from "../components/PurchaseReturnScreen";
+import { GrnGapsScreen } from "../components/GrnGapsScreen";
 
 /** Wraps a screen so OUR boundary sees the throw before the router's
  * CatchBoundary does.
@@ -108,6 +111,35 @@ const stockDeductionGapsRoute = createRoute({
   component: withBoundary(StockDeductionGapsScreen),
 });
 
+// --------------------------------------------------------- procurement (M5) --
+// ADR-019, track T4. Receiving, returns and the human-visible GRN gap report.
+// `/procurement/gaps` is deliberately its OWN route rather than a section of
+// `/inventory/gaps`: a stock-deduction gap and a delivery gap are different
+// events with different audiences and different next steps, and folding them
+// into one screen is how eight distinct reasons end up under one heading —
+// the filed M4 defect this milestone must not repeat.
+
+const receivingRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/procurement/receive",
+  beforeLoad: requireAuth,
+  component: withBoundary(ReceivingScreen),
+});
+
+const purchaseReturnRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/procurement/returns",
+  beforeLoad: requireAuth,
+  component: withBoundary(PurchaseReturnScreen),
+});
+
+const grnGapsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/procurement/gaps",
+  beforeLoad: requireAuth,
+  component: withBoundary(GrnGapsScreen),
+});
+
 const routeTree = rootRoute.addChildren([
   loginRoute,
   posRoute,
@@ -118,6 +150,9 @@ const routeTree = rootRoute.addChildren([
   stockCountListRoute,
   stockCountRoute,
   stockDeductionGapsRoute,
+  receivingRoute,
+  purchaseReturnRoute,
+  grnGapsRoute,
 ]);
 
 // TanStack Router catches a throw inside a route component in its own

@@ -1311,3 +1311,303 @@ impl From<db::SyncReplayBlock> for SyncReplayBlock {
         }
     }
 }
+
+// ----------------------------------------------- procurement (M5, ADR-019) --
+//
+// Mirror `packages/contracts/src/types/procurement.ts` field-for-field where
+// a shape exists there (`GoodsReceiptNoteSchema`, `GrnLineSchema`,
+// `GrnGapSchema`, `PurchaseReturnSchema`, `PurchaseReturnLineSchema`).
+//
+// TWO DTOs BELOW HAVE NO CONTRACT MIRROR AND ARE REPORTED, NOT INVENTED
+// AROUND: `GrnEntryIntentEcho` and `PurchaseOrderReceiptProgress` are edge
+// READ shapes — neither crosses a sync boundary, so neither is a wire
+// aggregate — and `packages/contracts` carries no TS+Zod mirror for either.
+// They use `holler_edge_database::model`'s own field names verbatim, so a
+// future contract mirror is a rename-free swap.
+//
+// Contract deltas the storage model does NOT carry, stated rather than
+// silently filled: `goods_receipt_note` as stored gains a `gaps` array (the
+// edge returns the receipt whole so the screen can show every gap without a
+// second query — ADR-019 §1), and `grn_gap` here carries no `entry_seq`
+// because it deliberately has none (ADR-019 §2: a plain outbox, not a ranged
+// stream — the contrast with `StockDeductionGap` above is the decision, not
+// an omission).
+
+/// Mirrors `GrnLineSchema`. **BOTH SIDES OF THE CONVERSION ARE PRESENT AND
+/// THAT IS NOT REDUNDANCY** — `entered_*` is what the human typed,
+/// `base_quantity_micro` is what the ledger received, and
+/// `pack_size_micro_applied` is the rate actually used. When a receipt turns
+/// out 1000× wrong, "what did they actually type?" is answerable from this
+/// row and must stay so; no screen may render one side only.
+#[derive(Debug, Clone, Serialize)]
+pub struct GrnLine {
+    pub id: String,
+    pub grn_id: String,
+    pub inventory_item_id: String,
+    pub line_number: i64,
+    pub purchase_order_line_id: Option<String>,
+    pub entered_purchase_unit: String,
+    pub entered_quantity_micro: i64,
+    /// The dimension the AUTHOR declared — never derived from
+    /// `inventory_item.dimension` (ADR-019 §6).
+    pub quantity_dimension: String,
+    pub base_quantity_micro: i64,
+    pub pack_size_micro_applied: i64,
+    /// Paise per BASE unit, computed at the edge. Formatted above, never
+    /// recomputed.
+    pub unit_cost_paise: i64,
+    pub line_total_paise: i64,
+    /// Modelled now, alerted in M6 (ADR-019 §8). Carried so the receipt row
+    /// is complete; nothing in M5 reads them.
+    pub batch_code: Option<String>,
+    pub expiry_date: Option<String>,
+    pub schema_version: u8,
+}
+
+impl From<db::GrnLine> for GrnLine {
+    fn from(l: db::GrnLine) -> Self {
+        Self {
+            id: l.id,
+            grn_id: l.grn_id,
+            inventory_item_id: l.inventory_item_id,
+            line_number: l.line_number,
+            purchase_order_line_id: l.purchase_order_line_id,
+            entered_purchase_unit: l.entered_purchase_unit,
+            entered_quantity_micro: l.entered_quantity_micro,
+            quantity_dimension: l.quantity_dimension,
+            base_quantity_micro: l.base_quantity_micro,
+            pack_size_micro_applied: l.pack_size_micro_applied,
+            unit_cost_paise: l.unit_cost_paise,
+            line_total_paise: l.line_total_paise,
+            batch_code: l.batch_code,
+            expiry_date: l.expiry_date,
+            schema_version: 1,
+        }
+    }
+}
+
+/// Mirrors `GrnGapSchema`. `detail` is PROSE because a person reads it: M5
+/// acceptance criterion 3 is "the gap is visible to a human on the POS", not
+/// "a gap row exists". `reason` is one of EIGHT closed-set values and every
+/// screen must render the actual one — the M4 gaps screen titling every row
+/// "Items Sold With No Recipe" regardless of reason is a filed M6 defect and
+/// must not be repeated here.
+#[derive(Debug, Clone, Serialize)]
+pub struct GrnGap {
+    pub id: String,
+    pub outlet_id: String,
+    pub grn_id: String,
+    pub grn_line_id: Option<String>,
+    pub inventory_item_id: Option<String>,
+    pub reason: String,
+    pub detail: Option<String>,
+    pub occurred_at: String,
+    pub business_date: String,
+    pub schema_version: u8,
+}
+
+impl From<db::GrnGap> for GrnGap {
+    fn from(g: db::GrnGap) -> Self {
+        Self {
+            id: g.id,
+            outlet_id: g.outlet_id,
+            grn_id: g.grn_id,
+            grn_line_id: g.grn_line_id,
+            inventory_item_id: g.inventory_item_id,
+            reason: g.reason,
+            detail: g.detail,
+            occurred_at: g.occurred_at,
+            business_date: g.business_date,
+            schema_version: 1,
+        }
+    }
+}
+
+/// Mirrors `GoodsReceiptNoteSchema`, plus the `gaps` the receipt actually
+/// produced. `purchase_order_id` and `supplier_id` are `Option` AND THAT IS
+/// THE POINT (ADR-019 §1) — a receipt with neither is an ordinary, accepted
+/// receipt with gaps attached, never a failure.
+#[derive(Debug, Clone, Serialize)]
+pub struct GoodsReceiptNote {
+    pub id: String,
+    pub outlet_id: String,
+    pub purchase_order_id: Option<String>,
+    pub supplier_id: Option<String>,
+    pub grn_number: String,
+    pub delivery_note_ref: Option<String>,
+    pub received_at: String,
+    pub received_by_user_id: String,
+    pub business_date: String,
+    pub notes: Option<String>,
+    pub lines: Vec<GrnLine>,
+    pub gaps: Vec<GrnGap>,
+    pub schema_version: u8,
+}
+
+impl From<db::GoodsReceiptNote> for GoodsReceiptNote {
+    fn from(g: db::GoodsReceiptNote) -> Self {
+        Self {
+            id: g.id,
+            outlet_id: g.outlet_id,
+            purchase_order_id: g.purchase_order_id,
+            supplier_id: g.supplier_id,
+            grn_number: g.grn_number,
+            delivery_note_ref: g.delivery_note_ref,
+            received_at: g.received_at,
+            received_by_user_id: g.received_by_user_id,
+            business_date: g.business_date,
+            notes: g.notes,
+            lines: g.lines.into_iter().map(GrnLine::from).collect(),
+            gaps: g.gaps.into_iter().map(GrnGap::from).collect(),
+            schema_version: 1,
+        }
+    }
+}
+
+/// The `entryIntentEcho` (M5 acceptance criterion 4). **No contract mirror
+/// exists** — see this section's header. Every number here is computed by the
+/// edge's own resolution, the same one the write runs; the screen formats and
+/// never recomputes.
+#[derive(Debug, Clone, Serialize)]
+pub struct GrnEntryIntentEcho {
+    pub inventory_item_id: String,
+    pub inventory_item_name: String,
+    pub entered_purchase_unit: String,
+    pub entered_quantity_micro: i64,
+    /// What the OPERATOR declared.
+    pub quantity_dimension: String,
+    pub pack_size_micro_applied: i64,
+    pub base_quantity_micro: i64,
+    /// `inventory_item.dimension` — shown SEPARATELY so an operator can see
+    /// the two disagree. Never used to fill `quantity_dimension` in, at any
+    /// layer.
+    pub item_dimension: String,
+    pub unit_cost_paise: i64,
+    pub line_total_paise: i64,
+    /// Every gap this line WOULD record if committed as entered. Shown, never
+    /// used to block.
+    pub gap_reasons: Vec<String>,
+    pub schema_version: u8,
+}
+
+impl From<db::GrnEntryIntentEcho> for GrnEntryIntentEcho {
+    fn from(e: db::GrnEntryIntentEcho) -> Self {
+        Self {
+            inventory_item_id: e.inventory_item_id,
+            inventory_item_name: e.inventory_item_name,
+            entered_purchase_unit: e.entered_purchase_unit,
+            entered_quantity_micro: e.entered_quantity_micro,
+            quantity_dimension: e.quantity_dimension,
+            pack_size_micro_applied: e.pack_size_micro_applied,
+            base_quantity_micro: e.base_quantity_micro,
+            item_dimension: e.item_dimension,
+            unit_cost_paise: e.unit_cost_paise,
+            line_total_paise: e.line_total_paise,
+            gap_reasons: e.gap_reasons,
+            schema_version: 1,
+        }
+    }
+}
+
+/// Mirrors `PurchaseReturnLineSchema`.
+#[derive(Debug, Clone, Serialize)]
+pub struct PurchaseReturnLine {
+    pub id: String,
+    pub purchase_return_id: String,
+    pub inventory_item_id: String,
+    pub grn_line_id: Option<String>,
+    pub line_number: i64,
+    pub entered_purchase_unit: String,
+    pub entered_quantity_micro: i64,
+    pub quantity_dimension: String,
+    pub base_quantity_micro: i64,
+    pub unit_cost_paise: i64,
+    pub schema_version: u8,
+}
+
+impl From<db::PurchaseReturnLine> for PurchaseReturnLine {
+    fn from(l: db::PurchaseReturnLine) -> Self {
+        Self {
+            id: l.id,
+            purchase_return_id: l.purchase_return_id,
+            inventory_item_id: l.inventory_item_id,
+            grn_line_id: l.grn_line_id,
+            line_number: l.line_number,
+            entered_purchase_unit: l.entered_purchase_unit,
+            entered_quantity_micro: l.entered_quantity_micro,
+            quantity_dimension: l.quantity_dimension,
+            base_quantity_micro: l.base_quantity_micro,
+            unit_cost_paise: l.unit_cost_paise,
+            schema_version: 1,
+        }
+    }
+}
+
+/// Mirrors `PurchaseReturnSchema`.
+#[derive(Debug, Clone, Serialize)]
+pub struct PurchaseReturn {
+    pub id: String,
+    pub outlet_id: String,
+    pub supplier_id: Option<String>,
+    pub grn_id: Option<String>,
+    pub return_number: String,
+    pub reason: String,
+    pub returned_at: String,
+    pub returned_by_user_id: String,
+    pub business_date: String,
+    pub notes: Option<String>,
+    pub lines: Vec<PurchaseReturnLine>,
+    pub schema_version: u8,
+}
+
+impl From<db::PurchaseReturn> for PurchaseReturn {
+    fn from(r: db::PurchaseReturn) -> Self {
+        Self {
+            id: r.id,
+            outlet_id: r.outlet_id,
+            supplier_id: r.supplier_id,
+            grn_id: r.grn_id,
+            return_number: r.return_number,
+            reason: r.reason,
+            returned_at: r.returned_at,
+            returned_by_user_id: r.returned_by_user_id,
+            business_date: r.business_date,
+            notes: r.notes,
+            lines: r.lines.into_iter().map(PurchaseReturnLine::from).collect(),
+            schema_version: 1,
+        }
+    }
+}
+
+/// This outlet's own view of how much of a PO has arrived. **No contract
+/// mirror exists** — see this section's header.
+///
+/// **THE EDGE'S AND THE CLOUD'S FIGURES LEGITIMATELY DIFFER AND BOTH ARE
+/// RIGHT** (ADR-019 §4). The field name carries `_at_this_outlet` so a
+/// consumer cannot read it as an all-outlet total, and no code path anywhere
+/// may reconcile it against the cloud's figure — reconciling reintroduces the
+/// second writer that keeping receipt state off `purchase_order` exists to
+/// avoid.
+#[derive(Debug, Clone, Serialize)]
+pub struct PurchaseOrderReceiptProgress {
+    pub purchase_order_id: String,
+    pub purchase_order_line_id: String,
+    pub inventory_item_id: String,
+    pub ordered_base_quantity_micro: i64,
+    pub received_base_quantity_micro_at_this_outlet: i64,
+    pub schema_version: u8,
+}
+
+impl From<db::PurchaseOrderReceiptProgress> for PurchaseOrderReceiptProgress {
+    fn from(p: db::PurchaseOrderReceiptProgress) -> Self {
+        Self {
+            purchase_order_id: p.purchase_order_id,
+            purchase_order_line_id: p.purchase_order_line_id,
+            inventory_item_id: p.inventory_item_id,
+            ordered_base_quantity_micro: p.ordered_base_quantity_micro,
+            received_base_quantity_micro_at_this_outlet: p
+                .received_base_quantity_micro_at_this_outlet,
+            schema_version: 1,
+        }
+    }
+}
