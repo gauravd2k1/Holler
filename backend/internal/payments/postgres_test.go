@@ -140,7 +140,13 @@ func newFixture(t *testing.T, pool postgres.Pool) fixture {
 		UserID:      "principal-user",
 		TenantID:    org.ID,
 		OutletID:    out.ID,
-		Permissions: []auth.Permission{auth.PermissionOutletManage},
+		// billing.manage, not outlet.manage: M5 T7a landed the check the
+		// v0.5.0 approval was conditioned on, so compliance config writes now
+		// gate on the permission that names what they do. This fixture is a
+		// caller of that path, and it went red the first time the Postgres
+		// suite actually ran against it -- under HOLLER_SKIP_PG_TESTS it was
+		// green and unexecuted.
+		Permissions: []auth.Permission{auth.Permission(contracts.PermissionBillingManage)},
 	})
 
 	cv, err := complianceSvc.CreateComplianceVersion(configCtx, org.ID, compliance.NewComplianceVersionInput{
