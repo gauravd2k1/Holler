@@ -1,0 +1,5 @@
+# Playwright artefacts from the dev-server smoke test (`pnpm smoke`). Traces
+# are kept on failure only and are large; they are diagnostic output, not
+# source.
+test-results/
+playwright-report/

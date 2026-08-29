@@ -18,5 +18,12 @@ export default defineConfig({
     environment: "jsdom",
     globals: false,
     setupFiles: [],
+    // `tests/` holds the Playwright dev-server smoke test, which drives a
+    // real browser against `pnpm dev` and cannot run under vitest/jsdom.
+    // Excluded here rather than renamed so it keeps the `.spec.ts` name every
+    // Playwright convention expects — and so the two runners stay visibly
+    // distinct: vitest covers pure logic, `pnpm smoke` covers the one runtime
+    // vitest structurally cannot observe.
+    exclude: ["node_modules/**", "tests/**"],
   },
 });
