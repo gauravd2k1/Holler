@@ -406,21 +406,34 @@ func TestPostgres_PurchaseOrderApprovalWritesBothFieldsTogether(t *testing.T) {
 		t.Errorf("re-read must carry both approval fields: %+v", reread)
 	}
 
-	// An amend must not silently clear an approval that already happened.
+	// AMENDING AN APPROVED ORDER REVOKES ITS APPROVAL, on this path too.
+	//
+	// This assertion is the REVERSE of what it was when the file was written,
+	// and the reversal is the point. The create route could never set the
+	// status back to APPROVED, so no amended order was ever *in* an approved
+	// state — but leaving approved_by_user_id and approved_at standing meant
+	// an order raised at one figure, approved, and then re-posted ten times
+	// larger still answered "who authorised this spend" with a name and a
+	// timestamp that belonged to different contents. An approval is an
+	// approval OF CONTENTS. Change the contents and it refers to nothing.
 	if _, err := svc.CreatePurchaseOrder(ctx, fx.tenantID, NewPurchaseOrderInput{
 		PurchaseOrder: PurchaseOrder{
 			ID: po.ID, OutletID: fx.outletID, SupplierID: supplierID, PoNumber: po.PoNumber,
-			Status: PurchaseOrderStatusPendingApproval, TotalPaise: total,
+			Status: PurchaseOrderStatusPendingApproval, TotalPaise: total * 10,
 		},
 	}); err != nil {
 		t.Fatalf("amending an approved order: %v", err)
 	}
+	var approvedAtAfter *time.Time
 	if err := pool.QueryRow(ctx,
-		`SELECT approved_by_user_id FROM purchase_order WHERE id = $1`, po.ID).Scan(&approver); err != nil {
+		`SELECT approved_by_user_id, approved_at FROM purchase_order WHERE id = $1`, po.ID).
+		Scan(&approver, &approvedAtAfter); err != nil {
 		t.Fatalf("re-reading after amend: %v", err)
 	}
-	if approver == nil {
-		t.Error("an amend must not clear approved_by_user_id — the create route does not write that column at all")
+	if approver != nil || approvedAtAfter != nil {
+		t.Errorf("an amend must revoke the approval, got approver=%v approved_at=%v — otherwise the "+
+			"po_approval_limit_paise ceiling is bypassable by approving small and amending upward",
+			approver, approvedAtAfter)
 	}
 }
 
@@ -1115,5 +1128,420 @@ func TestPostgres_UniqueViolationsMapToConflict(t *testing.T) {
 		Supplier: Supplier{ID: id.New(), OutletID: fx.otherOutletID, Code: code, Name: "Other Outlet", IsActive: true},
 	}); err != nil {
 		t.Fatalf("the same supplier code at another outlet must be allowed: %v", err)
+	}
+}
+
+// --- admin list / update / amend against the real schema --------------------
+
+// TestPostgres_SupplierListCarriesThePriceListAndScopesToTheTenant exercises
+// ListSuppliers and SupplierItemsForSuppliers against live SQL — the two
+// queries that join supplier to outlet and brand, where an unqualified column
+// is SQLSTATE 42702 and no static check can see it.
+//
+// It also pins the is_active default: an inactive supplier is OFF the list a
+// buyer picks from unless it is asked for by name.
+func TestPostgres_SupplierListCarriesThePriceListAndScopesToTheTenant(t *testing.T) {
+	pool := setupPool(t)
+	ctx := context.Background()
+	fx := newPgFixture(t, pool, "SupplierList")
+	other := newPgFixture(t, pool, "SupplierListOther")
+	svc := newPgService(pool)
+
+	activeID, inactiveID := id.New(), id.New()
+	price := int64(120000)
+	if _, _, err := svc.CreateSupplier(ctx, fx.tenantID, NewSupplierInput{
+		Supplier: Supplier{ID: activeID, OutletID: fx.outletID, Code: "AAA-" + idSuffix(activeID), Name: "Active Foods", IsActive: true},
+		Items: []SupplierItem{{
+			ID: id.New(), InventoryItemID: fx.massItemID, PurchaseUnit: "50kg sack",
+			PackSizeMicro: 50_000_000, QuantityDimension: DimensionMass,
+			LastPricePaise: &price, IsPreferred: true,
+		}},
+	}); err != nil {
+		t.Fatalf("CreateSupplier (active): %v", err)
+	}
+	if _, _, err := svc.CreateSupplier(ctx, fx.tenantID, NewSupplierInput{
+		Supplier: Supplier{ID: inactiveID, OutletID: fx.outletID, Code: "ZZZ-" + idSuffix(inactiveID), Name: "Retired Foods", IsActive: false},
+	}); err != nil {
+		t.Fatalf("CreateSupplier (inactive): %v", err)
+	}
+	// The fixtures must EXIST before anything is asserted about them: a
+	// rejected INSERT leaves zero rows and every later assertion passes on
+	// absent data.
+	if n := countRows(t, pool, `SELECT count(*) FROM supplier WHERE id = ANY($1::uuid[])`,
+		[]string{activeID, inactiveID}); n != 2 {
+		t.Fatalf("supplier fixtures did not insert: %d of 2 rows", n)
+	}
+	if n := countRows(t, pool, `SELECT count(*) FROM supplier_item WHERE supplier_id = $1`, activeID); n != 1 {
+		t.Fatalf("supplier_item fixture did not insert: %d rows", n)
+	}
+	// The other tenant gets a supplier too, so "the list is empty" cannot be
+	// what makes the isolation assertion pass.
+	otherSupplierID := seedPgSupplier(t, svc, other)
+
+	list, err := svc.ListSuppliers(ctx, fx.tenantID, SupplierFilter{OutletID: fx.outletID})
+	if err != nil {
+		t.Fatalf("ListSuppliers: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("want only the ACTIVE supplier, got %d: %+v", len(list), list)
+	}
+	if list[0].ID != activeID {
+		t.Fatalf("want supplier %s, got %s", activeID, list[0].ID)
+	}
+	if len(list[0].Items) != 1 {
+		t.Fatalf("the price list must travel with the supplier, got %d items", len(list[0].Items))
+	}
+	it := list[0].Items[0]
+	if it.LastPricePaise == nil || *it.LastPricePaise != price {
+		t.Errorf("last_price_paise is what prefills a PO line; got %v", it.LastPricePaise)
+	}
+	if it.PackSizeMicro != 50_000_000 || it.PurchaseUnit != "50kg sack" {
+		t.Errorf("supplier_item did not round-trip: %+v", it)
+	}
+	if it.QuantityDimension != DimensionMass {
+		t.Errorf("quantity_dimension must read back as STORED, got %q", it.QuantityDimension)
+	}
+
+	withInactive, err := svc.ListSuppliers(ctx, fx.tenantID, SupplierFilter{OutletID: fx.outletID, IncludeInactive: true})
+	if err != nil {
+		t.Fatalf("ListSuppliers(include_inactive): %v", err)
+	}
+	if len(withInactive) != 2 {
+		t.Fatalf("include_inactive must surface the retired supplier, got %d", len(withInactive))
+	}
+
+	// CROSS-TENANT, WITH NO OUTLET FILTER SET.
+	//
+	// The outlet_id filter must NOT be what makes this pass. When this
+	// assertion was first written it ran over an outlet-filtered list, and
+	// deleting the tenant predicate from the SQL left the test green — the
+	// other tenant lives at a different outlet, so it was excluded for the
+	// wrong reason. The unfiltered call is the only one that exercises
+	// b.tenant_id at all.
+	unfiltered, err := svc.ListSuppliers(ctx, fx.tenantID, SupplierFilter{IncludeInactive: true})
+	if err != nil {
+		t.Fatalf("ListSuppliers(no outlet filter): %v", err)
+	}
+	if len(unfiltered) != 2 {
+		t.Fatalf("want this tenant's two suppliers, got %d: %+v", len(unfiltered), unfiltered)
+	}
+	for _, s := range unfiltered {
+		if s.ID == otherSupplierID {
+			t.Fatalf("cross-tenant leak: %s appeared in tenant %s's unfiltered list", otherSupplierID, fx.tenantID)
+		}
+	}
+	if _, err := svc.ListSuppliers(ctx, fx.tenantID, SupplierFilter{OutletID: other.outletID}); !errors.Is(err, httpx.ErrForbidden) {
+		t.Fatalf("want ErrForbidden for another tenant's outlet, got %v", err)
+	}
+}
+
+// TestPostgres_UpdateSupplierKeepsTheAuthorsDimensionAndTheOutlet covers the
+// update path's three real decisions: the 0.5.2 dimension guard still fires on
+// an EDIT (not only on a create), a supplier may not move outlets, and
+// created_at comes from the stored row rather than the request body.
+func TestPostgres_UpdateSupplierKeepsTheAuthorsDimensionAndTheOutlet(t *testing.T) {
+	pool := setupPool(t)
+	ctx := context.Background()
+	fx := newPgFixture(t, pool, "SupplierUpdate")
+	svc := newPgService(pool)
+
+	supplierID := id.New()
+	created, _, err := svc.CreateSupplier(ctx, fx.tenantID, NewSupplierInput{
+		Supplier: Supplier{ID: supplierID, OutletID: fx.outletID, Code: "UPD-" + idSuffix(supplierID), Name: "Before", IsActive: true},
+	})
+	if err != nil {
+		t.Fatalf("CreateSupplier: %v", err)
+	}
+	if n := countRows(t, pool, `SELECT count(*) FROM supplier WHERE id = $1`, supplierID); n != 1 {
+		t.Fatalf("supplier fixture did not insert: %d rows", n)
+	}
+
+	newPrice := int64(99900)
+	updated, items, err := svc.UpdateSupplier(ctx, fx.tenantID, supplierID, NewSupplierInput{
+		Supplier: Supplier{
+			Code: created.Code, Name: "After", PaymentTermsDays: 30, IsActive: true,
+			CreatedAt: "1999-01-01T00:00:00Z", // must be IGNORED
+		},
+		Items: []SupplierItem{{
+			ID: id.New(), InventoryItemID: fx.countItemID, PurchaseUnit: "tray",
+			PackSizeMicro: 30_000_000, QuantityDimension: DimensionCount, LastPricePaise: &newPrice,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("UpdateSupplier: %v", err)
+	}
+	if updated.Name != "After" || updated.PaymentTermsDays != 30 {
+		t.Errorf("the edit did not apply: %+v", updated)
+	}
+	if updated.CreatedAt != created.CreatedAt {
+		t.Errorf("created_at must come from the STORED row, not the body: want %q, got %q",
+			created.CreatedAt, updated.CreatedAt)
+	}
+	if updated.ConfigVersion <= created.ConfigVersion {
+		t.Errorf("an edit must bump config_version so GET /sync/config carries it: %d -> %d",
+			created.ConfigVersion, updated.ConfigVersion)
+	}
+	if len(items) != 1 || items[0].SupplierID != supplierID {
+		t.Fatalf("the price list must be stamped with its parent: %+v", items)
+	}
+	var storedName string
+	var storedDim string
+	if err := pool.QueryRow(ctx,
+		`SELECT s.name, si.quantity_dimension FROM supplier s
+		 JOIN supplier_item si ON si.supplier_id = s.id WHERE s.id = $1`, supplierID).
+		Scan(&storedName, &storedDim); err != nil {
+		t.Fatalf("reading back the update: %v", err)
+	}
+	if storedName != "After" || storedDim != string(DimensionCount) {
+		t.Errorf("stored row disagrees with the returned one: %q / %q", storedName, storedDim)
+	}
+
+	// THE 0.5.2 GUARD, on the EDIT path, against a real COUNT-dimensioned
+	// item. If the update path ever auto-filled quantity_dimension from
+	// inventory_item this comparison would be x == x and could never fire.
+	_, _, err = svc.UpdateSupplier(ctx, fx.tenantID, supplierID, NewSupplierInput{
+		Supplier: Supplier{Code: created.Code, Name: "After", IsActive: true},
+		Items: []SupplierItem{{
+			ID: id.New(), InventoryItemID: fx.countItemID, PurchaseUnit: "tray",
+			PackSizeMicro: 30_000_000, QuantityDimension: DimensionMass,
+		}},
+	})
+	if !errors.Is(err, ErrDimensionMismatch) {
+		t.Fatalf("want ErrDimensionMismatch on the update path, got %v", err)
+	}
+
+	// A supplier may not move outlets: purchase orders and receipts already
+	// point at it from where it was created.
+	_, _, err = svc.UpdateSupplier(ctx, fx.tenantID, supplierID, NewSupplierInput{
+		Supplier: Supplier{OutletID: fx.otherOutletID, Code: created.Code, Name: "Moved", IsActive: true},
+	})
+	if !errors.Is(err, httpx.ErrInvalidInput) {
+		t.Fatalf("want ErrInvalidInput for an outlet move, got %v", err)
+	}
+
+	// An unknown id is 404 and creates nothing.
+	strangerID := id.New()
+	if _, _, err := svc.UpdateSupplier(ctx, fx.tenantID, strangerID, NewSupplierInput{
+		Supplier: Supplier{OutletID: fx.outletID, Code: "GHOST", Name: "Ghost", IsActive: true},
+	}); !errors.Is(err, httpx.ErrNotFound) {
+		t.Fatalf("want ErrNotFound for an unknown supplier, got %v", err)
+	}
+	if n := countRows(t, pool, `SELECT count(*) FROM supplier WHERE id = $1`, strangerID); n != 0 {
+		t.Errorf("the update route must never create a supplier: %d rows", n)
+	}
+}
+
+// TestPostgres_PurchaseOrderListFiltersAndIsolates drives ListPurchaseOrders
+// through its real three-table join with every filter combination a buyer
+// uses.
+func TestPostgres_PurchaseOrderListFiltersAndIsolates(t *testing.T) {
+	pool := setupPool(t)
+	ctx := context.Background()
+	fx := newPgFixture(t, pool, "POList")
+	other := newPgFixture(t, pool, "POListOther")
+	svc := newPgService(pool)
+
+	supplierID := seedPgSupplier(t, svc, fx)
+	draft := seedPgPurchaseOrder(t, svc, fx, supplierID, 1_000_00)
+	pending := seedPgPurchaseOrder(t, svc, fx, supplierID, 2_000_00)
+	if _, err := svc.CreatePurchaseOrder(ctx, fx.tenantID, NewPurchaseOrderInput{
+		PurchaseOrder: PurchaseOrder{
+			ID: draft.ID, OutletID: fx.outletID, SupplierID: supplierID, PoNumber: draft.PoNumber,
+			Status: PurchaseOrderStatusDraft, TotalPaise: 1_000_00,
+		},
+	}); err != nil {
+		t.Fatalf("moving the first order to DRAFT: %v", err)
+	}
+	otherSupplier := seedPgSupplier(t, svc, other)
+	otherPO := seedPgPurchaseOrder(t, svc, other, otherSupplier, 3_000_00)
+
+	if n := countRows(t, pool, `SELECT count(*) FROM purchase_order WHERE id = ANY($1::uuid[])`,
+		[]string{draft.ID, pending.ID, otherPO.ID}); n != 3 {
+		t.Fatalf("purchase_order fixtures did not insert: %d of 3 rows", n)
+	}
+
+	all, err := svc.ListPurchaseOrders(ctx, fx.tenantID, PurchaseOrderFilter{})
+	if err != nil {
+		t.Fatalf("ListPurchaseOrders: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("want this tenant's two orders, got %d: %+v", len(all), all)
+	}
+	for _, po := range all {
+		if po.ID == otherPO.ID {
+			t.Fatalf("cross-tenant leak: %s appeared in tenant %s's list", otherPO.ID, fx.tenantID)
+		}
+	}
+
+	byStatus, err := svc.ListPurchaseOrders(ctx, fx.tenantID, PurchaseOrderFilter{
+		OutletID: fx.outletID, Statuses: []PurchaseOrderStatus{PurchaseOrderStatusPendingApproval},
+	})
+	if err != nil {
+		t.Fatalf("ListPurchaseOrders(status): %v", err)
+	}
+	if len(byStatus) != 1 || byStatus[0].ID != pending.ID {
+		t.Fatalf("status filter: want only %s, got %+v", pending.ID, byStatus)
+	}
+	if len(byStatus[0].Lines) != 1 || byStatus[0].Lines[0].OrderedQuantityMicro != 100_000_000 {
+		t.Errorf("the list must carry each order's lines: %+v", byStatus[0].Lines)
+	}
+
+	bySupplier, err := svc.ListPurchaseOrders(ctx, fx.tenantID, PurchaseOrderFilter{SupplierID: supplierID})
+	if err != nil {
+		t.Fatalf("ListPurchaseOrders(supplier): %v", err)
+	}
+	if len(bySupplier) != 2 {
+		t.Errorf("supplier filter: want 2, got %d", len(bySupplier))
+	}
+
+	// An unknown status is an ERROR, not an empty list: a silently empty
+	// answer to a typo reads as "there are no such orders".
+	if _, err := svc.ListPurchaseOrders(ctx, fx.tenantID, PurchaseOrderFilter{
+		Statuses: []PurchaseOrderStatus{PurchaseOrderStatus("PENDNIG")},
+	}); !errors.Is(err, httpx.ErrInvalidInput) {
+		t.Fatalf("want ErrInvalidInput for an unknown status, got %v", err)
+	}
+}
+
+// TestPostgres_AmendingAnApprovedOrderRevokesTheApprovalAndReboundsTheCeiling
+// is THE test this track exists for. It runs the actual escalation attempt end
+// to end against live SQL:
+//
+//	raise ₹5,000 -> approve it under a ₹10,000 ceiling ->
+//	amend it to ₹50,000 -> try to approve again
+//
+// If the amend kept the approval, the order would stand authorised at ₹50,000
+// with only a ₹10,000 ceiling ever consulted. The final ApprovePurchaseOrder
+// call is what proves the ceiling actually sees the NEW total.
+func TestPostgres_AmendingAnApprovedOrderRevokesTheApprovalAndReboundsTheCeiling(t *testing.T) {
+	pool := setupPool(t)
+	ctx := context.Background()
+	fx := newPgFixture(t, pool, "POAmend")
+	svc := newPgService(pool)
+
+	supplierID := seedPgSupplier(t, svc, fx)
+	const small int64 = 5_000_00
+	const large int64 = 50_000_00
+	po := seedPgPurchaseOrder(t, svc, fx, supplierID, small)
+	if n := countRows(t, pool, `SELECT count(*) FROM purchase_order WHERE id = $1`, po.ID); n != 1 {
+		t.Fatalf("purchase_order fixture did not insert: %d rows", n)
+	}
+	grantApprovalRole(t, pool, fx, "PG_AMEND_"+idSuffix(po.ID), "Purchasing Manager", ptrInt64(10_000_00))
+
+	if _, err := svc.ApprovePurchaseOrder(ctx, pgPrincipal(fx, PermissionApprove), po.ID); err != nil {
+		t.Fatalf("ApprovePurchaseOrder: %v", err)
+	}
+	var approver *string
+	if err := pool.QueryRow(ctx, `SELECT approved_by_user_id FROM purchase_order WHERE id = $1`, po.ID).
+		Scan(&approver); err != nil {
+		t.Fatalf("reading the approval: %v", err)
+	}
+	if approver == nil {
+		t.Fatal("the approval fixture did not take; the rest of this test would pass on absent data")
+	}
+
+	amended, err := svc.AmendPurchaseOrder(ctx, fx.tenantID, po.ID, NewPurchaseOrderInput{
+		PurchaseOrder: PurchaseOrder{
+			TotalPaise: large,
+			Notes:      strPtr("quantity increased after the approval"),
+			Lines: []PurchaseOrderLine{{
+				ID: id.New(), InventoryItemID: fx.massItemID, LineNumber: 1, PurchaseUnit: "50kg sack",
+				OrderedQuantityMicro: 1_000_000_000, QuantityDimension: DimensionMass,
+				UnitPricePaise: 120000, LineTotalPaise: large,
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AmendPurchaseOrder: %v", err)
+	}
+	if amended.ApprovedByUserID != nil || amended.ApprovedAt != nil {
+		t.Errorf("the returned order must show the approval revoked: %+v", amended)
+	}
+	if amended.Status != PurchaseOrderStatusPendingApproval {
+		t.Errorf("an amended order must return to PENDING_APPROVAL, got %s", amended.Status)
+	}
+	// The order kept its po_number and supplier because the amend omitted
+	// them; an amend is a partial edit, not a re-statement of the whole row.
+	if amended.PoNumber != po.PoNumber || amended.SupplierID != supplierID {
+		t.Errorf("an omitted field must keep its stored value: %+v", amended)
+	}
+
+	var status string
+	var approvedAt *time.Time
+	var total int64
+	if err := pool.QueryRow(ctx,
+		`SELECT status, approved_by_user_id, approved_at, total_paise FROM purchase_order WHERE id = $1`, po.ID).
+		Scan(&status, &approver, &approvedAt, &total); err != nil {
+		t.Fatalf("reading back the amend: %v", err)
+	}
+	if approver != nil || approvedAt != nil {
+		t.Fatalf("BOTH approval columns must be NULL after an amend, got %v / %v", approver, approvedAt)
+	}
+	if status != string(PurchaseOrderStatusPendingApproval) || total != large {
+		t.Fatalf("stored row after amend: status=%q total=%d", status, total)
+	}
+	if n := countRows(t, pool,
+		`SELECT count(*) FROM purchase_order_line WHERE purchase_order_id = $1 AND ordered_quantity_micro = 1000000000`,
+		po.ID); n != 1 {
+		t.Errorf("the amended line must have replaced the original: %d rows", n)
+	}
+
+	// THE CEILING NOW SEES THE NEW TOTAL. Without the revocation this call
+	// would never happen at all — the order would already read as approved.
+	_, err = svc.ApprovePurchaseOrder(ctx, pgPrincipal(fx, PermissionApprove), po.ID)
+	var refusal *ApprovalRefusal
+	if !errors.As(err, &refusal) {
+		t.Fatalf("re-approving a ₹50,000 order under a ₹10,000 ceiling must be refused, got %v", err)
+	}
+	if refusal.TotalPaise != large {
+		t.Errorf("the refusal must quote the AMENDED total, got %d", refusal.TotalPaise)
+	}
+}
+
+// TestPostgres_AmendRefusesTerminalOrdersAndUnknownIds pins the two remaining
+// amend decisions: a CANCELLED order is not revivable by editing, and an
+// amend never creates.
+func TestPostgres_AmendRefusesTerminalOrdersAndUnknownIds(t *testing.T) {
+	pool := setupPool(t)
+	ctx := context.Background()
+	fx := newPgFixture(t, pool, "POAmendTerminal")
+	svc := newPgService(pool)
+
+	supplierID := seedPgSupplier(t, svc, fx)
+	po := seedPgPurchaseOrder(t, svc, fx, supplierID, 1_000_00)
+	if _, err := svc.AmendPurchaseOrder(ctx, fx.tenantID, po.ID, NewPurchaseOrderInput{
+		PurchaseOrder: PurchaseOrder{Status: PurchaseOrderStatusCancelled, TotalPaise: 1_000_00},
+	}); err != nil {
+		t.Fatalf("cancelling through an amend: %v", err)
+	}
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT status FROM purchase_order WHERE id = $1`, po.ID).Scan(&status); err != nil {
+		t.Fatalf("reading back the cancellation: %v", err)
+	}
+	if status != string(PurchaseOrderStatusCancelled) {
+		t.Fatalf("the cancellation fixture did not take (status %q); the next assertion would prove nothing", status)
+	}
+
+	if _, err := svc.AmendPurchaseOrder(ctx, fx.tenantID, po.ID, NewPurchaseOrderInput{
+		PurchaseOrder: PurchaseOrder{TotalPaise: 9_000_00},
+	}); !errors.Is(err, httpx.ErrConflict) {
+		t.Fatalf("want ErrConflict amending a CANCELLED order, got %v", err)
+	}
+	var totalAfter int64
+	if err := pool.QueryRow(ctx, `SELECT total_paise FROM purchase_order WHERE id = $1`, po.ID).Scan(&totalAfter); err != nil {
+		t.Fatalf("re-reading the cancelled order: %v", err)
+	}
+	if totalAfter != 1_000_00 {
+		t.Errorf("a refused amend must write nothing, total_paise is now %d", totalAfter)
+	}
+
+	ghostID := id.New()
+	if _, err := svc.AmendPurchaseOrder(ctx, fx.tenantID, ghostID, NewPurchaseOrderInput{
+		PurchaseOrder: PurchaseOrder{TotalPaise: 100},
+	}); !errors.Is(err, httpx.ErrNotFound) {
+		t.Fatalf("want ErrNotFound amending an unknown order, got %v", err)
+	}
+	if n := countRows(t, pool, `SELECT count(*) FROM purchase_order WHERE id = $1`, ghostID); n != 0 {
+		t.Errorf("the amend route must never create an order: %d rows", n)
 	}
 }

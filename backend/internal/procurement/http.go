@@ -3,7 +3,10 @@ package procurement
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -37,7 +40,21 @@ func (h *Handler) Mount(r chi.Router) {
 	r.With(auth.RequirePermission(PermissionManage)).
 		Post("/procurement/suppliers", h.createSupplier)
 	r.With(auth.RequirePermission(PermissionManage)).
+		Get("/procurement/suppliers", h.listSuppliers)
+	// PATCH, not PUT: an amend of an existing row, which 404s rather than
+	// creating one. Same permission as the create — whoever may raise a
+	// supplier may edit it.
+	r.With(auth.RequirePermission(PermissionManage)).
+		Patch("/procurement/suppliers/{supplierId}", h.updateSupplier)
+
+	r.With(auth.RequirePermission(PermissionManage)).
 		Post("/procurement/purchase-orders", h.createPurchaseOrder)
+	r.With(auth.RequirePermission(PermissionManage)).
+		Get("/procurement/purchase-orders", h.listPurchaseOrders)
+	// The amend route. It REVOKES the order's approval; see
+	// Service.AmendPurchaseOrder for why that is not optional.
+	r.With(auth.RequirePermission(PermissionManage)).
+		Patch("/procurement/purchase-orders/{purchaseOrderId}", h.amendPurchaseOrder)
 
 	r.With(auth.RequirePermission(PermissionApprove)).
 		Post("/procurement/purchase-orders/{purchaseOrderId}/approve", h.approvePurchaseOrder)
@@ -485,4 +502,147 @@ func (h *Handler) ingestStockTransferOut(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	httpx.JSON(w, http.StatusCreated, stored)
+}
+
+// --- GET /procurement/suppliers ---------------------------------------------
+
+// queryFlag reads a boolean query parameter. ONLY the literal "true" enables
+// it: "false", "0", "no" and a typo all read as off, because a flag that
+// widens what a list returns must not be switched on by a value the caller did
+// not mean.
+func queryFlag(r *http.Request, name string) bool {
+	return r.URL.Query().Get(name) == "true"
+}
+
+type listSuppliersResponse struct {
+	Suppliers []SupplierWithItems `json:"suppliers"`
+}
+
+func (h *Handler) listSuppliers(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.principal(r)
+	if !ok {
+		httpx.Error(w, httpx.ErrUnauthorized)
+		return
+	}
+	suppliers, err := h.svc.ListSuppliers(r.Context(), p.TenantID, SupplierFilter{
+		OutletID:        r.URL.Query().Get("outlet_id"),
+		IncludeInactive: queryFlag(r, "include_inactive"),
+	})
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, listSuppliersResponse{Suppliers: suppliers})
+}
+
+// --- PATCH /procurement/suppliers/{supplierId} ------------------------------
+
+func (h *Handler) updateSupplier(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.principal(r)
+	if !ok {
+		httpx.Error(w, httpx.ErrUnauthorized)
+		return
+	}
+	var req createSupplierRequest
+	if err := httpx.DecodeJSON(r, &req); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	// quantity_dimension is passed through EXACTLY AS THE AUTHOR SENT IT, on
+	// the update path as on the create path. Filling it here from the
+	// referenced inventory_item would make the service's comparison x == x
+	// and the guard could never fire (ADR-019 §6).
+	sup, items, err := h.svc.UpdateSupplier(r.Context(), p.TenantID, chi.URLParam(r, "supplierId"), NewSupplierInput{
+		Supplier: req.Supplier, Items: req.Items,
+	})
+	if err != nil {
+		writeConfigError(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, createSupplierResponse{Supplier: sup, Items: items})
+}
+
+// --- GET /procurement/purchase-orders ---------------------------------------
+
+// listPurchaseOrdersResponse carries NO receipt progress, deliberately. See
+// domain.go: the cloud's figure legitimately differs from any till's, so it
+// travels only from the detail route and only wearing its ScopeCloudWide
+// label.
+type listPurchaseOrdersResponse struct {
+	PurchaseOrders []PurchaseOrder `json:"purchase_orders"`
+}
+
+// parseStatusFilter accepts ?status=DRAFT&status=SENT and ?status=DRAFT,SENT.
+// An unknown status is rejected by the service rather than dropped: silently
+// returning an empty list for a typo reads as "there are no such orders" and
+// gets acted on as such.
+func parseStatusFilter(r *http.Request) []PurchaseOrderStatus {
+	var out []PurchaseOrderStatus
+	for _, raw := range r.URL.Query()["status"] {
+		for _, part := range strings.Split(raw, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			out = append(out, PurchaseOrderStatus(part))
+		}
+	}
+	return out
+}
+
+func (h *Handler) listPurchaseOrders(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.principal(r)
+	if !ok {
+		httpx.Error(w, httpx.ErrUnauthorized)
+		return
+	}
+	limit := 0
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 {
+			httpx.Error(w, fmt.Errorf("%w: limit must be a positive integer", httpx.ErrInvalidInput))
+			return
+		}
+		limit = parsed
+	}
+	orders, err := h.svc.ListPurchaseOrders(r.Context(), p.TenantID, PurchaseOrderFilter{
+		OutletID:   r.URL.Query().Get("outlet_id"),
+		SupplierID: r.URL.Query().Get("supplier_id"),
+		Statuses:   parseStatusFilter(r),
+		Limit:      limit,
+	})
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, listPurchaseOrdersResponse{PurchaseOrders: orders})
+}
+
+// --- PATCH /procurement/purchase-orders/{purchaseOrderId} -------------------
+
+// amendPurchaseOrder REVOKES THE ORDER'S APPROVAL as part of the amend — both
+// approval columns are cleared and the status returns to PENDING_APPROVAL. The
+// response therefore always carries approved_by_user_id: null, which is the
+// signal an admin screen needs to say "this now needs approving again".
+//
+// Without that rule the ceiling in ApprovePurchaseOrder would be bypassable by
+// raising a small order, getting it approved, and amending it upward.
+func (h *Handler) amendPurchaseOrder(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.principal(r)
+	if !ok {
+		httpx.Error(w, httpx.ErrUnauthorized)
+		return
+	}
+	var req createPurchaseOrderRequest
+	if err := httpx.DecodeJSON(r, &req); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	po, err := h.svc.AmendPurchaseOrder(r.Context(), p.TenantID, chi.URLParam(r, "purchaseOrderId"),
+		NewPurchaseOrderInput{PurchaseOrder: req.PurchaseOrder})
+	if err != nil {
+		writeConfigError(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, po)
 }

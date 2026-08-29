@@ -164,3 +164,62 @@ type GrnReplayResult struct {
 	Receipt       *GoodsReceiptNote
 	Gap           *GrnGap
 }
+
+// SupplierFilter scopes GET /procurement/suppliers. Tenant is NEVER a field
+// here: it comes from the authenticated principal and is applied in the query
+// itself, so a caller cannot widen it by omitting a parameter.
+type SupplierFilter struct {
+	// OutletID empty means "every outlet in this tenant". A supplier is
+	// outlet-scoped config, so a buyer working one site passes it.
+	OutletID string
+	// IncludeInactive defaults false: a deactivated supplier is off the
+	// list a buyer picks from, but is never deleted, because purchase orders
+	// and receipts still point at it.
+	IncludeInactive bool
+}
+
+// SupplierWithItems is a supplier together with its whole supplier_item price
+// list — the shape a caller needs to prefill a purchase order line from
+// SupplierItem.LastPricePaise without a second round trip.
+//
+// LastPricePaise is ADVISORY. It prefills; it is never the price a GRN posts.
+// What was invoiced is a fact, what was expected is a guess, and this list
+// carries the guess.
+type SupplierWithItems struct {
+	Supplier
+	Items []SupplierItem `json:"items"`
+}
+
+// PurchaseOrderFilter scopes GET /procurement/purchase-orders to what a buyer
+// actually asks for. Tenant is not a field, for the reason it is not one on
+// SupplierFilter.
+type PurchaseOrderFilter struct {
+	OutletID   string
+	SupplierID string
+	// Statuses empty means every status. A caller asking for an unknown
+	// status is an error, never an empty list: silently returning nothing for
+	// a typo reads as "no orders" and is acted on as such.
+	Statuses []PurchaseOrderStatus
+	// Limit is clamped to maxPurchaseOrderListLimit and defaults to
+	// defaultPurchaseOrderListLimit.
+	Limit int
+}
+
+// The list route's page bounds. Named because a bare 100 in a query string is
+// a magic number and because a buyer scrolling a year of orders must not be
+// able to ask for all of them in one statement.
+const (
+	defaultPurchaseOrderListLimit = 100
+	maxPurchaseOrderListLimit     = 500
+	defaultSupplierListLimit      = 500
+)
+
+// NOTE ON WHAT THE LIST ROUTES DELIBERATELY DO NOT CARRY.
+//
+// Neither list returns receipt progress. Progress is DERIVED per order from
+// grn_line rows (Service.PurchaseOrderReceiptProgress) and lives on the detail
+// route, where it is returned LABELLED with ScopeCloudWide. Putting an
+// unlabelled figure in a list is how a cloud-wide number gets rendered beside
+// an outlet's own and read as drift — and the "fix" for drift is to make one
+// side authoritative, which is the second writer that keeping receipt state
+// off purchase_order exists to prevent (§50.1, ADR-019 §4).

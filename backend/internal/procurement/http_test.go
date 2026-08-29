@@ -280,3 +280,170 @@ func TestCreateSupplier_DimensionMismatchIs422(t *testing.T) {
 		t.Errorf("want dimension_mismatch, got %q", errBody.Code)
 	}
 }
+
+// --- the list / update / amend routes ---------------------------------------
+
+func doGet(t *testing.T, r http.Handler, path string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	return rec
+}
+
+func doPatch(t *testing.T, r http.Handler, path string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshalling request body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPatch, path, bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	return rec
+}
+
+// TestListAndAmendRoutes_RefuseACallerWithoutProcurementManage extends "a
+// permission with no check is a permission that does not exist" to the four
+// routes this track adds. The caller holds a DIFFERENT real permission, not an
+// empty principal — an empty principal would fail for want of authentication
+// and prove nothing about the gate.
+//
+// The read routes are gated too, deliberately: a supplier price list is
+// commercially sensitive and a purchase order list is the outlet's spend.
+func TestListAndAmendRoutes_RefuseACallerWithoutProcurementManage(t *testing.T) {
+	r, repo := newTestRouter(t, auth.PermissionOutletManage)
+
+	gets := []string{"/procurement/suppliers", "/procurement/purchase-orders"}
+	for _, path := range gets {
+		t.Run("GET "+path, func(t *testing.T) {
+			if rec := doGet(t, r, path); rec.Code != http.StatusForbidden {
+				t.Fatalf("want 403 without procurement.manage, got %d: %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+
+	patches := []struct{ name, path string }{
+		{"supplier", "/procurement/suppliers/" + testSupplierID},
+		{"purchase-order", "/procurement/purchase-orders/" + testPurchaseOrder},
+	}
+	for _, tc := range patches {
+		t.Run("PATCH "+tc.name, func(t *testing.T) {
+			rec := doPatch(t, r, tc.path, map[string]any{})
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("want 403 without procurement.manage, got %d: %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+
+	if len(repo.suppliers) != 0 || len(repo.purchaseOrders) != 0 {
+		t.Fatalf("a refused request must write nothing: %+v %+v", repo.suppliers, repo.purchaseOrders)
+	}
+}
+
+// TestListSuppliersRoute_ReturnsThePriceListForPrefilling is the wire shape a
+// caller needs to raise a purchase order without a second round trip:
+// suppliers with their items, each item carrying last_price_paise.
+func TestListSuppliersRoute_ReturnsThePriceListForPrefilling(t *testing.T) {
+	r, repo := newTestRouter(t, PermissionManage)
+
+	price := int64(120000)
+	body := supplierBody()
+	body["items"] = []any{map[string]any{
+		"id": "bbbbbbbb-bbbb-7bbb-8bbb-bbbbbbbbbbbb", "supplier_id": testSupplierID,
+		"inventory_item_id": massItemID, "purchase_unit": "50kg sack",
+		"pack_size_micro": 50_000_000, "quantity_dimension": string(DimensionMass),
+		"last_price_paise": price, "is_preferred": true,
+	}}
+	if rec := doPost(t, r, "/procurement/suppliers", body); rec.Code != http.StatusOK {
+		t.Fatalf("seeding supplier: %d %s", rec.Code, rec.Body.String())
+	}
+	if _, ok := repo.suppliers[testSupplierID]; !ok {
+		t.Fatal("supplier fixture did not insert; every assertion below would pass on absent data")
+	}
+	if len(repo.supplierItems[testSupplierID]) != 1 {
+		t.Fatalf("supplier_item fixture did not insert: %+v", repo.supplierItems[testSupplierID])
+	}
+
+	rec := doGet(t, r, "/procurement/suppliers")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /procurement/suppliers: %d %s", rec.Code, rec.Body.String())
+	}
+	var got listSuppliersResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decoding: %v", err)
+	}
+	if len(got.Suppliers) != 1 || got.Suppliers[0].ID != testSupplierID {
+		t.Fatalf("want the seeded supplier, got %+v", got.Suppliers)
+	}
+	if len(got.Suppliers[0].Items) != 1 {
+		t.Fatalf("the price list must travel with the supplier: %+v", got.Suppliers[0])
+	}
+	if lp := got.Suppliers[0].Items[0].LastPricePaise; lp == nil || *lp != price {
+		t.Errorf("last_price_paise is what prefills a PO line, got %v", lp)
+	}
+}
+
+// TestAmendRoute_RevokesTheApprovalOnTheWire is the response-shape half of the
+// amend decision. An admin screen reads approved_by_user_id off this body to
+// decide whether to show "needs approval"; if it came back still populated the
+// screen would say the order was authorised at a figure nobody authorised.
+func TestAmendRoute_RevokesTheApprovalOnTheWire(t *testing.T) {
+	r, repo := newTestRouter(t, PermissionManage, PermissionApprove)
+
+	if rec := doPost(t, r, "/procurement/suppliers", supplierBody()); rec.Code != http.StatusOK {
+		t.Fatalf("seeding supplier: %d %s", rec.Code, rec.Body.String())
+	}
+	const small = 5_000_00
+	poBody := map[string]any{"purchase_order": map[string]any{
+		"id": testPurchaseOrder, "outlet_id": testOutletID, "supplier_id": testSupplierID,
+		"po_number": "PO-1", "status": "PENDING_APPROVAL", "total_paise": small, "lines": []any{},
+	}}
+	if rec := doPost(t, r, "/procurement/purchase-orders", poBody); rec.Code != http.StatusOK {
+		t.Fatalf("seeding purchase order: %d %s", rec.Code, rec.Body.String())
+	}
+	repo.approvalLimits[testUserID] = ptrInt64(10_000_00)
+	if rec := doPost(t, r, "/procurement/purchase-orders/"+testPurchaseOrder+"/approve", nil); rec.Code != http.StatusOK {
+		t.Fatalf("approving: %d %s", rec.Code, rec.Body.String())
+	}
+	if repo.purchaseOrders[testPurchaseOrder].ApprovedByUserID == nil {
+		t.Fatal("the approval fixture did not take; the amend assertion below would prove nothing")
+	}
+
+	rec := doPatch(t, r, "/procurement/purchase-orders/"+testPurchaseOrder, map[string]any{
+		"purchase_order": map[string]any{"total_paise": 50_000_00, "lines": []any{}},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PATCH purchase order: %d %s", rec.Code, rec.Body.String())
+	}
+	var amended PurchaseOrder
+	if err := json.Unmarshal(rec.Body.Bytes(), &amended); err != nil {
+		t.Fatalf("decoding: %v", err)
+	}
+	if amended.ApprovedByUserID != nil || amended.ApprovedAt != nil {
+		t.Errorf("the amend response must show the approval revoked: %+v", amended)
+	}
+	if amended.Status != PurchaseOrderStatusPendingApproval {
+		t.Errorf("want PENDING_APPROVAL after an amend, got %s", amended.Status)
+	}
+	if stored := repo.purchaseOrders[testPurchaseOrder]; stored.ApprovedByUserID != nil || stored.TotalPaise != 50_000_00 {
+		t.Errorf("stored row after the amend: %+v", stored)
+	}
+}
+
+// TestListPurchaseOrdersRoute_RejectsAnUnknownStatusRatherThanReturningNothing
+// pins the filter's failure mode. A typo that returned an empty list would be
+// read as "there are no such orders" and acted on.
+func TestListPurchaseOrdersRoute_RejectsAnUnknownStatusRatherThanReturningNothing(t *testing.T) {
+	r, _ := newTestRouter(t, PermissionManage)
+
+	rec := doGet(t, r, "/procurement/purchase-orders?status=PENDNIG")
+	if rec.Code != http.StatusBadRequest && rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("an unknown status must be an error, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	if rec := doGet(t, r, "/procurement/purchase-orders?limit=0"); rec.Code == http.StatusOK {
+		t.Errorf("limit=0 must be rejected, not silently defaulted: %s", rec.Body.String())
+	}
+}

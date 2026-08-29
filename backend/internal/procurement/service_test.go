@@ -3,6 +3,8 @@ package procurement
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -136,13 +138,95 @@ func (f *fakeRepository) SupplierOutlet(ctx context.Context, supplierID string) 
 }
 
 func (f *fakeRepository) UpsertPurchaseOrder(ctx context.Context, tx pgx.Tx, po PurchaseOrder) error {
-	// Mirrors the real INSERT: approval columns are NOT written here.
-	if existing, ok := f.purchaseOrders[po.ID]; ok {
-		po.ApprovedByUserID = existing.ApprovedByUserID
-		po.ApprovedAt = existing.ApprovedAt
-	}
+	// Mirrors the real statement: the INSERT never writes the approval
+	// columns, and the ON CONFLICT branch sets BOTH to NULL. Amending an
+	// order's contents revokes its approval, on this path and on
+	// AmendPurchaseOrder, identically.
+	po.ApprovedByUserID = nil
+	po.ApprovedAt = nil
 	f.purchaseOrders[po.ID] = po
 	return nil
+}
+
+func (f *fakeRepository) AmendPurchaseOrder(ctx context.Context, tx pgx.Tx, po PurchaseOrder) error {
+	if _, ok := f.purchaseOrders[po.ID]; !ok {
+		return fmt.Errorf("%w: purchase order %s", httpx.ErrNotFound, po.ID)
+	}
+	po.ApprovedByUserID = nil
+	po.ApprovedAt = nil
+	f.purchaseOrders[po.ID] = po
+	return nil
+}
+
+func (f *fakeRepository) GetSupplier(ctx context.Context, tenantID, supplierID string) (Supplier, bool, error) {
+	s, ok := f.suppliers[supplierID]
+	if !ok || f.outletTenant[s.OutletID] != tenantID {
+		return Supplier{}, false, nil
+	}
+	return s, true, nil
+}
+
+func (f *fakeRepository) ListSuppliers(ctx context.Context, tenantID string, filter SupplierFilter) ([]Supplier, error) {
+	out := []Supplier{}
+	for _, s := range f.suppliers {
+		if f.outletTenant[s.OutletID] != tenantID {
+			continue
+		}
+		if filter.OutletID != "" && s.OutletID != filter.OutletID {
+			continue
+		}
+		if !filter.IncludeInactive && !s.IsActive {
+			continue
+		}
+		out = append(out, s)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Code < out[j].Code })
+	return out, nil
+}
+
+func (f *fakeRepository) SupplierItemsForSuppliers(ctx context.Context, supplierIDs []string) (map[string][]SupplierItem, error) {
+	out := map[string][]SupplierItem{}
+	for _, id := range supplierIDs {
+		if items := f.supplierItems[id]; len(items) > 0 {
+			out[id] = items
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeRepository) ListPurchaseOrders(ctx context.Context, tenantID string, filter PurchaseOrderFilter) ([]PurchaseOrder, error) {
+	wanted := map[PurchaseOrderStatus]bool{}
+	for _, st := range filter.Statuses {
+		wanted[st] = true
+	}
+	out := []PurchaseOrder{}
+	for _, po := range f.purchaseOrders {
+		if f.outletTenant[po.OutletID] != tenantID {
+			continue
+		}
+		if filter.OutletID != "" && po.OutletID != filter.OutletID {
+			continue
+		}
+		if filter.SupplierID != "" && po.SupplierID != filter.SupplierID {
+			continue
+		}
+		if len(wanted) > 0 && !wanted[po.Status] {
+			continue
+		}
+		out = append(out, po)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].PoNumber < out[j].PoNumber })
+	return out, nil
+}
+
+func (f *fakeRepository) PurchaseOrderLinesForOrders(ctx context.Context, ids []string) (map[string][]PurchaseOrderLine, error) {
+	out := map[string][]PurchaseOrderLine{}
+	for _, id := range ids {
+		if po, ok := f.purchaseOrders[id]; ok && len(po.Lines) > 0 {
+			out[id] = po.Lines
+		}
+	}
+	return out, nil
 }
 
 func (f *fakeRepository) GetPurchaseOrder(ctx context.Context, tenantID, id string) (PurchaseOrder, bool, error) {

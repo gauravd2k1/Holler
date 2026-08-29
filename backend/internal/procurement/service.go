@@ -90,39 +90,12 @@ func (s *Service) CreateSupplier(ctx context.Context, tenantID string, in NewSup
 	if err := s.requireOutletInTenant(ctx, tenantID, sup.OutletID); err != nil {
 		return Supplier{}, nil, err
 	}
-	if strings.TrimSpace(sup.ID) == "" {
-		return Supplier{}, nil, fmt.Errorf("%w: id is required", httpx.ErrInvalidInput)
+	if err := validateSupplierFields(sup); err != nil {
+		return Supplier{}, nil, err
 	}
-	if strings.TrimSpace(sup.Code) == "" {
-		return Supplier{}, nil, fmt.Errorf("%w: code is required", httpx.ErrInvalidInput)
-	}
-	if strings.TrimSpace(sup.Name) == "" {
-		return Supplier{}, nil, fmt.Errorf("%w: name is required", httpx.ErrInvalidInput)
-	}
-	if sup.PaymentTermsDays < 0 {
-		return Supplier{}, nil, fmt.Errorf("%w: payment_terms_days must not be negative", httpx.ErrInvalidInput)
-	}
-
-	items := make([]SupplierItem, 0, len(in.Items))
-	for _, it := range in.Items {
-		if strings.TrimSpace(it.ID) == "" {
-			return Supplier{}, nil, fmt.Errorf("%w: supplier_item id is required", httpx.ErrInvalidInput)
-		}
-		if strings.TrimSpace(it.PurchaseUnit) == "" {
-			return Supplier{}, nil, fmt.Errorf("%w: supplier_item purchase_unit is required", httpx.ErrInvalidInput)
-		}
-		if it.PackSizeMicro <= 0 {
-			return Supplier{}, nil, fmt.Errorf("%w: supplier_item pack_size_micro must be positive", httpx.ErrInvalidInput)
-		}
-		if it.LastPricePaise != nil && *it.LastPricePaise < 0 {
-			return Supplier{}, nil, fmt.Errorf("%w: supplier_item last_price_paise must not be negative", httpx.ErrInvalidInput)
-		}
-		if err := s.requireDimensionMatchesItem(ctx, it.InventoryItemID, it.QuantityDimension, "supplier_item"); err != nil {
-			return Supplier{}, nil, err
-		}
-		it.SupplierID = sup.ID
-		it.SchemaVersion = 1
-		items = append(items, it)
+	items, err := s.normaliseSupplierItems(ctx, sup.ID, in.Items)
+	if err != nil {
+		return Supplier{}, nil, err
 	}
 
 	now := s.now().Format(time.RFC3339)
@@ -132,7 +105,7 @@ func (s *Service) CreateSupplier(ctx context.Context, tenantID string, in NewSup
 	sup.UpdatedAt = now
 	sup.SchemaVersion = 1
 
-	err := s.repo.WithTx(ctx, func(tx pgx.Tx) error {
+	err = s.repo.WithTx(ctx, func(tx pgx.Tx) error {
 		newVersion, err := s.repo.BumpOutletConfigVersion(ctx, tx, sup.OutletID)
 		if err != nil {
 			return err
@@ -202,30 +175,9 @@ func (s *Service) CreatePurchaseOrder(ctx context.Context, tenantID string, in N
 		return PurchaseOrder{}, fmt.Errorf("%w: unknown purchase order status %q", httpx.ErrInvalidInput, po.Status)
 	}
 
-	lines := make([]PurchaseOrderLine, 0, len(po.Lines))
-	seenLineNumbers := map[int]bool{}
-	for _, l := range po.Lines {
-		if strings.TrimSpace(l.ID) == "" {
-			return PurchaseOrder{}, fmt.Errorf("%w: purchase_order_line id is required", httpx.ErrInvalidInput)
-		}
-		if l.OrderedQuantityMicro <= 0 {
-			return PurchaseOrder{}, fmt.Errorf("%w: purchase_order_line ordered_quantity_micro must be positive", httpx.ErrInvalidInput)
-		}
-		if l.UnitPricePaise < 0 || l.LineTotalPaise < 0 {
-			return PurchaseOrder{}, fmt.Errorf("%w: purchase_order_line prices must not be negative", httpx.ErrInvalidInput)
-		}
-		if strings.TrimSpace(l.PurchaseUnit) == "" {
-			return PurchaseOrder{}, fmt.Errorf("%w: purchase_order_line purchase_unit is required", httpx.ErrInvalidInput)
-		}
-		if seenLineNumbers[l.LineNumber] {
-			return PurchaseOrder{}, fmt.Errorf("%w: purchase_order_line line_number %d is duplicated", httpx.ErrInvalidInput, l.LineNumber)
-		}
-		seenLineNumbers[l.LineNumber] = true
-		if err := s.requireDimensionMatchesItem(ctx, l.InventoryItemID, l.QuantityDimension, "purchase_order_line"); err != nil {
-			return PurchaseOrder{}, err
-		}
-		l.PurchaseOrderID = po.ID
-		lines = append(lines, l)
+	lines, err := s.normalisePurchaseOrderLines(ctx, po.ID, po.Lines)
+	if err != nil {
+		return PurchaseOrder{}, err
 	}
 	po.Lines = lines
 
@@ -857,4 +809,379 @@ func (s *Service) SyncConfigBundle(ctx context.Context, tenantID, outletID strin
 		PurchaseOrders:     orders,
 		PurchaseOrderLines: lines,
 	}, nil
+}
+
+// --- shared write-path validation -------------------------------------------
+
+// validateSupplierFields is the field-level half of a supplier write, shared
+// by CreateSupplier and UpdateSupplier so the two paths cannot drift. Outlet
+// tenancy is NOT checked here: that is the caller's first act, before any
+// field is looked at.
+func validateSupplierFields(sup Supplier) error {
+	if strings.TrimSpace(sup.ID) == "" {
+		return fmt.Errorf("%w: id is required", httpx.ErrInvalidInput)
+	}
+	if strings.TrimSpace(sup.Code) == "" {
+		return fmt.Errorf("%w: code is required", httpx.ErrInvalidInput)
+	}
+	if strings.TrimSpace(sup.Name) == "" {
+		return fmt.Errorf("%w: name is required", httpx.ErrInvalidInput)
+	}
+	if sup.PaymentTermsDays < 0 {
+		return fmt.Errorf("%w: payment_terms_days must not be negative", httpx.ErrInvalidInput)
+	}
+	return nil
+}
+
+// normaliseSupplierItems validates a whole price list and stamps the parent
+// id onto each row.
+//
+// IT SETS SupplierID AND SchemaVersion AND NOTHING ELSE. It emphatically does
+// NOT fill QuantityDimension: that is the unit the author chose, and filling
+// it from the referenced inventory_item would make
+// requireDimensionMatchesItem's comparison x == x, so the guard could never
+// fire and would look correct in review (ADR-019 §6, contracts 0.5.2).
+func (s *Service) normaliseSupplierItems(ctx context.Context, supplierID string, in []SupplierItem) ([]SupplierItem, error) {
+	items := make([]SupplierItem, 0, len(in))
+	for _, it := range in {
+		if strings.TrimSpace(it.ID) == "" {
+			return nil, fmt.Errorf("%w: supplier_item id is required", httpx.ErrInvalidInput)
+		}
+		if strings.TrimSpace(it.PurchaseUnit) == "" {
+			return nil, fmt.Errorf("%w: supplier_item purchase_unit is required", httpx.ErrInvalidInput)
+		}
+		if it.PackSizeMicro <= 0 {
+			return nil, fmt.Errorf("%w: supplier_item pack_size_micro must be positive", httpx.ErrInvalidInput)
+		}
+		if it.LastPricePaise != nil && *it.LastPricePaise < 0 {
+			return nil, fmt.Errorf("%w: supplier_item last_price_paise must not be negative", httpx.ErrInvalidInput)
+		}
+		if err := s.requireDimensionMatchesItem(ctx, it.InventoryItemID, it.QuantityDimension, "supplier_item"); err != nil {
+			return nil, err
+		}
+		it.SupplierID = supplierID
+		it.SchemaVersion = 1
+		items = append(items, it)
+	}
+	return items, nil
+}
+
+// normalisePurchaseOrderLines is the line-level half of a purchase order
+// write, shared by CreatePurchaseOrder and AmendPurchaseOrder.
+//
+// Same rule as normaliseSupplierItems: it stamps the parent id and never
+// touches QuantityDimension.
+func (s *Service) normalisePurchaseOrderLines(ctx context.Context, purchaseOrderID string, in []PurchaseOrderLine) ([]PurchaseOrderLine, error) {
+	lines := make([]PurchaseOrderLine, 0, len(in))
+	seenLineNumbers := map[int]bool{}
+	for _, l := range in {
+		if strings.TrimSpace(l.ID) == "" {
+			return nil, fmt.Errorf("%w: purchase_order_line id is required", httpx.ErrInvalidInput)
+		}
+		if l.OrderedQuantityMicro <= 0 {
+			return nil, fmt.Errorf("%w: purchase_order_line ordered_quantity_micro must be positive", httpx.ErrInvalidInput)
+		}
+		if l.UnitPricePaise < 0 || l.LineTotalPaise < 0 {
+			return nil, fmt.Errorf("%w: purchase_order_line prices must not be negative", httpx.ErrInvalidInput)
+		}
+		if strings.TrimSpace(l.PurchaseUnit) == "" {
+			return nil, fmt.Errorf("%w: purchase_order_line purchase_unit is required", httpx.ErrInvalidInput)
+		}
+		if seenLineNumbers[l.LineNumber] {
+			return nil, fmt.Errorf("%w: purchase_order_line line_number %d is duplicated", httpx.ErrInvalidInput, l.LineNumber)
+		}
+		seenLineNumbers[l.LineNumber] = true
+		if err := s.requireDimensionMatchesItem(ctx, l.InventoryItemID, l.QuantityDimension, "purchase_order_line"); err != nil {
+			return nil, err
+		}
+		l.PurchaseOrderID = purchaseOrderID
+		lines = append(lines, l)
+	}
+	return lines, nil
+}
+
+// --- supplier read + update -------------------------------------------------
+
+// ListSuppliers returns the tenant's suppliers with their whole price lists
+// attached, which is what lets a caller prefill a purchase order line from
+// SupplierItem.LastPricePaise without a second round trip.
+//
+// Requires procurement.manage (route middleware). Tenancy is applied inside
+// the query, and an explicit outlet_id is checked against the tenant BEFORE
+// the list is read, so an outlet id from another tenant is a 403 rather than
+// an empty list — an empty list reads as "this outlet has no suppliers" and
+// hides the isolation failure.
+func (s *Service) ListSuppliers(ctx context.Context, tenantID string, filter SupplierFilter) ([]SupplierWithItems, error) {
+	if strings.TrimSpace(tenantID) == "" {
+		return nil, httpx.ErrUnauthorized
+	}
+	if strings.TrimSpace(filter.OutletID) != "" {
+		if err := s.requireOutletInTenant(ctx, tenantID, filter.OutletID); err != nil {
+			return nil, err
+		}
+	}
+	suppliers, err := s.repo.ListSuppliers(ctx, tenantID, filter)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(suppliers))
+	for _, sup := range suppliers {
+		ids = append(ids, sup.ID)
+	}
+	itemsBySupplier, err := s.repo.SupplierItemsForSuppliers(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]SupplierWithItems, 0, len(suppliers))
+	for _, sup := range suppliers {
+		items := itemsBySupplier[sup.ID]
+		if items == nil {
+			items = []SupplierItem{}
+		}
+		out = append(out, SupplierWithItems{Supplier: sup, Items: items})
+	}
+	return out, nil
+}
+
+// UpdateSupplier edits an EXISTING supplier and REPLACES its whole price list.
+// Requires procurement.manage. A supplier that does not exist in this tenant
+// is httpx.ErrNotFound — this route never creates one, because a typo'd id
+// that silently minted a second supplier is how a price list ends up split
+// across two rows nobody can reconcile.
+//
+// A SUPPLIER MAY NOT CHANGE OUTLET. purchase_order, goods_receipt_note and
+// supplier_invoice rows already point at it from the outlet it was created in;
+// moving it would leave those rows referencing a supplier that is, from their
+// outlet's point of view, no longer there. Retire it and create a new one.
+//
+// created_at is taken from the STORED row, never from the request: a caller
+// re-posting a whole supplier object must not be able to rewrite when it came
+// into existence.
+func (s *Service) UpdateSupplier(ctx context.Context, tenantID, supplierID string, in NewSupplierInput) (Supplier, []SupplierItem, error) {
+	if strings.TrimSpace(tenantID) == "" {
+		return Supplier{}, nil, httpx.ErrUnauthorized
+	}
+	supplierID = strings.TrimSpace(supplierID)
+	if supplierID == "" {
+		return Supplier{}, nil, fmt.Errorf("%w: supplier id is required", httpx.ErrInvalidInput)
+	}
+	if id := strings.TrimSpace(in.Supplier.ID); id != "" && id != supplierID {
+		return Supplier{}, nil, fmt.Errorf("%w: body id %q does not match path id %q", httpx.ErrInvalidInput, id, supplierID)
+	}
+
+	existing, found, err := s.repo.GetSupplier(ctx, tenantID, supplierID)
+	if err != nil {
+		return Supplier{}, nil, err
+	}
+	if !found {
+		// Indistinguishable from another tenant's supplier, deliberately: a
+		// 403 here would confirm the id exists.
+		return Supplier{}, nil, fmt.Errorf("%w: supplier %s", httpx.ErrNotFound, supplierID)
+	}
+
+	sup := in.Supplier
+	sup.ID = supplierID
+	if strings.TrimSpace(sup.OutletID) == "" {
+		sup.OutletID = existing.OutletID
+	}
+	if sup.OutletID != existing.OutletID {
+		return Supplier{}, nil, fmt.Errorf("%w: a supplier may not move between outlets; retire supplier %s and create a new one at outlet %s",
+			httpx.ErrInvalidInput, supplierID, sup.OutletID)
+	}
+	if err := validateSupplierFields(sup); err != nil {
+		return Supplier{}, nil, err
+	}
+	items, err := s.normaliseSupplierItems(ctx, sup.ID, in.Items)
+	if err != nil {
+		return Supplier{}, nil, err
+	}
+
+	sup.CreatedAt = existing.CreatedAt
+	sup.UpdatedAt = s.now().Format(time.RFC3339)
+	sup.SchemaVersion = 1
+
+	err = s.repo.WithTx(ctx, func(tx pgx.Tx) error {
+		newVersion, err := s.repo.BumpOutletConfigVersion(ctx, tx, sup.OutletID)
+		if err != nil {
+			return err
+		}
+		sup.ConfigVersion = int64(newVersion)
+		return s.repo.UpsertSupplier(ctx, tx, sup, items)
+	})
+	if err != nil {
+		return Supplier{}, nil, err
+	}
+	return sup, items, nil
+}
+
+// --- purchase order read + amend --------------------------------------------
+
+// ListPurchaseOrders is the buyer's list, filtered by outlet, supplier and
+// status. Requires procurement.manage.
+//
+// IT RETURNS NO RECEIPT PROGRESS. See the note in domain.go: progress is
+// cloud-wide, differs legitimately from any till's own figure, and is only
+// ever returned LABELLED, from the detail route.
+func (s *Service) ListPurchaseOrders(ctx context.Context, tenantID string, filter PurchaseOrderFilter) ([]PurchaseOrder, error) {
+	if strings.TrimSpace(tenantID) == "" {
+		return nil, httpx.ErrUnauthorized
+	}
+	if strings.TrimSpace(filter.OutletID) != "" {
+		if err := s.requireOutletInTenant(ctx, tenantID, filter.OutletID); err != nil {
+			return nil, err
+		}
+	}
+	for _, st := range filter.Statuses {
+		if !validPurchaseOrderStatus(st) {
+			return nil, fmt.Errorf("%w: unknown purchase order status %q", httpx.ErrInvalidInput, st)
+		}
+	}
+	orders, err := s.repo.ListPurchaseOrders(ctx, tenantID, filter)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(orders))
+	for _, po := range orders {
+		ids = append(ids, po.ID)
+	}
+	linesByOrder, err := s.repo.PurchaseOrderLinesForOrders(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	for i := range orders {
+		lines := linesByOrder[orders[i].ID]
+		if lines == nil {
+			lines = []PurchaseOrderLine{}
+		}
+		orders[i].Lines = lines
+	}
+	return orders, nil
+}
+
+func validPurchaseOrderStatus(st PurchaseOrderStatus) bool {
+	switch st {
+	case PurchaseOrderStatusDraft, PurchaseOrderStatusPendingApproval, PurchaseOrderStatusApproved,
+		PurchaseOrderStatusSent, PurchaseOrderStatusCancelled, PurchaseOrderStatusClosed:
+		return true
+	default:
+		return false
+	}
+}
+
+// AmendPurchaseOrder edits an EXISTING order's lines, notes, expected date and
+// total. Requires procurement.manage.
+//
+// ---------------------------------------------------------------------------
+// AMENDING A PURCHASE ORDER REVOKES ITS APPROVAL. ALWAYS. NO EXCEPTIONS.
+// ---------------------------------------------------------------------------
+//
+// approved_by_user_id and approved_at go to NULL and the status returns to
+// PENDING_APPROVAL (or stays DRAFT if it never left). The order must be
+// approved again, and that second approval is checked against the NEW
+// total_paise by both gates.
+//
+// The alternative was considered and rejected: if an approved order could be
+// amended without re-approval, role.po_approval_limit_paise would be
+// bypassable by anyone holding procurement.manage — raise ₹5,000, have it
+// approved by someone whose ceiling is ₹10,000, then amend it to ₹5,00,000.
+// The approval would still read as granted, by name and timestamp, and no gate
+// would ever see the new number. An approval is an approval OF CONTENTS; change
+// the contents and it no longer refers to anything.
+//
+// TERMINAL ORDERS ARE NOT AMENDABLE. CANCELLED and CLOSED are 409: reviving one
+// by editing it would erase the fact that it ended.
+func (s *Service) AmendPurchaseOrder(ctx context.Context, tenantID, purchaseOrderID string, in NewPurchaseOrderInput) (PurchaseOrder, error) {
+	if strings.TrimSpace(tenantID) == "" {
+		return PurchaseOrder{}, httpx.ErrUnauthorized
+	}
+	purchaseOrderID = strings.TrimSpace(purchaseOrderID)
+	if purchaseOrderID == "" {
+		return PurchaseOrder{}, fmt.Errorf("%w: purchase order id is required", httpx.ErrInvalidInput)
+	}
+	if id := strings.TrimSpace(in.PurchaseOrder.ID); id != "" && id != purchaseOrderID {
+		return PurchaseOrder{}, fmt.Errorf("%w: body id %q does not match path id %q", httpx.ErrInvalidInput, id, purchaseOrderID)
+	}
+
+	existing, found, err := s.repo.GetPurchaseOrder(ctx, tenantID, purchaseOrderID)
+	if err != nil {
+		return PurchaseOrder{}, err
+	}
+	if !found {
+		return PurchaseOrder{}, fmt.Errorf("%w: purchase order %s", httpx.ErrNotFound, purchaseOrderID)
+	}
+	switch existing.Status {
+	case PurchaseOrderStatusCancelled, PurchaseOrderStatusClosed:
+		return PurchaseOrder{}, fmt.Errorf("%w: purchase order %s is %s and cannot be amended; raise a new order instead",
+			httpx.ErrConflict, existing.ID, existing.Status)
+	}
+
+	po := in.PurchaseOrder
+	po.ID = purchaseOrderID
+	// The outlet is NOT movable, for the reason a supplier is not: every
+	// receipt and gap already recorded against this order lives at an outlet.
+	po.OutletID = existing.OutletID
+	if strings.TrimSpace(po.SupplierID) == "" {
+		po.SupplierID = existing.SupplierID
+	}
+	if strings.TrimSpace(po.PoNumber) == "" {
+		po.PoNumber = existing.PoNumber
+	}
+	if po.TotalPaise < 0 {
+		return PurchaseOrder{}, fmt.Errorf("%w: total_paise must not be negative", httpx.ErrInvalidInput)
+	}
+
+	supplierOutlet, supplierFound, err := s.repo.SupplierOutlet(ctx, po.SupplierID)
+	if err != nil {
+		return PurchaseOrder{}, err
+	}
+	if !supplierFound {
+		return PurchaseOrder{}, fmt.Errorf("%w: supplier %s does not exist", httpx.ErrInvalidInput, po.SupplierID)
+	}
+	if supplierOutlet != po.OutletID {
+		return PurchaseOrder{}, fmt.Errorf("%w: supplier %s belongs to a different outlet", httpx.ErrForbidden, po.SupplierID)
+	}
+
+	// THE REVOCATION, expressed in the status as well as the two columns. A
+	// caller may ask for DRAFT or CANCELLED instead; it may not ask for
+	// APPROVED, SENT or CLOSED, which are reachable only through the approve
+	// route and only after the ceiling has seen the new total.
+	switch po.Status {
+	case "":
+		if existing.Status == PurchaseOrderStatusDraft {
+			po.Status = PurchaseOrderStatusDraft
+		} else {
+			po.Status = PurchaseOrderStatusPendingApproval
+		}
+	case PurchaseOrderStatusDraft, PurchaseOrderStatusPendingApproval, PurchaseOrderStatusCancelled:
+		// fine
+	case PurchaseOrderStatusApproved, PurchaseOrderStatusSent, PurchaseOrderStatusClosed:
+		return PurchaseOrder{}, fmt.Errorf("%w: status %q may only be reached through POST /procurement/purchase-orders/{id}/approve",
+			httpx.ErrInvalidInput, po.Status)
+	default:
+		return PurchaseOrder{}, fmt.Errorf("%w: unknown purchase order status %q", httpx.ErrInvalidInput, po.Status)
+	}
+
+	lines, err := s.normalisePurchaseOrderLines(ctx, po.ID, po.Lines)
+	if err != nil {
+		return PurchaseOrder{}, err
+	}
+	po.Lines = lines
+
+	po.ApprovedByUserID = nil
+	po.ApprovedAt = nil
+	po.CreatedAt = existing.CreatedAt
+	po.SchemaVersion = 1
+
+	err = s.repo.WithTx(ctx, func(tx pgx.Tx) error {
+		newVersion, err := s.repo.BumpOutletConfigVersion(ctx, tx, po.OutletID)
+		if err != nil {
+			return err
+		}
+		po.ConfigVersion = int64(newVersion)
+		return s.repo.AmendPurchaseOrder(ctx, tx, po)
+	})
+	if err != nil {
+		return PurchaseOrder{}, err
+	}
+	return po, nil
 }

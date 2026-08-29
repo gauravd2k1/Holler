@@ -130,6 +130,34 @@ type Repository interface {
 	ListSupplierInvoices(ctx context.Context, tenantID, outletID string) ([]SupplierInvoice, error)
 	InsertSupplierCredit(ctx context.Context, credit SupplierCredit) error
 	ListSupplierCredits(ctx context.Context, tenantID, outletID string) ([]SupplierCredit, error)
+
+	// --- admin read paths (tenant-scoped in the QUERY, never afterwards) ----
+
+	// GetSupplier is the tenant-scoped single read the update path needs
+	// before it may touch a row. It joins outlet and brand for the same
+	// reason GetPurchaseOrder does: a supplier id on its own carries no
+	// tenancy, so a fetch-then-compare is one forgotten `if` from a
+	// cross-tenant write.
+	GetSupplier(ctx context.Context, tenantID, supplierID string) (Supplier, bool, error)
+	ListSuppliers(ctx context.Context, tenantID string, filter SupplierFilter) ([]Supplier, error)
+	// SupplierItemsForSuppliers fetches the price lists for a whole page of
+	// suppliers in ONE statement. A per-supplier query here would be N+1 on
+	// the screen a buyer opens most often.
+	SupplierItemsForSuppliers(ctx context.Context, supplierIDs []string) (map[string][]SupplierItem, error)
+
+	ListPurchaseOrders(ctx context.Context, tenantID string, filter PurchaseOrderFilter) ([]PurchaseOrder, error)
+	PurchaseOrderLinesForOrders(ctx context.Context, purchaseOrderIDs []string) (map[string][]PurchaseOrderLine, error)
+
+	// AmendPurchaseOrder rewrites an EXISTING order's contents and REVOKES ITS
+	// APPROVAL in the same statement: approved_by_user_id and approved_at go
+	// to NULL and the status leaves APPROVED/SENT.
+	//
+	// THAT IS THE WHOLE POINT OF THE METHOD. An amend that kept the approval
+	// would make the ceiling in ApprovePurchaseOrder bypassable by raising a
+	// small order, having it approved, and then amending it upward — the
+	// approval would still read as granted and no gate would ever see the new
+	// total. Re-approval is not friction here; it is the control.
+	AmendPurchaseOrder(ctx context.Context, tx pgx.Tx, po PurchaseOrder) error
 }
 
 type pgRepository struct {
@@ -320,9 +348,19 @@ func (r *pgRepository) SupplierOutlet(ctx context.Context, supplierID string) (s
 // --- purchase_order ---------------------------------------------------------
 
 func (r *pgRepository) UpsertPurchaseOrder(ctx context.Context, tx pgx.Tx, po PurchaseOrder) error {
-	// approved_by_user_id / approved_at are ABSENT from both the column list
-	// and the DO UPDATE SET clause, deliberately: this route may not grant an
-	// approval, and an amend must not silently clear one either.
+	// approved_by_user_id / approved_at are ABSENT from the INSERT column list
+	// deliberately: this route may not grant an approval.
+	//
+	// ON CONFLICT THEY ARE SET TO NULL — this route may not PRESERVE one
+	// either. An upsert that re-wrote total_paise and lines while leaving the
+	// approval standing would let a caller raise a small order, have it
+	// approved, then post it again ten times larger with the approval still on
+	// the row. It could never reach status APPROVED that way (this route
+	// rejects that status), but it would still read as approved by name and
+	// date on every screen and in every audit answer to "who authorised this
+	// spend". Approval belongs to the contents that were approved. Amending
+	// the contents revokes it, on BOTH amend paths, identically
+	// (AmendPurchaseOrder does the same in one UPDATE).
 	_, err := tx.Exec(ctx,
 		`INSERT INTO purchase_order (id, outlet_id, supplier_id, po_number, status, expected_date,
 		                             notes, total_paise, created_at, updated_at, config_version)
@@ -331,6 +369,7 @@ func (r *pgRepository) UpsertPurchaseOrder(ctx context.Context, tx pgx.Tx, po Pu
 		   supplier_id = EXCLUDED.supplier_id, po_number = EXCLUDED.po_number,
 		   status = EXCLUDED.status, expected_date = EXCLUDED.expected_date,
 		   notes = EXCLUDED.notes, total_paise = EXCLUDED.total_paise,
+		   approved_by_user_id = NULL, approved_at = NULL,
 		   updated_at = EXCLUDED.updated_at, config_version = EXCLUDED.config_version`,
 		po.ID, po.OutletID, po.SupplierID, po.PoNumber, string(po.Status), po.ExpectedDate,
 		po.Notes, po.TotalPaise, po.CreatedAt, po.CreatedAt, po.ConfigVersion,
@@ -995,4 +1034,228 @@ func (r *pgRepository) ListSupplierCredits(ctx context.Context, tenantID, outlet
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+// --- admin read paths -------------------------------------------------------
+
+// supplierColumnsQualified is the supplier column list carrying the "s."
+// alias. It is a SEPARATE constant from supplierSelect for the reason
+// purchaseOrderColumnsQualified is separate from purchaseOrderColumns:
+// supplier, outlet and brand all have id / created_at / updated_at, so an
+// unqualified column in a query that joins them is "column reference is
+// ambiguous" (SQLSTATE 42702) at runtime and invisible to every static check.
+// That exact bug shipped once in this file.
+const supplierColumnsQualified = `s.id, s.outlet_id, s.code, s.name, s.gstin, s.phone, s.email,
+	       s.address, s.payment_terms_days, s.is_active, s.config_version, s.created_at, s.updated_at`
+
+func scanSupplier(row rowScanner) (Supplier, bool, error) {
+	var s Supplier
+	var createdAt, updatedAt time.Time
+	err := row.Scan(&s.ID, &s.OutletID, &s.Code, &s.Name, &s.Gstin, &s.Phone, &s.Email, &s.Address,
+		&s.PaymentTermsDays, &s.IsActive, &s.ConfigVersion, &createdAt, &updatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Supplier{}, false, nil
+	}
+	if err != nil {
+		return Supplier{}, false, fmt.Errorf("procurement: scanning supplier: %w", err)
+	}
+	s.CreatedAt = createdAt.UTC().Format(time.RFC3339)
+	s.UpdatedAt = updatedAt.UTC().Format(time.RFC3339)
+	s.SchemaVersion = 1
+	return s, true, nil
+}
+
+// nullableID turns an empty filter value into a real SQL NULL, so ONE
+// statement serves both "filtered" and "unfiltered". Building the WHERE clause
+// by string concatenation is how a tenant guard eventually gets concatenated
+// out of one branch and nobody notices.
+func nullableID(v string) *string {
+	if v == "" {
+		return nil
+	}
+	return &v
+}
+
+func (r *pgRepository) GetSupplier(ctx context.Context, tenantID, supplierID string) (Supplier, bool, error) {
+	return scanSupplier(r.pool.QueryRow(ctx,
+		`SELECT `+supplierColumnsQualified+`
+		 FROM supplier s
+		 JOIN outlet o ON o.id = s.outlet_id
+		 JOIN brand b ON b.id = o.brand_id
+		 WHERE s.id = $1 AND b.tenant_id = $2`,
+		supplierID, tenantID,
+	))
+}
+
+func (r *pgRepository) ListSuppliers(ctx context.Context, tenantID string, filter SupplierFilter) ([]Supplier, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT `+supplierColumnsQualified+`
+		 FROM supplier s
+		 JOIN outlet o ON o.id = s.outlet_id
+		 JOIN brand b ON b.id = o.brand_id
+		 WHERE b.tenant_id = $1
+		   AND ($2::uuid IS NULL OR s.outlet_id = $2::uuid)
+		   AND ($3::boolean OR s.is_active)
+		 ORDER BY s.outlet_id, s.code
+		 LIMIT $4`,
+		tenantID, nullableID(filter.OutletID), filter.IncludeInactive, defaultSupplierListLimit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("procurement: listing suppliers: %w", err)
+	}
+	defer rows.Close()
+	out := []Supplier{}
+	for rows.Next() {
+		s, _, err := scanSupplier(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+func (r *pgRepository) SupplierItemsForSuppliers(ctx context.Context, supplierIDs []string) (map[string][]SupplierItem, error) {
+	out := map[string][]SupplierItem{}
+	if len(supplierIDs) == 0 {
+		return out, nil
+	}
+	rows, err := r.pool.Query(ctx,
+		`SELECT si.id, si.supplier_id, si.inventory_item_id, si.purchase_unit, si.pack_size_micro,
+		        si.quantity_dimension, si.last_price_paise, si.is_preferred
+		 FROM supplier_item si
+		 WHERE si.supplier_id = ANY($1::uuid[])
+		 ORDER BY si.supplier_id, si.inventory_item_id, si.purchase_unit`,
+		supplierIDs,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("procurement: listing supplier items: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var it SupplierItem
+		var dim string
+		if err := rows.Scan(&it.ID, &it.SupplierID, &it.InventoryItemID, &it.PurchaseUnit, &it.PackSizeMicro,
+			&dim, &it.LastPricePaise, &it.IsPreferred); err != nil {
+			return nil, fmt.Errorf("procurement: scanning supplier item: %w", err)
+		}
+		// Read back EXACTLY as stored, never re-derived from inventory_item on
+		// the way out: a read that healed a mismatch would hide the very
+		// disagreement the write path exists to reject (ADR-019 §6).
+		it.QuantityDimension = Dimension(dim)
+		it.SchemaVersion = 1
+		out[it.SupplierID] = append(out[it.SupplierID], it)
+	}
+	return out, rows.Err()
+}
+
+func (r *pgRepository) ListPurchaseOrders(ctx context.Context, tenantID string, filter PurchaseOrderFilter) ([]PurchaseOrder, error) {
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = defaultPurchaseOrderListLimit
+	}
+	if limit > maxPurchaseOrderListLimit {
+		limit = maxPurchaseOrderListLimit
+	}
+	var statuses []string
+	for _, s := range filter.Statuses {
+		statuses = append(statuses, string(s))
+	}
+	rows, err := r.pool.Query(ctx,
+		`SELECT `+purchaseOrderColumnsQualified+`
+		 FROM purchase_order po
+		 JOIN outlet o ON o.id = po.outlet_id
+		 JOIN brand b ON b.id = o.brand_id
+		 WHERE b.tenant_id = $1
+		   AND ($2::uuid IS NULL OR po.outlet_id = $2::uuid)
+		   AND ($3::uuid IS NULL OR po.supplier_id = $3::uuid)
+		   AND ($4::text[] IS NULL OR po.status = ANY($4::text[]))
+		 ORDER BY po.created_at DESC, po.id
+		 LIMIT $5`,
+		tenantID, nullableID(filter.OutletID), nullableID(filter.SupplierID), statuses, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("procurement: listing purchase orders: %w", err)
+	}
+	defer rows.Close()
+	out := []PurchaseOrder{}
+	for rows.Next() {
+		po, _, err := scanPurchaseOrder(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, po)
+	}
+	return out, rows.Err()
+}
+
+func (r *pgRepository) PurchaseOrderLinesForOrders(ctx context.Context, purchaseOrderIDs []string) (map[string][]PurchaseOrderLine, error) {
+	out := map[string][]PurchaseOrderLine{}
+	if len(purchaseOrderIDs) == 0 {
+		return out, nil
+	}
+	rows, err := r.pool.Query(ctx,
+		purchaseOrderLineSelect+` WHERE purchase_order_id = ANY($1::uuid[])
+		 ORDER BY purchase_order_id, line_number`,
+		purchaseOrderIDs,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("procurement: listing purchase order lines for orders: %w", err)
+	}
+	lines, err := scanPurchaseOrderLines(rows)
+	if err != nil {
+		return nil, err
+	}
+	for _, l := range lines {
+		out[l.PurchaseOrderID] = append(out[l.PurchaseOrderID], l)
+	}
+	return out, nil
+}
+
+// AmendPurchaseOrder updates an EXISTING order and NULLS BOTH APPROVAL COLUMNS
+// in the same UPDATE. It never inserts: a missing row is httpx.ErrNotFound, not
+// a silent create, because "amend" and "raise" are different decisions and an
+// amend that quietly created a row would have no raiser recorded anywhere.
+//
+// Both approval columns go to NULL TOGETHER, which is what keeps
+// purchase_order_approval_is_whole satisfied. Nothing in this package clears
+// one alone, exactly as nothing sets one alone.
+func (r *pgRepository) AmendPurchaseOrder(ctx context.Context, tx pgx.Tx, po PurchaseOrder) error {
+	tag, err := tx.Exec(ctx,
+		`UPDATE purchase_order
+		 SET supplier_id = $1, po_number = $2, status = $3, expected_date = $4, notes = $5,
+		     total_paise = $6, approved_by_user_id = NULL, approved_at = NULL,
+		     updated_at = $7, config_version = $8
+		 WHERE id = $9`,
+		po.SupplierID, po.PoNumber, string(po.Status), po.ExpectedDate, po.Notes,
+		po.TotalPaise, time.Now().UTC(), po.ConfigVersion, po.ID,
+	)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return fmt.Errorf("%w: po_number %q already exists in this outlet", httpx.ErrConflict, po.PoNumber)
+		}
+		return fmt.Errorf("procurement: amending purchase order: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("%w: purchase order %s", httpx.ErrNotFound, po.ID)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM purchase_order_line WHERE purchase_order_id = $1`, po.ID); err != nil {
+		return fmt.Errorf("procurement: clearing purchase order lines: %w", err)
+	}
+	for _, l := range po.Lines {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO purchase_order_line (id, purchase_order_id, inventory_item_id, line_number,
+			                                  purchase_unit, ordered_quantity_micro, quantity_dimension,
+			                                  unit_price_paise, line_total_paise)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+			l.ID, po.ID, l.InventoryItemID, l.LineNumber, l.PurchaseUnit, l.OrderedQuantityMicro,
+			string(l.QuantityDimension), l.UnitPricePaise, l.LineTotalPaise,
+		); err != nil {
+			if isUniqueViolation(err) {
+				return fmt.Errorf("%w: purchase order line_number %d is duplicated", httpx.ErrConflict, l.LineNumber)
+			}
+			return fmt.Errorf("procurement: inserting purchase order line: %w", err)
+		}
+	}
+	return nil
 }
