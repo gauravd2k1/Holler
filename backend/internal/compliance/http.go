@@ -12,10 +12,15 @@ import (
 )
 
 // Handler wires the compliance config write path onto a shared router. Every
-// route here is permission-gated on the HUMAN-auth group (auth.Authenticate
-// + PermissionOutletManage) — these are management decisions, not device
-// replay, so they are never mounted under outlet.DeviceAuthenticate
-// (CLAUDE.md's "config aggregates ... cloud owns them" rule, ADR-016).
+// route here is permission-gated on the HUMAN-auth group (auth.Authenticate +
+// permConfigManage, which is billing.manage) — these are management
+// decisions, not device replay, so they are never mounted under
+// outlet.DeviceAuthenticate (CLAUDE.md's "config aggregates ... cloud owns
+// them" rule, ADR-016).
+//
+// THE GATE IS billing.manage, NOT outlet.manage, and the two are deliberately
+// different people: outlet.manage renames tables, billing.manage sets the
+// GSTIN printed on every invoice. One constant so a route cannot drift off it.
 type Handler struct {
 	svc *Service
 }
@@ -32,18 +37,18 @@ func NewHandler(svc *Service) *Handler {
 // sibling config routes that ARE documented (POST /stations, POST
 // /outlets/{outletId}/tables).
 func (h *Handler) Mount(r chi.Router) {
-	r.With(auth.RequirePermission(auth.PermissionOutletManage)).Post("/outlets/{outletId}/compliance-versions", h.createComplianceVersion)
+	r.With(auth.RequirePermission(permConfigManage)).Post("/outlets/{outletId}/compliance-versions", h.createComplianceVersion)
 
-	r.With(auth.RequirePermission(auth.PermissionOutletManage)).Post("/outlets/{outletId}/tax-profiles", h.createTaxProfile)
-	r.With(auth.RequirePermission(auth.PermissionOutletManage)).Post("/outlets/{outletId}/tax-profiles/{taxProfileId}/deactivate", h.deactivateTaxProfile)
+	r.With(auth.RequirePermission(permConfigManage)).Post("/outlets/{outletId}/tax-profiles", h.createTaxProfile)
+	r.With(auth.RequirePermission(permConfigManage)).Post("/outlets/{outletId}/tax-profiles/{taxProfileId}/deactivate", h.deactivateTaxProfile)
 
-	r.With(auth.RequirePermission(auth.PermissionOutletManage)).Post("/outlets/{outletId}/invoice-series", h.createInvoiceSeries)
-	r.With(auth.RequirePermission(auth.PermissionOutletManage)).Post("/outlets/{outletId}/invoice-series/{seriesId}/deactivate", h.deactivateInvoiceSeries)
+	r.With(auth.RequirePermission(permConfigManage)).Post("/outlets/{outletId}/invoice-series", h.createInvoiceSeries)
+	r.With(auth.RequirePermission(permConfigManage)).Post("/outlets/{outletId}/invoice-series/{seriesId}/deactivate", h.deactivateInvoiceSeries)
 
-	r.With(auth.RequirePermission(auth.PermissionOutletManage)).Post("/outlets/{outletId}/discount-definitions", h.createDiscountDefinition)
-	r.With(auth.RequirePermission(auth.PermissionOutletManage)).Post("/outlets/{outletId}/discount-definitions/{discountId}/deactivate", h.deactivateDiscountDefinition)
+	r.With(auth.RequirePermission(permConfigManage)).Post("/outlets/{outletId}/discount-definitions", h.createDiscountDefinition)
+	r.With(auth.RequirePermission(permConfigManage)).Post("/outlets/{outletId}/discount-definitions/{discountId}/deactivate", h.deactivateDiscountDefinition)
 
-	r.With(auth.RequirePermission(auth.PermissionOutletManage)).Post("/outlets/{outletId}/fiscal-profile", h.setFiscalProfile)
+	r.With(auth.RequirePermission(permConfigManage)).Post("/outlets/{outletId}/fiscal-profile", h.setFiscalProfile)
 }
 
 func (h *Handler) principalTenant(r *http.Request) (string, bool) {

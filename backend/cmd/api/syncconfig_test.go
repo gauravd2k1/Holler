@@ -16,6 +16,7 @@ import (
 	"github.com/holler/backend/internal/menu"
 	"github.com/holler/backend/internal/outlet"
 	"github.com/holler/backend/internal/platform/httpx"
+	"github.com/holler/backend/internal/procurement"
 	"github.com/holler/backend/internal/tables"
 )
 
@@ -111,6 +112,17 @@ func (f fakeInventoryProvider) SyncConfigBundle(ctx context.Context, tenantID, o
 // fakeUsersProvider stands in for auth.Service.ListEdgeUserCache. It applies
 // the same tenant/since_version filtering a real implementation must, so
 // tests can assert the handler passes both through untouched.
+type fakeProcurementProvider struct {
+	bundle procurement.ConfigBundle
+}
+
+func (f fakeProcurementProvider) SyncConfigBundle(ctx context.Context, tenantID, outletID string, sinceVersion int) (procurement.ConfigBundle, error) {
+	if tenantID != scTenantID || outletID != scOutletID {
+		return procurement.ConfigBundle{}, httpx.ErrNotFound
+	}
+	return f.bundle, nil
+}
+
 type fakeUsersProvider struct {
 	entries []contracts.EdgeUserCacheEntry
 }
@@ -198,6 +210,14 @@ func newTestSyncConfigHandler() *syncConfigHandler {
 				Recipes:                  []contracts.Recipe{},
 				RecipeIngredients:        []contracts.RecipeIngredient{},
 				ModifierIngredientDeltas: []contracts.ModifierIngredientDelta{},
+			},
+		},
+		fakeProcurementProvider{
+			bundle: procurement.ConfigBundle{
+				Suppliers:          []contracts.Supplier{},
+				SupplierItems:      []contracts.SupplierItem{},
+				PurchaseOrders:     []contracts.PurchaseOrder{},
+				PurchaseOrderLines: []contracts.PurchaseOrderLine{},
 			},
 		},
 		fakeUsersProvider{

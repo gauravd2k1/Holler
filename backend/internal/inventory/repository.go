@@ -519,7 +519,8 @@ func (r *pgRepository) GetLedgerEntryByID(ctx context.Context, id string) (Stock
 const ledgerEntrySelect = `SELECT id, outlet_id, entry_seq, inventory_item_id, inventory_item_name, dimension,
 	       entry_type, origin, quantity_applied_micro, recipe_id, recipe_version, recipe_name,
 	       modifier_delta_id, modifier_name, modifier_delta_version, source_order_id, source_order_item_id,
-	       reason_code, source_stock_count_id, note, occurred_at, business_date, created_by_user_id, unit_cost_paise
+	       reason_code, source_stock_count_id, note, occurred_at, business_date, created_by_user_id, unit_cost_paise,
+	       source_grn_id, source_purchase_return_id, source_stock_transfer_out_id
 	FROM stock_ledger_entry`
 
 type rowScanner interface {
@@ -538,7 +539,8 @@ func scanLedgerEntryRow(row rowScanner) (StockLedgerEntry, bool, error) {
 	err := row.Scan(&e.ID, &e.OutletID, &e.EntrySeq, &e.InventoryItemID, &e.InventoryItemName, &dim,
 		&entryType, &origin, &e.QuantityAppliedMicro, &e.RecipeID, &e.RecipeVersion, &e.RecipeName,
 		&e.ModifierDeltaID, &e.ModifierName, &e.ModifierDeltaVersion, &e.SourceOrderID, &e.SourceOrderItemID,
-		&e.ReasonCode, &e.SourceStockCountID, &e.Note, &occurredAt, &businessDate, &e.CreatedByUserID, &e.UnitCostPaise)
+		&e.ReasonCode, &e.SourceStockCountID, &e.Note, &occurredAt, &businessDate, &e.CreatedByUserID, &e.UnitCostPaise,
+		&e.SourceGrnID, &e.SourcePurchaseReturnID, &e.SourceStockTransferOutID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return StockLedgerEntry{}, false, nil
 	}
@@ -560,12 +562,20 @@ func (r *pgRepository) InsertLedgerEntry(ctx context.Context, entry StockLedgerE
 		   id, outlet_id, entry_seq, inventory_item_id, inventory_item_name, dimension,
 		   entry_type, origin, quantity_applied_micro, recipe_id, recipe_version, recipe_name,
 		   modifier_delta_id, modifier_name, modifier_delta_version, source_order_id, source_order_item_id,
-		   reason_code, source_stock_count_id, note, occurred_at, business_date, created_by_user_id, unit_cost_paise
-		 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)`,
+		   reason_code, source_stock_count_id, note, occurred_at, business_date, created_by_user_id, unit_cost_paise,
+		   source_grn_id, source_purchase_return_id, source_stock_transfer_out_id
+		 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)`,
 		entry.ID, entry.OutletID, entry.EntrySeq, entry.InventoryItemID, entry.InventoryItemName, string(entry.Dimension),
 		string(entry.EntryType), string(entry.Origin), entry.QuantityAppliedMicro, entry.RecipeID, entry.RecipeVersion, entry.RecipeName,
 		entry.ModifierDeltaID, entry.ModifierName, entry.ModifierDeltaVersion, entry.SourceOrderID, entry.SourceOrderItemID,
 		entry.ReasonCode, entry.SourceStockCountID, entry.Note, entry.OccurredAt, entry.BusinessDate, entry.CreatedByUserID, entry.UnitCostPaise,
+		// 0.6.0 (ADR-019). WITHOUT THESE THREE THE 0.5.9 DEFECT REOPENS UNDER
+		// NEW NAMES: the columns exist in both stores and the edge sends them,
+		// json.Unmarshal is lenient about fields the INSERT never mentions, and
+		// every PURCHASE / RETURN_TO_VENDOR / TRANSFER_OUT row would land in
+		// Postgres with NULL provenance, silently. A column nothing reads is a
+		// column that does not exist.
+		entry.SourceGrnID, entry.SourcePurchaseReturnID, entry.SourceStockTransferOutID,
 	)
 	if err != nil {
 		if isUniqueViolation(err) {

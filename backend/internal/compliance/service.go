@@ -15,15 +15,17 @@ import (
 	"github.com/holler/backend/internal/platform/id"
 )
 
-// permConfigManage gates every write in this file. No purpose-built
-// "billing.manage"/"compliance.manage" permission exists in the frozen
-// contracts.Permission enum (packages/contracts/go/identity.go); outlet.manage
-// is the closest existing permission for "may configure fiscal identity,
-// tax rules, invoice numbering and discounts at this outlet" — the same
-// judgment backend/internal/kitchen already made for POST /printers. Noted
-// in this task's final report as a candidate for a dedicated permission in a
-// future contracts bump.
-const permConfigManage = auth.PermissionOutletManage
+// permConfigManage gates every write in this file: fiscal identity, tax
+// rules, invoice numbering and discount policy at an outlet.
+//
+// IT IS billing.manage, NOT outlet.manage. contracts.PermissionBillingManage
+// has existed since v0.5.0 and had NO CHECK BEHIND IT for a whole milestone —
+// an enum member every drift suite asserted was present while nothing in this
+// backend read it, which is exactly why "presence is not enforcement" is a
+// rule. Gating these routes on outlet.manage meant whoever may rename a table
+// may also set the GSTIN printed on every invoice. ADR-019 §10 lands the
+// check; this constant IS the landing.
+const permConfigManage = contracts.PermissionBillingManage
 
 // Service holds the T13 config write path's business logic: create/
 // deactivate for compliance_version, tax_profile (+ its child tax_rule

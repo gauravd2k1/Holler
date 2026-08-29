@@ -73,7 +73,7 @@ func authedCtx(tenantID, outletID string) context.Context {
 		UserID:      "principal-user",
 		TenantID:    tenantID,
 		OutletID:    outletID,
-		Permissions: []auth.Permission{auth.PermissionOutletManage},
+		Permissions: []auth.Permission{contracts.PermissionBillingManage},
 	})
 }
 

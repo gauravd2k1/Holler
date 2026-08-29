@@ -277,7 +277,7 @@ func ctxWithPermissions(perms ...auth.Permission) context.Context {
 }
 
 func authedCtx() context.Context {
-	return ctxWithPermissions(auth.PermissionOutletManage)
+	return ctxWithPermissions(permConfigManage)
 }
 
 // --- permission gating -----------------------------------------------------
@@ -391,7 +391,7 @@ func TestCreateTaxProfile_CodeUniquePerOutletNotGlobal(t *testing.T) {
 
 	otherCtx := auth.WithPrincipal(context.Background(), auth.AuthenticatedPrincipal{
 		UserID: "principal-user", TenantID: testTenantID, OutletID: otherOutletID,
-		Permissions: []auth.Permission{auth.PermissionOutletManage},
+		Permissions: []auth.Permission{permConfigManage},
 	})
 	if _, _, err := svc.CreateTaxProfile(otherCtx, testTenantID, NewTaxProfileInput{
 		OutletID: otherOutletID, Code: "GST_5_RESTAURANT", Name: "GST 5%", PricingMode: contracts.PricingModeExclusive,
@@ -579,4 +579,62 @@ func TestSyncConfigBundle_FiscalProfileNeverFilteredBySinceVersion(t *testing.T)
 	if bundle.FiscalProfile == nil || bundle.FiscalProfile.ID != fp.ID {
 		t.Fatalf("expected the current fiscal profile regardless of since_version, got %+v", bundle.FiscalProfile)
 	}
+}
+
+// --- T7a: billing.manage is ENFORCED, not merely present -------------------
+//
+// contracts.PermissionBillingManage shipped at v0.5.0 as an enum member with
+// no check behind it, and these routes ran on outlet.manage for a whole
+// milestone — so whoever could rename a table could set the GSTIN printed on
+// every invoice. Every drift suite stayed green throughout, because they
+// assert the member EXISTS. Presence is not enforcement; this test is the
+// enforcement.
+//
+// It is deliberately the NEGATIVE case: a caller holding outlet.manage and
+// nothing else. A test that only proves the happy path with billing.manage
+// granted would still pass if the gate were widened back to outlet.manage.
+func TestComplianceWrites_RefuseOutletManageWithoutBillingManage(t *testing.T) {
+	outletManageOnly := ctxWithPermissions(auth.PermissionOutletManage)
+
+	t.Run("compliance_version", func(t *testing.T) {
+		svc, _ := newTestService()
+		_, err := svc.CreateComplianceVersion(outletManageOnly, testTenantID, NewComplianceVersionInput{
+			OutletID: testOutletID, Label: "v1", EffectiveFrom: time.Now().UTC(),
+		})
+		if !errors.Is(err, httpx.ErrForbidden) {
+			t.Fatalf("outlet.manage alone must not configure fiscal identity: got %v, want ErrForbidden", err)
+		}
+	})
+
+	t.Run("tax_profile", func(t *testing.T) {
+		svc, _ := newTestService()
+		_, _, err := svc.CreateTaxProfile(outletManageOnly, testTenantID, NewTaxProfileInput{
+			OutletID: testOutletID, Code: "GST_5", Name: "GST 5%", PricingMode: contracts.PricingModeExclusive,
+		})
+		if !errors.Is(err, httpx.ErrForbidden) {
+			t.Fatalf("outlet.manage alone must not configure tax rules: got %v, want ErrForbidden", err)
+		}
+	})
+
+	t.Run("invoice_series", func(t *testing.T) {
+		svc, _ := newTestService()
+		_, err := svc.CreateInvoiceSeries(outletManageOnly, testTenantID, NewInvoiceSeriesInput{
+			OutletID: testOutletID, Code: "MAIN", PrefixTemplate: "FY26/PNQ/",
+			ResetPolicy: contracts.SequenceResetNever, PaddingWidth: 6,
+		})
+		if !errors.Is(err, httpx.ErrForbidden) {
+			t.Fatalf("outlet.manage alone must not configure invoice numbering: got %v, want ErrForbidden", err)
+		}
+	})
+
+	// And the positive control, so the refusals above are attributable to the
+	// permission rather than to some unrelated failure in the fixture.
+	t.Run("billing.manage is accepted", func(t *testing.T) {
+		svc, _ := newTestService()
+		if _, err := svc.CreateComplianceVersion(authedCtx(), testTenantID, NewComplianceVersionInput{
+			OutletID: testOutletID, Label: "v1", EffectiveFrom: time.Now().UTC(),
+		}); err != nil {
+			t.Fatalf("billing.manage must be accepted: %v", err)
+		}
+	})
 }

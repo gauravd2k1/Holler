@@ -13,6 +13,7 @@ import (
 	"github.com/holler/backend/internal/menu"
 	"github.com/holler/backend/internal/outlet"
 	"github.com/holler/backend/internal/platform/httpx"
+	"github.com/holler/backend/internal/procurement"
 	"github.com/holler/backend/internal/tables"
 )
 
@@ -84,6 +85,21 @@ type complianceConfigProvider interface {
 // mirroring kitchen.Service.SyncConfigBundle).
 type inventoryConfigProvider interface {
 	SyncConfigBundle(ctx context.Context, tenantID, outletID string, sinceVersion int) (inventory.ConfigBundle, error)
+}
+
+// procurementConfigProvider is the minimal seam onto
+// backend/internal/procurement (T1, ADR-019): supplier, supplier_item,
+// purchase_order and purchase_order_line, pre-filtered by since_version and
+// pre-scoped to the caller's tenant (procurement.Service.SyncConfigBundle
+// calls requireOutletInTenant itself, mirroring
+// inventory.Service.SyncConfigBundle).
+//
+// The edge holds ALL of it READ-ONLY. A purchase order reaches an outlet so a
+// receiving screen can prefill from it; the edge never writes one back, and it
+// never approves one — role.po_approval_limit_paise is Postgres-only and there
+// is no role table in SQLite at all (ADR-019 §7).
+type procurementConfigProvider interface {
+	SyncConfigBundle(ctx context.Context, tenantID, outletID string, sinceVersion int) (procurement.ConfigBundle, error)
 }
 
 // edgeUserCacheProvider is the minimal seam onto backend/internal/auth this
@@ -233,6 +249,18 @@ type syncConfigResponse struct {
 	// stamp a variant, and every sale gapped NO_VARIANT.
 	MenuItemVariants  []variantConfigWire  `json:"menu_item_variants"`
 	MenuItemModifiers []modifierConfigWire `json:"menu_item_modifiers"`
+
+	// Milestone 5 (ADR-019, T1): suppliers, their price lists, purchase orders
+	// and their lines. All CLOUD_TO_EDGE config, all read-only at the edge.
+	//
+	// PurchaseOrders carry NO RECEIPT STATE and never will. Receipt progress is
+	// derived on both sides and the two derivations legitimately differ (the
+	// edge sees its own grn_line rows, the cloud sees every outlet's), so there
+	// is deliberately no progress field on this bundle for an edge to trust.
+	Suppliers          []contracts.Supplier          `json:"suppliers"`
+	SupplierItems      []contracts.SupplierItem      `json:"supplier_items"`
+	PurchaseOrders     []contracts.PurchaseOrder     `json:"purchase_orders"`
+	PurchaseOrderLines []contracts.PurchaseOrderLine `json:"purchase_order_lines"`
 }
 
 // syncConfigHandler assembles the composite bundle. It never runs SQL
@@ -245,14 +273,15 @@ type syncConfigHandler struct {
 	kitchen           kitchenConfigProvider
 	compliance        complianceConfigProvider
 	inventory         inventoryConfigProvider
+	procurement       procurementConfigProvider
 	users             edgeUserCacheProvider
 	deviceCredentials edgeDeviceCredentialProvider
 }
 
-func newSyncConfigHandler(outlets outletConfigProvider, menuSvc menuConfigProvider, tablesSvc tablesConfigProvider, kitchenSvc kitchenConfigProvider, complianceSvc complianceConfigProvider, inventorySvc inventoryConfigProvider, usersSvc edgeUserCacheProvider, deviceCredentialsSvc edgeDeviceCredentialProvider) *syncConfigHandler {
+func newSyncConfigHandler(outlets outletConfigProvider, menuSvc menuConfigProvider, tablesSvc tablesConfigProvider, kitchenSvc kitchenConfigProvider, complianceSvc complianceConfigProvider, inventorySvc inventoryConfigProvider, procurementSvc procurementConfigProvider, usersSvc edgeUserCacheProvider, deviceCredentialsSvc edgeDeviceCredentialProvider) *syncConfigHandler {
 	return &syncConfigHandler{
 		outlets: outlets, menu: menuSvc, tables: tablesSvc, kitchen: kitchenSvc, compliance: complianceSvc,
-		inventory: inventorySvc, users: usersSvc, deviceCredentials: deviceCredentialsSvc,
+		inventory: inventorySvc, procurement: procurementSvc, users: usersSvc, deviceCredentials: deviceCredentialsSvc,
 	}
 }
 
@@ -351,6 +380,11 @@ func (h *syncConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		httpx.Error(w, err)
 		return
 	}
+	procurementBundle, err := h.procurement.SyncConfigBundle(r.Context(), tenantID, outletID, sinceVersion)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
 
 	resp := syncConfigResponse{
 		ConfigVersion:       o.ConfigVersion,
@@ -380,6 +414,11 @@ func (h *syncConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		MenuItemVariants:  variantsToWire(variants),
 		MenuItemModifiers: modifiersToWire(modifiers),
+
+		Suppliers:          procurementBundle.Suppliers,
+		SupplierItems:      procurementBundle.SupplierItems,
+		PurchaseOrders:     procurementBundle.PurchaseOrders,
+		PurchaseOrderLines: procurementBundle.PurchaseOrderLines,
 	}
 	if resp.Users == nil {
 		resp.Users = []contracts.EdgeUserCacheEntry{}
@@ -416,6 +455,18 @@ func (h *syncConfigHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if resp.ModifierIngredientDeltas == nil {
 		resp.ModifierIngredientDeltas = []contracts.ModifierIngredientDelta{}
+	}
+	if resp.Suppliers == nil {
+		resp.Suppliers = []contracts.Supplier{}
+	}
+	if resp.SupplierItems == nil {
+		resp.SupplierItems = []contracts.SupplierItem{}
+	}
+	if resp.PurchaseOrders == nil {
+		resp.PurchaseOrders = []contracts.PurchaseOrder{}
+	}
+	if resp.PurchaseOrderLines == nil {
+		resp.PurchaseOrderLines = []contracts.PurchaseOrderLine{}
 	}
 
 	httpx.JSON(w, http.StatusOK, resp)

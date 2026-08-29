@@ -28,6 +28,7 @@ import (
 	"github.com/holler/backend/internal/platform/config"
 	"github.com/holler/backend/internal/platform/httpx"
 	"github.com/holler/backend/internal/platform/postgres"
+	"github.com/holler/backend/internal/procurement"
 	"github.com/holler/backend/internal/tables"
 	"github.com/holler/backend/internal/tenant"
 )
@@ -166,8 +167,18 @@ func buildRouter(pool postgres.Pool, cfg config.Config) *chi.Mux {
 	inventorySvc := inventory.NewService(inventoryRepo)
 	inventoryHandler := inventory.NewHandler(inventorySvc)
 
+	// --- procurement (ADR-019; T1) -------------------------------------------
+	// supplier and purchase_order are CLOUD_TO_EDGE config (human-authenticated
+	// write routes below, gated on procurement.manage / procurement.approve);
+	// goods_receipt_note, grn_gap, purchase_return and stock_transfer_out are
+	// EDGE_TO_CLOUD envelope-wrapped replay, mounted under
+	// outlet.DeviceAuthenticate exactly like inventory's ledger ingest.
+	procurementRepo := procurement.NewRepository(pool)
+	procurementSvc := procurement.NewService(procurementRepo)
+	procurementHandler := procurement.NewHandler(procurementSvc)
+
 	// --- composite GET /sync/config ---------------------------------------
-	syncConfig := newSyncConfigHandler(outletSvc, menuSvc, tablesSvc, kitchenSvc, complianceSvc, inventorySvc, authSvc, deviceSvc)
+	syncConfig := newSyncConfigHandler(outletSvc, menuSvc, tablesSvc, kitchenSvc, complianceSvc, inventorySvc, procurementSvc, authSvc, deviceSvc)
 
 	router := httpx.NewRouter()
 	router.Get("/health", health.Handler)
@@ -201,6 +212,7 @@ func buildRouter(pool postgres.Pool, cfg config.Config) *chi.Mux {
 		kitchenHandler.Mount(r)
 		complianceHandler.Mount(r)
 		inventoryHandler.Mount(r)
+		procurementHandler.Mount(r)
 
 		// Device enrollment/rotation/revocation are human-privileged
 		// management actions (a technician or manager acting through an
@@ -234,6 +246,7 @@ func buildRouter(pool postgres.Pool, cfg config.Config) *chi.Mux {
 		tablesHandlers.MountEnvelopeIngest(r)
 		paymentsHandler.Mount(r)
 		inventoryHandler.MountIngest(r)
+		procurementHandler.MountIngest(r)
 	})
 
 	return router

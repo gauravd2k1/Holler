@@ -73,7 +73,22 @@ var guardedTables = []guardedTable{
 	{"recipe", "AggregateTypeRecipe (CLOUD_TO_EDGE, ADR-018)"},
 	{"recipe_ingredient", "child of recipe (ADR-018 §7)"},
 	{"modifier_ingredient_delta", "child of menu_item_modifier, itself child of menu_item (ADR-018 §1)"},
+	{"supplier", "AggregateTypeSupplier (CLOUD_TO_EDGE, ADR-019)"},
+	{"supplier_item", "child of supplier (ADR-019, the menu_item_variant precedent)"},
+	{"purchase_order", "AggregateTypePurchaseOrder (CLOUD_TO_EDGE, ADR-019)"},
+	{"purchase_order_line", "child of purchase_order (ADR-019)"},
 }
+
+// NOTE ON WHAT IS *NOT* DECLARED ABOVE, and why each absence is a decision:
+//
+//	goods_receipt_note, grn_gap, purchase_return, stock_transfer_out — and
+//	their child rows — are EDGE_TO_CLOUD. The cloud never sends them down, so
+//	GET /sync/config is not where they could be missed.
+//
+//	grn_sequence is edge-local (SQLite only, the invoice_sequence precedent).
+//	supplier_invoice and supplier_credit are cloud-only (the refresh_token /
+//	device_credential precedent). Neither store has both halves, so neither
+//	belongs in a config bundle at all.
 
 // guardExemptions: table -> column -> stated reason. Every entry here is
 // deliberate, never a placeholder. Two categories:
@@ -105,12 +120,18 @@ var guardExemptions = map[string]map[string]string{
 		"created_at": "cloud-internal bookkeeping. EdgeUserCacheEntry carries updated_at, which is what the edge compares for cache freshness; it has never needed created_at.",
 	},
 	"role": {
-		"id":         "Removed from GET /sync/config at 0.2.2 BY DESIGN: the edge has no role table. Permissions arrive pre-flattened on every EdgeUserCacheEntry.Permissions instead (openapi.yaml's `roles was removed at 0.2.2` comment). Every column here shares this one reason.",
-		"tenant_id":  "see id's entry in this table",
-		"code":       "see id's entry in this table",
-		"name":       "see id's entry in this table",
-		"created_at": "see id's entry in this table",
-		"updated_at": "see id's entry in this table",
+		// 0.6.0, ADR-019 §5/§7. Not the 0.2.2 reason the rest of this table
+		// gives — this column could not reach an edge even if roles did,
+		// because THERE IS NO role TABLE IN SQLITE and the edge must never be
+		// able to approve a purchase order. Approval is a back-office act
+		// against the cloud, by someone who is not standing at a till.
+		"po_approval_limit_paise": "Postgres-only by necessity AND by design (ADR-019 §7). The edge flattens permissions into app_user.permissions_json and models no role; PO approval happens in the admin, against the cloud. Shipping this ceiling to an outlet would imply the outlet could enforce it.",
+		"id":                      "Removed from GET /sync/config at 0.2.2 BY DESIGN: the edge has no role table. Permissions arrive pre-flattened on every EdgeUserCacheEntry.Permissions instead (openapi.yaml's `roles was removed at 0.2.2` comment). Every column here shares this one reason.",
+		"tenant_id":               "see id's entry in this table",
+		"code":                    "see id's entry in this table",
+		"name":                    "see id's entry in this table",
+		"created_at":              "see id's entry in this table",
+		"updated_at":              "see id's entry in this table",
 	},
 	"role_permission": {
 		"role_id":    "see role's entry: role_permission is role's child row and was removed from the wire in the same 0.2.2 decision.",
