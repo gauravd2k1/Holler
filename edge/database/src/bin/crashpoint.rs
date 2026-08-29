@@ -12,7 +12,8 @@
 //! precisely to avoid it.
 //!
 //! Usage:
-//!     crashpoint <data_dir> <order_id>
+//!     crashpoint <data_dir> <order_id>     -- M4: one confirm + deduct
+//!     crashpoint <data_dir> --grn          -- M5: one goods receipt + post
 //!
 //! Environment:
 //!     HOLLER_DB_KEY_HEX   64 hex chars, the same key the database was sealed with
@@ -28,8 +29,12 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use holler_edge_database::crypto::EncryptionKey;
-use holler_edge_database::model::OrderConfirmedMeta;
+use holler_edge_database::model::{NewGoodsReceiptNote, NewGrnLine, OrderConfirmedMeta};
 use holler_edge_database::Db;
+
+/// The receipt the M5 crash run records. Fixed ids so the test can look the
+/// rows up (or fail to) from an independent reopen.
+const GRN_ID: &str = "0191b000-0000-7000-8000-0000000000d1";
 
 const EXIT_ERROR: u8 = 2;
 
@@ -54,9 +59,9 @@ fn run() -> Result<(), String> {
         args.next()
             .ok_or("usage: crashpoint <data_dir> <order_id>")?,
     );
-    let order_id = args
+    let target = args
         .next()
-        .ok_or("usage: crashpoint <data_dir> <order_id>")?;
+        .ok_or("usage: crashpoint <data_dir> <order_id|--grn>")?;
 
     let key_hex = std::env::var("HOLLER_DB_KEY_HEX").map_err(|_| "HOLLER_DB_KEY_HEX is not set")?;
     let key = parse_key_hex(&key_hex)?;
@@ -66,20 +71,78 @@ fn run() -> Result<(), String> {
 
     let mut db = Db::open(&sealed, &plaintext, key).map_err(|e| format!("opening db: {e}"))?;
 
-    // The confirm the POS itself performs. If HOLLER_CRASH_POINT names a
-    // point inside this call, the process dies here: no unwind, no Drop, no
-    // seal, no commit.
-    db.confirm_order_with_outbox(
-        &order_id,
-        &OrderConfirmedMeta {
-            outbox_id: format!("outbox-confirm-{order_id}"),
-            occurred_at: "2026-08-23T10:30:00Z".to_string(),
-            confirmed_at: "2026-08-23T10:30:00Z".to_string(),
-        },
-    )
-    .map_err(|e| format!("confirming {order_id}: {e}"))?;
+    // The write the POS itself performs. If HOLLER_CRASH_POINT names a point
+    // inside this call, the process dies there: no unwind, no Drop, no seal,
+    // no commit. Both branches go through the SAME public entry point the POS
+    // uses -- a harness that reimplements the path it is testing proves only
+    // that the harness works.
+    if target == "--grn" {
+        receive_goods(&mut db)?;
+    } else {
+        db.confirm_order_with_outbox(
+            &target,
+            &OrderConfirmedMeta {
+                outbox_id: format!("outbox-confirm-{target}"),
+                occurred_at: "2026-08-23T10:30:00Z".to_string(),
+                confirmed_at: "2026-08-23T10:30:00Z".to_string(),
+            },
+        )
+        .map_err(|e| format!("confirming {target}: {e}"))?;
+    }
 
     db.close().map_err(|e| format!("sealing db: {e}"))?;
+    Ok(())
+}
+
+/// Records one goods receipt against whatever the seed already stocks --
+/// no purchase order and no supplier, which is the walk-in delivery case and
+/// the one an outlet performs with the uplink down.
+///
+/// Reads the outlet, user and item out of the seeded database rather than
+/// assuming them, so this follows the seed instead of silently testing a
+/// fixture the seed no longer produces.
+fn receive_goods(db: &mut Db) -> Result<(), String> {
+    let (outlet_id, user_id, item_id) = db
+        .connection()
+        .query_row(
+            "SELECT o.id, u.id, i.id              FROM outlet o              JOIN app_user u ON u.outlet_id = o.id              JOIN inventory_item i ON i.outlet_id = o.id              ORDER BY i.id LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map_err(|e| format!("the seed must contain an outlet, a user and an item: {e}"))?;
+
+    let dimension: String = db
+        .connection()
+        .query_row(
+            "SELECT dimension FROM inventory_item WHERE id = ?1",
+            [&item_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("reading the item dimension: {e}"))?;
+
+    db.record_goods_receipt(NewGoodsReceiptNote {
+        id: GRN_ID.to_string(),
+        outlet_id,
+        purchase_order_id: None,
+        supplier_id: None,
+        delivery_note_ref: Some("DN-CRASH".to_string()),
+        received_at: "2026-08-23T10:30:00Z".to_string(),
+        received_by_user_id: user_id,
+        notes: None,
+        lines: vec![NewGrnLine {
+            inventory_item_id: item_id,
+            entered_purchase_unit: "kg".to_string(),
+            entered_quantity_micro: 5_000_000,
+            // The author's declaration, matching the item so the run is not
+            // also exercising a dimension mismatch.
+            quantity_dimension: dimension,
+            purchase_price_paise: 4_000,
+            batch_code: None,
+            expiry_date: None,
+            purchase_order_line_id: None,
+        }],
+    })
+    .map_err(|e| format!("receiving goods: {e}"))?;
     Ok(())
 }
 

@@ -77,7 +77,7 @@ fn valuation_paise(
     caller_supplied: Option<i64>,
 ) -> DbResult<i64> {
     if let Some(stated) = caller_supplied {
-        if stated < 0 || stated > MAX_SAFE_INTEGER {
+        if !(0..=MAX_SAFE_INTEGER).contains(&stated) {
             return Err(DbError::InvalidInput(format!(
                 "unit_cost_paise must be between 0 and 2^53-1, got {stated}"
             )));
@@ -261,7 +261,7 @@ pub(crate) fn record_stock_transfer_out(
     let mut lines = Vec::with_capacity(req.lines.len());
     for (index, line) in req.lines.iter().enumerate() {
         let line_number = index as i64 + 1;
-        if line.base_quantity_micro <= 0 || line.base_quantity_micro > MAX_SAFE_INTEGER {
+        if !(1..=MAX_SAFE_INTEGER).contains(&line.base_quantity_micro) {
             return Err(DbError::InvalidInput(format!(
                 "base_quantity_micro must be between 1 and 2^53-1, got {}",
                 line.base_quantity_micro

@@ -73,7 +73,7 @@ fn receipt(
 /// A fully configured outlet: one item, one supplier that sells it in 50 kg
 /// sacks, one user. No receipts and no ledger rows — those are the code's job.
 fn configured() -> Db {
-    let mut db = Db::open_in_memory_for_tests().expect("open db");
+    let db = Db::open_in_memory_for_tests().expect("open db");
     let conn = db.connection();
     seed_outlet(conn, OUTLET);
     seed_user(conn, USER, OUTLET);

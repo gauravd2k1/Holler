@@ -131,7 +131,7 @@ mod tests {
     }
 
     fn seeded() -> Db {
-        let mut db = Db::open_in_memory_for_tests().expect("open db");
+        let db = Db::open_in_memory_for_tests().expect("open db");
         seed_outlet(db.connection(), OUTLET);
         seed_inventory_item(db.connection(), RICE, OUTLET, "Rice", "MASS", 1_000_000);
         db

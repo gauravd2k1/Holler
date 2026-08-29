@@ -174,8 +174,16 @@ fn ledger_rows_for_order(db: &Db) -> i64 {
 /// Runs `crashpoint` against the sealed database, optionally arming a crash
 /// point. Returns the exit status.
 fn run_crashpoint(dir: &Path, crash_point: Option<&str>) -> std::process::ExitStatus {
+    run_crashpoint_target(dir, ORDER_ID, crash_point)
+}
+
+fn run_crashpoint_target(
+    dir: &Path,
+    target: &str,
+    crash_point: Option<&str>,
+) -> std::process::ExitStatus {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_crashpoint"));
-    cmd.arg(dir).arg(ORDER_ID).env("HOLLER_DB_KEY_HEX", KEY_HEX);
+    cmd.arg(dir).arg(target).env("HOLLER_DB_KEY_HEX", KEY_HEX);
     if let Some(point) = crash_point {
         cmd.env("HOLLER_CRASH_POINT", point);
     }
@@ -259,5 +267,142 @@ fn without_the_crash_point_the_same_confirm_commits_and_deducts() {
         ledger_rows_for_order(&db) > 0,
         "the seeded item has a recipe, so a committed confirm must deduct — \
          without this the crash assertion above would hold vacuously"
+    );
+}
+
+// ===========================================================================
+// M5 acceptance criterion 2, the same shape one milestone on.
+//
+//   > Kill the POS between the GRN write and the ledger post → GRN and
+//   > ledger agree on reopen. **Judged against the crash, not the API.**
+//
+// The receipt, its lines, its gaps, the PURCHASE ledger entries and the
+// grn_sequence advance that minted the number all ride in ONE transaction,
+// so "agree" means NEITHER survives. A partial outcome — a receipt with no
+// stock behind it, or stock with no receipt explaining it — is exactly what
+// this excludes, and a delivery that was recorded but never reached the
+// ledger is the worse of the two: it reads as received while the shelf
+// figure says it never arrived.
+//
+// The seed carries no supplier and no purchase order, which makes this the
+// walk-in delivery case — the one an outlet actually performs with the
+// uplink down.
+// ===========================================================================
+
+const GRN_ID: &str = "0191b000-0000-7000-8000-0000000000d1";
+
+fn grn_rows(db: &Db) -> i64 {
+    db.connection()
+        .query_row(
+            "SELECT COUNT(*) FROM goods_receipt_note WHERE id = ?1",
+            [GRN_ID],
+            |r| r.get(0),
+        )
+        .expect("count receipts")
+}
+
+fn grn_line_rows(db: &Db) -> i64 {
+    db.connection()
+        .query_row(
+            "SELECT COUNT(*) FROM grn_line WHERE grn_id = ?1",
+            [GRN_ID],
+            |r| r.get(0),
+        )
+        .expect("count receipt lines")
+}
+
+fn ledger_rows_for_grn(db: &Db) -> i64 {
+    db.connection()
+        .query_row(
+            "SELECT COUNT(*) FROM stock_ledger_entry WHERE source_grn_id = ?1",
+            [GRN_ID],
+            |r| r.get(0),
+        )
+        .expect("count ledger rows")
+}
+
+/// The GRN number the counter would have issued. Read back to prove the
+/// counter itself rolled back with the receipt: a consumed-but-unused number
+/// would make the next receipt jump, and a gap in the series must only ever
+/// mean "a receipt was rolled back", never "two receipts share a number".
+fn grn_sequence_next_value(db: &Db) -> i64 {
+    db.connection()
+        .query_row(
+            "SELECT COALESCE(MAX(next_value), 0) FROM grn_sequence",
+            [],
+            |r| r.get(0),
+        )
+        .expect("read grn_sequence")
+}
+
+/// THE CRITERION. The process dies inside the receipt transaction, after the
+/// `goods_receipt_note` and its gaps are written and before a single
+/// `PURCHASE` entry is posted.
+#[test]
+fn grn_and_ledger_agree_after_the_process_dies_mid_receipt() {
+    let (_guard, dir) = seeded_dir();
+
+    let status = run_crashpoint_target(&dir, "--grn", Some("after_grn_before_ledger"));
+
+    assert!(
+        !status.success(),
+        "the process must have died inside the transaction, not completed"
+    );
+    assert_ne!(
+        status.code(),
+        Some(2),
+        "exit 2 is crashpoint's own error path — the abort point did not fire, \
+         so nothing about durability was tested"
+    );
+
+    // A genuinely independent reopen: a different process wrote this file.
+    let db = open(&dir);
+    assert_eq!(
+        grn_rows(&db),
+        0,
+        "the receipt was written before the abort but never committed, so it \
+         must not survive"
+    );
+    assert_eq!(grn_line_rows(&db), 0);
+    assert_eq!(
+        ledger_rows_for_grn(&db),
+        0,
+        "no stock may exist for a receipt that did not commit"
+    );
+    assert_eq!(
+        grn_sequence_next_value(&db),
+        0,
+        "the counter advance rides in the same transaction: an uncommitted \
+         receipt must not consume a GRN number"
+    );
+}
+
+/// The positive control, and it is not optional: without it the test above
+/// passes just as well against a build that receives nothing at all. Same
+/// seed, same binary, no crash point — the receipt must commit AND post
+/// stock, and the counter must have moved exactly once.
+#[test]
+fn without_the_crash_point_the_same_receipt_commits_and_posts_stock() {
+    let (_guard, dir) = seeded_dir();
+
+    let status = run_crashpoint_target(&dir, "--grn", None);
+    assert!(
+        status.success(),
+        "an unarmed run must complete and seal: {status:?}"
+    );
+
+    let db = open(&dir);
+    assert_eq!(grn_rows(&db), 1);
+    assert_eq!(grn_line_rows(&db), 1);
+    assert_eq!(
+        ledger_rows_for_grn(&db),
+        1,
+        "a committed receipt posts its PURCHASE entry — without this the \
+         crash assertion above would hold vacuously"
+    );
+    assert_eq!(
+        grn_sequence_next_value(&db),
+        1,
+        "1-based, and advanced exactly once by the one receipt that committed"
     );
 }

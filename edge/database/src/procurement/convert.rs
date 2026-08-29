@@ -335,6 +335,11 @@ pub(crate) fn base_quantity_from_stored_rate(
 /// `declared_dimension` is the author's own declaration off
 /// [`crate::model::NewGrnLine::quantity_dimension`]. It is compared, never
 /// derived.
+// Eight parameters, and each one is a distinct fact the resolution needs;
+// bundling them into a struct would only move the same list one line up and
+// hide which of them is the author's declaration -- the one parameter whose
+// provenance is the whole point of this function.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_line_conversion(
     tx: &Transaction,
     supplier_id: Option<&str>,
