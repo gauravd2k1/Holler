@@ -36,6 +36,15 @@
 /// criterion 2 names.
 pub const AFTER_CONFIRM_BEFORE_DEDUCT: &str = "after_confirm_before_deduct";
 
+/// Between the `goods_receipt_note` (with its lines and gaps) being written
+/// and the `PURCHASE` `stock_ledger_entry` rows that ride in the SAME
+/// transaction -- the exact window M5 acceptance criterion 2 names.
+///
+/// Criterion 2 is judged against the crash, not the API: the receipt and the
+/// ledger must AGREE on reopen. Because both are inside one transaction,
+/// agreeing means neither is there.
+pub const AFTER_GRN_BEFORE_LEDGER: &str = "after_grn_before_ledger";
+
 /// The environment variable naming the point to abort at. Absent (the normal
 /// case, including every test that is not about crashing) means no point
 /// fires.

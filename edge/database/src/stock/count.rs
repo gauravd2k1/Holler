@@ -219,7 +219,11 @@ pub(crate) fn complete_stock_count(
             // Contracts 0.5.5 (`0023_stock_count_integrity.sql`): typed,
             // no-FK provenance — the fix for the gap this crate flagged
             // when it had only `note` to link with.
+            unit_cost_paise: None,
             source_stock_count_id: Some(stock_count_id.to_string()),
+            source_grn_id: None,
+            source_purchase_return_id: None,
+            source_stock_transfer_out_id: None,
         };
         let entry_seq = repo::next_stock_ledger_sequence_value(tx, outlet_id, completed_at)?;
         let id = uuid::Uuid::now_v7().to_string();

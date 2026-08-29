@@ -17,6 +17,7 @@ mod migrations;
 pub mod model;
 mod payment;
 mod pragma;
+pub mod procurement;
 pub mod repo;
 pub(crate) mod stock;
 pub mod tax;
@@ -789,6 +790,170 @@ impl Db {
         outlet_id: &str,
     ) -> DbResult<Vec<model::StockDeductionGap>> {
         repo::list_stock_deduction_gaps_for_outlet(self.connection(), outlet_id)
+    }
+
+    // ---------------------------------- Milestone 5: procurement (T2) --
+    // ADR-019. THE RULE: a GRN NEVER BLOCKS ON A PO. Every unmatched
+    // condition records a `grn_gap` and ACCEPTS the receipt. Refusing a
+    // delivery standing in the kitchen doorway is the outage, not the
+    // protection.
+    //
+    // Permission gating (`procurement.manage`) is the CALLER's, exactly as
+    // it is for the M4 stock paths -- see `crate::stock`'s module doc
+    // comment for why no permission lookup lives in this crate. The edge
+    // NEVER approves a purchase order and has no way to: there is no `role`
+    // table in this store and no `po_approval_limit_paise` anywhere in it.
+
+    /// Records one goods receipt and posts its `PURCHASE`
+    /// `stock_ledger_entry` rows -- **the receipt, its lines, its gaps, the
+    /// ledger entries, their `entry_seq` marks and the `grn_sequence`
+    /// advance that minted the number all commit together or not at all.**
+    /// M5 acceptance criterion 2 is judged against that, not against this
+    /// signature.
+    ///
+    /// **Caller must have already checked `procurement.manage`.**
+    pub fn record_goods_receipt(
+        &mut self,
+        req: model::NewGoodsReceiptNote,
+    ) -> DbResult<model::GoodsReceiptNote> {
+        let tx = self.connection_mut().transaction()?;
+        let result = procurement::receipt::record_goods_receipt(&tx, req)?;
+        tx.commit()?;
+        Ok(result)
+    }
+
+    /// [`Db::record_goods_receipt`] plus the `local_outbox` rows, in the
+    /// SAME transaction as every row the receipt wrote. TWO aggregate types
+    /// leave together -- `goods_receipt_note` and `grn_gap` -- because a gap
+    /// explains the receipt beside it and could not be joined to it if it
+    /// arrived by another path (ADR-019).
+    pub fn record_goods_receipt_with_outbox(
+        &mut self,
+        req: model::NewGoodsReceiptNote,
+        outbox_meta: &model::ProcurementOutboxMeta,
+    ) -> DbResult<model::GoodsReceiptNote> {
+        let tx = self.connection_mut().transaction()?;
+        let result = procurement::receipt::record_goods_receipt_with_outbox(&tx, req, outbox_meta)?;
+        tx.commit()?;
+        Ok(result)
+    }
+
+    /// The `entryIntentEcho` the receiving screen MUST show before the
+    /// operator commits (M5 acceptance criterion 4): what was typed, the
+    /// rate that will be applied, the base-unit quantity that will actually
+    /// be recorded, and every gap the line would produce.
+    ///
+    /// **Read-only, and it runs the SAME resolution the write runs.** An
+    /// echo computed independently -- in TypeScript, or in the Tauri layer
+    /// -- is an echo that can disagree with the write, which is worse than
+    /// no echo at all.
+    pub fn grn_entry_intent_echo(
+        &mut self,
+        supplier_id: Option<&str>,
+        line: &model::NewGrnLine,
+    ) -> DbResult<model::GrnEntryIntentEcho> {
+        let tx = self.connection_mut().transaction()?;
+        let result = procurement::receipt::entry_intent_echo(&tx, supplier_id, line)?;
+        tx.commit()?;
+        Ok(result)
+    }
+
+    /// The bounded, newest-first `grn_gap` read behind M5 acceptance
+    /// criterion 3 -- **the gap must be visible to a human on the POS**, not
+    /// merely present in a table. `detail` is prose for that reason.
+    pub fn list_grn_gaps(&self, outlet_id: &str) -> DbResult<Vec<model::GrnGap>> {
+        procurement::list_grn_gaps_for_outlet(self.connection(), outlet_id)
+    }
+
+    /// **THIS OUTLET's** receipt progress for one purchase order, derived on
+    /// demand from local `grn_line` rows.
+    ///
+    /// **The cloud's figure for the same PO will differ, and both are
+    /// right** (ADR-019): the cloud sums every outlet's receipts, this sums
+    /// one outlet's. Show both, label which is which, and NEVER reconcile
+    /// them -- reconciling puts back the second writer that keeping receipt
+    /// state off `purchase_order` exists to avoid.
+    pub fn purchase_order_receipt_progress(
+        &self,
+        purchase_order_id: &str,
+    ) -> DbResult<Vec<model::PurchaseOrderReceiptProgress>> {
+        procurement::purchase_order_receipt_progress(self.connection(), purchase_order_id)
+    }
+
+    /// Weighted average cost for one item at one outlet, in integer paise
+    /// per BASE unit -- DERIVED from the ledger on every call, never stored
+    /// on `inventory_item` (a cost column on a cloud-owned config row is the
+    /// half-config, half-transaction row ADR-011 forbids).
+    ///
+    /// `None` means this outlet has never recorded a costed receipt for the
+    /// item. **That is not the same as zero**, and a caller must not treat
+    /// it as such.
+    pub fn weighted_average_cost_paise(
+        &self,
+        outlet_id: &str,
+        inventory_item_id: &str,
+    ) -> DbResult<Option<i64>> {
+        procurement::cost::weighted_average_cost_paise(
+            self.connection(),
+            outlet_id,
+            inventory_item_id,
+        )
+    }
+
+    /// Records one purchase return and posts its `RETURN_TO_VENDOR` ledger
+    /// entries, in one transaction. **Caller must have already checked
+    /// `procurement.manage`.**
+    pub fn record_purchase_return(
+        &mut self,
+        req: model::NewPurchaseReturn,
+    ) -> DbResult<model::PurchaseReturn> {
+        let tx = self.connection_mut().transaction()?;
+        let result = procurement::movement::record_purchase_return(&tx, req)?;
+        tx.commit()?;
+        Ok(result)
+    }
+
+    /// [`Db::record_purchase_return`] plus its `local_outbox` row, in the
+    /// same transaction as every row it wrote.
+    pub fn record_purchase_return_with_outbox(
+        &mut self,
+        req: model::NewPurchaseReturn,
+        outbox_meta: &model::ProcurementOutboxMeta,
+    ) -> DbResult<model::PurchaseReturn> {
+        let tx = self.connection_mut().transaction()?;
+        let result =
+            procurement::movement::record_purchase_return_with_outbox(&tx, req, outbox_meta)?;
+        tx.commit()?;
+        Ok(result)
+    }
+
+    /// Records one OUTBOUND stock transfer and posts its `TRANSFER_OUT`
+    /// ledger entries, in one transaction. **Outbound half only** -- no
+    /// `TRANSFER_IN` row is written anywhere, deliberately: a transfer spans
+    /// two edge databases and that is M8 machinery (ADR-019).
+    /// **Caller must have already checked `procurement.manage`.**
+    pub fn record_stock_transfer_out(
+        &mut self,
+        req: model::NewStockTransferOut,
+    ) -> DbResult<model::StockTransferOut> {
+        let tx = self.connection_mut().transaction()?;
+        let result = procurement::movement::record_stock_transfer_out(&tx, req)?;
+        tx.commit()?;
+        Ok(result)
+    }
+
+    /// [`Db::record_stock_transfer_out`] plus its `local_outbox` row, in the
+    /// same transaction as every row it wrote.
+    pub fn record_stock_transfer_out_with_outbox(
+        &mut self,
+        req: model::NewStockTransferOut,
+        outbox_meta: &model::ProcurementOutboxMeta,
+    ) -> DbResult<model::StockTransferOut> {
+        let tx = self.connection_mut().transaction()?;
+        let result =
+            procurement::movement::record_stock_transfer_out_with_outbox(&tx, req, outbox_meta)?;
+        tx.commit()?;
+        Ok(result)
     }
 
     /// Sets `order_type`/`table_id` on a `DRAFT` order — the cashier

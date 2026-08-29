@@ -74,7 +74,11 @@ pub(crate) fn record_wastage(tx: &Transaction, req: NewWastageEntry) -> DbResult
         // Wastage is not count-driven — contracts 0.5.5's new column is
         // for COUNT_ADJUSTMENT provenance only (see
         // `crate::stock::count::complete_stock_count`).
+        unit_cost_paise: None,
         source_stock_count_id: None,
+        source_grn_id: None,
+        source_purchase_return_id: None,
+        source_stock_transfer_out_id: None,
     };
 
     let entry_seq = repo::next_stock_ledger_sequence_value(tx, &req.outlet_id, &req.occurred_at)?;

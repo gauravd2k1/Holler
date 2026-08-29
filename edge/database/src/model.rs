@@ -1270,6 +1270,18 @@ pub struct NewStockLedgerEntry {
     pub modifier_delta_id: Option<String>,
     pub modifier_name: Option<String>,
     pub modifier_delta_version: Option<i64>,
+    /// Paise per BASE unit. **This is the field ADR-018 sec.8 deferred to M5
+    /// and contracts 0.6.0 finally gives a writer.** It stayed `None` on
+    /// every row the product wrote for a whole milestone -- the column
+    /// existed, nothing set it, and 0.6.0 removed its exemption from
+    /// `scripts/check-contract-field-consumers.mjs` on the strength of this
+    /// write path existing.
+    ///
+    /// `None` on every sale-, wastage- and count-posted row, deliberately:
+    /// those consume at the average rather than setting it, and a cost on
+    /// them would let issuing stock move the purchase price
+    /// (`crate::procurement::cost`).
+    pub unit_cost_paise: Option<i64>,
     /// Contracts 0.5.5 (`packages/contracts/sqlite/0023_stock_count_integrity.sql`):
     /// typed provenance for a `COUNT_ADJUSTMENT` row, no FK (the same
     /// no-FK provenance discipline as `recipe_id`/`source_order_id`) —
@@ -1278,6 +1290,19 @@ pub struct NewStockLedgerEntry {
     /// else. Replaces the `"stock_count:{id}"` string this crate used to
     /// write into `note` before this column existed.
     pub source_stock_count_id: Option<String>,
+    /// Contracts 0.6.0 (`packages/contracts/sqlite/0027_m5_procurement.sql`):
+    /// typed, no-FK provenance for the three procurement sources, matching
+    /// the `source_stock_count_id` shape exactly. Exactly one of the three is
+    /// `Some` on any procurement-posted row; all three are `None` on every
+    /// sale-, wastage- and count-posted row.
+    ///
+    /// The 0.5.9 lesson is why these are here at the same time as the write
+    /// path that sets them: a column nothing reads is a column that does not
+    /// exist, and a fidelity test proves fidelity only for the fields its
+    /// fixture populates.
+    pub source_grn_id: Option<String>,
+    pub source_purchase_return_id: Option<String>,
+    pub source_stock_transfer_out_id: Option<String>,
 }
 
 /// Caller-supplied fields to insert one `stock_deduction_gap` row — a
@@ -1364,6 +1389,19 @@ pub struct StockLedgerEntry {
     pub unit_cost_paise: Option<i64>,
     /// Contracts 0.5.5 — see [`NewStockLedgerEntry::source_stock_count_id`].
     pub source_stock_count_id: Option<String>,
+    /// Contracts 0.6.0 (`packages/contracts/sqlite/0027_m5_procurement.sql`):
+    /// typed, no-FK provenance for the three procurement sources, matching
+    /// the `source_stock_count_id` shape exactly. Exactly one of the three is
+    /// `Some` on any procurement-posted row; all three are `None` on every
+    /// sale-, wastage- and count-posted row.
+    ///
+    /// The 0.5.9 lesson is why these are here at the same time as the write
+    /// path that sets them: a column nothing reads is a column that does not
+    /// exist, and a fidelity test proves fidelity only for the fields its
+    /// fixture populates.
+    pub source_grn_id: Option<String>,
+    pub source_purchase_return_id: Option<String>,
+    pub source_stock_transfer_out_id: Option<String>,
 }
 
 // ------------------------------ wastage / stock counts / variance (M4, T3) --
@@ -1563,4 +1601,343 @@ pub struct SyncReplayBlock {
     /// `None` while the entry is still inside its retry budget. `Some` once
     /// the budget is spent and the cursor has moved past it.
     pub blocked_at: Option<String>,
+}
+
+// ---------------------------------- Milestone 5: procurement (T2, ADR-019) --
+// `goods_receipt_note`, `purchase_return` and `stock_transfer_out` are
+// EDGE-AUTHORITATIVE (edge->cloud); `grn_line`, `purchase_return_line` and
+// `stock_transfer_line` ride as child rows; `grn_gap` is its own aggregate on
+// a PLAIN outbox (no entry_seq, no cursor -- ADR-019 sec.2); `grn_sequence`
+// is edge-local and never leaves the outlet.
+//
+// THE RULE EVERY TYPE BELOW SERVES: **a GRN never blocks on a PO.** Nothing
+// in this group can reject a receipt for a business/config reason. The only
+// rejections are malformed caller input (a non-positive quantity, an absurd
+// magnitude) -- the same posture `NewWastageEntry` takes, and for the same
+// reason: a caller defect is not a shop-floor condition.
+
+/// The largest quantity or money magnitude this crate will accept from a
+/// caller or produce from a conversion: `2^53 - 1`, JavaScript's exact
+/// integer limit.
+///
+/// **The binding range limit is JavaScript's 2^53, not `i64`** (ADR-018,
+/// CLAUDE.md). Every quantity written here crosses a Tauri IPC boundary into
+/// a JS `number`; a value that fits `i64` but not `2^53` arrives in the POS
+/// silently rounded, which is precisely the "wrong-but-plausible" failure the
+/// micro-unit discipline exists to prevent. Checked at the edge because the
+/// edge is the only side that can still tell the difference.
+pub const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
+
+/// One line of a goods receipt, as the operator entered it.
+///
+/// **`quantity_dimension` is the unit the AUTHOR chose and must never be
+/// auto-filled from `inventory_item.dimension`** (contracts 0.5.2/0.6.0,
+/// ADR-019). If a write path or a UI derives it from the referent the
+/// comparison becomes `x == x`, the `DIMENSION_MISMATCH` guard can never
+/// fire, and it will look correct in review. It is a required field on this
+/// struct -- not an `Option` with a fallback -- so no caller can decline to
+/// state it.
+#[derive(Debug, Clone)]
+pub struct NewGrnLine {
+    pub inventory_item_id: String,
+    /// The supplier's own unit label off the delivery note -- `"SACK"`,
+    /// `"CRATE"`, `"kg"`. Free text; the CONVERSION is what must be exact.
+    pub entered_purchase_unit: String,
+    /// WHAT THE HUMAN TYPED, in micro-units of `entered_purchase_unit`
+    /// (3 sacks = `3_000_000`). Stored verbatim alongside the converted
+    /// figure so "what did they actually type?" is answerable from the row
+    /// when a receipt turns out 1000x wrong (ADR-019).
+    pub entered_quantity_micro: i64,
+    /// `"MASS" | "VOLUME" | "COUNT"`. See the struct doc comment.
+    pub quantity_dimension: String,
+    /// Paise for ONE `entered_purchase_unit` -- the figure on the delivery
+    /// note or supplier invoice. The per-base-unit cost the ledger carries is
+    /// DERIVED from this at the edge and never recomputed anywhere else
+    /// (CLAUDE.md: money is computed by the edge, formatted by the layers
+    /// above it).
+    pub purchase_price_paise: i64,
+    /// Batch and expiry: captured at receipt or never (ADR-019). Nothing in
+    /// M5 reads them; M6's expiry alerting does.
+    pub batch_code: Option<String>,
+    pub expiry_date: Option<String>,
+    /// The PO line this receipt line answers, when the caller already knows
+    /// it. `None` is ordinary, not an error: the receipt path resolves the
+    /// match itself and records a gap when there is none.
+    pub purchase_order_line_id: Option<String>,
+}
+
+/// A goods receipt as submitted by the receiving screen. `grn_number` is
+/// deliberately ABSENT -- it is minted from the edge-local `grn_sequence`
+/// inside the same transaction (`invoice_sequence` precedent), never accepted
+/// from a caller. `business_date` is likewise absent: computed once,
+/// internally, from `received_at` through the one business-date function.
+#[derive(Debug, Clone)]
+pub struct NewGoodsReceiptNote {
+    pub id: String,
+    pub outlet_id: String,
+    /// `None` is the walk-in / standing-order / emergency-purchase case and
+    /// is ACCEPTED -- it records a `NO_PURCHASE_ORDER` gap. A `Some` naming a
+    /// PO this edge has never seen is accepted too, as
+    /// `PURCHASE_ORDER_NOT_FOUND`.
+    pub purchase_order_id: Option<String>,
+    /// Same rule: an unconfigured supplier is a `SUPPLIER_NOT_FOUND` gap,
+    /// never a refusal.
+    pub supplier_id: Option<String>,
+    pub delivery_note_ref: Option<String>,
+    pub received_at: String,
+    pub received_by_user_id: String,
+    pub notes: Option<String>,
+    pub lines: Vec<NewGrnLine>,
+}
+
+/// A `goods_receipt_note` as stored, with the lines and gaps the receipt
+/// actually produced. Returned whole so the receiving screen can show what
+/// was recorded -- including every gap -- without a second query.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GoodsReceiptNote {
+    pub id: String,
+    pub outlet_id: String,
+    pub purchase_order_id: Option<String>,
+    pub supplier_id: Option<String>,
+    pub grn_number: String,
+    pub delivery_note_ref: Option<String>,
+    pub received_at: String,
+    pub received_by_user_id: String,
+    pub business_date: String,
+    pub notes: Option<String>,
+    pub lines: Vec<GrnLine>,
+    pub gaps: Vec<GrnGap>,
+}
+
+/// A `grn_line` as stored -- field-for-field, both sides of the conversion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GrnLine {
+    pub id: String,
+    pub grn_id: String,
+    pub inventory_item_id: String,
+    pub line_number: i64,
+    pub purchase_order_line_id: Option<String>,
+    pub entered_purchase_unit: String,
+    pub entered_quantity_micro: i64,
+    pub quantity_dimension: String,
+    pub base_quantity_micro: i64,
+    /// THE RATE ACTUALLY APPLIED, snapshotted: base micro-units produced by
+    /// ONE `entered_purchase_unit`, with `inventory_item.yield_factor_ppm`
+    /// already folded in. Storing the effective rate rather than the raw
+    /// `supplier_item.pack_size_micro` is what makes the row's own arithmetic
+    /// reproducible -- `base_quantity_micro` is derived from THIS number, so
+    /// a later edit to the supplier's pack size or to the item's yield cannot
+    /// restate a past receipt. See `crate::procurement::convert` for the
+    /// two-step rounding argument.
+    pub pack_size_micro_applied: i64,
+    /// Paise per BASE unit -- the figure the `stock_ledger_entry` carries and
+    /// the one weighted average cost is derived from.
+    pub unit_cost_paise: i64,
+    pub line_total_paise: i64,
+    pub batch_code: Option<String>,
+    pub expiry_date: Option<String>,
+}
+
+/// A `grn_gap` as stored. `detail` is PROSE because a person reads it: M5
+/// acceptance criterion 3 is "the gap is visible to a human on the POS", not
+/// "a gap row exists" (ADR-019).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GrnGap {
+    pub id: String,
+    pub outlet_id: String,
+    pub grn_id: String,
+    pub grn_line_id: Option<String>,
+    pub inventory_item_id: Option<String>,
+    /// One of the eight closed-set reasons -- see
+    /// `crate::procurement::GrnGapReason`.
+    pub reason: String,
+    pub detail: Option<String>,
+    pub occurred_at: String,
+    pub business_date: String,
+}
+
+/// What the receiving screen must show the operator BEFORE they commit
+/// (`entryIntentEcho`, ADR-019, M5 acceptance criterion 4): the typed figure,
+/// the rate that will be applied, and the base-unit quantity that will
+/// actually be recorded.
+///
+/// Computed by the same function the write path uses, never by a parallel
+/// implementation in the UI -- an echo derived independently from the write
+/// is an echo that can disagree with it, which is worse than no echo at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GrnEntryIntentEcho {
+    pub inventory_item_id: String,
+    pub inventory_item_name: String,
+    pub entered_purchase_unit: String,
+    pub entered_quantity_micro: i64,
+    pub quantity_dimension: String,
+    pub pack_size_micro_applied: i64,
+    pub base_quantity_micro: i64,
+    /// The dimension the ledger row will carry -- `inventory_item.dimension`,
+    /// shown SEPARATELY from `quantity_dimension` so an operator can see the
+    /// two disagree. Never used to fill `quantity_dimension` in.
+    pub item_dimension: String,
+    pub unit_cost_paise: i64,
+    pub line_total_paise: i64,
+    /// Every gap this line WOULD record if committed as entered. Shown, not
+    /// used to block.
+    pub gap_reasons: Vec<String>,
+}
+
+/// Caller-supplied identity for a procurement `local_outbox` row -- the
+/// [`StockCountOutboxMeta`] shape. The caller supplies only the outbox row's
+/// own id and the moment; every payload field is built by this crate from the
+/// rows it just wrote, so a caller cannot commit a misleading event.
+#[derive(Debug, Clone)]
+pub struct ProcurementOutboxMeta {
+    pub outbox_id: String,
+    pub occurred_at: String,
+}
+
+/// One line of a purchase return. Same both-sides-of-the-conversion
+/// discipline as [`NewGrnLine`]; `purchase_return_line` carries no
+/// `pack_size_micro_applied` column, which is reported as a contract
+/// asymmetry rather than worked around.
+#[derive(Debug, Clone)]
+pub struct NewPurchaseReturnLine {
+    pub inventory_item_id: String,
+    pub grn_line_id: Option<String>,
+    pub entered_purchase_unit: String,
+    pub entered_quantity_micro: i64,
+    /// The unit the author chose. Never derived from the referent.
+    pub quantity_dimension: String,
+    /// Paise per BASE unit. `None` means "value it at what this outlet
+    /// actually paid" -- the weighted average cost derived from the ledger
+    /// (`crate::procurement::cost`), never a guess and never a silent zero.
+    pub unit_cost_paise: Option<i64>,
+}
+
+/// A purchase return as submitted. `return_number` is caller-supplied:
+/// contracts 0.6.0 mints a counter for the GRN (`grn_sequence`) and none for
+/// this document, so this crate does not invent one -- see
+/// `crate::procurement::numbering`.
+#[derive(Debug, Clone)]
+pub struct NewPurchaseReturn {
+    pub id: String,
+    pub outlet_id: String,
+    pub supplier_id: Option<String>,
+    pub grn_id: Option<String>,
+    pub return_number: String,
+    /// `"DAMAGED" | "EXPIRED" | "WRONG_ITEM" | "QUALITY" | "OVER_DELIVERY" |
+    /// "OTHER"`.
+    pub reason: String,
+    pub returned_at: String,
+    pub returned_by_user_id: String,
+    pub notes: Option<String>,
+    pub lines: Vec<NewPurchaseReturnLine>,
+}
+
+/// A `purchase_return` as stored, with its lines.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PurchaseReturn {
+    pub id: String,
+    pub outlet_id: String,
+    pub supplier_id: Option<String>,
+    pub grn_id: Option<String>,
+    pub return_number: String,
+    pub reason: String,
+    pub returned_at: String,
+    pub returned_by_user_id: String,
+    pub business_date: String,
+    pub notes: Option<String>,
+    pub lines: Vec<PurchaseReturnLine>,
+}
+
+/// A `purchase_return_line` as stored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PurchaseReturnLine {
+    pub id: String,
+    pub purchase_return_id: String,
+    pub inventory_item_id: String,
+    pub grn_line_id: Option<String>,
+    pub line_number: i64,
+    pub entered_purchase_unit: String,
+    pub entered_quantity_micro: i64,
+    pub quantity_dimension: String,
+    pub base_quantity_micro: i64,
+    pub unit_cost_paise: i64,
+}
+
+/// One line of an outbound stock transfer. `stock_transfer_line` carries only
+/// a BASE quantity -- there is no purchase-unit pair on that table -- so this
+/// struct takes the base figure directly rather than inventing an
+/// entered/converted split the schema cannot store.
+#[derive(Debug, Clone)]
+pub struct NewStockTransferLine {
+    pub inventory_item_id: String,
+    pub base_quantity_micro: i64,
+    /// The unit the author chose. Never derived from the referent.
+    pub quantity_dimension: String,
+    /// `None` values the dispatch at the weighted average cost derived from
+    /// the ledger -- see [`NewPurchaseReturnLine::unit_cost_paise`].
+    pub unit_cost_paise: Option<i64>,
+}
+
+/// An outbound stock transfer as submitted. OUTBOUND HALF ONLY: this posts
+/// `TRANSFER_OUT` at the source outlet. `TRANSFER_IN` and goods-in-transit
+/// are M8 -- a transfer spans two edge databases (ADR-019).
+#[derive(Debug, Clone)]
+pub struct NewStockTransferOut {
+    pub id: String,
+    pub outlet_id: String,
+    /// May name an outlet this edge database has no row for -- deliberately
+    /// no FK on the column, so a transfer to a sibling outlet this till has
+    /// never synced still dispatches.
+    pub destination_outlet_id: String,
+    pub transfer_number: String,
+    pub dispatched_at: String,
+    pub dispatched_by_user_id: String,
+    pub notes: Option<String>,
+    pub lines: Vec<NewStockTransferLine>,
+}
+
+/// A `stock_transfer_out` as stored, with its lines.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StockTransferOut {
+    pub id: String,
+    pub outlet_id: String,
+    pub destination_outlet_id: String,
+    pub transfer_number: String,
+    pub dispatched_at: String,
+    pub dispatched_by_user_id: String,
+    pub business_date: String,
+    pub notes: Option<String>,
+    pub lines: Vec<StockTransferLine>,
+}
+
+/// A `stock_transfer_line` as stored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StockTransferLine {
+    pub id: String,
+    pub stock_transfer_out_id: String,
+    pub inventory_item_id: String,
+    pub line_number: i64,
+    pub base_quantity_micro: i64,
+    pub quantity_dimension: String,
+    pub unit_cost_paise: i64,
+}
+
+/// This outlet's own view of how much of a purchase order has arrived --
+/// DERIVED on demand from local `grn_line` rows, never stored.
+///
+/// **THE EDGE'S AND THE CLOUD'S FIGURES LEGITIMATELY DIFFER, AND BOTH ARE
+/// RIGHT** (ADR-019). The edge sees only this outlet's receipts; the cloud
+/// sees every outlet's. A PO shared across outlets reads "40 of 100" at one
+/// till and "90 of 100" in the admin at the same moment. Show both, label
+/// which is which, and NEVER reconcile them -- reconciling reintroduces the
+/// second writer that keeping receipt state off `purchase_order` exists to
+/// avoid (sec.50.1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PurchaseOrderReceiptProgress {
+    pub purchase_order_id: String,
+    pub purchase_order_line_id: String,
+    pub inventory_item_id: String,
+    pub ordered_base_quantity_micro: i64,
+    /// Received AT THIS OUTLET only. See the struct doc comment.
+    pub received_base_quantity_micro_at_this_outlet: i64,
 }

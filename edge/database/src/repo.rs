@@ -5427,6 +5427,9 @@ fn stock_ledger_entry_from_row(row: &rusqlite::Row) -> rusqlite::Result<StockLed
         modifier_delta_version: row.get(21)?,
         unit_cost_paise: row.get(22)?,
         source_stock_count_id: row.get(23)?,
+        source_grn_id: row.get(24)?,
+        source_purchase_return_id: row.get(25)?,
+        source_stock_transfer_out_id: row.get(26)?,
     })
 }
 
@@ -5434,7 +5437,7 @@ const STOCK_LEDGER_ENTRY_COLUMNS: &str = "id, outlet_id, entry_seq, inventory_it
     inventory_item_name, dimension, entry_type, origin, quantity_applied_micro, recipe_id, \
     recipe_version, recipe_name, source_order_id, source_order_item_id, reason_code, note, \
     occurred_at, business_date, created_by_user_id, modifier_delta_id, modifier_name, \
-    modifier_delta_version, unit_cost_paise, source_stock_count_id";
+    modifier_delta_version, unit_cost_paise, source_stock_count_id, source_grn_id, \n    source_purchase_return_id, source_stock_transfer_out_id";
 
 /// Fetches the exact row a just-completed insert wrote, by `(outlet_id,
 /// entry_seq)` — the table's own uniqueness key (0016) — so
@@ -6278,4 +6281,252 @@ pub fn list_blocked_replays(conn: &Connection, outlet_id: &str) -> DbResult<Vec<
         })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
+}
+
+// ---------------------------------- Milestone 5: procurement (T2, ADR-019) --
+//
+// EVENT TYPES ARE NOT YET FROZEN IN THE CONTRACT. `OUTBOX_EVENT_TYPES` in
+// `packages/contracts/src/types/events.ts` carries nineteen values, none of
+// them procurement, and contracts are read-only to a builder agent (ADR-008).
+// The four names below are what this crate emits; they need freezing in the
+// TypeScript list and the Go mirror before `scripts/check-event-type-drift.mjs`
+// can pass, and that gap is REPORTED rather than routed around -- the check
+// firing here is the check working.
+//
+// `goods_receipt_note` and `grn_gap` are BOTH emitted by the receipt path, and
+// deliberately: a gap records what could not be matched ABOUT THIS RECEIPT and
+// belongs beside the receipt it explains, exactly as `/inventory/ledger-entries`
+// carries two aggregate types (ADR-019). `grn_gap` rides the PLAIN outbox --
+// no `entry_seq`, no cursor, no contiguity check.
+const EVENT_TYPE_GOODS_RECEIVED: &str = "GoodsReceived";
+const EVENT_TYPE_GRN_GAP_RECORDED: &str = "GrnGapRecorded";
+const EVENT_TYPE_PURCHASE_RETURNED: &str = "PurchaseReturned";
+const EVENT_TYPE_STOCK_DISPATCHED: &str = "StockDispatched";
+
+fn grn_line_json(l: &GrnLine) -> serde_json::Value {
+    serde_json::json!({
+        "id": l.id,
+        "grn_id": l.grn_id,
+        "inventory_item_id": l.inventory_item_id,
+        "line_number": l.line_number,
+        "purchase_order_line_id": l.purchase_order_line_id,
+        // BOTH SIDES OF THE CONVERSION travel, and the applied rate with them
+        // (ADR-019). The cloud stores what it receives and recomputes neither
+        // side: recomputing against current configuration would silently
+        // restate history.
+        "entered_purchase_unit": l.entered_purchase_unit,
+        "entered_quantity_micro": l.entered_quantity_micro,
+        "quantity_dimension": l.quantity_dimension,
+        "base_quantity_micro": l.base_quantity_micro,
+        "pack_size_micro_applied": l.pack_size_micro_applied,
+        "unit_cost_paise": l.unit_cost_paise,
+        "line_total_paise": l.line_total_paise,
+        // Modelled now, alerted in M6. On the wire from the first version, so
+        // the field does not have to be added to a high-volume table later --
+        // and because batch identity is captured at receipt or never.
+        "batch_code": l.batch_code,
+        "expiry_date": l.expiry_date,
+    })
+}
+
+fn goods_receipt_note_json(g: &GoodsReceiptNote) -> serde_json::Value {
+    serde_json::json!({
+        "id": g.id,
+        "outlet_id": g.outlet_id,
+        "purchase_order_id": g.purchase_order_id,
+        "supplier_id": g.supplier_id,
+        "grn_number": g.grn_number,
+        "delivery_note_ref": g.delivery_note_ref,
+        "received_at": g.received_at,
+        "received_by_user_id": g.received_by_user_id,
+        "business_date": g.business_date,
+        "notes": g.notes,
+        "lines": g.lines.iter().map(grn_line_json).collect::<Vec<_>>(),
+        "schema_version": 1,
+    })
+}
+
+fn grn_gap_json(gap: &GrnGap) -> serde_json::Value {
+    serde_json::json!({
+        "id": gap.id,
+        "outlet_id": gap.outlet_id,
+        "grn_id": gap.grn_id,
+        "grn_line_id": gap.grn_line_id,
+        "inventory_item_id": gap.inventory_item_id,
+        "reason": gap.reason,
+        "detail": gap.detail,
+        "occurred_at": gap.occurred_at,
+        "business_date": gap.business_date,
+        "schema_version": 1,
+    })
+}
+
+pub(crate) fn insert_goods_received_outbox(
+    tx: &Transaction,
+    g: &GoodsReceiptNote,
+    meta: &ProcurementOutboxMeta,
+) -> DbResult<()> {
+    let payload = serde_json::json!({
+        "event_id": meta.outbox_id,
+        "event_type": EVENT_TYPE_GOODS_RECEIVED,
+        "occurred_at": meta.occurred_at,
+        "outlet_id": g.outlet_id,
+        "schema_version": 1,
+        "data": { "goods_receipt_note": goods_receipt_note_json(g) },
+    })
+    .to_string();
+    insert_outbox_entry(
+        tx,
+        &NewOutboxEntry {
+            id: meta.outbox_id.clone(),
+            aggregate_type: "goods_receipt_note".to_string(),
+            aggregate_id: g.id.clone(),
+            event_type: EVENT_TYPE_GOODS_RECEIVED.to_string(),
+            payload_json: payload,
+            created_at: meta.occurred_at.clone(),
+        },
+    )
+}
+
+/// One outbox row per gap, on its own `grn_gap` aggregate type.
+///
+/// `index` derives a distinct, DETERMINISTIC outbox id from the caller's
+/// single `outbox_id`: one receipt can produce several gaps, `local_outbox.id`
+/// is a primary key, and a UUID minted here would make the same receipt
+/// replayed twice look like two different events. Deriving it from the
+/// caller's id keeps the whole receipt's event set reproducible from the
+/// caller's own identity, which is what makes a retry idempotent rather than
+/// duplicating.
+pub(crate) fn insert_grn_gap_recorded_outbox(
+    tx: &Transaction,
+    gap: &GrnGap,
+    meta: &ProcurementOutboxMeta,
+    index: usize,
+) -> DbResult<()> {
+    let outbox_id = format!("{}-gap-{index}", meta.outbox_id);
+    let payload = serde_json::json!({
+        "event_id": outbox_id,
+        "event_type": EVENT_TYPE_GRN_GAP_RECORDED,
+        "occurred_at": meta.occurred_at,
+        "outlet_id": gap.outlet_id,
+        "schema_version": 1,
+        "data": { "grn_gap": grn_gap_json(gap) },
+    })
+    .to_string();
+    insert_outbox_entry(
+        tx,
+        &NewOutboxEntry {
+            id: outbox_id.clone(),
+            aggregate_type: "grn_gap".to_string(),
+            aggregate_id: gap.id.clone(),
+            event_type: EVENT_TYPE_GRN_GAP_RECORDED.to_string(),
+            payload_json: payload,
+            created_at: meta.occurred_at.clone(),
+        },
+    )
+}
+
+fn purchase_return_line_json(l: &PurchaseReturnLine) -> serde_json::Value {
+    serde_json::json!({
+        "id": l.id,
+        "purchase_return_id": l.purchase_return_id,
+        "inventory_item_id": l.inventory_item_id,
+        "grn_line_id": l.grn_line_id,
+        "line_number": l.line_number,
+        "entered_purchase_unit": l.entered_purchase_unit,
+        "entered_quantity_micro": l.entered_quantity_micro,
+        "quantity_dimension": l.quantity_dimension,
+        "base_quantity_micro": l.base_quantity_micro,
+        "unit_cost_paise": l.unit_cost_paise,
+    })
+}
+
+pub(crate) fn insert_purchase_returned_outbox(
+    tx: &Transaction,
+    r: &PurchaseReturn,
+    meta: &ProcurementOutboxMeta,
+) -> DbResult<()> {
+    let payload = serde_json::json!({
+        "event_id": meta.outbox_id,
+        "event_type": EVENT_TYPE_PURCHASE_RETURNED,
+        "occurred_at": meta.occurred_at,
+        "outlet_id": r.outlet_id,
+        "schema_version": 1,
+        "data": { "purchase_return": {
+            "id": r.id,
+            "outlet_id": r.outlet_id,
+            "supplier_id": r.supplier_id,
+            "grn_id": r.grn_id,
+            "return_number": r.return_number,
+            "reason": r.reason,
+            "returned_at": r.returned_at,
+            "returned_by_user_id": r.returned_by_user_id,
+            "business_date": r.business_date,
+            "notes": r.notes,
+            "lines": r.lines.iter().map(purchase_return_line_json).collect::<Vec<_>>(),
+            "schema_version": 1,
+        } },
+    })
+    .to_string();
+    insert_outbox_entry(
+        tx,
+        &NewOutboxEntry {
+            id: meta.outbox_id.clone(),
+            aggregate_type: "purchase_return".to_string(),
+            aggregate_id: r.id.clone(),
+            event_type: EVENT_TYPE_PURCHASE_RETURNED.to_string(),
+            payload_json: payload,
+            created_at: meta.occurred_at.clone(),
+        },
+    )
+}
+
+fn stock_transfer_line_json(l: &StockTransferLine) -> serde_json::Value {
+    serde_json::json!({
+        "id": l.id,
+        "stock_transfer_out_id": l.stock_transfer_out_id,
+        "inventory_item_id": l.inventory_item_id,
+        "line_number": l.line_number,
+        "base_quantity_micro": l.base_quantity_micro,
+        "quantity_dimension": l.quantity_dimension,
+        "unit_cost_paise": l.unit_cost_paise,
+    })
+}
+
+pub(crate) fn insert_stock_dispatched_outbox(
+    tx: &Transaction,
+    t: &StockTransferOut,
+    meta: &ProcurementOutboxMeta,
+) -> DbResult<()> {
+    let payload = serde_json::json!({
+        "event_id": meta.outbox_id,
+        "event_type": EVENT_TYPE_STOCK_DISPATCHED,
+        "occurred_at": meta.occurred_at,
+        "outlet_id": t.outlet_id,
+        "schema_version": 1,
+        "data": { "stock_transfer_out": {
+            "id": t.id,
+            "outlet_id": t.outlet_id,
+            "destination_outlet_id": t.destination_outlet_id,
+            "transfer_number": t.transfer_number,
+            "dispatched_at": t.dispatched_at,
+            "dispatched_by_user_id": t.dispatched_by_user_id,
+            "business_date": t.business_date,
+            "notes": t.notes,
+            "lines": t.lines.iter().map(stock_transfer_line_json).collect::<Vec<_>>(),
+            "schema_version": 1,
+        } },
+    })
+    .to_string();
+    insert_outbox_entry(
+        tx,
+        &NewOutboxEntry {
+            id: meta.outbox_id.clone(),
+            aggregate_type: "stock_transfer_out".to_string(),
+            aggregate_id: t.id.clone(),
+            event_type: EVENT_TYPE_STOCK_DISPATCHED.to_string(),
+            payload_json: payload,
+            created_at: meta.occurred_at.clone(),
+        },
+    )
 }
