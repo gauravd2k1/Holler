@@ -273,3 +273,6 @@ pub fn header(
         created_by_user_id: USER_ID.to_string(),
     }
 }
+
+/// Procurement fixtures (Milestone 5, track T2). See that module.
+pub mod procurement;
