@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Holler API — Vertical Slice
-  version: "0.6.0"
+  version: "0.6.2"
   description: >
     Covers only the §70 order endpoints needed for the Milestone 1–2 vertical
     slice (Menu → POS Order → Local SQLite → KOT → KDS → Cloud sync). Frozen
@@ -1347,6 +1347,43 @@ paths:
                   discount_definitions:
                     type: array
                     items: { $ref: "#/components/schemas/DiscountDefinition" }
+                  # Milestone 5 (0.6.2, ADR-019). CONFIG, cloud->edge, and they
+                  # belong here for a blunt reason: the cloud has been sending
+                  # all four since 0.6.0 and this schema named none of them, so
+                  # the edge had nothing to write a consumer against and serde
+                  # discarded every one in silence. The supplier and PO pickers
+                  # read empty tables, and with no supplier_item there is no
+                  # pack size to convert a receipt against -- a delivery
+                  # degrades to a NO_SUPPLIER_ITEM gap at an outlet that is
+                  # correctly configured in the cloud.
+                  #
+                  # scripts/check-config-apply-drift.mjs now fails the build if
+                  # a family the cloud sends has no field on the edge's
+                  # ConfigBundle. The Go guard proves the cloud SENDS a column;
+                  # that one proves an outlet STORES it.
+                  suppliers:
+                    type: array
+                    items: { $ref: "#/components/schemas/Supplier" }
+                  supplier_items:
+                    type: array
+                    description: >
+                      Child rows of supplier, shipped flat in the bundle like
+                      item_stations and station_printers. quantity_dimension
+                      travels AS STORED and the edge must not re-derive it from
+                      the referenced inventory_item: doing so turns the cloud's
+                      write-time guard into x == x (contracts 0.5.2).
+                    items: { $ref: "#/components/schemas/SupplierItem" }
+                  purchase_orders:
+                    type: array
+                    description: >
+                      READ-ONLY at the edge. The outlet prefills a receiving
+                      screen from these and never writes one back -- a PO is a
+                      cloud-owned config row and receipt progress is derived,
+                      never stored (ADR-019 §4).
+                    items: { $ref: "#/components/schemas/PurchaseOrder" }
+                  purchase_order_lines:
+                    type: array
+                    items: { $ref: "#/components/schemas/PurchaseOrderLine" }
                   fiscal_profile:
                     description: >
                       The outlet's current seller identity, or null before one
@@ -1523,6 +1560,35 @@ paths:
   # ---------------------------------------------------------------------------
 
   /procurement/suppliers:
+    get:
+      summary: >
+        List suppliers for an outlet, each with its full supplier_item price
+        list so a caller can prefill a purchase-order line from
+        last_price_paise without a second round trip. Requires
+        procurement.manage.
+      parameters:
+        - name: outlet_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: include_inactive
+          in: query
+          schema: { type: boolean }
+      responses:
+        "200":
+          description: Suppliers with their price lists
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  allOf:
+                    - $ref: "#/components/schemas/Supplier"
+                    - type: object
+                      properties:
+                        items:
+                          type: array
+                          items: { $ref: "#/components/schemas/SupplierItem" }
     post:
       summary: >
         Create or update a supplier and its supplier_item price list. CONFIG,
@@ -1566,6 +1632,41 @@ paths:
             reclassifying an item is a migration, not an edit.
 
   /procurement/purchase-orders:
+    get:
+      summary: >
+        List purchase orders. Requires procurement.manage. An unrecognised
+        status is a 400, never an empty list — a filter nobody can spell
+        returning "no orders" is how a buyer concludes there is nothing to
+        receive.
+
+        NO RECEIPT PROGRESS on the list, deliberately: it would be an N+1 and,
+        worse, an unlabelled cloud-wide figure sitting beside rows a reader
+        will assume are outlet-local. Progress lives on the detail route where
+        its scope can be named.
+      parameters:
+        - name: outlet_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: supplier_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/PurchaseOrderStatus" }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1 }
+      responses:
+        "200":
+          description: Purchase orders
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/PurchaseOrder" }
+        "400":
+          description: An unrecognised status filter.
     post:
       summary: >
         Raise or amend a purchase order. CONFIG, cloud→edge — the edge holds it
@@ -1719,6 +1820,196 @@ paths:
           description: Transfer recorded
         "422":
           $ref: "#/components/responses/EnvelopeRouteMismatch"
+
+
+  /procurement/suppliers/{supplierId}:
+    patch:
+      summary: >
+        Amend a supplier and its price list. Requires procurement.manage.
+        404s rather than creating — an amend to a supplier that does not exist
+        is a mistake, not an upsert. A supplier may NOT move outlets, and
+        created_at comes from the stored row, never the request.
+
+        quantity_dimension on each supplier_item stays THE UNIT THE AUTHOR
+        CHOSE. This handler compares it against inventory_item.dimension and
+        rejects a mismatch; auto-filling it here would make the comparison
+        x == x and the guard could never fire (contracts 0.5.2).
+      parameters:
+        - name: supplierId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                supplier: { $ref: "#/components/schemas/Supplier" }
+                items:
+                  type: array
+                  items: { $ref: "#/components/schemas/SupplierItem" }
+      responses:
+        "200":
+          description: Supplier amended
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Supplier"
+        "404":
+          description: No such supplier in this tenant.
+        "422":
+          description: >
+            A supplier_item whose quantity_dimension differs from the
+            referenced inventory_item.dimension. Rejected, never converted.
+
+  /procurement/purchase-orders/{purchaseOrderId}:
+    get:
+      summary: >
+        One purchase order with its lines, plus DERIVED receipt progress.
+
+        The progress figure is the CLOUD'S derivation, computed from every
+        outlet's grn_line rows, and the response labels it as such. The edge
+        derives its own from its own receipts and the two LEGITIMATELY DIFFER —
+        a shared PO reads "40 of 100" at one till and "90 of 100" here at the
+        same moment, and both are right. Show both, label which is which, and
+        never reconcile them: a reconciled figure needs one authority, and
+        choosing one puts a second writer back on this aggregate (§50.1).
+      parameters:
+        - name: purchaseOrderId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Purchase order with cloud-wide receipt progress
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  purchase_order: { $ref: "#/components/schemas/PurchaseOrder" }
+                  receipt_progress:
+                    type: object
+                    description: >
+                      Derived at read time, never stored on the row. `scope`
+                      names whose receipts it counts so a UI cannot present it
+                      as a single agreed number.
+                    properties:
+                      scope: { type: string, enum: [CLOUD_WIDE] }
+                      lines:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            purchase_order_line_id: { type: string, format: uuid }
+                            ordered_quantity_micro: { type: integer }
+                            received_quantity_micro: { type: integer }
+        "404":
+          description: No such purchase order in this tenant.
+    patch:
+      summary: >
+        Amend a purchase order. Requires procurement.manage. Partial: omitted
+        fields keep their stored values.
+
+        AN AMEND REVOKES THE APPROVAL, UNCONDITIONALLY. approved_by_user_id and
+        approved_at go NULL together and the status returns to
+        PENDING_APPROVAL (a DRAFT stays DRAFT). Without that rule the approval
+        ceiling is trivially bypassable: raise ₹5,000, get it approved under a
+        ₹10,000 limit, then amend it to ₹50,000 — leaving a row that answers
+        "who authorised this spend" with a name attached to different contents.
+
+        CANCELLED and CLOSED are terminal: amending one is 409.
+      parameters:
+        - name: purchaseOrderId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                purchase_order: { $ref: "#/components/schemas/PurchaseOrder" }
+      responses:
+        "200":
+          description: Purchase order amended, approval revoked
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PurchaseOrder"
+        "409":
+          description: The order is CANCELLED or CLOSED, which are terminal.
+
+  /procurement/supplier-invoices:
+    post:
+      summary: >
+        Record a supplier invoice. CLOUD-ONLY — no SQLite mirror and not an
+        AggregateType (the refresh_token / device_credential precedent): an
+        outlet does not reconcile a supplier ledger with the uplink down, and
+        an edge copy would be a second authority over money owed.
+
+        MODELLED, NOT ACTED ON. `status` accepts only RECEIVED from any M5 code
+        path; the settlement states exist so the column does not change shape
+        when M7 lands posting and payment.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SupplierInvoice"
+      responses:
+        "201":
+          description: Supplier invoice recorded
+    get:
+      summary: List supplier invoices for an outlet. Requires procurement.manage.
+      parameters:
+        - name: outlet_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Supplier invoices
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/SupplierInvoice" }
+
+  /procurement/supplier-credits:
+    post:
+      summary: >
+        Record a supplier credit note. CLOUD-ONLY, same reasoning as
+        supplier_invoice. Application against an invoice is M7 — M5 creates and
+        lists only.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SupplierCredit"
+      responses:
+        "201":
+          description: Supplier credit recorded
+    get:
+      summary: List supplier credits for an outlet. Requires procurement.manage.
+      parameters:
+        - name: outlet_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Supplier credits
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/SupplierCredit" }
 
 components:
   responses:
