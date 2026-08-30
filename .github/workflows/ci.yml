@@ -599,7 +599,20 @@ jobs:
           workspaces: tests/e2e-scenario/harness -> target
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          # 22 for the same reason as lan-integration: this suite imports the
+          # real apps/kds client modules, which open a genuine WebSocket, and
+          # Node's global one is only unflagged from 22. On 20 every scenario
+          # touching the KDS reports `ReferenceError: WebSocket is not defined`
+          # as a harness-level fatal -- so the run completes, the invariants
+          # look untouched, and the job fails for a reason that reads nothing
+          # like "the runtime is too old".
+          #
+          # ONE ROOT CAUSE, TWO JOBS. Fixing lan-integration's pin alone left
+          # this one red, and the two failures looked entirely unrelated from
+          # their job names: a WebSocket ReferenceError over there, a UNIQUE
+          # constraint on station.code over here. The constraint violation was
+          # real and is fixed separately; it was simply masking this behind it.
+          node-version: "22"
       - uses: pnpm/action-setup@v4
         with:
           version: 10
