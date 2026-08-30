@@ -27,9 +27,17 @@
 //! whole-object, and a whole-object comparison of a row whose optional fields
 //! are all null cannot tell a field that was carried from a field neither side
 //! has. That is how `source_stock_count_id` was dropped by the cloud for two
-//! milestones while this test was green (contracts 0.5.9). So the fixture is
-//! TWO entries -- a wastage row and a count-sourced COUNT_ADJUSTMENT -- and a
-//! provenance group added later needs its own entry here.
+//! milestones while this test was green (contracts 0.5.9), and then how the
+//! three 0.6.0 procurement columns were dropped after it -- the fixture was a
+//! wastage row, on which all three are legitimately null, so the test passed
+//! on null agreeing with null and proved nothing.
+//!
+//! So the fixture is FIVE entries, one per provenance group: a wastage row, a
+//! count-sourced COUNT_ADJUSTMENT, a PURCHASE from a real receipt, a
+//! RETURN_TO_VENDOR from a real return, and a TRANSFER_OUT from a real
+//! dispatch. **A provenance group added later needs its own entry here, and
+//! the group is not landed until it has one.** A fidelity test proves fidelity
+//! only for the fields its fixture populates.
 //!
 //! Between them nothing in the round trip is unchecked. Both comparisons are
 //! whole-object and byte-exact against a canonical serialisation -- never a
@@ -550,6 +558,14 @@ fn edge_row_as_wire(e: &model::StockLedgerEntry) -> Value {
         "modifier_name": e.modifier_name,
         "modifier_delta_version": e.modifier_delta_version,
         "unit_cost_paise": e.unit_cost_paise,
+        // Contracts 0.6.0. These three lagged here after `ranged.rs` gained
+        // them (1e6455b) and THAT IS THE MIRROR EARNING ITS KEEP -- the job of
+        // a hand-written twin is to disagree out loud. What it must never do
+        // is disagree by staying null on both sides, which is why the fixture
+        // below earns a real receipt, return and dispatch.
+        "source_grn_id": e.source_grn_id,
+        "source_purchase_return_id": e.source_purchase_return_id,
+        "source_stock_transfer_out_id": e.source_stock_transfer_out_id,
         "schema_version": 1,
     })
 }
@@ -573,7 +589,9 @@ fn postgres_row_as_wire(pg: &mut PgClient, entry_id: &str) -> Value {
                     to_char(business_date, 'YYYY-MM-DD'),
                     created_by_user_id::text, modifier_delta_id::text, modifier_name,
                     modifier_delta_version::text, unit_cost_paise::text,
-                    source_stock_count_id::text
+                    source_stock_count_id::text,
+                    source_grn_id::text, source_purchase_return_id::text,
+                    source_stock_transfer_out_id::text
              FROM stock_ledger_entry WHERE id::text = $1",
             &[&uuid_param(entry_id)],
         )
@@ -609,6 +627,12 @@ fn postgres_row_as_wire(pg: &mut PgClient, entry_id: &str) -> Value {
         // deliberately NOT compared, because the cloud dropped it on decode
         // and stored NULL for every row.
         "source_stock_count_id": str_or_null(23),
+        // Contracts 0.6.0, and the same reasoning one milestone on: these were
+        // NULL in postgres for every replayed procurement movement while the
+        // edge's own copy was correct, because the payload never carried them.
+        "source_grn_id": str_or_null(24),
+        "source_purchase_return_id": str_or_null(25),
+        "source_stock_transfer_out_id": str_or_null(26),
         "note": str_or_null(15),
         "occurred_at": str_or_null(16),
         "business_date": str_or_null(17),
@@ -711,19 +735,195 @@ fn a_ledger_entry_created_at_the_edge_replays_to_the_real_cloud_and_reads_back_i
     db.complete_stock_count(&count_id, &seed.outlet_id, "2026-08-23T21:05:00Z")
         .expect("complete_stock_count");
 
+    // --- THREE MORE ENTRIES, one per procurement provenance group ---------
+    //
+    // Contracts 0.6.0 put `source_grn_id`, `source_purchase_return_id` and
+    // `source_stock_transfer_out_id` on the row in both stores. The payload in
+    // `ranged.rs` did not carry them, so the cloud stored NULL for every
+    // replayed procurement movement -- 0.5.9's defect, a third time, and the
+    // rule against it was already written into ADR-019 when it happened.
+    //
+    // A wastage row and a count adjustment leave all three legitimately null,
+    // and null == null is the shape that let `source_stock_count_id` cross
+    // this seam unnoticed for two milestones WHILE THIS TEST WAS GREEN. So
+    // each group earns its own entry through the shipping write path, exactly
+    // as the header promises: a fidelity test proves fidelity only for the
+    // fields its fixture populates.
+    //
+    // These ride the plain outbox, not the ranged cursor, so they are pumped
+    // by `pump_procurement` below -- and they MUST land first, because
+    // postgres carries a real FK from each provenance column to the document
+    // it names. That ordering is not test scaffolding; it is the replay order
+    // the outlet itself uses.
+    let user_id: String = pg
+        .query_one(
+            "SELECT id::text FROM app_user WHERE email = $1::text",
+            &[&seed.email],
+        )
+        .expect("devseed must have created a user to receive against")
+        .get(0);
+
+    // The destination of the transfer. A real outlet row, because postgres
+    // puts an FK on `destination_outlet_id` and a CHECK that it is not the
+    // source -- the outbound half still names a real sibling (ADR-019).
+    let destination_outlet_id = new_id();
+    pg.execute(
+        "INSERT INTO outlet (id, brand_id, name, timezone, config_version)
+         SELECT $1::text::uuid, brand_id, 'Cloud E2E Destination', timezone, 1
+           FROM outlet WHERE id = $2::text::uuid",
+        &[
+            &uuid_param(&destination_outlet_id),
+            &uuid_param(&seed.outlet_id),
+        ],
+    )
+    .expect("seeding the transfer destination outlet");
+
+    // The edge's own copy of the receiving user. `open_edge_db` seeds config
+    // only; every operational row below is written by the code under test.
+    db.connection()
+        .execute(
+            "INSERT INTO app_user
+                (id, tenant_id, outlet_id, email, full_name, password_hash, pin_hash,
+                 is_active, permissions_json, config_version, updated_at)
+             VALUES (?1, ?2, ?3, ?4, 'Cloud E2E Receiver', 'not-a-hash', NULL,
+                     1, '[]', 1, '2026-08-23T00:00:00Z')",
+            rusqlite::params![user_id, seed.tenant_id, seed.outlet_id, seed.email],
+        )
+        .expect("seeding the edge's app_user");
+
+    // A receipt with no PO and no supplier: the walk-in case, ACCEPTED with a
+    // gap (ADR-019, "a GRN never blocks on a PO"). It posts the PURCHASE entry
+    // that carries `source_grn_id` -- and, because M5 put a cost on the ledger,
+    // the first entry in this fixture with a non-null `unit_cost_paise`.
+    let grn_id = new_id();
+    db.record_goods_receipt_with_outbox(
+        model::NewGoodsReceiptNote {
+            id: grn_id.clone(),
+            outlet_id: seed.outlet_id.clone(),
+            purchase_order_id: None,
+            supplier_id: None,
+            delivery_note_ref: Some("DN-CRIT6".to_string()),
+            received_at: "2026-08-23T11:00:00Z".to_string(),
+            received_by_user_id: user_id.clone(),
+            notes: None,
+            lines: vec![model::NewGrnLine {
+                inventory_item_id: item_id.clone(),
+                entered_purchase_unit: "kg".to_string(),
+                entered_quantity_micro: 4_000_000,
+                // The author's own declaration, never read off the item: if a
+                // write path auto-filled this the comparison becomes x == x
+                // and the guard can never fire (contracts 0.5.2).
+                quantity_dimension: "MASS".to_string(),
+                purchase_price_paise: 3_500,
+                batch_code: None,
+                expiry_date: None,
+                purchase_order_line_id: None,
+            }],
+        },
+        &model::ProcurementOutboxMeta {
+            outbox_id: new_id(),
+            occurred_at: "2026-08-23T11:00:00Z".to_string(),
+        },
+    )
+    .expect("record_goods_receipt_with_outbox");
+
+    // A return against that receipt: posts RETURN_TO_VENDOR carrying
+    // `source_purchase_return_id`. `unit_cost_paise: None` values it at the
+    // weighted average the ledger already holds, never a guess and never zero.
+    let return_id = new_id();
+    db.record_purchase_return_with_outbox(
+        model::NewPurchaseReturn {
+            id: return_id.clone(),
+            outlet_id: seed.outlet_id.clone(),
+            supplier_id: None,
+            grn_id: Some(grn_id.clone()),
+            return_number: format!("RTV-{return_id}"),
+            reason: "DAMAGED".to_string(),
+            returned_at: "2026-08-23T12:00:00Z".to_string(),
+            returned_by_user_id: user_id.clone(),
+            notes: None,
+            lines: vec![model::NewPurchaseReturnLine {
+                inventory_item_id: item_id.clone(),
+                grn_line_id: None,
+                entered_purchase_unit: "kg".to_string(),
+                entered_quantity_micro: 1_000_000,
+                quantity_dimension: "MASS".to_string(),
+                unit_cost_paise: None,
+            }],
+        },
+        &model::ProcurementOutboxMeta {
+            outbox_id: new_id(),
+            occurred_at: "2026-08-23T12:00:00Z".to_string(),
+        },
+    )
+    .expect("record_purchase_return_with_outbox");
+
+    // The outbound half of a transfer: posts TRANSFER_OUT carrying
+    // `source_stock_transfer_out_id`. No TRANSFER_IN is written anywhere --
+    // that half spans a second edge database and is M8.
+    let transfer_id = new_id();
+    db.record_stock_transfer_out_with_outbox(
+        model::NewStockTransferOut {
+            id: transfer_id.clone(),
+            outlet_id: seed.outlet_id.clone(),
+            destination_outlet_id: destination_outlet_id.clone(),
+            transfer_number: format!("TRF-{transfer_id}"),
+            dispatched_at: "2026-08-23T13:00:00Z".to_string(),
+            dispatched_by_user_id: user_id.clone(),
+            notes: None,
+            lines: vec![model::NewStockTransferLine {
+                inventory_item_id: item_id.clone(),
+                base_quantity_micro: 500_000,
+                quantity_dimension: "MASS".to_string(),
+                unit_cost_paise: None,
+            }],
+        },
+        &model::ProcurementOutboxMeta {
+            outbox_id: new_id(),
+            occurred_at: "2026-08-23T13:00:00Z".to_string(),
+        },
+    )
+    .expect("record_stock_transfer_out_with_outbox");
+
     // Read back through the SAME call the pump sends from, so what is compared
     // is what was sent rather than a second opinion about it.
     let edge_entries = repo::list_ledger_entries_after(db.connection(), &seed.outlet_id, 0, 100)
         .expect("listing the edge's ledger entries");
     assert_eq!(
         edge_entries.len(),
-        2,
-        "the fixture is one wastage entry and one count-sourced adjustment"
+        5,
+        "the fixture is one wastage entry, one count-sourced adjustment, and \
+         one entry per procurement provenance group (receipt, return, dispatch)"
     );
+
+    // EVERY provenance column must be POPULATED on the entry that owns it.
+    // Without these four checks the whole-object comparisons below can pass on
+    // null agreeing with null, which is precisely how this test stayed green
+    // through contracts 0.5.9 -- and then again through 0.6.0.
     assert_eq!(
         edge_entries[1].source_stock_count_id.as_deref(),
         Some(count_id.as_str()),
         "the edge must stamp the adjustment with the count that produced it (contracts 0.5.5): if this is null, the comparison below is back to proving nothing about this field"
+    );
+    assert_eq!(
+        edge_entries[2].source_grn_id.as_deref(),
+        Some(grn_id.as_str()),
+        "the PURCHASE entry must name the receipt that produced it (contracts 0.6.0)"
+    );
+    assert_eq!(
+        edge_entries[3].source_purchase_return_id.as_deref(),
+        Some(return_id.as_str()),
+        "the RETURN_TO_VENDOR entry must name the return that produced it (contracts 0.6.0)"
+    );
+    assert_eq!(
+        edge_entries[4].source_stock_transfer_out_id.as_deref(),
+        Some(transfer_id.as_str()),
+        "the TRANSFER_OUT entry must name the dispatch that produced it (contracts 0.6.0)"
+    );
+    assert!(
+        edge_entries[2].unit_cost_paise.is_some(),
+        "M5 puts a cost on the ledger at receipt: an uncosted PURCHASE entry \
+         would make the comparison below prove nothing about unit_cost_paise either"
     );
 
     // --- replay over the real seam ---------------------------------------
@@ -734,6 +934,27 @@ fn a_ledger_entry_created_at_the_edge_replays_to_the_real_cloud_and_reads_back_i
         base_url: cloud.base_url.clone(),
         device_token,
     });
+
+    // The procurement DOCUMENTS first. Postgres puts a real FK from each
+    // provenance column to the document it names, so a ledger entry whose
+    // `source_grn_id` points at a receipt the cloud has not seen cannot
+    // insert. This is the outlet's own replay order, not an ordering invented
+    // for the test.
+    let procurement = worker
+        .pump_procurement(&mut db, 100)
+        .expect("pumping procurement documents");
+    assert!(
+        procurement.stopped.is_none()
+            && procurement.blocked.is_empty()
+            && procurement.over_budget.is_empty()
+            && procurement.refused_locally.is_empty(),
+        "the procurement documents must all land before the ledger references them: \
+         stopped={:?} blocked={:?} over_budget={:?} refused_locally={:?}",
+        procurement.stopped,
+        procurement.blocked,
+        procurement.over_budget,
+        procurement.refused_locally,
+    );
 
     let report = worker
         .pump_ranged_streams(&mut db, 100)
@@ -747,7 +968,7 @@ fn a_ledger_entry_created_at_the_edge_replays_to_the_real_cloud_and_reads_back_i
     );
     assert_eq!(
         report.ledger_acked,
-        vec![1, 2],
+        vec![1, 2, 3, 4, 5],
         "the cloud must acknowledge exactly the marks the edge minted"
     );
 
