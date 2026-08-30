@@ -499,7 +499,20 @@ jobs:
           workspaces: tests/integration/kds-lan-bridge -> target
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          # 22, NOT the 20 every other job pins. This suite drives a GENUINE
+          # WebSocket and uses Node's own global one rather than taking a `ws`
+          # dependency -- and that global is only unflagged from Node 22. On 20
+          # every test in the file dies with `ReferenceError: WebSocket is not
+          # defined`, which is what this job did from 2026-08-27 while the same
+          # suite passed by hand on a developer box running Node 24.
+          #
+          # THAT IS THE SECOND TIME M2 ACCEPTANCE ITEM 5 WAS RECORDED AS MET
+          # WHILE THIS JOB PROVED NO SOCKET SESSION AT ALL (docs/RESUME.md §5).
+          # The first was a bridge that silently stopped compiling. Same
+          # criterion, same job, different runtime: the test stated its own
+          # requirement in a comment and nothing enforced it, so "it passes
+          # locally" and "the build is green" drifted apart unnoticed.
+          node-version: "22"
       - uses: pnpm/action-setup@v4
         with:
           version: 10

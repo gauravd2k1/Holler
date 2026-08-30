@@ -31,10 +31,36 @@ function configFor(bridge: BridgeHandle, overrides: Partial<LanConfig> = {}): La
   };
 }
 
+/**
+ * FAILS THE SUITE WITH THE REASON, rather than letting every test die on a
+ * bare `ReferenceError: WebSocket is not defined`.
+ *
+ * This suite deliberately takes no `ws` dependency: the point of T10 is a
+ * GENUINE socket, and a library socket is one more thing standing between the
+ * test and the claim. The cost is a hard floor of Node 22, where the global is
+ * first unflagged — and a floor stated only in a comment is not a floor. CI
+ * pinned Node 20 and this file's four tests failed for eleven days while the
+ * same suite passed by hand on Node 24, with M2 acceptance item 5 recorded as
+ * met throughout. An environment requirement that is not checked is an
+ * environment requirement that is not met.
+ */
+function requireGlobalWebSocket(): void {
+  if (typeof globalThis.WebSocket === "undefined") {
+    throw new Error(
+      `This suite needs Node's global WebSocket, which is unflagged from Node 22. ` +
+        `Running Node ${process.version}. Upgrade the runtime — do NOT add a \`ws\` ` +
+        `dependency to get past this: a library socket would no longer prove the ` +
+        `one thing T10 exists to prove, that a real KDS speaks to a real edge over ` +
+        `a real socket.`,
+    );
+  }
+}
+
 /** Node's own global `WebSocket` (available without any dependency since
  * Node 22) — a genuine socket, not a fake satisfying `LanClient`'s
  * interface. */
 function createRealSocket(url: string) {
+  requireGlobalWebSocket();
   return new WebSocket(url) as unknown as import("../../../apps/kds/src/lib/lanClient").WebSocketLike;
 }
 
@@ -196,6 +222,7 @@ describe("KDS <-> edge/device LAN interop (T10)", () => {
     // Client-eye view of the same rejection: a real WebSocket against that
     // URL must never open, and must not deliver a false "connected" status
     // to the store.
+    requireGlobalWebSocket();
     await new Promise<void>((resolve, reject) => {
       const socket = new WebSocket(brokenUrl);
       const timer = setTimeout(() => {
