@@ -161,6 +161,13 @@ jobs:
       # stock_ledger_entry provenance columns added at 0.6.0.
       - name: openapi matches the go mirrors
         run: node scripts/check-openapi-go-drift.mjs
+      # The Go guard in backend/cmd/api/syncconfig_guard_test.go proves the
+      # cloud SENDS a config column. It cannot prove an outlet STORES it, and
+      # at 0.6.0 four procurement families passed that guard, shipped in every
+      # bundle, and reached no outlet at all -- serde discards an unknown field
+      # in silence. This is the other half of the wire.
+      - name: the edge applies every config family the cloud sends
+        run: node scripts/check-config-apply-drift.mjs
 
   # The Rust edge crates carry the majority of Milestone 1's test coverage —
   # including the offline order-creation test that IS the milestone acceptance

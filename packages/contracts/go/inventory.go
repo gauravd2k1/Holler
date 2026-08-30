@@ -219,6 +219,14 @@ const (
 	StockEntryOriginManual          StockEntryOrigin = "MANUAL"
 	StockEntryOriginCountAdjustment StockEntryOrigin = "COUNT_ADJUSTMENT"
 	StockEntryOriginWastage         StockEntryOrigin = "WASTAGE"
+
+	// Milestone 5 (0.6.2). One per provenance column already on the row, so
+	// origin and provenance cannot disagree about which document produced the
+	// movement. Landed with the milestone because the interim wrote 'MANUAL'
+	// on every receipt -- a false value in an append-only table.
+	StockEntryOriginGoodsReceipt   StockEntryOrigin = "GOODS_RECEIPT"
+	StockEntryOriginPurchaseReturn StockEntryOrigin = "PURCHASE_RETURN"
+	StockEntryOriginStockTransfer  StockEntryOrigin = "STOCK_TRANSFER"
 )
 
 // StockLedgerEntry is EDGE-AUTHORITATIVE and append-only, enforced by trigger

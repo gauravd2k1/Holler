@@ -215,3 +215,45 @@ Two smaller defects the broader matcher exposed, both pre-existing and both mask
 - **Deliberate negative fixtures needed declaring.** `NotAFrozenEvent` and `NotAFrozenOrderEvent` are edge/sync tests asserting an unknown type is *refused*, so they must never be frozen. They are now a declared list with a reason each — the `SINGLE_STORE_MIGRATIONS` / `NOT_YET_EMITTED` discipline — rather than filtered by a pattern, so a real miss cannot hide behind "it looked like a test".
 
 **The fix was falsified, not merely observed to pass:** removing `GoodsReceived` from the frozen list makes the check fire on `edge/database/src/repo.rs:6301`, where before it passed silently.
+
+---
+
+## Addendum — 0.6.2: config the cloud sent and no outlet stored, and an `origin` that was lying (2026-08-30)
+
+### 1. Four config families crossed the wire into nothing
+
+`GET /sync/config` has carried `suppliers`, `supplier_items`, `purchase_orders` and `purchase_order_lines` since 0.6.0. The OpenAPI schema named none of them and `edge/sync/src/config.rs` had no fields for them, so **serde discarded all four in silence** and every outlet's procurement tables were empty.
+
+The cost was not cosmetic. The supplier and PO pickers read empty tables; with no `supplier_item` there is no pack size to convert a receipt against, so a delivery at a correctly-configured outlet degraded to a `NO_SUPPLIER_ITEM` gap. **M5 acceptance criterion 1 could not pass.**
+
+**This is contracts 0.5.9 inverted.** Then the *edge* wrote `source_stock_count_id` and the *cloud* had never heard of it, so `json.Unmarshal` dropped it and the Postgres column was NULL for every row. Now the *cloud* writes four families the *edge* has never heard of, and serde drops them. Same silence, same lenient decoder, opposite direction. The schemas, both stores, the Go structs and the Zod types were all correct throughout; only the two ends of one wire disagreed.
+
+### 2. The existing guard was not missing, and was not blind to new tables
+
+`TestSyncConfigGuard_EveryCloudAuthoritativeColumnIsWiredOrExempted` was extended at 0.6.0 with all four procurement tables, the four arrays were added to `syncConfigResponse`, and **it passed — correctly, on its own terms.**
+
+It reflects over the Go response struct and asks *"is this column somewhere in the cloud's wire shape?"* It never asks whether anything at the far end reads it. **Its scope defined "delivered" as "the cloud emits it" rather than "the outlet stores it", and the defect lived one hop past the edge of that definition.**
+
+That is worth stating precisely, because the tempting diagnoses — *the guard was never built*, or *the guard cannot see new tables* — are both false here, and either would have led to rebuilding something that already worked.
+
+**The fix is the other half of the wire:** `scripts/check-config-apply-drift.mjs` compares the cloud's `syncConfigResponse` json tags against the edge's `ConfigBundle` fields and fails on any family the cloud sends that the edge has no field for. It is wired into CI in the same change, because a check nobody runs is indistinguishable from a check nobody wrote — this repo's fourth instance of that.
+
+**Its exemption list is empty, and that is deliberate.** The first draft declared `roles`, `day_start_time` and `fiscal_profile` as not-applied, inferred from reading the cloud side alone. The stale-exemption half of the guard caught all three immediately — they *are* fields on the edge struct. An exemption list written on the day a guard is born is a lie about coverage that nobody audits later; this one starts empty and any entry must earn itself.
+
+**Falsified:** renaming `ConfigBundle::suppliers` makes the check exit 1 naming exactly `"suppliers"` and no other family.
+
+### 3. `origin` was recording a false value in a table that only accepts inserts
+
+Three members added: `GOODS_RECEIPT`, `PURCHASE_RETURN`, `STOCK_TRANSFER` — **one per provenance column already on the row** (`source_grn_id`, `source_purchase_return_id`, `source_stock_transfer_out_id`), so `origin` and provenance cannot disagree about which document produced a movement.
+
+**Landed with the milestone rather than filed to M6.** The stopping rule is not *"does this change touch existing rows"* but ***"does the INTERIM write rows that would need rewriting."*** It does — at every receipt, return and dispatch, on every outlet, for as long as the deferral lasts, into a table correctable only by appending a row that contradicts the first. That is the argument that landed `UNRESOLVABLE_REFERENCE` at once (0.5.3), unchanged.
+
+`MANUAL` also lied to the only reader that exists: a variance report grouping by `origin` could not separate a delivery from a hand adjustment — the exact distinction the column was introduced to preserve.
+
+**Two CHECKs move, not one.** The obvious one is the enum. The second is the provenance CHECK, whose `'MANUAL','COUNT_ADJUSTMENT','WASTAGE'` branch would otherwise reject every new member at insert time with a message about `recipe_id` — a migration that applies cleanly and then fails on the first receipt. Both the edge agent and this session found that independently before writing any SQL.
+
+**SQLite needed a full table rebuild; PostgreSQL needed a constraint swap.** 0021 chose triggers over a rebuild and said why — but that reasoning does not reach here, and the difference is *direction*: a trigger can only ADD a restriction, and this change must LOOSEN one. No trigger can widen a CHECK already compiled into a table.
+
+**The rebuild carries three triggers and three indexes back by hand.** `DROP TABLE` takes them with it in silence, and a rebuild that forgets them leaves the ledger mutable and unbounded **while every test still passes** — nothing in the suite tries to UPDATE a ledger row expecting failure. Columns are named explicitly in both the INSERT and the SELECT, never `SELECT *`: every provenance column is TEXT, so an order-dependent copy is one ALTER away from silently transposing two of them.
+
+**The PostgreSQL constraints are located, not guessed.** Both CHECKs in 0016 are inline and unnamed, so their identifiers are whatever PostgreSQL auto-generated. `DROP CONSTRAINT IF EXISTS` on a guessed name would swallow a miss in silence and leave the old CHECK in force. The migration finds them by definition text, asserts it dropped **exactly two**, and re-adds them with explicit names so no future migration has to do this again.

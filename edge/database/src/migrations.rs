@@ -150,6 +150,19 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0028_grn_sequence.sql",
         include_str!("../../../packages/contracts/sqlite/0028_grn_sequence.sql"),
     ),
+    // 0029 (contracts 0.6.2) — origin learns GOODS_RECEIPT / PURCHASE_RETURN /
+    // STOCK_TRANSFER. A FULL TABLE REBUILD, because the change LOOSENS a CHECK
+    // and no trigger can widen one that is already compiled into the table
+    // (0021 chose triggers for the opposite case and said why).
+    //
+    // The rebuild carries three triggers and three indexes back by hand. DROP
+    // TABLE takes them with it in silence, and a rebuild that forgets them
+    // leaves the ledger mutable and unbounded while every test still passes --
+    // nothing in the suite tries to UPDATE a ledger row expecting failure.
+    (
+        "0029_ledger_origin_procurement.sql",
+        include_str!("../../../packages/contracts/sqlite/0029_ledger_origin_procurement.sql"),
+    ),
 ];
 
 /// Applies any migrations not yet reflected in `PRAGMA user_version`. Safe

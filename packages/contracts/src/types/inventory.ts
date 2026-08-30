@@ -278,6 +278,19 @@ export const StockEntryOriginSchema = z.enum([
   "MANUAL",
   "COUNT_ADJUSTMENT",
   "WASTAGE",
+  // Milestone 5 (0.6.2). One member per provenance column already on the row --
+  // source_grn_id, source_purchase_return_id, source_stock_transfer_out_id --
+  // so origin and provenance cannot disagree about which document produced the
+  // movement.
+  //
+  // These landed WITH the milestone rather than after it because the interim
+  // was writing origin = 'MANUAL' on every receipt, return and dispatch: a
+  // false value, in an append-only table, correctable only by appending a row
+  // that contradicts it. The rule is not "does the change touch existing rows"
+  // but "does the interim write rows that would need rewriting."
+  "GOODS_RECEIPT",
+  "PURCHASE_RETURN",
+  "STOCK_TRANSFER",
 ]);
 export type StockEntryOrigin = z.infer<typeof StockEntryOriginSchema>;
 
