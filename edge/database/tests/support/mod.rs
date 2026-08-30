@@ -2,6 +2,16 @@
 //! (`tests/invoice_numbering_stress.rs`, `tests/invoice_split_conservation.rs`).
 //! Lives under `tests/support/` (not `tests/support.rs`) so cargo does not
 //! treat it as its own test binary — the `tests/common/mod.rs` convention.
+//!
+//! `#![allow(dead_code)]` for the same reason as `support/procurement.rs`:
+//! this module is compiled into EVERY test binary in the directory and each
+//! one uses only the helpers it needs, so every other binary sees the rest as
+//! dead. Under CI's `-D warnings` that is a compile error in a target that has
+//! nothing wrong with it. The single `#[allow(dead_code)]` further down was
+//! this same problem, patched one item at a time; the module-level attribute
+//! replaces that game of whack-a-mole.
+
+#![allow(dead_code)]
 
 use holler_edge_database::model::*;
 use holler_edge_database::repo;
@@ -245,10 +255,9 @@ pub fn create_order(
 }
 
 // Not every test binary that includes this shared module calls every helper
-// (each `tests/*.rs` file is compiled as its own crate) — `#[allow]` here
-// rather than in each binary, matching the pattern already needed for a
-// module shared across independent integration test crates.
-#[allow(dead_code)]
+// (each `tests/*.rs` file is compiled as its own crate). The module-level
+// `#![allow(dead_code)]` at the top of this file now covers this and every
+// other helper here, so no per-item attribute is needed.
 pub fn header(
     order_id: &str,
     series_code: &str,

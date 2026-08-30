@@ -1,9 +1,19 @@
 //! Procurement fixtures for `tests/goods_receipt.rs`.
 //!
+//! `#![allow(dead_code)]` because cargo compiles a `tests/support/` module
+//! into EVERY test binary in this directory, and each binary uses only the
+//! helpers it needs. Every other binary therefore sees the rest as dead --
+//! 14 warnings, and CI's clippy runs with `-D warnings`, so `edge-style`
+//! failed to compile `invoice_numbering_stress` over helpers that are used,
+//! just not by that target. The allow is scoped to this shared module; it
+//! silences nothing in the code under test.
+//!
 //! **CONFIG ROWS ONLY.** Everything operational a test asserts about — the
 //! receipt, its lines, its gaps, its ledger entries — must be written by the
 //! code under test. A helper that seeded a `goods_receipt_note` would let a
 //! test pass against a write path that never ran.
+
+#![allow(dead_code)]
 
 use rusqlite::{params, Connection};
 

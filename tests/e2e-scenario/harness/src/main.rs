@@ -132,7 +132,22 @@ const KDS_CREDENTIAL_SECRET: &str = "e2e-harness-kds-secret";
 // ---- Harness-minted extra fixture ids (augmented onto the template after
 // devseed runs) — a second station, a multi-station item, and a
 // deliberately no-station item, per the spec's seed requirements. ----
-const STATION_2_ID: &str = "0191b000-0000-7000-8000-000000000031";
+// The second station the multi-station item routes to. THESE ARE DEVSEED'S
+// OWN ROW, not a harness fixture: devseed seeds MAIN_KITCHEN plus TANDOOR,
+// MAIN, CHAT, BAR and DESSERT, so "a second station" stopped being something
+// this harness had to provide when the seed grew.
+//
+// It used to mint its own `0191b000-...-031` with code "BAR", which collided
+// with devseed's BAR on `UNIQUE (station.outlet_id, station.code)` and killed
+// the harness at startup -- the whole `e2e-scenario` job then timed out at
+// 180s waiting on a process that had already died, reporting a timeout rather
+// than the constraint violation that caused it.
+//
+// A harness that augments a seed must follow the seed. `crashpoint.rs` reads
+// its outlet, user and item out of the seeded database for exactly this
+// reason: a hardcoded mirror of someone else's fixture is only correct until
+// they change it, and it fails at a distance when they do.
+const STATION_2_ID: &str = "0191e500-0000-7000-8000-000000000004";
 const STATION_2_CODE: &str = "BAR";
 const ITEM_MULTI_ID: &str = "0191b000-0000-7000-8000-000000000040"; // routes to BOTH stations
 const ITEM_NO_STATION_ID: &str = "0191b000-0000-7000-8000-000000000041"; // routes nowhere, deliberately
@@ -422,19 +437,22 @@ fn build_template(root: &Path) -> PathBuf {
     let db = Db::open(&sealed, &plaintext, key).expect("open template for augmentation");
     let conn = db.connection();
 
-    repo::upsert_station(
-        conn,
-        &model::Station {
-            id: STATION_2_ID.to_string(),
-            outlet_id: devseed_ids::OUTLET_ID.to_string(),
-            code: STATION_2_CODE.to_string(),
-            name: "Bar".to_string(),
-            sort_order: 2,
-            is_active: true,
-            config_version: 1,
-        },
-    )
-    .expect("seed second station");
+    // No second station is seeded here any more -- devseed's BAR row IS the
+    // second station (see STATION_2_ID). Re-upserting it under a different id
+    // is what broke this job.
+    //
+    // Asserted rather than assumed, so that if devseed drops BAR this fails
+    // HERE, naming the reason, instead of surfacing later as an unroutable
+    // menu item or a scenario that quietly exercises one station.
+    // Read through the repo, never raw SQL (ADR-003) -- the same rule that
+    // governs every other augmentation in this function.
+    let second_station = repo::get_station(conn, STATION_2_ID)
+        .expect("querying for devseed's second station");
+    assert!(
+        second_station
+            .is_some_and(|s| s.outlet_id == devseed_ids::OUTLET_ID && s.code == STATION_2_CODE),
+        "devseed must seed the {STATION_2_CODE} station this harness routes the          multi-station item to. If devseed's station set changed, update          STATION_2_ID/STATION_2_CODE to match it -- do not re-add a private          station here, which is the collision that broke e2e-scenario."
+    );
 
     repo::upsert_menu_item(
         conn,
