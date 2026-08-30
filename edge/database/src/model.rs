@@ -2032,3 +2032,105 @@ pub struct PurchaseOrderLineRow {
     pub unit_price_paise: i64,
     pub line_total_paise: i64,
 }
+
+// -------------------------------- Milestone 5: procurement CONFIG rows (T3b) --
+//
+// The four CLOUD_TO_EDGE procurement config families as they are STORED, one
+// struct per table, carrying every column the frozen SQLite schema
+// (`packages/contracts/sqlite/0027_m5_procurement.sql`) declares -- including
+// `config_version`, which the picker-facing read structs above deliberately
+// omit because a screen has no use for it.
+//
+// These exist separately from `Supplier`/`SupplierItem`/`PurchaseOrderSummary`
+// /`PurchaseOrderLineRow` because those are JOIN-ENRICHED READ SHAPES (they
+// carry `inventory_item_name`, `supplier_name`, and nested lines) and a write
+// path must never invent a value for a column it does not own. A struct that
+// is both the read projection and the write row would need a name for a field
+// that is not a column, and the apply path would have to fabricate one.
+//
+// WHY THESE LANDED LATE, AND WHAT IT COST. `GET /sync/config` has carried
+// `suppliers`, `supplier_items`, `purchase_orders` and `purchase_order_lines`
+// since contracts 0.6.0, and `edge/sync`'s `ConfigBundle` had no such fields --
+// so serde discarded all four IN SILENCE and every outlet's procurement tables
+// were empty. The pickers read nothing and a receipt had no `supplier_item`,
+// hence no pack size, hence a `NO_SUPPLIER_ITEM` gap on every delivery. This is
+// contracts 0.5.9 inverted: then the edge wrote a field the cloud had never
+// heard of and `json.Unmarshal` dropped it. Same lenient decoder, same silence,
+// opposite direction. `scripts/check-config-apply-drift.mjs` is the guard.
+
+/// A `supplier` row exactly as the cloud sends it. CLOUD-OWNED (ADR-019,
+/// sec.50.1): nothing at the edge writes this outside the config apply path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SupplierConfig {
+    pub id: String,
+    pub outlet_id: String,
+    pub code: String,
+    pub name: String,
+    pub gstin: Option<String>,
+    pub phone: Option<String>,
+    pub email: Option<String>,
+    pub address: Option<String>,
+    pub payment_terms_days: i64,
+    pub is_active: bool,
+    pub config_version: i64,
+}
+
+/// A `supplier_item` row exactly as the cloud sends it. A CHILD ROW of
+/// `supplier`, so it has NO `config_version` of its own -- the frozen schema
+/// gives it none, and its parent's version gates the family.
+///
+/// `quantity_dimension` is **stored exactly as received and never re-derived
+/// from the referenced `inventory_item.dimension`** (contracts 0.5.2, ADR-019
+/// sec.6). If the apply path recomputed it, the cloud's write-time rejection
+/// would be comparing `x == x`, could never fire, and would look correct in
+/// review -- while the edge's `DIMENSION_MISMATCH` gap would likewise never be
+/// raised on a genuinely mis-authored row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SupplierItemConfig {
+    pub id: String,
+    pub supplier_id: String,
+    pub inventory_item_id: String,
+    pub purchase_unit: String,
+    pub pack_size_micro: i64,
+    pub quantity_dimension: String,
+    pub last_price_paise: Option<i64>,
+    pub is_preferred: bool,
+}
+
+/// A `purchase_order` header exactly as the cloud sends it.
+///
+/// **No receipt state, and there never will be** (ADR-019 sec.4). Receipt
+/// progress is derived from local `grn_line` rows and the cloud's figure for
+/// the same PO legitimately differs; a column here would make the outlet a
+/// second writer of a cloud aggregate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PurchaseOrderConfig {
+    pub id: String,
+    pub outlet_id: String,
+    pub supplier_id: String,
+    pub po_number: String,
+    pub status: String,
+    pub expected_date: Option<String>,
+    pub notes: Option<String>,
+    pub total_paise: i64,
+    pub approved_by_user_id: Option<String>,
+    pub approved_at: Option<String>,
+    pub created_at: String,
+    pub config_version: i64,
+}
+
+/// A `purchase_order_line` row exactly as the cloud sends it. A CHILD ROW, so
+/// no `config_version` of its own. `quantity_dimension` carries the same rule
+/// and the same trap as [`SupplierItemConfig::quantity_dimension`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PurchaseOrderLineConfig {
+    pub id: String,
+    pub purchase_order_id: String,
+    pub inventory_item_id: String,
+    pub line_number: i64,
+    pub purchase_unit: String,
+    pub ordered_quantity_micro: i64,
+    pub quantity_dimension: String,
+    pub unit_price_paise: i64,
+    pub line_total_paise: i64,
+}

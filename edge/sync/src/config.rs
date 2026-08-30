@@ -115,6 +115,42 @@ pub struct ConfigBundle {
     pub invoice_series: Vec<WireInvoiceSeries>,
     #[serde(default)]
     pub discount_definitions: Vec<WireDiscountDefinition>,
+    // ------------------------------------------------------------- M5 (T3b) --
+    // The four procurement config families (contracts 0.6.0, ADR-019).
+    //
+    // THESE FOUR WERE SENT AND DISCARDED IN SILENCE. `backend/cmd/api/
+    // syncconfig.go` has put `suppliers`, `supplier_items`, `purchase_orders`
+    // and `purchase_order_lines` on `GET /sync/config` since 0.6.0; this
+    // struct had no such fields, and serde's default posture for an unknown
+    // field is to drop it without a word. Every outlet's procurement tables
+    // were therefore EMPTY: the supplier and PO pickers read nothing, and with
+    // no `supplier_item` there was no pack size to convert a receipt against,
+    // so a delivery degraded to a `NO_SUPPLIER_ITEM` gap every time.
+    //
+    // This is contracts 0.5.9 INVERTED. Then the edge wrote
+    // `source_stock_count_id` and the cloud had never heard of it, so
+    // `json.Unmarshal` dropped it and the column was NULL for every row. Same
+    // lenient decoder, same silence, opposite direction. The guard that now
+    // holds this class is `scripts/check-config-apply-drift.mjs`, which
+    // compares the cloud's json tags against THIS struct's field names -- the
+    // Go-side guard could only ever prove the cloud EMITS a column, never that
+    // an outlet STORES it.
+    //
+    // `#[serde(default)]` for the same reason every family above has it: an
+    // older cloud that has not deployed procurement yet must still parse.
+    #[serde(default)]
+    pub suppliers: Vec<WireSupplier>,
+    #[serde(default)]
+    pub supplier_items: Vec<WireSupplierItem>,
+    #[serde(default)]
+    pub purchase_orders: Vec<WirePurchaseOrder>,
+    /// Sent as its OWN top-level array, not read out of `purchase_orders[].
+    /// lines`. `WirePurchaseOrder` deliberately has no `lines` field: the
+    /// cloud's `PurchaseOrdersSince` and `PurchaseOrderLinesSince` are
+    /// separate since_version-filtered queries, so a line changed without its
+    /// header would arrive in this array and nowhere else.
+    #[serde(default)]
+    pub purchase_order_lines: Vec<WirePurchaseOrderLine>,
     /// `backend/internal/compliance/service.go::SyncConfigBundle` always
     /// calls `CurrentFiscalProfile` unconditionally — not `*Since` — so this
     /// is the FULL current object every pull, never a delta, and `None`
@@ -380,6 +416,92 @@ pub struct WireModifierIngredientDelta {
     pub inventory_item_id: String,
     pub quantity_micro: i64,
     pub config_version: i64,
+}
+
+/// Mirrors `Supplier` (`packages/contracts/go/procurement.go`, 0.6.0).
+/// Field names are the Go struct's json tags verbatim. `created_at`/
+/// `updated_at`/`schema_version` are on the wire but have no column in
+/// `packages/contracts/sqlite/0027_m5_procurement.sql`, so they are not
+/// modelled here -- serde ignores them, which is correct for a field with
+/// nowhere contracted to go (the `roles` precedent).
+#[derive(Debug, Deserialize)]
+pub struct WireSupplier {
+    pub id: String,
+    pub outlet_id: String,
+    pub code: String,
+    pub name: String,
+    #[serde(default)]
+    pub gstin: Option<String>,
+    #[serde(default)]
+    pub phone: Option<String>,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub address: Option<String>,
+    pub payment_terms_days: i64,
+    pub is_active: bool,
+    pub config_version: i64,
+}
+
+/// Mirrors `SupplierItem` (`packages/contracts/go/procurement.go`). A CHILD
+/// ROW of `supplier` -- no `config_version` on the wire and none in the
+/// schema.
+///
+/// `quantity_dimension` is carried through as the raw stored string and
+/// **never re-derived from the referenced `inventory_item`** (contracts
+/// 0.5.2). The cloud is the side that rejects a mismatch, at write time; if
+/// this apply path recomputed the value, that comparison would become
+/// `x == x` and could never fire.
+#[derive(Debug, Deserialize)]
+pub struct WireSupplierItem {
+    pub id: String,
+    pub supplier_id: String,
+    pub inventory_item_id: String,
+    pub purchase_unit: String,
+    pub pack_size_micro: i64,
+    pub quantity_dimension: String,
+    #[serde(default)]
+    pub last_price_paise: Option<i64>,
+    pub is_preferred: bool,
+}
+
+/// Mirrors `PurchaseOrder` (`packages/contracts/go/procurement.go`), minus
+/// `lines` -- see `ConfigBundle::purchase_order_lines` for why the lines are
+/// taken from the top-level array instead.
+#[derive(Debug, Deserialize)]
+pub struct WirePurchaseOrder {
+    pub id: String,
+    pub outlet_id: String,
+    pub supplier_id: String,
+    pub po_number: String,
+    pub status: String,
+    #[serde(default)]
+    pub expected_date: Option<String>,
+    #[serde(default)]
+    pub notes: Option<String>,
+    pub total_paise: i64,
+    #[serde(default)]
+    pub approved_by_user_id: Option<String>,
+    #[serde(default)]
+    pub approved_at: Option<String>,
+    pub created_at: String,
+    pub config_version: i64,
+}
+
+/// Mirrors `PurchaseOrderLine` (`packages/contracts/go/procurement.go`). A
+/// CHILD ROW: no `config_version`. `quantity_dimension` carries the same rule
+/// and the same trap as [`WireSupplierItem::quantity_dimension`].
+#[derive(Debug, Deserialize)]
+pub struct WirePurchaseOrderLine {
+    pub id: String,
+    pub purchase_order_id: String,
+    pub inventory_item_id: String,
+    pub line_number: i64,
+    pub purchase_unit: String,
+    pub ordered_quantity_micro: i64,
+    pub quantity_dimension: String,
+    pub unit_price_paise: i64,
+    pub line_total_paise: i64,
 }
 
 /// Mirrors `EdgeDeviceCredential` (openapi.yaml / packages/contracts 0.4.3).
@@ -838,6 +960,90 @@ pub fn apply_bundle(
                     inventory_item_id: d.inventory_item_id.clone(),
                     quantity_micro: d.quantity_micro,
                     config_version: d.config_version,
+                },
+            )?;
+        }
+        // M5 (ADR-019): the four procurement config families, in FK order --
+        // supplier (needs only outlet) -> supplier_item (supplier_id, and
+        // inventory_item_id into the inventory_item rows applied just above)
+        // -> purchase_order (supplier_id; approved_by_user_id -> app_user,
+        // applied first of all) -> purchase_order_line (purchase_order_id,
+        // inventory_item_id).
+        //
+        // An empty array is a legitimate value throughout, never an error: a
+        // brand-new outlet has no suppliers, and an outlet that receives with
+        // no supplier_item records a gap and ACCEPTS THE RECEIPT (ADR-019 §1)
+        // rather than having sync refuse anything.
+        for s in &bundle.suppliers {
+            repo::upsert_supplier(
+                conn,
+                &model::SupplierConfig {
+                    id: s.id.clone(),
+                    outlet_id: s.outlet_id.clone(),
+                    code: s.code.clone(),
+                    name: s.name.clone(),
+                    gstin: s.gstin.clone(),
+                    phone: s.phone.clone(),
+                    email: s.email.clone(),
+                    address: s.address.clone(),
+                    payment_terms_days: s.payment_terms_days,
+                    is_active: s.is_active,
+                    config_version: s.config_version,
+                },
+            )?;
+        }
+        // `quantity_dimension` is copied STRAIGHT ACROSS, never looked up from
+        // the referenced inventory_item. See `WireSupplierItem`'s doc comment:
+        // deriving it here would make the cloud's mismatch rejection `x == x`
+        // and would silently repair exactly the mis-authored rows the
+        // DIMENSION_MISMATCH gap exists to surface.
+        for si in &bundle.supplier_items {
+            repo::upsert_supplier_item(
+                conn,
+                &model::SupplierItemConfig {
+                    id: si.id.clone(),
+                    supplier_id: si.supplier_id.clone(),
+                    inventory_item_id: si.inventory_item_id.clone(),
+                    purchase_unit: si.purchase_unit.clone(),
+                    pack_size_micro: si.pack_size_micro,
+                    quantity_dimension: si.quantity_dimension.clone(),
+                    last_price_paise: si.last_price_paise,
+                    is_preferred: si.is_preferred,
+                },
+            )?;
+        }
+        for po in &bundle.purchase_orders {
+            repo::upsert_purchase_order(
+                conn,
+                &model::PurchaseOrderConfig {
+                    id: po.id.clone(),
+                    outlet_id: po.outlet_id.clone(),
+                    supplier_id: po.supplier_id.clone(),
+                    po_number: po.po_number.clone(),
+                    status: po.status.clone(),
+                    expected_date: po.expected_date.clone(),
+                    notes: po.notes.clone(),
+                    total_paise: po.total_paise,
+                    approved_by_user_id: po.approved_by_user_id.clone(),
+                    approved_at: po.approved_at.clone(),
+                    created_at: po.created_at.clone(),
+                    config_version: po.config_version,
+                },
+            )?;
+        }
+        for l in &bundle.purchase_order_lines {
+            repo::upsert_purchase_order_line(
+                conn,
+                &model::PurchaseOrderLineConfig {
+                    id: l.id.clone(),
+                    purchase_order_id: l.purchase_order_id.clone(),
+                    inventory_item_id: l.inventory_item_id.clone(),
+                    line_number: l.line_number,
+                    purchase_unit: l.purchase_unit.clone(),
+                    ordered_quantity_micro: l.ordered_quantity_micro,
+                    quantity_dimension: l.quantity_dimension.clone(),
+                    unit_price_paise: l.unit_price_paise,
+                    line_total_paise: l.line_total_paise,
                 },
             )?;
         }
@@ -1896,6 +2102,242 @@ mod tests {
             station_printers.len(),
             1,
             "re-applying must not duplicate the compound-keyed join row"
+        );
+    }
+
+    // ----------------------------------------------------------- M5 (T3b) --
+    //
+    // THE FOUR PROCUREMENT CONFIG FAMILIES. Before this, `GET /sync/config`
+    // carried all four and this module had no fields for them, so serde
+    // dropped them without a word and every outlet's procurement tables were
+    // empty. These tests are the end-of-wire half of the proof that
+    // `scripts/check-config-apply-drift.mjs` makes structurally.
+
+    /// Seeds one `inventory_item` a supplier_item / PO line can reference,
+    /// with the dimension the caller names, and PROVES THE SEED LANDED before
+    /// anything asserts about rows that point at it -- a rejected fixture
+    /// insert leaves zero rows and makes every later assertion trivially true.
+    fn seed_inventory_item(db: &mut Db, outlet_id: &str, id: &str, dimension: &str) {
+        repo::upsert_inventory_item(
+            db.connection(),
+            &model::InventoryItem {
+                id: id.to_string(),
+                outlet_id: outlet_id.to_string(),
+                sku: format!("SKU-{id}"),
+                name: format!("Item {id}"),
+                category: None,
+                dimension: dimension.to_string(),
+                reorder_level_micro: None,
+                par_level_micro: None,
+                storage_location: None,
+                is_active: true,
+                yield_factor_ppm: 1_000_000,
+                config_version: 1,
+            },
+        )
+        .expect("seed inventory item");
+        let seeded = repo::get_inventory_item(db.connection(), id)
+            .expect("read back seeded inventory item")
+            .expect("the fixture inventory_item must actually exist");
+        assert_eq!(seeded.dimension, dimension);
+    }
+
+    fn wire_supplier(config_version: i64) -> WireSupplier {
+        WireSupplier {
+            id: "sup-1".to_string(),
+            outlet_id: "outlet-1".to_string(),
+            code: "VEG-01".to_string(),
+            name: "Green Grocers".to_string(),
+            gstin: Some("27AAAAA0000A1Z5".to_string()),
+            phone: Some("9000000000".to_string()),
+            email: None,
+            address: Some("Pune".to_string()),
+            payment_terms_days: 15,
+            is_active: true,
+            config_version,
+        }
+    }
+
+    /// The whole point of the fix: all four families sent on `/sync/config`
+    /// must land in local SQLite. Falsifiable by deleting any one of the four
+    /// apply loops in `apply_bundle`, or by renaming the matching
+    /// `ConfigBundle` field -- which is what the real defect was: serde then
+    /// discards the array in silence and the matching assertion below goes
+    /// red.
+    #[test]
+    fn all_four_procurement_config_families_land_in_local_tables() {
+        let mut db = Db::open_in_memory_for_tests().expect("open db");
+        seed_outlet(&mut db, "outlet-1");
+        seed_inventory_item(&mut db, "outlet-1", "inv-1", "MASS");
+
+        let mut bundle = empty_bundle(2);
+        bundle.suppliers = vec![wire_supplier(2)];
+        bundle.supplier_items = vec![WireSupplierItem {
+            id: "supitem-1".to_string(),
+            supplier_id: "sup-1".to_string(),
+            inventory_item_id: "inv-1".to_string(),
+            purchase_unit: "SACK".to_string(),
+            pack_size_micro: 50_000_000_000,
+            quantity_dimension: "MASS".to_string(),
+            last_price_paise: Some(250_000),
+            is_preferred: true,
+        }];
+        bundle.purchase_orders = vec![WirePurchaseOrder {
+            id: "po-1".to_string(),
+            outlet_id: "outlet-1".to_string(),
+            supplier_id: "sup-1".to_string(),
+            po_number: "PO-0001".to_string(),
+            status: "APPROVED".to_string(),
+            expected_date: Some("2026-09-01".to_string()),
+            notes: Some("morning delivery".to_string()),
+            total_paise: 500_000,
+            // `u1` is the user `empty_bundle` puts in the bundle; it applies
+            // earlier in the same transaction, which is what satisfies
+            // purchase_order.approved_by_user_id -> app_user(id).
+            approved_by_user_id: Some("u1".to_string()),
+            approved_at: Some("2026-08-29T10:00:00Z".to_string()),
+            created_at: "2026-08-29T09:00:00Z".to_string(),
+            config_version: 2,
+        }];
+        bundle.purchase_order_lines = vec![WirePurchaseOrderLine {
+            id: "poline-1".to_string(),
+            purchase_order_id: "po-1".to_string(),
+            inventory_item_id: "inv-1".to_string(),
+            line_number: 1,
+            purchase_unit: "SACK".to_string(),
+            ordered_quantity_micro: 2_000_000,
+            quantity_dimension: "MASS".to_string(),
+            unit_price_paise: 250_000,
+            line_total_paise: 500_000,
+        }];
+
+        let applied = apply_bundle(&mut db, "outlet-1", 0, bundle).expect("apply must succeed");
+        assert!(applied);
+
+        let suppliers = db.list_suppliers("outlet-1").expect("list suppliers");
+        assert_eq!(
+            suppliers.len(),
+            1,
+            "the supplier the cloud sent must be stored"
+        );
+        assert_eq!(suppliers[0].code, "VEG-01");
+        assert_eq!(suppliers[0].payment_terms_days, 15);
+        assert_eq!(suppliers[0].gstin.as_deref(), Some("27AAAAA0000A1Z5"));
+
+        let items = db
+            .list_supplier_items("sup-1", Some("inv-1"))
+            .expect("list supplier items");
+        assert_eq!(
+            items.len(),
+            1,
+            "no supplier_item means no pack size, hence a NO_SUPPLIER_ITEM gap on every delivery"
+        );
+        assert_eq!(items[0].purchase_unit, "SACK");
+        assert_eq!(items[0].pack_size_micro, 50_000_000_000);
+        assert_eq!(items[0].last_price_paise, Some(250_000));
+        assert!(items[0].is_preferred);
+
+        let orders = db
+            .list_open_purchase_orders("outlet-1")
+            .expect("list purchase orders");
+        assert_eq!(
+            orders.len(),
+            1,
+            "the purchase order the cloud sent must be stored"
+        );
+        assert_eq!(orders[0].po_number, "PO-0001");
+        assert_eq!(orders[0].total_paise, 500_000);
+        assert_eq!(
+            orders[0].lines.len(),
+            1,
+            "the PO line must land too - it arrives as its own top-level array"
+        );
+        assert_eq!(orders[0].lines[0].ordered_quantity_micro, 2_000_000);
+        assert_eq!(orders[0].lines[0].unit_price_paise, 250_000);
+    }
+
+    /// Contracts 0.5.2 / ADR-019 §6: `quantity_dimension` is THE UNIT THE
+    /// AUTHOR CHOSE and is stored exactly as received -- never re-derived from
+    /// the referenced `inventory_item.dimension`. Here the item is MASS and
+    /// both the supplier_item and the PO line say COUNT; both must read back
+    /// COUNT.
+    ///
+    /// Falsifiable by making either apply loop look the dimension up from the
+    /// inventory_item: both assertions below go red. If such a derivation ever
+    /// shipped, the cloud's write-time mismatch rejection becomes `x == x`,
+    /// can never fire, and looks correct in review - which is exactly why this
+    /// asserts a DISAGREEING pair rather than a matching one.
+    #[test]
+    fn procurement_quantity_dimension_is_stored_as_received_not_derived_from_the_item() {
+        let mut db = Db::open_in_memory_for_tests().expect("open db");
+        seed_outlet(&mut db, "outlet-1");
+        seed_inventory_item(&mut db, "outlet-1", "inv-mass", "MASS");
+
+        let mut bundle = empty_bundle(2);
+        bundle.suppliers = vec![wire_supplier(2)];
+        bundle.supplier_items = vec![WireSupplierItem {
+            id: "supitem-count".to_string(),
+            supplier_id: "sup-1".to_string(),
+            inventory_item_id: "inv-mass".to_string(),
+            purchase_unit: "CRATE".to_string(),
+            pack_size_micro: 12_000_000,
+            quantity_dimension: "COUNT".to_string(),
+            last_price_paise: None,
+            is_preferred: false,
+        }];
+        bundle.purchase_orders = vec![WirePurchaseOrder {
+            id: "po-count".to_string(),
+            outlet_id: "outlet-1".to_string(),
+            supplier_id: "sup-1".to_string(),
+            po_number: "PO-0002".to_string(),
+            status: "SENT".to_string(),
+            expected_date: None,
+            notes: None,
+            total_paise: 0,
+            approved_by_user_id: Some("u1".to_string()),
+            approved_at: Some("2026-08-29T10:00:00Z".to_string()),
+            created_at: "2026-08-29T09:00:00Z".to_string(),
+            config_version: 2,
+        }];
+        bundle.purchase_order_lines = vec![WirePurchaseOrderLine {
+            id: "poline-count".to_string(),
+            purchase_order_id: "po-count".to_string(),
+            inventory_item_id: "inv-mass".to_string(),
+            line_number: 1,
+            purchase_unit: "CRATE".to_string(),
+            ordered_quantity_micro: 3_000_000,
+            quantity_dimension: "COUNT".to_string(),
+            unit_price_paise: 0,
+            line_total_paise: 0,
+        }];
+
+        apply_bundle(&mut db, "outlet-1", 0, bundle).expect("apply must succeed");
+
+        let items = db
+            .list_supplier_items("sup-1", Some("inv-mass"))
+            .expect("list supplier items");
+        assert_eq!(
+            items.len(),
+            1,
+            "fixture supplier_item must exist before anything is asserted about it"
+        );
+        assert_eq!(
+            items[0].quantity_dimension, "COUNT",
+            "supplier_item.quantity_dimension must survive the apply as the author wrote it, \
+             not be re-derived from the MASS inventory_item it points at"
+        );
+
+        let lines = db
+            .list_purchase_order_lines("po-count")
+            .expect("list purchase order lines");
+        assert_eq!(
+            lines.len(),
+            1,
+            "fixture purchase_order_line must exist before anything is asserted about it"
+        );
+        assert_eq!(
+            lines[0].quantity_dimension, "COUNT",
+            "purchase_order_line.quantity_dimension must survive the apply as the author wrote it"
         );
     }
 }

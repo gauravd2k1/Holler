@@ -6642,3 +6642,152 @@ pub(crate) fn insert_stock_dispatched_outbox(
         },
     )
 }
+
+// ------------------------------- procurement config (cloud->edge, ADR-019) --
+//
+// `supplier`, `supplier_item`, `purchase_order` and `purchase_order_line` are
+// CLOUD-OWNED CONFIG. These four upserts are the ONLY non-test writers of
+// those tables in this crate, called from `edge/sync`'s `apply_bundle` inside
+// the one transaction that applies a whole config bundle.
+//
+// The two parents carry `config_version` and use the same
+// `WHERE excluded.config_version >= <table>.config_version` stale-replay guard
+// every other config family here uses. The two child rows have NO
+// `config_version` column in the frozen schema (they are child rows, not
+// aggregates -- the `menu_item_variant`/`station_printer` precedent), so they
+// upsert unguarded: their parent's version gates the family.
+
+/// Upserts a `supplier` row from the config bundle.
+pub fn upsert_supplier(conn: &Connection, s: &SupplierConfig) -> DbResult<()> {
+    conn.execute(
+        "INSERT INTO supplier
+            (id, outlet_id, code, name, gstin, phone, email, address,
+             payment_terms_days, is_active, config_version)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+         ON CONFLICT(id) DO UPDATE SET
+            outlet_id = excluded.outlet_id, code = excluded.code,
+            name = excluded.name, gstin = excluded.gstin, phone = excluded.phone,
+            email = excluded.email, address = excluded.address,
+            payment_terms_days = excluded.payment_terms_days,
+            is_active = excluded.is_active,
+            config_version = excluded.config_version
+         WHERE excluded.config_version >= supplier.config_version",
+        params![
+            s.id,
+            s.outlet_id,
+            s.code,
+            s.name,
+            s.gstin,
+            s.phone,
+            s.email,
+            s.address,
+            s.payment_terms_days,
+            bool_to_i64(s.is_active),
+            s.config_version,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Upserts a `supplier_item` row from the config bundle.
+///
+/// **`quantity_dimension` is written exactly as received.** It is NOT looked up
+/// from `inventory_item.dimension` here and must never be: the column records
+/// the unit the author chose (contracts 0.5.2), and deriving it from the
+/// referent turns every downstream mismatch check into `x == x`.
+pub fn upsert_supplier_item(conn: &Connection, s: &SupplierItemConfig) -> DbResult<()> {
+    conn.execute(
+        "INSERT INTO supplier_item
+            (id, supplier_id, inventory_item_id, purchase_unit, pack_size_micro,
+             quantity_dimension, last_price_paise, is_preferred)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         ON CONFLICT(id) DO UPDATE SET
+            supplier_id = excluded.supplier_id,
+            inventory_item_id = excluded.inventory_item_id,
+            purchase_unit = excluded.purchase_unit,
+            pack_size_micro = excluded.pack_size_micro,
+            quantity_dimension = excluded.quantity_dimension,
+            last_price_paise = excluded.last_price_paise,
+            is_preferred = excluded.is_preferred",
+        params![
+            s.id,
+            s.supplier_id,
+            s.inventory_item_id,
+            s.purchase_unit,
+            s.pack_size_micro,
+            s.quantity_dimension,
+            s.last_price_paise,
+            bool_to_i64(s.is_preferred),
+        ],
+    )?;
+    Ok(())
+}
+
+/// Upserts a `purchase_order` header from the config bundle. Carries no
+/// receipt state, deliberately (ADR-019 sec.4).
+pub fn upsert_purchase_order(conn: &Connection, p: &PurchaseOrderConfig) -> DbResult<()> {
+    conn.execute(
+        "INSERT INTO purchase_order
+            (id, outlet_id, supplier_id, po_number, status, expected_date, notes,
+             total_paise, approved_by_user_id, approved_at, created_at, config_version)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+         ON CONFLICT(id) DO UPDATE SET
+            outlet_id = excluded.outlet_id, supplier_id = excluded.supplier_id,
+            po_number = excluded.po_number, status = excluded.status,
+            expected_date = excluded.expected_date, notes = excluded.notes,
+            total_paise = excluded.total_paise,
+            approved_by_user_id = excluded.approved_by_user_id,
+            approved_at = excluded.approved_at, created_at = excluded.created_at,
+            config_version = excluded.config_version
+         WHERE excluded.config_version >= purchase_order.config_version",
+        params![
+            p.id,
+            p.outlet_id,
+            p.supplier_id,
+            p.po_number,
+            p.status,
+            p.expected_date,
+            p.notes,
+            p.total_paise,
+            p.approved_by_user_id,
+            p.approved_at,
+            p.created_at,
+            p.config_version,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Upserts a `purchase_order_line` from the config bundle.
+///
+/// **`quantity_dimension` is written exactly as received** -- same rule and
+/// same trap as [`upsert_supplier_item`].
+pub fn upsert_purchase_order_line(conn: &Connection, l: &PurchaseOrderLineConfig) -> DbResult<()> {
+    conn.execute(
+        "INSERT INTO purchase_order_line
+            (id, purchase_order_id, inventory_item_id, line_number, purchase_unit,
+             ordered_quantity_micro, quantity_dimension, unit_price_paise, line_total_paise)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+         ON CONFLICT(id) DO UPDATE SET
+            purchase_order_id = excluded.purchase_order_id,
+            inventory_item_id = excluded.inventory_item_id,
+            line_number = excluded.line_number,
+            purchase_unit = excluded.purchase_unit,
+            ordered_quantity_micro = excluded.ordered_quantity_micro,
+            quantity_dimension = excluded.quantity_dimension,
+            unit_price_paise = excluded.unit_price_paise,
+            line_total_paise = excluded.line_total_paise",
+        params![
+            l.id,
+            l.purchase_order_id,
+            l.inventory_item_id,
+            l.line_number,
+            l.purchase_unit,
+            l.ordered_quantity_micro,
+            l.quantity_dimension,
+            l.unit_price_paise,
+            l.line_total_paise,
+        ],
+    )?;
+    Ok(())
+}
