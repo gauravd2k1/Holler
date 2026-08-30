@@ -1,13 +1,18 @@
-# M5 resume state — 2026-08-28
+# M5 resume state — 2026-08-31
 
-`main` is at **`6ecbb20`**, tagged **`m4-complete`**. Read this file first, then
-`docs/M5_HANDOFF.md`, `docs/adr/ADR-018-m4-inventory-contracts.md`, and the
-2026-08-27 / 2026-08-28 entries in `docs/retro.md`.
+`main` is at **`603b8da`**. Contracts are **FROZEN at v0.6.2**; migrations run
+through **sqlite 0029 / postgres 0030**. Read this file first, then
+`docs/backlog.md` (THE ONLY BACKLOG), then
+`docs/adr/ADR-019-m5-procurement-contracts.md` **including its three addenda**,
+then the 2026-08-29/30 entries in `docs/retro.md`.
 
-**This file replaced an "M4 resume state" header dated 2026-08-24.** M4 content
-that is now closed has been collapsed to a line; everything still open is carried
-forward verbatim. M3 is still not acceptance-complete and its defects are still
-listed.
+**Every M5 track has landed: T1, T2, T3, T4, T5a, T7a, T7b.** What remains is
+the acceptance pass, which is MID-FLIGHT and has produced no verdicts yet.
+
+**`apps/admin` does not exist and is M6.** T5 was written as "add supplier and PO
+screens" and is really "create the web admin application, then add them" — a
+milestone, not a track. Until it lands, **purchase orders are raised through the
+API**, and acceptance criterion 5 says so rather than being quietly re-scoped.
 
 ---
 
@@ -92,27 +97,96 @@ caches every binary that did link.
 
 ## 2. What is open right now
 
-**(a) `gh` is installed but not authenticated.** `gh auth login` has not been run
-on this machine, so `gh run list` still cannot read this repo's CI. The whole
-point of installing it — `docs/retro.md` 2026-08-23, *"Install the CLI that reads
-your own CI"* — is unmet until that one interactive command is run. Until then a
-push is fire-and-forget, which is the root cause of the four pushes that spent a
-day producing no verdict. **Report the CI verdict in the same message as the
-commit; a push whose result nobody read is not a push.**
+**(a) THE M5 ACCEPTANCE PASS IS MID-FLIGHT AND NOTHING IS OBSERVED YET.** Zero of
+seven criteria are acceptance-observed. Rows 3 and 4 are PARTIALLY observed —
+T4 drove the shipping screens in real Chromium against the dev server and saw the
+`4 SACK -> 200000g` echo and eight gap rows with eight distinct titles — but
+**Tauri IPC was stubbed**, so no edge write was exercised. Rows 2, 5, 6, 7 have
+test evidence only, and M5's own rule says **none may be evidenced by a test
+harness**. The planned pass is:
 
-**(b) The `m4-complete` tag is local and has not been pushed.**
+1. Seed supplier + PO in the cloud, sync down, **confirm the receiving pickers
+   POPULATE** rather than falling back to typed UUIDs. Nothing has ever
+   demonstrated this: the config fix is verified only by a static guard
+   comparing json tags to struct fields, and **a guard can be green while
+   nothing has crossed the wire**. Empty pickers is a worse defect than the one
+   that was fixed.
+2. Network off, receive 4 SACK against that PO, confirm `PURCHASE` ledger rows at
+   the converted 200,000 g. **Then criterion 2 in the same receipt** — kill the
+   POS between the GRN write and the ledger post, reopen, confirm they agree.
+3. Receive with no PO: receipt stands, gap recorded, gap screen names the reason.
+4. Reconnect, confirm replay, and **watch whether the offline attempts burned
+   retry budget**. If they did, offline is being classified as permanent, which
+   would mean a disconnected outlet quietly strands its own receipts — the exact
+   failure the per-entry budget exists to prevent.
 
-**(c) The two ADR-013 hardware gates in §4 remain open.** They block **M3**
-acceptance, not M4.
+**(b) CI IS READABLE NOW, AND TWO JOBS ARE STILL RED.** `gh auth` is done
+(account `gauravd2k1`), so `gh run list --repo gauravd2k1/Holler` works. The
+first readable verdict covered 27 commits pushed blind and found **every run red
+since 2026-08-27**:
 
-**(d) Seeded reorder levels are placeholders** that make 28 of 32 items read LOW.
-Criterion 4's surface is correct; the data behind it is not meaningful. Set real
-levels before any rollout or demo, or the banner trains people to ignore it.
+| Job | State | Since |
+|---|---|---|
+| `e2e-scenario` | **RED** | before this session (27 Aug), undiagnosed |
+| `lan-integration` | **RED** | before this session (27 Aug) — see the correction in §5 |
+| `cloud-replay` | fixed `1e6455b` | broke at the 0.6.0 push, red for ten commits |
+| `edge-style` | fixed `1e6455b` | rustfmt diffs in files this session wrote |
+| `pos-dev-server-smoke` | **GREEN** | new, and it works |
 
-**Closed since the last resume:** criterion 1 through the till (`7e88d1c`), stale
-stock queries after a sale, negative stock never surfacing without a configured
-reorder level, the 1000x VOLUME display defect and the test assertion that
-encoded it (`d1881b1`), and the two unlabelled quantity inputs (`afb5aa0`).
+**The two red jobs are pre-existing and were not caused by M5.** Neither has been
+diagnosed. Do not read a green local suite as a green build.
+
+**(c) `cloud-replay` caught contracts 0.5.9 happening A THIRD TIME.**
+`edge/sync/src/ranged.rs`'s ledger replay payload never carried `source_grn_id`,
+`source_purchase_return_id` or `source_stock_transfer_out_id`. The columns have
+been in both stores since 0.6.0 and the edge writes them on every receipt — so
+the edge's own copy was right while **the cloud stored NULL for every replayed
+procurement movement**. 0.5.9's rule is quoted inside ADR-019 ("the
+additive-change consumer list reaches THE WIRE TYPES, not just the schemas") and
+the wire type was still missed, because the list was walked for the schemas and
+the repository and this serialiser is neither. **A rule written down is not a
+rule enforced.**
+
+**THE HOLE THAT REMAINS, and it is 0.5.9's other lesson:** that test's fixture is
+a WASTAGE entry where all three columns are legitimately null, so it now passes
+on three nulls agreeing with three nulls. It proves the fields are on the wire,
+**not that a populated value survives**. A criterion-6 fixture with a real GRN
+row is still needed.
+
+**(d) The two ADR-013 hardware gates in §4 remain open.** They block **M3**
+acceptance.
+
+**(e) Seeded reorder levels are placeholders** that make 28 of 32 items read LOW.
+Set real levels before any rollout or demo.
+
+### Environment facts a fresh session will otherwise rediscover
+
+- **The repo is PUBLIC** (`private: false`). Branch protection is therefore
+  available and **is applied**: `allow_force_pushes: false`,
+  `allow_deletions: false`, `enforce_admins: true`. Actions minutes are
+  unmetered for public repos, so **do not gate the `windows-latest` crash job to
+  save minutes** — there are none to save, and it guards criterion 2.
+- **History-rewriting git is DENIED** in `.claude/settings.json` (`reset`,
+  `rebase`, `commit --amend`, `checkout --`, `restore`, `push --force`, `clean`,
+  `branch -D`, `stash drop/clear`, `gc`). Verified binding: `git reset --soft
+  HEAD` and `curl` were both refused at the permission layer. The list matches on
+  command PREFIX, so a trailing `--force` is not caught locally — the server-side
+  protection is what covers that spelling.
+- **PUSH AFTER EVERY COMMIT.** The reflog is not a backup. On 2026-08-29 a
+  `git reset HEAD~1` run by one agent discarded a PARALLEL agent's commit
+  (~4,100 lines); it survived only because the working tree still held it.
+- **Postgres is not running by default.** Docker Desktop must be started
+  manually, then `docker compose up -d postgres`. Backend tests need
+  `HOLLER_TEST_DATABASE_URL=postgres://holler:holler_dev@127.0.0.1:5432/holler?sslmode=disable`
+  — and **`HOLLER_SKIP_PG_TESTS=1` hides real failures**: it masked four
+  `internal/payments` tests that T7a's `billing.manage` check broke.
+- **`LNK1104: cannot open file ...exe` is McAfee, not your code.** Re-run; two or
+  three retries reach green.
+- **The POS's pnpm store can hold a STALE `@holler/contracts`** — a hard copy
+  whose `index.ts` exports a file the copy does not contain. Symptom: contract
+  symbols "missing" that plainly exist. Fix: `pnpm install --offline` in
+  `apps/pos`, and `vite --force` if the dev server still throws "does not provide
+  an export".
 
 ---
 
@@ -170,7 +244,19 @@ and the named fallback.
 
 ---
 
-## 5. M2 acceptance item 5 — was silently red, now re-evidenced
+## 5. M2 acceptance item 5 — RED AGAIN as of 2026-08-30
+
+> **CORRECTION, 2026-08-31.** Everything below was true when written, and the
+> `lan-integration` job is **failing again** — its "real socket session" step,
+> red since at least 2026-08-27 and not caused by any M5 work. **This section's
+> "re-verified 4/4" claim is therefore STALE, and item 5 should not be read as
+> met until someone looks.**
+>
+> That is the same criterion, failing in the same job, for the second time. The
+> first time it stood recorded as met while its bridge silently failed to
+> compile — which is why this section exists at all. **Undiagnosed. Diagnose it
+> before trusting any M2 claim.**
+
 
 **Item 5 ("one real KDS↔edge socket session") had been failing since ADR-017 and
 nobody knew.** `tests/integration/kds-lan-bridge` stopped compiling when
