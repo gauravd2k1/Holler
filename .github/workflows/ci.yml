@@ -596,7 +596,22 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: tests/e2e-scenario/harness -> target
+          # BOTH manifests, because startup compiles both: the orchestrator
+          # spawns the harness with `cargo run`, and the harness in turn spawns
+          # `cargo run --manifest-path edge/database/Cargo.toml --bin devseed`
+          # to build its template. Caching only the harness leaves devseed
+          # compiling cold on every run.
+          workspaces: |
+            tests/e2e-scenario/harness -> target
+            edge/database -> target
+          # SAVE THE CACHE EVEN WHEN THE JOB FAILS. The default is false, and
+          # combined with the missing build step below it produced a deadlock
+          # that outlived every individual fix: the job failed, so the cache
+          # was never written, so the next run compiled the whole tree cold
+          # inside a 180s timeout, so it failed. This job had no green run
+          # between 2026-08-12 and 2026-08-31 and could not have had one --
+          # every fix landed into a job that would time out regardless.
+          cache-on-failure: true
       - uses: actions/setup-node@v4
         with:
           # 22 for the same reason as lan-integration: this suite imports the
@@ -624,5 +639,24 @@ jobs:
         run: cd apps/kds && pnpm install --frozen-lockfile
       - name: install orchestrator deps
         run: cd tests/e2e-scenario/orchestrator && pnpm install --frozen-lockfile
+      # COMPILE THE HARNESS AS ITS OWN STEP. The orchestrator spawns it with
+      # `cargo run`, which compiles on demand -- inside the 180s the bridge
+      # allows for the harness to print its ready line. So a cold build was
+      # indistinguishable from a hung harness, and reported as the latter:
+      # "harness did not respond within 180000ms", with no cargo output in the
+      # log because the child's stderr is inherited and swallowed by vitest.
+      #
+      # Compilation is not the thing under test and must not be charged to the
+      # thing under test's timeout. With this step the `cargo run` below is a
+      # no-op and the 180s covers only devseed, augmentation and startup.
+      - name: build harness
+        run: cargo build --manifest-path tests/e2e-scenario/harness/Cargo.toml
+      # devseed is a BINARY TARGET of a different package. Building the harness
+      # pulls in edge/database as a library dependency and never builds its
+      # bins, so without this step `cargo run --bin devseed` still compiles
+      # from cold inside the ready-line timeout -- the same defect one level
+      # down, and the one that would have survived the fix above.
+      - name: build devseed (spawned by the harness at startup)
+        run: cargo build --manifest-path edge/database/Cargo.toml --bin devseed
       - name: reduced randomized run (fixed seed, CI)
         run: cd tests/e2e-scenario/orchestrator && pnpm test

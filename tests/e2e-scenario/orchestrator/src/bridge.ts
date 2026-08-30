@@ -111,16 +111,24 @@ export class HarnessBridge {
       if (next) next(trimmed);
       else this.buffer.push(trimmed);
     });
-    return this.readOneLine(180_000).then((readyLine) => {
+    // The ready wait and the per-request wait used the SAME message, so
+    // "harness did not respond within 180000ms" could mean either a harness
+    // that never started or one that hung mid-scenario -- distinguishable only
+    // by noticing which number appeared. Labelled, because that ambiguity cost
+    // real diagnosis time on a job that was red for nineteen days.
+    return this.readOneLine(180_000, "startup (devseed, augmentation, ready line)").then((readyLine) => {
       const ready = JSON.parse(readyLine) as { ready?: boolean };
       if (!ready.ready) throw new Error(`harness did not send a ready line: ${readyLine}`);
     });
   }
 
-  private readOneLine(timeoutMs: number): Promise<string> {
+  private readOneLine(timeoutMs: number, phase = "request/response"): Promise<string> {
     if (this.buffer.length > 0) return Promise.resolve(this.buffer.shift() as string);
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`harness did not respond within ${timeoutMs}ms`)), timeoutMs);
+      const timer = setTimeout(
+        () => reject(new Error(`harness did not respond within ${timeoutMs}ms during ${phase}`)),
+        timeoutMs,
+      );
       this.queue.push((line) => {
         clearTimeout(timer);
         resolve(line);
