@@ -16,9 +16,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use holler_edge_database::model::{
-    NewGoodsReceiptNote, NewGrnLine, Outlet, ProcurementOutboxMeta,
-};
+use holler_edge_database::model::{NewGoodsReceiptNote, NewGrnLine, Outlet, ProcurementOutboxMeta};
 use holler_edge_database::{repo, Db};
 use holler_edge_sync::worker::{StopReason, SyncWorker, WorkerConfig};
 use holler_edge_sync::MAX_PROCUREMENT_REPLAY_ATTEMPTS;
@@ -204,7 +202,11 @@ fn cloud(
                                 .map(str::to_string)
                         })
                         .unwrap_or_default();
-                    let code = if refuse.contains(&record_id) { status } else { 201 };
+                    let code = if refuse.contains(&record_id) {
+                        status
+                    } else {
+                        201
+                    };
                     seen_clone.lock().unwrap().push((path, record_id));
                     let _ = req.respond(Response::from_string("{}").with_status_code(code));
                 }
@@ -330,7 +332,9 @@ fn a_permanently_rejected_receipt_never_strands_the_receipts_behind_it() {
         "abandoned is not published: a fixed cloud can still land it"
     );
 
-    let after = worker.pump_procurement(&mut db, 50).expect("post-budget pump");
+    let after = worker
+        .pump_procurement(&mut db, 50)
+        .expect("post-budget pump");
     handle.join().unwrap();
     assert_eq!(after.over_budget, vec!["outbox-grn-1".to_string()]);
     assert!(after.published.is_empty());

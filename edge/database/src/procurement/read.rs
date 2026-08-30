@@ -277,7 +277,11 @@ mod tests {
         let rows = db
             .list_supplier_items("sup-a", Some("item-1"))
             .expect("list supplier items");
-        assert_eq!(rows.len(), 1, "the supplier_item fixture must have inserted");
+        assert_eq!(
+            rows.len(),
+            1,
+            "the supplier_item fixture must have inserted"
+        );
         assert_eq!(rows[0].quantity_dimension, "COUNT");
         assert_eq!(rows[0].pack_size_micro, 50_000_000_000);
         assert_eq!(rows[0].inventory_item_name, "Onion");

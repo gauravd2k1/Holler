@@ -336,6 +336,25 @@ fn ledger_entry_payload(e: &holler_edge_database::model::StockLedgerEntry) -> se
         "modifier_delta_version": e.modifier_delta_version,
         "unit_cost_paise": e.unit_cost_paise,
         "source_stock_count_id": e.source_stock_count_id,
+        // Contracts 0.6.0 put these three on the row in BOTH stores, the edge
+        // writes them on every receipt, return and dispatch, and this payload
+        // did not carry them -- so the cloud stored NULL for every replayed
+        // procurement movement while the edge's own copy was correct.
+        //
+        // THIS IS CONTRACTS 0.5.9 FOR THE THIRD TIME. That defect was
+        // source_stock_count_id: in both schemas, written by the edge, absent
+        // from the cloud's Go struct, dropped by a lenient decoder. 0.5.9's
+        // rule was written to stop exactly this: "the additive-change consumer
+        // list reaches THE WIRE TYPES, not just the schemas." The rule was
+        // written into ADR-019 and the wire type was still missed, because the
+        // consumer list was walked for the SCHEMAS and the REPOSITORY and this
+        // serialiser is neither.
+        //
+        // The whole-object identity check in edge/sync/tests/cloud_replay.rs is
+        // what caught it, by failing on fields "you did not expect to matter".
+        "source_grn_id": e.source_grn_id,
+        "source_purchase_return_id": e.source_purchase_return_id,
+        "source_stock_transfer_out_id": e.source_stock_transfer_out_id,
         "schema_version": 1,
     })
 }

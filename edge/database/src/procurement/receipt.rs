@@ -486,7 +486,8 @@ pub(crate) fn record_goods_receipt(
                         &po_line,
                     )?;
                     let already = received_base_so_far(tx, &po_line.id)?;
-                    let after = already.saturating_add(resolved_line.conversion.base_quantity_micro);
+                    let after =
+                        already.saturating_add(resolved_line.conversion.base_quantity_micro);
                     if ordered_base > 0 && after > ordered_base {
                         line_gaps.push((
                             GrnGapReason::QuantityExceedsOrdered,

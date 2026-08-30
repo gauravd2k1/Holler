@@ -1817,7 +1817,10 @@ INSERT INTO stock_ledger_entry
         let after: i64 = conn
             .query_row("SELECT COUNT(*) FROM stock_ledger_entry", [], |r| r.get(0))
             .expect("count after");
-        assert_eq!(after, 5, "a rebuild that drops rows is data loss, not a migration");
+        assert_eq!(
+            after, 5,
+            "a rebuild that drops rows is data loss, not a migration"
+        );
 
         let read = |id: &str, column: &str| -> Option<String> {
             conn.query_row(
@@ -1828,7 +1831,10 @@ INSERT INTO stock_ledger_entry
             .expect("read column")
         };
 
-        assert_eq!(read("sle-grn", "source_grn_id").as_deref(), Some("grn-seed"));
+        assert_eq!(
+            read("sle-grn", "source_grn_id").as_deref(),
+            Some("grn-seed")
+        );
         assert_eq!(read("sle-grn", "source_purchase_return_id"), None);
         assert_eq!(read("sle-grn", "source_stock_transfer_out_id"), None);
         assert_eq!(read("sle-grn", "note").as_deref(), Some("note-grn"));
@@ -1847,8 +1853,14 @@ INSERT INTO stock_ledger_entry
         assert_eq!(read("sle-xfer", "source_purchase_return_id"), None);
 
         assert_eq!(read("sle-recipe", "recipe_id").as_deref(), Some("recipe-1"));
-        assert_eq!(read("sle-recipe", "recipe_name").as_deref(), Some("Biryani"));
-        assert_eq!(read("sle-recipe", "source_order_id").as_deref(), Some("order-9"));
+        assert_eq!(
+            read("sle-recipe", "recipe_name").as_deref(),
+            Some("Biryani")
+        );
+        assert_eq!(
+            read("sle-recipe", "source_order_id").as_deref(),
+            Some("order-9")
+        );
         assert_eq!(
             read("sle-recipe", "source_order_item_id").as_deref(),
             Some("order-item-9")
@@ -1865,7 +1877,10 @@ INSERT INTO stock_ledger_entry
                 |r| r.get(0),
             )
             .expect("read entry_seq");
-        assert_eq!(seq, 3, "entry_seq is the cloud's gap-detection mark and must not be re-minted");
+        assert_eq!(
+            seq, 3,
+            "entry_seq is the cloud's gap-detection mark and must not be re-minted"
+        );
     }
 
     /// The whole point of 0029: the three procurement members are now legal,
@@ -1917,14 +1932,16 @@ INSERT INTO stock_ledger_entry
             "UPDATE stock_ledger_entry SET quantity_applied_micro = 1 WHERE id = 'sle-grn'",
             [],
         );
-        let err = update.expect_err("UPDATE on stock_ledger_entry must be refused after the rebuild");
+        let err =
+            update.expect_err("UPDATE on stock_ledger_entry must be refused after the rebuild");
         assert!(
             err.to_string().contains("append-only"),
             "the refusal must come from the append-only trigger, not incidentally: {err}"
         );
 
         let delete = conn.execute("DELETE FROM stock_ledger_entry WHERE id = 'sle-grn'", []);
-        let err = delete.expect_err("DELETE on stock_ledger_entry must be refused after the rebuild");
+        let err =
+            delete.expect_err("DELETE on stock_ledger_entry must be refused after the rebuild");
         assert!(
             err.to_string().contains("append-only"),
             "the refusal must come from the append-only trigger, not incidentally: {err}"

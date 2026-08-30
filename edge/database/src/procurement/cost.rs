@@ -72,10 +72,8 @@ pub(crate) fn weighted_average_cost_paise(
         return Ok(None);
     }
 
-    let rounded = round_ratio_half_away_from_zero(
-        i128::from(total_value),
-        i128::from(total_quantity_micro),
-    );
+    let rounded =
+        round_ratio_half_away_from_zero(i128::from(total_value), i128::from(total_quantity_micro));
     Ok(i64::try_from(rounded).ok())
 }
 

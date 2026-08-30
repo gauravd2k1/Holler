@@ -141,7 +141,15 @@ fn reasons(db: &Db) -> Vec<String> {
 #[test]
 fn a_receipt_posts_purchase_entries_at_the_converted_quantity_and_raises_stock() {
     let mut db = configured();
-    seed_purchase_order_with_line(db.connection(), OUTLET, SUPPLIER, USER, RICE, "SACK", micro(10));
+    seed_purchase_order_with_line(
+        db.connection(),
+        OUTLET,
+        SUPPLIER,
+        USER,
+        RICE,
+        "SACK",
+        micro(10),
+    );
 
     let before = db.get_current_stock(OUTLET, RICE).expect("stock before");
     assert_eq!(before, 0, "nothing is seeded into the ledger");
@@ -168,7 +176,11 @@ fn a_receipt_posts_purchase_entries_at_the_converted_quantity_and_raises_stock()
     assert_eq!(grn_line.unit_cost_paise, 4, "Rs 4000 over 100_000 g");
 
     let after = db.get_current_stock(OUTLET, RICE).expect("stock after");
-    assert_eq!(after - before, 100 * KG, "stock rises by the received amount");
+    assert_eq!(
+        after - before,
+        100 * KG,
+        "stock rises by the received amount"
+    );
 
     // unit_cost_paise is SET, not left NULL as it was on every row for a
     // whole milestone.
@@ -210,7 +222,10 @@ fn the_entry_intent_echo_matches_what_the_receipt_actually_records() {
     let written = &stored.lines[0];
 
     assert_eq!(echo.base_quantity_micro, written.base_quantity_micro);
-    assert_eq!(echo.pack_size_micro_applied, written.pack_size_micro_applied);
+    assert_eq!(
+        echo.pack_size_micro_applied,
+        written.pack_size_micro_applied
+    );
     assert_eq!(echo.unit_cost_paise, written.unit_cost_paise);
     assert_eq!(echo.line_total_paise, written.line_total_paise);
 }
@@ -290,7 +305,15 @@ fn an_item_the_purchase_order_does_not_list_is_received_and_gapped() {
         "VOLUME",
         IDENTITY_PPM,
     );
-    seed_purchase_order_with_line(db.connection(), OUTLET, SUPPLIER, USER, RICE, "SACK", micro(10));
+    seed_purchase_order_with_line(
+        db.connection(),
+        OUTLET,
+        SUPPLIER,
+        USER,
+        RICE,
+        "SACK",
+        micro(10),
+    );
 
     // Oil was added to the delivery after the order was sent.
     db.record_goods_receipt(receipt(
@@ -308,7 +331,15 @@ fn an_item_the_purchase_order_does_not_list_is_received_and_gapped() {
 #[test]
 fn an_over_delivery_is_received_and_gapped_never_truncated() {
     let mut db = configured();
-    seed_purchase_order_with_line(db.connection(), OUTLET, SUPPLIER, USER, RICE, "SACK", micro(2));
+    seed_purchase_order_with_line(
+        db.connection(),
+        OUTLET,
+        SUPPLIER,
+        USER,
+        RICE,
+        "SACK",
+        micro(2),
+    );
 
     let stored = db
         .record_goods_receipt(receipt(
@@ -425,7 +456,15 @@ fn a_matching_dimension_produces_no_mismatch_gap() {
 #[test]
 fn receipt_progress_is_derived_locally_and_never_written_back_to_the_order() {
     let mut db = configured();
-    seed_purchase_order_with_line(db.connection(), OUTLET, SUPPLIER, USER, RICE, "SACK", micro(10));
+    seed_purchase_order_with_line(
+        db.connection(),
+        OUTLET,
+        SUPPLIER,
+        USER,
+        RICE,
+        "SACK",
+        micro(10),
+    );
 
     let status_before: String = db
         .connection()
@@ -636,7 +675,10 @@ fn dispatching_more_than_is_on_hand_drives_stock_negative_rather_than_refusing()
     })
     .expect("a dispatch is never refused for want of stock");
 
-    assert_eq!(db.get_current_stock(OUTLET, RICE).expect("stock"), -(5 * KG));
+    assert_eq!(
+        db.get_current_stock(OUTLET, RICE).expect("stock"),
+        -(5 * KG)
+    );
 }
 
 // ---------------------------------------------------------------------------

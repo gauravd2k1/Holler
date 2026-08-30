@@ -323,7 +323,8 @@ pub(crate) fn base_quantity_from_stored_rate(
     entered_quantity_micro: i64,
     pack_size_micro_applied: i64,
 ) -> Option<i64> {
-    let num = i128::from(entered_quantity_micro).checked_mul(i128::from(pack_size_micro_applied))?;
+    let num =
+        i128::from(entered_quantity_micro).checked_mul(i128::from(pack_size_micro_applied))?;
     let rounded = round_ratio_half_away_from_zero(num, i128::from(MICRO));
     i64::try_from(rounded).ok()
 }
@@ -568,7 +569,9 @@ mod tests {
 
         assert_eq!(c.base_quantity_micro, kilograms(25));
         assert!(
-            c.gaps.iter().any(|(r, _)| *r == GrnGapReason::NoSupplierItem),
+            c.gaps
+                .iter()
+                .any(|(r, _)| *r == GrnGapReason::NoSupplierItem),
             "the fallback is recorded, not silent: {:?}",
             c.gaps
         );
