@@ -99,7 +99,16 @@ mod tests {
             inventory_item_name: "Rice".to_string(),
             dimension: "MASS".to_string(),
             entry_type: entry_type.to_string(),
-            origin: "MANUAL".to_string(),
+            // The origin a row of this entry_type really carries in
+            // production (contracts 0.6.2). A PURCHASE row posted by the
+            // receipt path says GOODS_RECEIPT, not MANUAL; a fixture that
+            // said MANUAL for every row would be averaging over data no
+            // shipping path produces.
+            origin: match entry_type {
+                "PURCHASE" => "GOODS_RECEIPT",
+                _ => "MANUAL",
+            }
+            .to_string(),
             quantity_applied_micro: quantity_micro,
             recipe_id: None,
             recipe_version: None,

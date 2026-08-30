@@ -62,10 +62,20 @@ use crate::repo;
 
 use super::convert::{fetch_receiving_item, resolve_line_conversion};
 use super::cost::weighted_average_cost_paise;
-use super::receipt::PROCUREMENT_ORIGIN;
-
 const ENTRY_TYPE_RETURN_TO_VENDOR: &str = "RETURN_TO_VENDOR";
 const ENTRY_TYPE_TRANSFER_OUT: &str = "TRANSFER_OUT";
+
+/// `stock_ledger_entry.origin` for the two outbound procurement documents
+/// (contracts 0.6.2). Both were `MANUAL` before, which said "a human keyed
+/// this by hand" about a row a return or a dispatch produced.
+///
+/// Neither constant is read anywhere except from the `LedgerProvenance` match
+/// in `post_outbound_ledger_entry`, deliberately: the origin and the
+/// provenance column are chosen by ONE `match` on ONE value, so they cannot
+/// drift apart -- a row saying `PURCHASE_RETURN` with a transfer id is not
+/// something a caller can construct.
+const ORIGIN_PURCHASE_RETURN: &str = "PURCHASE_RETURN";
+const ORIGIN_STOCK_TRANSFER: &str = "STOCK_TRANSFER";
 
 /// Resolves what one outbound line is worth per base unit: the caller's
 /// price if they stated one, else this outlet's weighted average cost, else
@@ -357,9 +367,16 @@ fn post_outbound_ledger_entry(
     created_by_user_id: Option<&str>,
     provenance: LedgerProvenance,
 ) -> DbResult<()> {
-    let (source_purchase_return_id, source_stock_transfer_out_id) = match provenance {
-        LedgerProvenance::PurchaseReturn(id) => (Some(id.to_string()), None),
-        LedgerProvenance::StockTransferOut(id) => (None, Some(id.to_string())),
+    // ONE match decides the origin AND the provenance column together. See
+    // ORIGIN_PURCHASE_RETURN's doc comment: this is what makes "origin and
+    // source_*_id can never disagree" structural rather than a convention.
+    let (origin, source_purchase_return_id, source_stock_transfer_out_id) = match provenance {
+        LedgerProvenance::PurchaseReturn(id) => {
+            (ORIGIN_PURCHASE_RETURN, Some(id.to_string()), None)
+        }
+        LedgerProvenance::StockTransferOut(id) => {
+            (ORIGIN_STOCK_TRANSFER, None, Some(id.to_string()))
+        }
     };
     let entry = NewStockLedgerEntry {
         outlet_id: outlet_id.to_string(),
@@ -367,7 +384,7 @@ fn post_outbound_ledger_entry(
         inventory_item_name: inventory_item_name.to_string(),
         dimension: dimension.to_string(),
         entry_type: entry_type.to_string(),
-        origin: PROCUREMENT_ORIGIN.to_string(),
+        origin: origin.to_string(),
         // NEGATIVE: stock leaves the outlet. `base_quantity_micro` is
         // validated positive before it reaches here, so the negation is exact
         // rather than a magnitude assumption.

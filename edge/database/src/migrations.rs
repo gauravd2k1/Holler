@@ -1679,3 +1679,344 @@ INSERT INTO stock_deduction_gap
         assert_eq!(bump("stock_ledger_sequence"), 3);
     }
 }
+
+/// 0029 REBUILDS `stock_ledger_entry`, AND A REBUILD LOSES WHAT NOBODY
+/// RE-CREATES.
+///
+/// `DROP TABLE` takes the table's triggers and indexes with it, silently and
+/// with no diagnostic anywhere. `stock_ledger_entry` carries three triggers
+/// (append-only-no-UPDATE, append-only-no-DELETE, and the 1e15 quantity bound)
+/// and three indexes. **Nothing else in this suite ever tries to UPDATE or
+/// DELETE a ledger row expecting to fail**, so a rebuild that forgot a trigger
+/// would leave the ledger mutable and every existing test would still pass.
+/// That is the exact shape of "green on absent data": the guarantee is gone
+/// and no assertion is looking at it.
+///
+/// So this module asserts the guarantees DIRECTLY, after the migration:
+/// each trigger by attempting the write it must refuse, and each index by
+/// name from `sqlite_master`.
+///
+/// It also falsifies the rebuild AGAINST A POPULATED TABLE (contracts 0.5.8's
+/// rule: a migration tested only on an empty table proves that the syntax
+/// parses). The seed populates ALL THREE provenance groups plus every other
+/// TEXT column that could be transposed by a column-order slip in the
+/// `INSERT ... SELECT`, because every provenance column on this row is TEXT
+/// and a transposition of two TEXT values is invisible to SQLite.
+#[cfg(test)]
+mod ledger_origin_rebuild_migration {
+    use super::*;
+    use crate::pragma::configure_connection;
+    use rusqlite::params;
+
+    const REBUILD_MIGRATION: &str = "0029_ledger_origin_procurement.sql";
+
+    /// Applies every migration strictly BEFORE `name` -- the version an outlet
+    /// upgrading into 0.6.2 is actually at when 0029 runs.
+    fn apply_up_to_but_not(conn: &Connection, name: &str) {
+        let stop = MIGRATIONS
+            .iter()
+            .position(|(n, _)| *n == name)
+            .unwrap_or_else(|| panic!("{name} is not in MIGRATIONS"));
+        for (n, sql) in MIGRATIONS.iter().take(stop) {
+            conn.execute_batch(sql)
+                .unwrap_or_else(|e| panic!("applying {n}: {e}"));
+        }
+        conn.pragma_update(None, "user_version", stop as i64)
+            .expect("set user_version");
+    }
+
+    /// Seeds the parents the three provenance columns point at, then three
+    /// ledger rows -- one per provenance group -- with every nullable TEXT
+    /// column given a DISTINCT value, so a transposed pair cannot read as
+    /// equal.
+    fn seed_populated_ledger(conn: &Connection) {
+        conn.execute_batch(
+            r#"
+INSERT INTO outlet (id,brand_id,name,created_at,updated_at) VALUES
+ ('out-1','brand-1','Pune','2026-08-30T00:00:00Z','2026-08-30T00:00:00Z');
+
+INSERT INTO app_user
+ (id,tenant_id,outlet_id,email,full_name,password_hash,is_active,
+  permissions_json,config_version,updated_at) VALUES
+ ('user-1','tenant-1','out-1','a@b.com','Receiver','argon2id$fake',1,'[]',1,
+  '2026-08-30T00:00:00Z');
+
+INSERT INTO goods_receipt_note
+ (id,outlet_id,grn_number,received_at,received_by_user_id,business_date) VALUES
+ ('grn-seed','out-1','GRN/20260830/0001','2026-08-30T06:00:00Z','user-1','2026-08-30');
+
+INSERT INTO purchase_return
+ (id,outlet_id,return_number,reason,returned_at,returned_by_user_id,business_date) VALUES
+ ('ret-seed','out-1','RET/20260830/0001','DAMAGED','2026-08-30T07:00:00Z','user-1','2026-08-30');
+
+INSERT INTO stock_transfer_out
+ (id,outlet_id,destination_outlet_id,transfer_number,dispatched_at,
+  dispatched_by_user_id,business_date) VALUES
+ ('xfer-seed','out-1','out-elsewhere','TRF/20260830/0001','2026-08-30T08:00:00Z',
+  'user-1','2026-08-30');
+
+-- Three rows, one per provenance group (contracts 0.5.9: a fidelity check
+-- proves fidelity only for the fields its fixture POPULATES -- a null
+-- round-trips through a dropped or transposed column perfectly).
+INSERT INTO stock_ledger_entry
+ (id,outlet_id,entry_seq,inventory_item_id,inventory_item_name,dimension,
+  entry_type,origin,quantity_applied_micro,recipe_id,recipe_version,recipe_name,
+  source_order_id,source_order_item_id,reason_code,note,occurred_at,
+  business_date,created_by_user_id,modifier_delta_id,modifier_name,
+  modifier_delta_version,unit_cost_paise,source_stock_count_id,
+  source_grn_id,source_purchase_return_id,source_stock_transfer_out_id) VALUES
+ ('sle-grn','out-1',1,'item-rice','Rice','MASS','PURCHASE','MANUAL',
+  100000000,NULL,NULL,NULL,NULL,NULL,NULL,'note-grn','2026-08-30T06:00:00Z',
+  '2026-08-30','user-1',NULL,NULL,NULL,4,NULL,'grn-seed',NULL,NULL),
+ ('sle-ret','out-1',2,'item-rice','Rice','MASS','RETURN_TO_VENDOR','MANUAL',
+  -5000000,NULL,NULL,NULL,NULL,NULL,'DAMAGED','note-ret','2026-08-30T07:00:00Z',
+  '2026-08-30','user-1',NULL,NULL,NULL,4,NULL,NULL,'ret-seed',NULL),
+ ('sle-xfer','out-1',3,'item-rice','Rice','MASS','TRANSFER_OUT','MANUAL',
+  -2000000,NULL,NULL,NULL,NULL,NULL,NULL,'note-xfer','2026-08-30T08:00:00Z',
+  '2026-08-30','user-1',NULL,NULL,NULL,4,NULL,NULL,NULL,'xfer-seed'),
+ ('sle-recipe','out-1',4,'item-rice','Rice','MASS','CONSUMPTION','RECIPE',
+  -1000000,'recipe-1',7,'Biryani','order-9','order-item-9',NULL,'note-recipe',
+  '2026-08-30T09:00:00Z','2026-08-30','user-1',NULL,NULL,NULL,NULL,NULL,
+  NULL,NULL,NULL),
+ ('sle-count','out-1',5,'item-rice','Rice','MASS','ADJUSTMENT','COUNT_ADJUSTMENT',
+  3000000,NULL,NULL,NULL,NULL,NULL,'RECOUNT','note-count','2026-08-30T10:00:00Z',
+  '2026-08-30','user-1',NULL,NULL,NULL,NULL,'count-seed',NULL,NULL,NULL);
+"#,
+        )
+        .expect("seed a POPULATED ledger — a rebuild tested on an empty table proves only that the syntax parses");
+
+        let seeded: i64 = conn
+            .query_row("SELECT COUNT(*) FROM stock_ledger_entry", [], |r| r.get(0))
+            .expect("count seeded rows");
+        assert_eq!(
+            seeded, 5,
+            "the fixture rows must actually exist before anything is asserted about them — \
+             a rejected INSERT leaves zero rows and makes every later assertion trivially true"
+        );
+    }
+
+    /// A database at 0.6.2, upgraded the way a real outlet upgrades: rows
+    /// first, migration second.
+    fn upgraded_populated_db() -> Connection {
+        let conn = Connection::open_in_memory().expect("open");
+        configure_connection(&conn).expect("pragmas");
+        apply_up_to_but_not(&conn, REBUILD_MIGRATION);
+        seed_populated_ledger(&conn);
+        apply_all(&conn).expect("0029 must survive a table that already has rows");
+        conn
+    }
+
+    /// Contracts 0.5.8's rule, applied to this rebuild: the rows survive, and
+    /// their provenance columns survive UNTRANSPOSED. Every value asserted
+    /// here is distinct from every other, so a column-order slip in the
+    /// `INSERT ... SELECT` cannot pass by coincidence.
+    #[test]
+    fn the_rebuild_carries_every_row_across_with_its_provenance_intact() {
+        let conn = upgraded_populated_db();
+
+        let after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM stock_ledger_entry", [], |r| r.get(0))
+            .expect("count after");
+        assert_eq!(after, 5, "a rebuild that drops rows is data loss, not a migration");
+
+        let read = |id: &str, column: &str| -> Option<String> {
+            conn.query_row(
+                &format!("SELECT {column} FROM stock_ledger_entry WHERE id = ?1"),
+                params![id],
+                |r| r.get(0),
+            )
+            .expect("read column")
+        };
+
+        assert_eq!(read("sle-grn", "source_grn_id").as_deref(), Some("grn-seed"));
+        assert_eq!(read("sle-grn", "source_purchase_return_id"), None);
+        assert_eq!(read("sle-grn", "source_stock_transfer_out_id"), None);
+        assert_eq!(read("sle-grn", "note").as_deref(), Some("note-grn"));
+
+        assert_eq!(
+            read("sle-ret", "source_purchase_return_id").as_deref(),
+            Some("ret-seed")
+        );
+        assert_eq!(read("sle-ret", "source_grn_id"), None);
+        assert_eq!(read("sle-ret", "reason_code").as_deref(), Some("DAMAGED"));
+
+        assert_eq!(
+            read("sle-xfer", "source_stock_transfer_out_id").as_deref(),
+            Some("xfer-seed")
+        );
+        assert_eq!(read("sle-xfer", "source_purchase_return_id"), None);
+
+        assert_eq!(read("sle-recipe", "recipe_id").as_deref(), Some("recipe-1"));
+        assert_eq!(read("sle-recipe", "recipe_name").as_deref(), Some("Biryani"));
+        assert_eq!(read("sle-recipe", "source_order_id").as_deref(), Some("order-9"));
+        assert_eq!(
+            read("sle-recipe", "source_order_item_id").as_deref(),
+            Some("order-item-9")
+        );
+        assert_eq!(
+            read("sle-count", "source_stock_count_id").as_deref(),
+            Some("count-seed")
+        );
+
+        let seq: i64 = conn
+            .query_row(
+                "SELECT entry_seq FROM stock_ledger_entry WHERE id = 'sle-xfer'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("read entry_seq");
+        assert_eq!(seq, 3, "entry_seq is the cloud's gap-detection mark and must not be re-minted");
+    }
+
+    /// The whole point of 0029: the three procurement members are now legal,
+    /// and they satisfy the extended provenance CHECK's "no recipe, no
+    /// modifier" branch. Falsifiable by removing the members from either
+    /// CHECK in the migration -- with the enum unextended this insert fails on
+    /// `origin`, and with only the enum extended it fails on the provenance
+    /// CHECK instead, which is the failure mode a partial migration would have
+    /// shipped.
+    #[test]
+    fn the_three_procurement_origins_are_insertable_after_the_rebuild() {
+        let conn = upgraded_populated_db();
+        for (id, seq, origin, entry_type) in [
+            ("sle-new-grn", 6, "GOODS_RECEIPT", "PURCHASE"),
+            ("sle-new-ret", 7, "PURCHASE_RETURN", "RETURN_TO_VENDOR"),
+            ("sle-new-xfer", 8, "STOCK_TRANSFER", "TRANSFER_OUT"),
+        ] {
+            conn.execute(
+                "INSERT INTO stock_ledger_entry
+                    (id,outlet_id,entry_seq,inventory_item_id,inventory_item_name,dimension,
+                     entry_type,origin,quantity_applied_micro,occurred_at,business_date)
+                 VALUES (?1,'out-1',?2,'item-rice','Rice','MASS',?3,?4,1000000,
+                         '2026-08-30T11:00:00Z','2026-08-30')",
+                params![id, seq, entry_type, origin],
+            )
+            .unwrap_or_else(|e| panic!("{origin} must be a legal origin after 0029: {e}"));
+        }
+
+        let stored: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM stock_ledger_entry
+                 WHERE origin IN ('GOODS_RECEIPT','PURCHASE_RETURN','STOCK_TRANSFER')",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count");
+        assert_eq!(stored, 3);
+    }
+
+    /// TRIGGER 1 and 2, asserted directly because nothing else in the suite
+    /// does: the ledger is append-only. A rebuild that forgot these would
+    /// leave every historical stock movement editable, and no other test in
+    /// this repository would notice.
+    #[test]
+    fn the_append_only_triggers_survive_the_rebuild() {
+        let conn = upgraded_populated_db();
+
+        let update = conn.execute(
+            "UPDATE stock_ledger_entry SET quantity_applied_micro = 1 WHERE id = 'sle-grn'",
+            [],
+        );
+        let err = update.expect_err("UPDATE on stock_ledger_entry must be refused after the rebuild");
+        assert!(
+            err.to_string().contains("append-only"),
+            "the refusal must come from the append-only trigger, not incidentally: {err}"
+        );
+
+        let delete = conn.execute("DELETE FROM stock_ledger_entry WHERE id = 'sle-grn'", []);
+        let err = delete.expect_err("DELETE on stock_ledger_entry must be refused after the rebuild");
+        assert!(
+            err.to_string().contains("append-only"),
+            "the refusal must come from the append-only trigger, not incidentally: {err}"
+        );
+
+        // And the row is still there — a refused write that silently removed
+        // the row anyway would satisfy the assertions above.
+        let still: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM stock_ledger_entry WHERE id = 'sle-grn'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count");
+        assert_eq!(still, 1);
+    }
+
+    /// TRIGGER 3: the 1e15 micro-unit bound (contracts 0.5.3) exists so that
+    /// arithmetic overflow is UNREACHABLE rather than handled. It is a
+    /// trigger, not a CHECK, which is exactly why a rebuild can drop it
+    /// without any CHECK-shaped evidence going missing.
+    #[test]
+    fn the_quantity_bound_trigger_survives_the_rebuild() {
+        let conn = upgraded_populated_db();
+        let over = conn.execute(
+            "INSERT INTO stock_ledger_entry
+                (id,outlet_id,entry_seq,inventory_item_id,inventory_item_name,dimension,
+                 entry_type,origin,quantity_applied_micro,occurred_at,business_date)
+             VALUES ('sle-huge','out-1',9,'item-rice','Rice','MASS','PURCHASE','GOODS_RECEIPT',
+                     1000000000000001,'2026-08-30T11:00:00Z','2026-08-30')",
+            [],
+        );
+        let err = over.expect_err("a quantity beyond 1e15 micro-units must be refused");
+        assert!(
+            err.to_string().contains("1e15"),
+            "the refusal must come from the bound trigger: {err}"
+        );
+
+        // The bound is on magnitude, not sign: an outbound row is bounded too.
+        let under = conn.execute(
+            "INSERT INTO stock_ledger_entry
+                (id,outlet_id,entry_seq,inventory_item_id,inventory_item_name,dimension,
+                 entry_type,origin,quantity_applied_micro,occurred_at,business_date)
+             VALUES ('sle-huge-neg','out-1',10,'item-rice','Rice','MASS','TRANSFER_OUT',
+                     'STOCK_TRANSFER',-1000000000000001,'2026-08-30T11:00:00Z','2026-08-30')",
+            [],
+        );
+        assert!(
+            under.is_err(),
+            "ABS() is what the trigger tests — a negative overrun must be refused too"
+        );
+    }
+
+    /// THE THREE INDEXES, by name. An index lost in a rebuild costs nothing
+    /// visible on a test-sized table and everything on a real one, which is
+    /// precisely why it needs an explicit assertion rather than a benchmark.
+    #[test]
+    fn the_three_ledger_indexes_survive_the_rebuild() {
+        let conn = upgraded_populated_db();
+        for name in [
+            "idx_stock_ledger_entry_item_date",
+            "idx_stock_ledger_entry_order",
+            "idx_stock_ledger_entry_source_count",
+        ] {
+            let found: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master
+                     WHERE type = 'index' AND name = ?1 AND tbl_name = 'stock_ledger_entry'",
+                    params![name],
+                    |r| r.get(0),
+                )
+                .expect("query sqlite_master");
+            assert_eq!(
+                found, 1,
+                "{name} did not survive the 0029 rebuild — DROP TABLE takes indexes with it silently"
+            );
+        }
+
+        // The UNIQUE (outlet_id, entry_seq) constraint is an index too, and it
+        // is what makes a cursor mark mean one position. Asserted by behaviour
+        // rather than by name, since SQLite names it automatically.
+        let duplicate = conn.execute(
+            "INSERT INTO stock_ledger_entry
+                (id,outlet_id,entry_seq,inventory_item_id,inventory_item_name,dimension,
+                 entry_type,origin,quantity_applied_micro,occurred_at,business_date)
+             VALUES ('sle-dup','out-1',1,'item-rice','Rice','MASS','PURCHASE','GOODS_RECEIPT',
+                     1000000,'2026-08-30T11:00:00Z','2026-08-30')",
+            [],
+        );
+        assert!(
+            duplicate.is_err(),
+            "UNIQUE (outlet_id, entry_seq) must survive: one mark cannot mean two positions"
+        );
+    }
+}

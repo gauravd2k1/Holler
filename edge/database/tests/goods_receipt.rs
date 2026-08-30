@@ -709,3 +709,170 @@ fn a_receipt_and_its_gaps_leave_on_the_outbox_together() {
         .expect("inspect stock_deduction_gap");
     assert_eq!(deduction_gap_has_one, 1);
 }
+
+// ---------------------------------------------------------------------------
+// stock_ledger_entry.origin — one member per procurement document (0.6.2)
+// ---------------------------------------------------------------------------
+//
+// Every procurement ledger row said `origin = 'MANUAL'` until contracts 0.6.2,
+// which is false and was written permanently into an append-only table.
+//
+// EACH TEST ASSERTS THE STORED VALUE, not that a row exists. `MANUAL` is still
+// a legal `origin` and always will be, so a regression to it breaks no CHECK,
+// no trigger and no other assertion in this suite — the only thing that can
+// catch it is an equality assertion on the stored string. That is also why
+// each test asserts the origin AND its paired provenance column together: the
+// pairing is the guarantee ("origin and source_*_id can never disagree about
+// which document produced the movement"), and half of it is not evidence.
+
+/// Reads `(origin, entry_type)` for the single ledger row matching a
+/// provenance column, and PROVES exactly one such row exists first — a query
+/// that matched nothing would make an `assert_eq!` on its result unreachable
+/// rather than false.
+fn origin_and_type_for(db: &Db, provenance_column: &str, id: &str) -> (String, String) {
+    let conn = db.connection();
+    let count: i64 = conn
+        .query_row(
+            &format!("SELECT COUNT(*) FROM stock_ledger_entry WHERE {provenance_column} = ?1"),
+            [id],
+            |r| r.get(0),
+        )
+        .expect("count rows");
+    assert_eq!(
+        count, 1,
+        "expected exactly one ledger row with {provenance_column} = {id} before asserting on it"
+    );
+    conn.query_row(
+        &format!(
+            "SELECT origin, entry_type FROM stock_ledger_entry WHERE {provenance_column} = ?1"
+        ),
+        [id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .expect("read origin")
+}
+
+/// A receipt posts `origin = 'GOODS_RECEIPT'`, paired with `source_grn_id`.
+/// Falsifiable by restoring `"MANUAL"` in `ORIGIN_GOODS_RECEIPT`
+/// (`edge/database/src/procurement/receipt.rs`): the row still inserts, every
+/// other test in this file still passes, and only this assertion goes red —
+/// which is the whole reason it is written as an equality on the stored value.
+#[test]
+fn a_receipt_posts_a_goods_receipt_origin_never_manual() {
+    let mut db = configured();
+    db.record_goods_receipt(receipt(
+        "grn-origin",
+        None,
+        Some(SUPPLIER),
+        vec![line(RICE, "SACK", 1, 200_000, "MASS")],
+    ))
+    .expect("record receipt");
+
+    let (origin, entry_type) = origin_and_type_for(&db, "source_grn_id", "grn-origin");
+    assert_eq!(
+        origin, "GOODS_RECEIPT",
+        "a delivery is not a hand adjustment: a variance report grouping by origin has to \
+         be able to tell them apart"
+    );
+    assert_eq!(entry_type, "PURCHASE");
+}
+
+/// A return posts `origin = 'PURCHASE_RETURN'`, paired with
+/// `source_purchase_return_id`.
+#[test]
+fn a_purchase_return_posts_a_purchase_return_origin_never_manual() {
+    let mut db = configured();
+    db.record_goods_receipt(receipt(
+        "grn-for-origin-return",
+        None,
+        Some(SUPPLIER),
+        vec![line(RICE, "SACK", 2, 200_000, "MASS")],
+    ))
+    .expect("receipt");
+
+    db.record_purchase_return(NewPurchaseReturn {
+        id: "ret-origin".to_string(),
+        outlet_id: OUTLET.to_string(),
+        supplier_id: Some(SUPPLIER.to_string()),
+        grn_id: Some("grn-for-origin-return".to_string()),
+        return_number: "RET/20260829/0002".to_string(),
+        reason: "DAMAGED".to_string(),
+        returned_at: "2026-08-29T07:00:00Z".to_string(),
+        returned_by_user_id: USER.to_string(),
+        notes: None,
+        lines: vec![NewPurchaseReturnLine {
+            inventory_item_id: RICE.to_string(),
+            grn_line_id: None,
+            entered_purchase_unit: "SACK".to_string(),
+            entered_quantity_micro: micro(1),
+            quantity_dimension: "MASS".to_string(),
+            unit_cost_paise: None,
+        }],
+    })
+    .expect("record return");
+
+    let (origin, entry_type) = origin_and_type_for(&db, "source_purchase_return_id", "ret-origin");
+    assert_eq!(origin, "PURCHASE_RETURN");
+    assert_eq!(entry_type, "RETURN_TO_VENDOR");
+
+    // The receipt's own row in the same database still says GOODS_RECEIPT --
+    // proving the two paths write DIFFERENT members and not one shared
+    // constant that happens to match here.
+    let (receipt_origin, _) = origin_and_type_for(&db, "source_grn_id", "grn-for-origin-return");
+    assert_eq!(receipt_origin, "GOODS_RECEIPT");
+}
+
+/// An outbound transfer posts `origin = 'STOCK_TRANSFER'`, paired with
+/// `source_stock_transfer_out_id`. In `movement.rs` the origin and the
+/// provenance column are chosen by ONE match on ONE value, so a row claiming
+/// PURCHASE_RETURN with a transfer id is not constructible — this test is what
+/// holds that arrangement in place.
+#[test]
+fn an_outbound_transfer_posts_a_stock_transfer_origin_never_manual() {
+    let mut db = configured();
+    db.record_goods_receipt(receipt(
+        "grn-for-origin-transfer",
+        None,
+        Some(SUPPLIER),
+        vec![line(RICE, "SACK", 2, 200_000, "MASS")],
+    ))
+    .expect("receipt");
+
+    db.record_stock_transfer_out(NewStockTransferOut {
+        id: "xfer-origin".to_string(),
+        outlet_id: OUTLET.to_string(),
+        destination_outlet_id: "outlet-elsewhere".to_string(),
+        transfer_number: "TRF/20260829/0002".to_string(),
+        dispatched_at: "2026-08-29T08:00:00Z".to_string(),
+        dispatched_by_user_id: USER.to_string(),
+        notes: None,
+        lines: vec![NewStockTransferLine {
+            inventory_item_id: RICE.to_string(),
+            base_quantity_micro: 10 * KG,
+            quantity_dimension: "MASS".to_string(),
+            unit_cost_paise: None,
+        }],
+    })
+    .expect("dispatch");
+
+    let (origin, entry_type) =
+        origin_and_type_for(&db, "source_stock_transfer_out_id", "xfer-origin");
+    assert_eq!(origin, "STOCK_TRANSFER");
+    assert_eq!(entry_type, "TRANSFER_OUT");
+
+    // NOTHING in this database says MANUAL any more: the three procurement
+    // paths are the only writers here, and a fourth path quietly falling back
+    // to MANUAL would show up as a non-zero count.
+    let manual: i64 = db
+        .connection()
+        .query_row(
+            "SELECT COUNT(*) FROM stock_ledger_entry WHERE origin = 'MANUAL'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("count MANUAL rows");
+    assert_eq!(
+        manual, 0,
+        "no procurement path may write MANUAL after contracts 0.6.2"
+    );
+}

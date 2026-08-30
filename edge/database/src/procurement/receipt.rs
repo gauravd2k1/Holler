@@ -68,21 +68,22 @@ use super::convert::{
 };
 use super::numbering::next_grn_number;
 
-/// `stock_ledger_entry.origin` for every row a procurement document posts.
+/// `stock_ledger_entry.origin` for every row a GOODS RECEIPT posts.
 ///
-/// **`MANUAL` is not a placeholder — it is the only legal value.** The
-/// `origin` CHECK on `stock_ledger_entry` (contracts 0016, unchanged by
-/// 0027) admits exactly `RECIPE | MODIFIER_DELTA | MANUAL |
-/// COUNT_ADJUSTMENT | WASTAGE`, and 0.6.0 added no procurement member. The
-/// exactly-one-provenance CHECK also requires `recipe_id` and
-/// `modifier_delta_id` to both be NULL on a `MANUAL` row, which is what
-/// these rows are. Provenance is carried instead by the three typed columns
-/// 0027 added (`source_grn_id` / `source_purchase_return_id` /
-/// `source_stock_transfer_out_id`), so a receipt-posted row is still
-/// distinguishable from a hand-keyed one. Reported as a contract gap rather
-/// than worked around: a `GRN`/`PURCHASE_RETURN`/`TRANSFER` origin member
-/// would make `entry_type` and `origin` agree the way every other pair does.
-pub(crate) const PROCUREMENT_ORIGIN: &str = "MANUAL";
+/// **This was `MANUAL` until contracts 0.6.2, and `MANUAL` was a lie.** The
+/// `origin` CHECK admitted no procurement member until
+/// `packages/contracts/sqlite/0029_ledger_origin_procurement.sql` rebuilt the
+/// table to add `GOODS_RECEIPT`, `PURCHASE_RETURN` and `STOCK_TRANSFER` --
+/// one per provenance column 0027 had already added -- so a variance report
+/// grouping by `origin` could not tell a delivery from a hand adjustment,
+/// which is the exact distinction the column exists to preserve.
+///
+/// The value pairs with `source_grn_id`: `origin` and provenance can never
+/// disagree about which document produced the movement, because nothing in
+/// this module sets one without the other. `recipe_id` and
+/// `modifier_delta_id` stay NULL, which is what the extended provenance
+/// CHECK's "no recipe, no modifier" branch requires.
+pub(crate) const ORIGIN_GOODS_RECEIPT: &str = "GOODS_RECEIPT";
 
 /// `stock_ledger_entry.entry_type` for a receipt.
 const ENTRY_TYPE_PURCHASE: &str = "PURCHASE";
@@ -560,7 +561,7 @@ pub(crate) fn record_goods_receipt(
             // stored on the grn_line and compared, never substituted here.
             dimension: resolved_line.item.dimension.clone(),
             entry_type: ENTRY_TYPE_PURCHASE.to_string(),
-            origin: PROCUREMENT_ORIGIN.to_string(),
+            origin: ORIGIN_GOODS_RECEIPT.to_string(),
             quantity_applied_micro: resolved_line.conversion.base_quantity_micro,
             recipe_id: None,
             recipe_version: None,
