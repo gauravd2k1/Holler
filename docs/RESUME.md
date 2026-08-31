@@ -1,7 +1,13 @@
 # M5 resume state — 2026-08-31
 
-`main` is at **`603b8da`**. Contracts are **FROZEN at v0.6.2**; migrations run
-through **sqlite 0029 / postgres 0030**. Read this file first, then
+`main` is at **`310d3a1`**. Contracts are **FROZEN at v0.6.2**; migrations run
+through **sqlite 0029 / postgres 0030**. **ALL 16 CI JOBS ARE GREEN** as of
+`310d3a1` (run 33335138157, 2026-08-30) — the first fully green run in the
+repository's readable history, and the first `e2e-scenario` pass since at least
+2026-08-12. All four standing red jobs are fixed and CI-confirmed (§2b).
+Clearing CI was the precondition for the M5 acceptance pass: an acceptance
+verdict against an unreadable build is worth nothing. **That precondition is now
+met, and the acceptance pass in §2(a) is the next work.** Read this file first, then
 `docs/backlog.md` (THE ONLY BACKLOG), then
 `docs/adr/ADR-019-m5-procurement-contracts.md` **including its three addenda**,
 then the 2026-08-29/30 entries in `docs/retro.md`.
@@ -120,21 +126,65 @@ harness**. The planned pass is:
    would mean a disconnected outlet quietly strands its own receipts — the exact
    failure the per-entry budget exists to prevent.
 
-**(b) CI IS READABLE NOW, AND TWO JOBS ARE STILL RED.** `gh auth` is done
-(account `gauravd2k1`), so `gh run list --repo gauravd2k1/Holler` works. The
-first readable verdict covered 27 commits pushed blind and found **every run red
-since 2026-08-27**:
+**(b) CI: ALL FOUR RED JOBS DIAGNOSED AND CONFIRMED GREEN (2026-08-31).**
+Run **33335138157** on `310d3a1` is green on all 16 jobs. Every claim in this
+section is now verdict-backed rather than local-run-backed.
+`gh auth` is done (account `gauravd2k1`), so `gh run list --repo
+gauravd2k1/Holler` works.
 
-| Job | State | Since |
-|---|---|---|
-| `e2e-scenario` | **RED** | before this session (27 Aug), undiagnosed |
-| `lan-integration` | **RED** | before this session (27 Aug) — see the correction in §5 |
-| `cloud-replay` | fixed `1e6455b` | broke at the 0.6.0 push, red for ten commits |
-| `edge-style` | fixed `1e6455b` | rustfmt diffs in files this session wrote |
-| `pos-dev-server-smoke` | **GREEN** | new, and it works |
+> **CORRECTION.** The table that stood here recorded `cloud-replay` and
+> `edge-style` as "fixed `1e6455b`". **They were not.** Both were still red on
+> every run after that commit, including the one on this file's own push. The
+> claim was written from a local run and never checked against a verdict — the
+> precise failure this whole section exists to prevent, committed inside the
+> section warning about it.
+>
+> A full sweep of all 16 jobs across the 37 runs in the blind window then found
+> the other two entries understated as well. **`e2e-scenario` has no green run
+> in the last 57 runs, back to 2026-08-12** — not "red since 27 Aug", but never
+> observed passing at all.
 
-**The two red jobs are pre-existing and were not caused by M5.** Neither has been
-diagnosed. Do not read a green local suite as a green build.
+| Job | Red for | Root cause | Fixed by |
+|---|---|---|---|
+| `e2e-scenario` | **36 of 37** runs; no green run since at least 2026-08-12 | **THREE faults stacked, each hidden by the one in front.** (1) The harness minted its own `BAR` station, colliding with devseed's on `UNIQUE (station.outlet_id, station.code)`, and died at startup. (2) Behind it, Node 20 has no global `WebSocket`. (3) Behind that, **the job had no build step**: the orchestrator spawns the harness with `cargo run`, which compiles on demand *inside* the 180s ready timeout, and `rust-cache` does not save on failure — so the job failed, saved no cache, and compiled cold next run. **A closed loop: fixes (1) and (2) were both correct and both landed into a job that would time out regardless.** | `66749b0`, `c0caeab`, `310d3a1` — **all three confirmed green, run 33335138157** |
+| `lan-integration` | **35 of 37** | Node 20 has no global `WebSocket`; the suite deliberately takes no `ws` dependency and needs Node 22. All four tests died on `ReferenceError`. | `47eec2f` |
+| `cloud-replay` | **27 of 37** | `1e6455b` added the three 0.6.0 provenance columns to `ranged.rs` but not to `edge_row_as_wire`, the test's hand-written mirror of it. | `a83ea22` |
+| `edge-style` | **26 of 37** | `tests/support/` compiles into every test binary; unused helpers are dead code, and CI clippy runs `-D warnings`. | `66749b0` |
+| `backend` | 5 of 37 | Transient: 0.6.0 schema landed before the backend caught up. Self-healed at `042d83e`. | — |
+| `contracts` | 7 of 37 | Transient: event-type guard. Self-healed at `9e9bcde`. | — |
+| `backend-style` | 1 of 37 | Transient. | — |
+| the other 9 jobs | **0 of 37** | Clean throughout the window. | — |
+
+**Four lessons the sweep produced, all worth more than the fixes:**
+
+- **A DEADLOCK CAN MAKE CORRECT FIXES LOOK WRONG.** `e2e-scenario` needed three
+  fixes and each was invisible until the one in front of it landed. Worse, the
+  third fault meant the job could not go green no matter what else was repaired
+  — so a fix that produced no change in the verdict was not evidence the
+  diagnosis was wrong. **When a job has never been green, do not assume the
+  current error is the only one; assume it is the first of N.**
+- **ONE ROOT CAUSE SPANNED TWO JOBS THAT LOOKED UNRELATED.** A WebSocket
+  `ReferenceError` in one and a UNIQUE constraint on `station.code` in the other
+  were one Node pin apart. Fixing the visible failure in `e2e-scenario` is what
+  made the second one visible — the constraint violation killed the harness
+  before any scenario reached a socket. **Do not assume the visible failures are
+  the whole bill, and do not assume distinct symptoms are distinct causes.**
+- **A SWALLOWED STDERR COSTS DAYS.** The harness child's stderr is `inherit`ed
+  and absorbed by vitest, so no cargo output ever reaches the job log. A cold
+  build was therefore indistinguishable from a hung harness and was reported as
+  the latter. And the bridge's two timeouts — startup (180s) and per-request
+  (30s) — emitted the SAME sentence, so the failure could not say which phase
+  it was in. Both are fixed; each timeout now names its phase.
+- **`e2e-scenario` FAILS QUIETLY.** The run completes, all 50 scenarios execute,
+  the invariant count reads zero violations, and the `WebSocket` errors land in a
+  "fatal (harness-level, not invariant)" bucket. The summary looks like a passing
+  run that happened to fail. **An invariant whose subject never occurred is worse
+  than no invariant**, and for eleven days every KDS-touching scenario had none.
+
+Seven jobs still pin Node 20 and pass on it; that was left alone deliberately
+rather than swept. Do not read a green local suite as a green build — see the
+`lan-integration` entry in §5, where a hand-run 4/4 on Node 24 stood as evidence
+while CI on Node 20 proved nothing.
 
 **(c) `cloud-replay` caught contracts 0.5.9 happening A THIRD TIME.**
 `edge/sync/src/ranged.rs`'s ledger replay payload never carried `source_grn_id`,
@@ -246,16 +296,36 @@ and the named fallback.
 
 ## 5. M2 acceptance item 5 — RED AGAIN as of 2026-08-30
 
-> **CORRECTION, 2026-08-31.** Everything below was true when written, and the
-> `lan-integration` job is **failing again** — its "real socket session" step,
-> red since at least 2026-08-27 and not caused by any M5 work. **This section's
-> "re-verified 4/4" claim is therefore STALE, and item 5 should not be read as
-> met until someone looks.**
+> **CORRECTION, 2026-08-31 — now DIAGNOSED and FIXED (`47eec2f`).** Everything
+> below was true when written. The `lan-integration` job was red in **35 of the
+> 37** runs in the blind window, and its "real socket session" step proved no
+> socket session at all.
+>
+> **The cause: CI pinned Node 20, and the suite needs Node 22.** It deliberately
+> takes no `ws` dependency — a library socket would no longer prove the one
+> thing T10 exists to prove — so it uses Node's own global `WebSocket`, which is
+> only unflagged from 22. All four tests died on `ReferenceError: WebSocket is
+> not defined`.
+>
+> **The requirement was written down and nothing enforced it.** `kds-lan.test.ts`
+> says "available without any dependency since Node 22" in a comment three lines
+> above the call. So the suite passed 4/4 by hand on a developer box running Node
+> 24 — which is where the "re-verified 4/4" claim below came from — while CI on
+> Node 20 failed every run. **"It passes locally" and "the build is green" drifted
+> apart, and neither reader could see the other.**
 >
 > That is the same criterion, failing in the same job, for the second time. The
 > first time it stood recorded as met while its bridge silently failed to
-> compile — which is why this section exists at all. **Undiagnosed. Diagnose it
-> before trusting any M2 claim.**
+> compile. Both times the job was red for a reason nobody was reading, and both
+> times the criterion was recorded from a green run somewhere else.
+>
+> Fixed by pinning this job to Node 22 and adding `requireGlobalWebSocket()` at
+> both raw socket sites, which fails with the runtime version and an explicit
+> instruction NOT to add `ws` to get past it. **An environment requirement that
+> is not checked is an environment requirement that is not met.**
+>
+> Item 5 is CI-evidenced green again as of `66749b0`. Note the same Node 20
+> defect was independently failing `e2e-scenario` — see §2(b).
 
 
 **Item 5 ("one real KDS↔edge socket session") had been failing since ADR-017 and
