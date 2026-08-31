@@ -16,15 +16,20 @@ enrollment that does not exist yet.
 ## Quick start
 
 ```powershell
-# 1. everything except the frontends; also writes apps\pos\.env.dev and
+# 1. mint this machine's edge database key ONCE and keep it out of the
+#    repository. The bootstrap has no default key on purpose (see below);
+#    it refuses to run without this. Use the same value every re-run.
+$env:HOLLER_DB_KEY_HEX = -join ((1..32) | ForEach-Object { '{0:x2}' -f (Get-Random -Max 256) })
+
+# 2. everything except the frontends; also writes apps\pos\.env.dev and
 #    apps\kds\.env.dev
 .\scripts\dev-bootstrap.ps1
 
-# 2. install frontend deps once
+# 3. install frontend deps once
 cd apps\pos
 pnpm install
 
-# 3. the blessed launch command. ONE terminal: tauri's beforeDevCommand starts
+# 4. the blessed launch command. ONE terminal: tauri's beforeDevCommand starts
 #    Vite for you (gap 4, closed), and this also starts the KDS LAN server
 #    (embedded in the POS process — see "Milestone 2" below).
 .\apps\pos\run-dev.ps1
@@ -82,9 +87,20 @@ writes them to `apps\pos\.env.dev` and `run-dev.ps1` loads them.
 | `HOLLER_DB_KEY_HEX` | 64 hex chars (32 bytes) — AES-256-GCM key for the edge database's encryption at rest (ADR-011). |
 | `HOLLER_LAN_BIND_ADDR` | Optional (T12). Bind address for the embedded KDS LAN server. Defaults to `0.0.0.0:9310` if unset — see the Milestone 2 section below. Never fatal to POS startup if binding fails. |
 
-The key in the quick start is a **development key**. It must never be used for
-anything holding real data. Changing it makes an existing `edge.db.enc`
-undecryptable; delete the file and re-run the bootstrap if you rotate it.
+**There is no default key, deliberately.** `dev-bootstrap.ps1` used to carry a
+fixed one so re-runs were reproducible; it was removed because a default is
+consent by omission — an outlet ships with an encrypted SQLite that anyone who
+read this repository can decrypt, precisely because nobody had to choose a key.
+The script now fails before it starts a container when neither `-DbKeyHex` nor
+`HOLLER_DB_KEY_HEX` is supplied. Do not reinstate a default "just for dev": a
+dev key becomes an outlet key the moment nobody has to type one.
+
+The key you mint in the quick start is still a **development key** and must
+never be used for anything holding real data. Keep it out of the repository —
+`.env.dev` is gitignored for this reason. Changing it makes an existing
+`edge.db.enc` undecryptable; delete the file and re-run the bootstrap if you
+rotate it, and note that a *different* key opens a different (empty) database
+rather than reporting an error.
 
 ## Where the edge database lives
 
@@ -352,6 +368,7 @@ Milestone 2 builds on, not for this acceptance run.
 | POS panics: `HOLLER_OUTLET_ID ... required` | Env vars not set in *this* terminal. They are read by the Rust process, so they must be set where `tauri dev` runs, not where Vite runs. |
 | Login fails with correct credentials | Edge DB seeded at a different path, or `HOLLER_OUTLET_ID` does not match the seeded outlet. `app_user` is unique per `(outlet_id, email)`. |
 | `HOLLER_DB_KEY_HEX must be exactly 64 hex characters` | Key is not 32 bytes hex-encoded. |
+| `HOLLER_DB_KEY_HEX is not set and -DbKeyHex was not supplied` | Expected on a fresh clone: the bootstrap has no default key. Mint one as shown in the quick start, in *this* terminal. |
 | Blank POS window | Since gap 4 closed, `tauri dev` starts Vite itself, so this now means Vite failed to start rather than that you forgot it — check `run-dev.ps1`'s output for the `BeforeDevCommand` line and any Vite error under it. If a *different* Vite was already serving 5173 (the script warns about this), the window is showing that server's build, not yours. |
 | `docker compose` warns about obsolete `version` | Harmless; the `version:` key in `docker-compose.yml` is a no-op in current Compose. |
 | KDS shows a blank page and the browser console has `Uncaught TypeError: Illegal invocation` | A browser-only failure: some global builtin (`setInterval`, `fetch`, `WebSocket`, …) was detached from the global object. **No Node-based test can catch this** — `vitest` uses jsdom's Node timers, and the `kds-lan` harness runs the real client under Node. Load the page in an actual browser and read the console before calling a frontend change working (`docs/retro.md`, 2026-08-11). |

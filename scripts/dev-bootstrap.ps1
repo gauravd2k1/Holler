@@ -17,10 +17,15 @@
 
 [CmdletBinding()]
 param(
-    # 32-byte key, hex-encoded, for the edge database's encryption at rest.
-    # A fixed default keeps re-runs reproducible. It is a DEVELOPMENT key and
-    # must never be used for anything holding real data (ADR-011).
-    [string]$DbKeyHex = "5ff0c2a1b93d4e6f8a7c1d2e3f405162738495a6b7c8d9eafb0c1d2e3f405162",
+    # 32-byte key, hex-encoded, for the edge database's encryption at rest
+    # (ADR-011). THERE IS DELIBERATELY NO DEFAULT. A default here is consent by
+    # omission: an outlet ships with an encrypted SQLite that anyone who read
+    # this repository can decrypt, because nobody changed it -- and nothing in
+    # the install path would ever say so. Supply it per-machine instead, either
+    # as -DbKeyHex or via the HOLLER_DB_KEY_HEX environment variable; the
+    # script refuses to run without one. See docs/DEV_SETUP.md for how to mint
+    # one, and keep it out of the repository.
+    [string]$DbKeyHex = "",
 
     # Where the POS keeps its edge database. Must match Tauri's app_data_dir()
     # for identifier com.holler.pos, or the POS will open a different (empty)
@@ -76,6 +81,34 @@ function Get-LanIPv4 {
 
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
+
+# --- 0. the edge database key ------------------------------------------------
+# Fail here, before any container starts, rather than letting a seeder deeper in
+# the run produce a database under a key the operator never chose. A default was
+# removed from this parameter deliberately; do not reinstate one "just for dev".
+# Dev keys become outlet keys the moment nobody has to type one.
+if ([string]::IsNullOrWhiteSpace($DbKeyHex)) {
+    $DbKeyHex = $env:HOLLER_DB_KEY_HEX
+}
+if ([string]::IsNullOrWhiteSpace($DbKeyHex)) {
+    throw @"
+HOLLER_DB_KEY_HEX is not set and -DbKeyHex was not supplied.
+
+This script has no default key on purpose. A hardcoded default means an edge
+database can be encrypted with a key published in this repository, and nothing
+downstream would report it.
+
+Mint one for this machine and keep it out of the repository:
+
+    `$env:HOLLER_DB_KEY_HEX = -join ((1..32) | ForEach-Object { '{0:x2}' -f (Get-Random -Max 256) })
+
+Then re-run this script. Use the SAME value every time on this machine -- a
+different key opens a different (empty) database, not an error.
+"@
+}
+if ($DbKeyHex -notmatch '^[0-9a-fA-F]{64}$') {
+    throw "HOLLER_DB_KEY_HEX must be exactly 64 hex characters (32 bytes); got $($DbKeyHex.Length) character(s)."
+}
 
 Write-Host "Holler dev bootstrap" -ForegroundColor Cyan
 Write-Host "repo: $repoRoot"

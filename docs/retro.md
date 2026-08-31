@@ -906,3 +906,63 @@ The same enumeration answered a question nobody had asked: `devseed.rs` writes n
 Measured, not assumed: all six appear in the consumer roots only in a doc comment enumerating the CHECK constraint (`edge/database/src/model.rs:1248-1250`), plus `"PURCHASE"` once in a test fixture (`edge/database/src/stock/variance.rs:150`).
 
 That measurement is the finding. **Widening the consumer check to enum values without first narrowing its corpus would report all six green** — a doc comment listing the permitted values is indistinguishable from a branch acting on one, under a grep. This is the DECLARED-versus-ACTED-ON gap the script's own header admits to, arriving a second time from a different direction, and it means the check must be built in a specific order or it ships inert. Carried into the M5 handoff as such.
+
+## 2026-08-31 — A broken outer loop makes every inner fix unfalsifiable
+
+`e2e-scenario` had no green run in the last 57, back to at least 2026-08-12. It
+took three fixes, and the order they became visible in is the whole finding.
+
+1. The harness minted its own `BAR` station and collided with devseed's on
+   `UNIQUE (station.outlet_id, station.code)`. It died at startup.
+2. Behind that, Node 20 has no global `WebSocket`, so every KDS-touching
+   scenario threw `ReferenceError`.
+3. Behind *that*, **the job had no build step.** The orchestrator spawns the
+   harness with `cargo run`, which compiles on demand *inside* the 180s ready
+   timeout — and `rust-cache` does not save on failure. So the job failed, saved
+   no cache, and compiled cold again on the next run.
+
+Fault 3 is a closed loop, and it is what makes this worth writing down. Fixes 1
+and 2 were both correct, and both landed into a job that would time out
+regardless. **The verdict did not move, and "the verdict did not move" read as
+evidence the diagnosis was wrong.** It was not. It was evidence that nothing
+about the job could be measured at all.
+
+**A BROKEN OUTER LOOP MAKES EVERY INNER FIX UNFALSIFIABLE.** This is the
+same family as green-on-absent-data (2026-08-30) and the harness-not-assertion
+failure (2026-08-24), one level up: there, the test could not see the defect;
+here, the *harness itself* was what made every result meaningless. When the
+apparatus is broken, a red verdict carries no information about the code, and
+neither does a green one.
+
+What follows from it:
+
+- **When a job has never been green, do not assume the current error is the only
+  one; assume it is the first of N.** Budget for a stack, not a bug.
+- **Fix the measuring apparatus before crediting or discrediting any fix made
+  under it.** Until the loop closes, no verdict distinguishes a good change from
+  a bad one — so a change that "did nothing" has not been tested.
+- **Do not raise the timeout before a green run.** Raising it would have masked
+  fault 3 into a slow pass and left the cold-compile loop in place permanently,
+  buying a green tick at the cost of the diagnosis. A timeout is a symptom
+  reporter; widening it deletes the report.
+
+Two more from the same sweep, both cheap and both cost days:
+
+- **A SWALLOWED STDERR COSTS DAYS.** The harness child's stderr is `inherit`ed
+  and absorbed by vitest, so no cargo output ever reached the job log. A cold
+  build was therefore indistinguishable from a hung harness, and was reported as
+  the latter for eleven days. The bridge's two timeouts — startup (180s) and
+  per-request (30s) — also emitted the *same sentence*, so the failure could not
+  say which phase it was in. Both fixed; each timeout now names its phase.
+- **ONE ROOT CAUSE SPANNED TWO JOBS THAT LOOKED UNRELATED.** A `WebSocket`
+  `ReferenceError` in `lan-integration` and a UNIQUE constraint violation in
+  `e2e-scenario` were one Node pin apart. Distinct symptoms are not evidence of
+  distinct causes.
+
+And the failure mode that let it hide: **`e2e-scenario` fails quietly.** The run
+completes, all 50 scenarios execute, the invariant count reads zero violations,
+and the `WebSocket` errors land in a "fatal (harness-level, not invariant)"
+bucket. The summary looks like a passing run that happened to fail. **An
+invariant whose subject never occurred is worse than no invariant** — it reports
+zero violations, which is what success looks like. For eleven days every
+KDS-touching scenario had none.
