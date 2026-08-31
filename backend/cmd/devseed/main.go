@@ -192,9 +192,22 @@ func seed(ctx context.Context, pool postgres.Pool, passwordHash string) error {
 	// items-sold-with-no-recipe report). Keep this list identical to
 	// CASHIER_PERMISSIONS in edge/database/src/bin/devseed.rs — the edge
 	// stores the flattened list and a config pull replaces, not merges.
+	//
+	// procurement.manage (M5) gates the receiving and purchase-return surfaces
+	// on the POS (apps/pos/src/domain/procurement.ts::canManageProcurement) AND
+	// every /procurement config route. Without it the seeded principal 403s on
+	// the API and the receiving screen never renders -- which is why nothing had
+	// ever demonstrated the supplier/PO pickers populating.
+	//
+	// procurement.approve is deliberately NOT here. A cashier does not approve
+	// purchase orders, and this list is cached flat on the edge, where approval
+	// must never happen at all. Criterion 5 needs a role that HOLDS approve with
+	// a po_approval_limit_paise below the order total; that is a separate role
+	// and is not seeded yet.
 	for _, p := range []string{
 		"order.create", "order.modify", "table.manage",
 		"inventory.manage", "inventory.count",
+		"procurement.manage",
 	} {
 		if _, err := pool.Exec(ctx,
 			`INSERT INTO role_permission (role_id, permission) VALUES ($1, $2)

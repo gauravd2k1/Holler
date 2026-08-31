@@ -1359,8 +1359,15 @@ const CASHIER_EMAIL: &str = "cashier@holler.test";
 /// Permissions for the seeded cashier, from the `Permission` enum in
 /// packages/contracts/src/types/identity.ts. The edge stores the flattened
 /// list for THIS outlet (§50.1, replace-not-merge).
-const CASHIER_PERMISSIONS: &str =
-    r#"["order.create","order.modify","table.manage","inventory.manage","inventory.count"]"#;
+/// Kept IDENTICAL to the list in `backend/cmd/devseed/main.go` -- a config pull
+/// REPLACES this list rather than merging into it, so a permission seeded on
+/// only one side disappears the first time the outlet syncs.
+///
+/// `procurement.manage` (M5) is what makes the receiving and purchase-return
+/// surfaces reachable; `canManageProcurement` gates both. `procurement.approve`
+/// is deliberately absent: the edge must never approve a purchase order, and
+/// the POS consults that permission nowhere.
+const CASHIER_PERMISSIONS: &str = r#"["order.create","order.modify","table.manage","inventory.manage","inventory.count","procurement.manage"]"#;
 
 /// Fixed timestamp for seeded rows. A constant rather than "now" so re-running
 /// the seeder produces an identical database — this crate has no clock
