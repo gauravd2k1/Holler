@@ -103,6 +103,33 @@ caches every binary that did link.
 
 ## 2. What is open right now
 
+**(a0) THE PASS WAS REPLANNED ON 2026-08-31: `edge/sync` HAS NO HOST.** Nothing
+that ships calls it, in either direction — see `docs/backlog.md` and
+**ADR-020**, which rules that the worker is hosted **in the POS Tauri process**
+(ADR-013: one executable on a 4GB box beats clean separation) and must **drain
+the outbox on graceful shutdown and again on next launch before anything else**,
+so the guarantee is "your day reaches the cloud at both ends of every trading
+day" rather than "syncs while the till is open".
+
+Two consequences for this section, both of which change what may be claimed:
+
+- **M1's offline-replay acceptance item is UNEVIDENCED and always was.** "WiFi
+  off → order → WiFi on → verify cloud-side" could not be performed: `local_outbox`
+  is written by many paths and drained by none, and `repo::mark_outbox_published`
+  has zero callers outside `edge/sync` and tests. The second half of that sentence
+  had nothing to make it happen. Re-run it once the host lands.
+- **Criterion 6 is BLOCKED, not pending.** A harness is the only thing that can
+  currently trigger a replay, and M5 forbids harness evidence.
+
+**CAVEAT ON CRITERIA 1, 2, 3, 4 AND 7 — record it with the observations, never
+after.** These five are offline-only and may be banked before ADR-020 lands. But
+they run against **LOCALLY-SEEDED EDGE DATA**, so they evidence offline behaviour
+and say **nothing** about config transport. **Two claims, two pieces of evidence.**
+Keeping them apart is what stops "the pickers populated" being read as "the pipe
+works" — and after both seeders have run under matching ids, a row's presence is
+not evidence that it travelled. Proving transport needs an empty start and a real
+pull, which is why it waits on the host.
+
 **(a) THE M5 ACCEPTANCE PASS IS MID-FLIGHT AND NOTHING IS OBSERVED YET.** Zero of
 seven criteria are acceptance-observed. Rows 3 and 4 are PARTIALLY observed —
 T4 drove the shipping screens in real Chromium against the dev server and saw the
