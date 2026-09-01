@@ -409,8 +409,15 @@ export function ReceivingScreen() {
         </p>
 
         <label>
-          Price per {purchaseUnit.trim() === "" ? "purchase unit" : purchaseUnit.trim()} (₹, off the
-          delivery note)
+          {/* "before GST" is load-bearing, not decoration. Nothing on this path reads a tax
+              profile or adds a tax component, so whatever is typed here becomes the cost on
+              every ledger row for this item. In this market the delivery-note figure is
+              commonly GST-INCLUSIVE, and typing it inflates the cost silently and permanently.
+              The label enforces nothing; it turns a silent mis-costing into an operator-visible
+              error. Handling purchase GST properly needs input-tax-credit treatment and belongs
+              with the compliance track (docs/backlog.md, ADR-pending). */}
+          Price per {purchaseUnit.trim() === "" ? "purchase unit" : purchaseUnit.trim()}, before
+          GST (₹, off the delivery note)
           <input
             inputMode="decimal"
             value={priceInput}
