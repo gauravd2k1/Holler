@@ -54,6 +54,10 @@ const (
 	ownerRoleID     = "0191a000-0000-7000-8000-000000000021"
 	buyerID         = "0191a000-0000-7000-8000-000000000022"
 	buyerUserRoleID = "0191a000-0000-7000-8000-000000000023"
+	ownerID         = "0191a000-0000-7000-8000-000000000024"
+	ownerUserRoleID = "0191a000-0000-7000-8000-000000000025"
+
+	ownerEmail = "owner@holler.test"
 
 	buyerEmail = "buyer@holler.test"
 
@@ -327,12 +331,45 @@ func seed(ctx context.Context, pool postgres.Pool, passwordHash string) error {
 		}
 	}
 
-	// The OWNER role exists to be NAMED by the refusal, so it needs the same
-	// permission the query filters on. It has no user by design.
+	// The OWNER role is NAMED by the approval refusal, so it needs the
+	// permission that query filters on. It also carries outlet.manage, which
+	// gates POST /devices/enroll (ADR-017) -- "the closest existing permission
+	// to may register hardware at this outlet", per the route's own note.
+	//
+	// Deliberately NOT on the cashier or the buyer. outlet.manage is the
+	// permission that currently also gates the compliance config writes, so
+	// whoever holds it can set the GSTIN printed on every invoice (the T7a
+	// hole). A till operator and a buyer are neither technicians nor managers,
+	// and widening their grant to make a fixture convenient is how a dev
+	// shortcut becomes the shipped authorization model.
+	for _, p := range []string{"procurement.approve", "outlet.manage"} {
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO role_permission (role_id, permission) VALUES ($1, $2)
+			 ON CONFLICT DO NOTHING`, ownerRoleID, p); err != nil {
+			return fmt.Errorf("seeding owner role_permission %s: %w", p, err)
+		}
+	}
+
+	// The OWNER role now needs a holder after all: device enrollment is an
+	// authenticated human action, and a role with no user cannot perform one.
+	// It stays absent from the edge seeder -- this login exists to enroll
+	// hardware and approve large orders against the cloud, never to operate a
+	// till offline.
 	if _, err := pool.Exec(ctx,
-		`INSERT INTO role_permission (role_id, permission) VALUES ($1, $2)
-		 ON CONFLICT DO NOTHING`, ownerRoleID, "procurement.approve"); err != nil {
-		return fmt.Errorf("seeding owner role_permission: %w", err)
+		`INSERT INTO app_user
+		   (id, tenant_id, email, full_name, password_hash, is_active, config_version, created_at, updated_at)
+		 VALUES ($1, $2, $3, 'Dev Owner', $4, TRUE, 1, $5, $5)
+		 ON CONFLICT (id) DO UPDATE SET password_hash = EXCLUDED.password_hash,
+		   is_active = EXCLUDED.is_active, updated_at = EXCLUDED.updated_at`,
+		ownerID, tenantID, ownerEmail, passwordHash, now); err != nil {
+		return fmt.Errorf("seeding owner app_user: %w", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO user_role (id, user_id, role_id, outlet_id, created_at)
+		 VALUES ($1, $2, $3, $4, $5)
+		 ON CONFLICT (id) DO NOTHING`,
+		ownerUserRoleID, ownerID, ownerRoleID, outletID, now); err != nil {
+		return fmt.Errorf("seeding owner user_role: %w", err)
 	}
 
 	if _, err := pool.Exec(ctx,
