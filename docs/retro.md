@@ -966,3 +966,64 @@ bucket. The summary looks like a passing run that happened to fail. **An
 invariant whose subject never occurred is worse than no invariant** — it reports
 zero violations, which is what success looks like. For eleven days every
 KDS-touching scenario had none.
+
+## 2026-09-02 — An acceptance criterion satisfied by either of two definitions cannot tell you which one you built
+
+M5 criterion 7: *"Weighted average cost after two receipts at different prices
+matches an independently computed figure."* It passed. The figure was right.
+
+And it could not have told us what the number **means**.
+
+The criterion tests that the average **moves** when prices differ. It does not
+test what is being averaged, over what range, or against what definition. Two
+completely different products satisfy it identically:
+
+- a **lifetime cumulative purchase-weighted average**, over every receipt an
+  outlet has ever recorded; and
+- a **weighted average cost of stock on hand**, bounded by a snapshot mark —
+  which is what an owner reading "average cost" generally means.
+
+Holler implements the first. Nobody decided that. Excluding outbound rows was a
+real decision, argued in `procurement/cost.rs`. The *unbounded over all time*
+property was never chosen at all — the words "on hand", "moving average" and
+"periodic average" appear in no design document in this repository. It is the
+consequence of writing the simplest query that satisfies the criterion.
+
+So an undocumented product definition reached acceptance, in a milestone whose
+headline claim is food costing, and the criterion that was supposed to gate it
+was blind to the difference by construction.
+
+**Same family as the M4 line about a test that constructs its own subject.**
+There, the test could not detect that nothing else constructed the subject. Here,
+the criterion cannot detect which of two subjects it is measuring. Both are
+green-on-the-wrong-question, and both survived precisely because the assertion
+was true.
+
+### The rule, and it applies to every future criterion
+
+**Read every acceptance criterion against the question: how many different
+products would satisfy this sentence?** If the answer is more than one, the
+criterion is testing that something happened, not that the right thing happened,
+and the definition it leaves open is the one that will ship undocumented.
+
+Criterion 7's honest form would have named the definition: *"weighted average
+cost of stock on hand"* or *"lifetime purchase-weighted average cost"*. Either
+would have forced the question during design instead of during a post-hoc audit
+of why the number looked high.
+
+### Two smaller findings from the same investigation, both worth keeping
+
+- **The dataset that passed was chosen to make the average vary, not to make the
+  rounding fail.** Three receipts at 10, 10 and 18 paise per gram divide evenly,
+  so the per-receipt rounding defect (±0.5 paise, +20% at a 2.5 paise/g price)
+  was invisible. A fixture chosen to exercise one property will pass over every
+  property it does not exercise. **Pick fixture values that are hostile to the
+  arithmetic, not merely different from each other.**
+- **A guard written over a table with no matching rows asserts nothing.** The
+  first version of the count-adjustment regression guard checked
+  `COUNT(*) = 0 WHERE origin = 'COUNT_ADJUSTMENT' AND unit_cost_paise IS NOT NULL`
+  — in a fixture that contained no count adjustments at all. It passed with the
+  defect deliberately introduced. It now opens, counts and completes a real
+  count, with a fixture assertion that an adjustment was actually posted before
+  anything is concluded from its absence. **Green on absent data, in the guard
+  written to prevent green on absent data.**

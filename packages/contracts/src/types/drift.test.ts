@@ -454,6 +454,11 @@ describe("Milestone 4 inventory contracts", () => {
     expect(() =>
       StockLedgerEntrySchema.parse(fixture("stock_ledger_entry_count_adjustment.json")),
     ).not.toThrow();
+    // 0.6.3: the COSTED group. Both other ledger fixtures are null in both
+    // money columns, and a null round-trips through a dropped field perfectly.
+    expect(() =>
+      StockLedgerEntrySchema.parse(fixture("stock_ledger_entry_goods_receipt.json")),
+    ).not.toThrow();
     expect(() => StockCountSchema.parse(fixture("stock_count.json"))).not.toThrow();
     expect(() => StockCountLineSchema.parse(fixture("stock_count_line.json"))).not.toThrow();
     expect(() =>

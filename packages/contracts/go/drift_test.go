@@ -509,6 +509,39 @@ func TestMilestone4FixturesRoundTrip(t *testing.T) {
 			"COUNT_ADJUSTMENT that loses the count it came from is an append-only row " +
 			"whose provenance is gone permanently (contracts 0.5.9, ADR-018)")
 	}
+	// 0.6.3 (ADR-021). THE COSTED GROUP NEEDS ITS OWN ROW for the same reason
+	// the provenance groups do: both other ledger fixtures carry
+	// unit_cost_paise: null and line_total_paise: null, and a null round-trips
+	// through a dropped field perfectly. Without this fixture the money columns
+	// would be green on absent data.
+	var receipt StockLedgerEntry
+	roundTrip(t, "stock_ledger_entry_goods_receipt.json", &receipt)
+	if receipt.LineTotalPaise == nil {
+		t.Fatal("stock_ledger_entry.line_total_paise was dropped on decode: the cloud " +
+			"would then derive cost from the rounded rate while the edge used the exact " +
+			"figure, and the two stores would disagree about money (contracts 0.6.3)")
+	}
+	// THE DRIFT INVARIANT the module doc used to only claim: the stored rate is
+	// what deriving it from the stored total produces, half away from zero. One
+	// expression, one place that can be wrong.
+	if receipt.UnitCostPaise == nil {
+		t.Fatal("a costed receipt row must carry both columns: the CHECK is directional, " +
+			"a total never appears without its rate")
+	}
+	numerator := int64(*receipt.LineTotalPaise) * 1_000_000
+	denominator := receipt.QuantityAppliedMicro
+	var expected int64
+	if numerator >= 0 {
+		expected = (numerator + denominator/2) / denominator
+	} else {
+		expected = (numerator - denominator/2) / denominator
+	}
+	if *receipt.UnitCostPaise != expected {
+		t.Fatalf("unit_cost_paise must be DERIVED from line_total_paise, never computed "+
+			"independently from the entered price: got %d, want %d",
+			*receipt.UnitCostPaise, expected)
+	}
+
 	var count StockCount
 	roundTrip(t, "stock_count.json", &count)
 	var line StockCountLine

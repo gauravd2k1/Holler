@@ -26,5 +26,6 @@
   "business_date": "2026-08-20",
   "created_by_user_id": "0191f2a0-1c3d-7a10-9f01-000000000021",
   "unit_cost_paise": null,
+  "line_total_paise": null,
   "schema_version": 1
 }

@@ -335,6 +335,11 @@ fn ledger_entry_payload(e: &holler_edge_database::model::StockLedgerEntry) -> se
         "modifier_name": e.modifier_name,
         "modifier_delta_version": e.modifier_delta_version,
         "unit_cost_paise": e.unit_cost_paise,
+        // 0.6.3: the invoiced total, and the ONLY averaging input. Omitting it
+        // here would leave the cloud deriving cost from the rounded rate while
+        // the edge used the exact figure -- the two stores disagreeing about
+        // money, which is the 0.5.9 defect with a price on it.
+        "line_total_paise": e.line_total_paise,
         "source_stock_count_id": e.source_stock_count_id,
         // Contracts 0.6.0 put these three on the row in BOTH stores, the edge
         // writes them on every receipt, return and dispatch, and this payload

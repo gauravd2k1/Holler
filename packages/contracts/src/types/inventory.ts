@@ -347,7 +347,11 @@ export const StockLedgerEntrySchema = z
     // outlet.timezone and outlet.day_start_time, never recomputed on read.
     business_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
     created_by_user_id: z.string().uuid().nullable(),
-    unit_cost_paise: z.number().int().nullable(), // DEFERRED M5
+    unit_cost_paise: z.number().int().nullable(),
+    // 0.6.3 (ADR-021): the invoiced total, unrounded. Set by receipts only —
+    // every other origin is valued AT the average and leaves this null. The
+    // averaging input; unit_cost_paise is a derived display rate.
+    line_total_paise: z.number().int().nullable(),
     schema_version: z.literal(1),
   })
   .refine(

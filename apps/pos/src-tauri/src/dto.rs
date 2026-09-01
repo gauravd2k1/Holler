@@ -1115,6 +1115,8 @@ pub struct StockLedgerEntry {
     pub business_date: String,
     pub created_by_user_id: Option<String>,
     pub unit_cost_paise: Option<i64>,
+    /// 0.6.3 (ADR-021): the invoiced total, unrounded. Set by receipts only.
+    pub line_total_paise: Option<i64>,
     pub schema_version: u8,
 }
 
@@ -1144,6 +1146,7 @@ impl From<db::StockLedgerEntry> for StockLedgerEntry {
             business_date: e.business_date,
             created_by_user_id: e.created_by_user_id,
             unit_cost_paise: e.unit_cost_paise,
+            line_total_paise: e.line_total_paise,
             schema_version: 1,
         }
     }

@@ -298,6 +298,12 @@ type StockLedgerEntry struct {
 	// removed in the same change — an exemption that outlives its reason is a
 	// silenced failure.
 	UnitCostPaise *int64 `json:"unit_cost_paise"`
+	// The EXACT money this row is worth, unrounded, as invoiced (0.6.3,
+	// ADR-021). Set by receipts and NOWHERE ELSE, because only a receipt has an
+	// invoiced total; every other origin is valued AT the average and leaves
+	// this null. This — not UnitCostPaise — is what weighted average cost sums,
+	// so that the division happens exactly once.
+	LineTotalPaise *int64 `json:"line_total_paise"`
 	SchemaVersion   int     `json:"schema_version"`
 }
 

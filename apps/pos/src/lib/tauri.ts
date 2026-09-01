@@ -812,6 +812,8 @@ const StockLedgerEntrySchema = z.object({
   business_date: z.string(),
   created_by_user_id: z.string().nullable(),
   unit_cost_paise: z.number().int().nullable(),
+  // 0.6.3 (ADR-021): the invoiced total. Null on every origin but a receipt.
+  line_total_paise: z.number().int().nullable(),
   schema_version: z.literal(1),
 });
 export type StockLedgerEntry = z.infer<typeof StockLedgerEntrySchema>;

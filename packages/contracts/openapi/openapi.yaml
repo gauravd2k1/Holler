@@ -3377,7 +3377,18 @@ components:
         unit_cost_paise:
           type: integer
           nullable: true
-          description: DEFERRED M5.
+          description: >
+            Cost per BASE unit, DERIVED from line_total_paise and rounded to
+            whole paise. A display rate: it is NOT what weighted average cost
+            sums (0.6.3, ADR-021).
+        line_total_paise:
+          type: integer
+          nullable: true
+          description: >
+            The exact money this row is worth, unrounded, as invoiced. Set by
+            receipts only — every other origin is valued AT the average and has
+            no invoiced total, so it is null. This is the sole input to weighted
+            average cost, which divides exactly once (0.6.3, ADR-021).
         schema_version: { type: integer, enum: [1] }
 
     StockCountStatus:
