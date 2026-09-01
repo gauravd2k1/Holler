@@ -558,6 +558,10 @@ fn edge_row_as_wire(e: &model::StockLedgerEntry) -> Value {
         "modifier_name": e.modifier_name,
         "modifier_delta_version": e.modifier_delta_version,
         "unit_cost_paise": e.unit_cost_paise,
+        // 0.6.3. THIS MIRROR IS HAND-WRITTEN, so it drifts from ranged.rs unless
+        // every new column is added here too -- which is exactly how the 0.5.9
+        // defect was caught, and how it would have been missed.
+        "line_total_paise": e.line_total_paise,
         // Contracts 0.6.0. These three lagged here after `ranged.rs` gained
         // them (1e6455b) and THAT IS THE MIRROR EARNING ITS KEEP -- the job of
         // a hand-written twin is to disagree out loud. What it must never do
@@ -591,7 +595,7 @@ fn postgres_row_as_wire(pg: &mut PgClient, entry_id: &str) -> Value {
                     modifier_delta_version::text, unit_cost_paise::text,
                     source_stock_count_id::text,
                     source_grn_id::text, source_purchase_return_id::text,
-                    source_stock_transfer_out_id::text
+                    source_stock_transfer_out_id::text, line_total_paise::text
              FROM stock_ledger_entry WHERE id::text = $1",
             &[&uuid_param(entry_id)],
         )
@@ -641,6 +645,10 @@ fn postgres_row_as_wire(pg: &mut PgClient, entry_id: &str) -> Value {
         "modifier_name": str_or_null(20),
         "modifier_delta_version": num(21),
         "unit_cost_paise": num(22),
+        // Appended at the END of the projection (index 26), never inserted into
+        // the middle (source_stock_transfer_out_id is 26): a shifted index here is
+        // wrong values, not a type error.
+        "line_total_paise": num(27),
         // Not a stored column. The wire carries it; the row does not have it
         // to lose, so it is restated rather than read back.
         "schema_version": 1,
