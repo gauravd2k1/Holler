@@ -60,7 +60,7 @@ The split that matters: WSL2 hosts the **cloud** dependencies for local developm
 - POS: `pnpm test` / `pnpm tauri dev` inside `apps/pos/`.
 - CI: lint, format, unit, integration, contract-drift check, build, security scan.
 
-## Contracts status: FROZEN at v0.6.2 (Milestone 5 procurement applied; migrations through sqlite 0029 / postgres 0030)
+## Contracts status: FROZEN at v0.6.3 (Milestone 5 procurement applied; migrations through sqlite 0030 / postgres 0031)
 <!-- The version and migration numbers on the heading above are checked by
      scripts/check-milestone-marker.mjs against packages/contracts/package.json
      and the migration files on disk. Third staleness of this line (0.4.7,
@@ -123,6 +123,12 @@ v0.6.0 (ADR-019) added the Milestone 5 procurement shapes — `supplier`, `suppl
 - **A single-store table hidden inside a mirrored migration is undeclarable.** `SINGLE_STORE_MIGRATIONS` pairs files by stem, so `grn_sequence` ships as `sqlite/0028` and the cloud-only accounts shapes as `postgres/0029`, each declared with a reason. Note also that **there is no `role` table in SQLite at all** — the edge flattens permissions into `app_user.permissions_json` — so `po_approval_limit_paise` is Postgres-only by necessity and by design: the edge must never approve a purchase order.
 
 0.6.0 also **removed** the `unit_cost_paise` and `yield_factor_ppm` exemptions from `scripts/check-contract-field-consumers.mjs`, because procurement now consumes both. **An exemption that outlives its reason is a silenced failure.** `batch_code`/`expiry_date` take their place, exempt with **M6** named — modelled now only because batch identity is captured at receipt or never.
+
+**0.6.3** (ADR-021) added `stock_ledger_entry.line_total_paise` — the exact invoiced money a row is worth. `unit_cost_paise` is a per-base-unit RATE rounded to whole paise once per receipt, and weighted average cost summed that rate, inheriting a rounding it could never recover: **±0.5 paise on a per-gram figure is +20% at 2.5 paise/g**, one-directional per item and worst on cheap staples. The ledger now stores the total and `procurement::cost` divides exactly once. Four rules bind every builder:
+- **Receipts set `line_total_paise`; every other origin leaves it NULL.** Only a receipt has an invoiced total — wastage, counts, variance and outbound movements are valued AT the average, so a `quantity × rate` product for them would fabricate precision and feed it back into the average that produced it. The CHECK is **directional**: a total never appears without its rate, a rate may stand alone.
+- **`unit_cost_paise` survives as a derived DISPLAY rate and is never an averaging input.** It is pinned by a drift test asserting `unit_cost_paise == round_half_away(line_total_paise × 10⁶ / quantity_applied_micro)` over a costed fixture. A stated invariant with no test is the defect class in half the retro log.
+- **Holler implements a LIFETIME CUMULATIVE PURCHASE-WEIGHTED AVERAGE, not weighted average cost of stock on hand.** The averaging query is unbounded — no `through_entry_seq`, no `business_date`, no on-hand term. Only half of that was decided: excluding outbound rows is argued; the unbounded property is recorded nowhere. Filed in `docs/backlog.md` with the trigger **before the first pilot**. A purchase return leaving the figure untouched is a consequence of it.
+- **A rebuild proves its own guarantees or it has none.** The SQLite side rebuilds `stock_ledger_entry`, so `migrations.rs` asserts afterwards that the insert-only guard **actually fires** (a real `UPDATE`, required to be rejected — not a `sqlite_master` name lookup) and that `stock_ledger_sequence` still leads `MAX(entry_seq)`, so a rebuild cannot regress ranged replay below the cloud high-water mark.
 
 Two cross-cutting rules the 0.4.x line established the hard way: contract-shaped changes cascade across crates that do not share a cargo workspace (see `docs/retro.md` 2026-08-15), so run `make check-seams` after changing any `pub` signature in `edge/` or `apps/pos/src-tauri`; and a migration that exists on disk but is absent from `edge/database/src/migrations.rs`'s `MIGRATIONS` list **never applies** — 0009–0011 sat dead for exactly that reason, and 0005 before them.
 
