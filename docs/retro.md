@@ -1027,3 +1027,55 @@ of why the number looked high.
   count, with a fixture assertion that an adjustment was actually posted before
   anything is concluded from its absence. **Green on absent data, in the guard
   written to prevent green on absent data.**
+
+## 2026-09-02 — A host that routes only some streams is indistinguishable from a working one
+
+ADR-020 shipped with the headline "the sync worker has a host" — the first time in
+five milestones that anything in the product constructed a `SyncWorker`. The
+drain ran at both ends of a trading day, both its claims were falsified with
+deliberately-red runs, and CI was green on all sixteen jobs.
+
+It hosted **one of three pumps**.
+
+`worker::pump_outbox` routes orders and table sessions. A goods receipt is
+`("goods_receipt_note", "GoodsReceiptRecorded")`, which that router does not map
+at all: it returns the row as `unrouted_skipped` and leaves it pending. Purchase
+returns and transfers go through `pump_procurement`, carrying the per-entry retry
+budget; ledger entries and stock gaps through `pump_ranged_streams`. So every
+GRN, return, transfer and ledger row would have sat in the outbox while the host
+reported success.
+
+**The failure reads as its own opposite.** The drain printed
+`drain published 0 row(s)` — which is exactly what an empty outbox prints. Not
+silence, which someone might question, but a plausible number meaning the reverse
+of the truth. The ordering trap this ADR already warned about at least does
+nothing visibly; this one does nothing and produces a reassuring report.
+
+**Nothing caught it, and the reason matters.** `cloud_replay` is green, has been
+for milestones, and drives `pump_ranged_streams` **directly** — it exercises the
+worker, not the host. Every test of the sync path constructs its own pump. So the
+question "does anything call the other two?" was structurally unaskable from
+inside the suite, in the same way "does anything construct the worker at all?"
+was before ADR-020.
+
+Same family as the M4 line — *a test that constructs its own subject cannot
+detect that nothing else constructs it* — one level along: **a test that
+constructs its own subject cannot detect that its caller constructs only some of
+them.** Hosting is not a property any test of the hosted thing can see.
+
+It was found by asking which code path a goods receipt actually takes while
+writing the procedure to close criterion 6 — not by a test, and not by review.
+
+### What changed beyond the fix
+
+Routing all three pumps fixes the instance and leaves the pattern: the next
+stream added hits the same wall and reads the same way. So the counter changed
+too. The drain now reports **published / unrouted / refused separately, per
+stream**, and a non-zero `unrouted` prints its own line saying the rows have no
+route and this is not an empty queue. `published` alone was never a report — it
+was a number that could not distinguish "nothing to send" from "nothing sendable".
+
+And the drain's claim about itself is no longer the only evidence: every pass now
+also prints the pending count **read straight from `local_outbox`**, so the
+table's number and the drain's number sit side by side in the same terminal. A
+mis-routing drain cannot make those two agree.

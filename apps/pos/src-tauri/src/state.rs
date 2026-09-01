@@ -237,6 +237,33 @@ impl AppState {
         let _ = db.shutdown_in_place();
     }
 
+    /// Rows still unpublished in `local_outbox`, read straight from the
+    /// database.
+    ///
+    /// **INDEPENDENT OF THE DRAIN'S OWN CLAIM.** "published N" is what the
+    /// drain says about itself; this is what the table says. A drain that
+    /// mis-routes, mis-counts or silently consumes rows cannot make this number
+    /// agree with it, which is the whole point — the ADR-020 defect printed
+    /// "published 0" with the outbox full, and no assertion existed that could
+    /// contradict it.
+    ///
+    /// Logged after every drain so the two numbers sit side by side in the same
+    /// terminal: a non-zero remainder after a successful drain is not
+    /// necessarily wrong (offline is normal), but it must never be a surprise.
+    pub fn pending_outbox_rows(&self) -> i64 {
+        let db = match self.db.lock() {
+            Ok(db) => db,
+            Err(e) => e.into_inner(),
+        };
+        db.connection()
+            .query_row(
+                "SELECT COUNT(*) FROM local_outbox WHERE published_at IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(-1)
+    }
+
     /// Drains `local_outbox` toward the cloud, bounded by `budget` (ADR-020).
     ///
     /// Returns the number of rows acknowledged. A no-op returning 0 when this
@@ -311,6 +338,41 @@ impl AppState {
             };
             drop(db);
 
+            // PER-STREAM, AND UNROUTED IS ITS OWN NUMBER. A single
+            // "published N" cannot distinguish an EMPTY outbox from an
+            // UNROUTED one: both report zero, and the unrouted case is the
+            // ADR-020 defect that shipped -- a host driving one of three pumps
+            // printed "published 0" while every GRN sat pending, which reads
+            // as "nothing to send".
+            //
+            // Fixing the three streams that exist would leave the NEXT stream
+            // hitting the same wall and reading the same way. So the counter
+            // reports what it actually saw, per stream, and a non-zero
+            // `unrouted` is the signal that a row exists which nothing knows
+            // how to send.
+            for line in [
+                StreamTally {
+                    stream: "orders",
+                    published: report.published.len(),
+                    unrouted: report.unrouted_skipped.len(),
+                    refused: report.authority_violations.len(),
+                },
+                StreamTally {
+                    stream: "procurement",
+                    published: procurement.published.len(),
+                    unrouted: 0,
+                    refused: procurement.blocked.len() + procurement.over_budget.len(),
+                },
+                StreamTally {
+                    stream: "stock",
+                    published: ranged.ledger_acked.len() + ranged.gap_acked.len(),
+                    unrouted: 0,
+                    refused: ranged.blocked.len(),
+                },
+            ] {
+                line.report(phase);
+            }
+
             acked += report.published.len()
                 + procurement.published.len()
                 + ranged.ledger_acked.len()
@@ -360,6 +422,12 @@ impl AppState {
         if acked > 0 {
             eprintln!("holler-pos: {phase} outbox drain published {acked} row(s)");
         }
+
+        // THE INDEPENDENT NUMBER, printed beside the drain's own claim. Read
+        // from local_outbox, not accumulated by the loop above, so a
+        // mis-routing or mis-counting drain cannot make the two agree.
+        let pending = self.pending_outbox_rows();
+        eprintln!("holler-pos: {phase} drain complete: {acked} published this pass, {pending} row(s) still pending in local_outbox");
         acked
     }
 
@@ -371,6 +439,47 @@ impl AppState {
             .take();
         if let Some(handle) = handle {
             handle.shutdown();
+        }
+    }
+}
+
+/// One stream's outcome from a single drain pass (ADR-020 correction,
+/// 2026-09-02).
+///
+/// **`published` alone is not a report.** A drain that says "published 0"
+/// cannot distinguish an EMPTY outbox from one full of rows nothing knows how
+/// to route — and the second is the defect that shipped in this ADR's first
+/// implementation, where a host driving one of three pumps printed zero while
+/// every goods receipt sat pending. Reporting the counts separately, per
+/// stream, is what makes the next unrouted stream visible instead of silent.
+struct StreamTally {
+    stream: &'static str,
+    /// Acknowledged by the cloud and marked published.
+    published: usize,
+    /// Rows this pump SAW and had no route for. Left pending, not an error —
+    /// and the number that says "something is here that nothing can send".
+    unrouted: usize,
+    /// Refused locally or out of retry budget: an authority violation, a
+    /// blocked entry, a row past its per-entry budget. Also left pending.
+    refused: usize,
+}
+
+impl StreamTally {
+    /// Silent only when the stream was genuinely empty and clean, so that a
+    /// quiet drain means "nothing was there" and never "nothing was routable".
+    fn report(&self, phase: &str) {
+        if self.published == 0 && self.unrouted == 0 && self.refused == 0 {
+            return;
+        }
+        eprintln!(
+            "holler-pos: {phase} drain [{}] published={} unrouted={} refused={}",
+            self.stream, self.published, self.unrouted, self.refused
+        );
+        if self.unrouted > 0 {
+            eprintln!(
+                "holler-pos:   {} {} row(s) have NO ROUTE and will stay pending until one exists — this is not an empty queue",
+                self.unrouted, self.stream
+            );
         }
     }
 }
