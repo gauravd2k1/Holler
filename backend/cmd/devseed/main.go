@@ -30,19 +30,68 @@ import (
 // Fixed development ids. MUST match the constants in
 // edge/database/src/bin/devseed.rs — the two seeders describe the same outlet.
 const (
-	tenantID    = "0191a000-0000-7000-8000-000000000001"
-	brandID     = "0191a000-0000-7000-8000-000000000002"
-	outletID    = "0191a000-0000-7000-8000-00000000000a"
-	deviceID    = "0191a000-0000-7000-8000-00000000000b"
-	cashierID   = "0191a000-0000-7000-8000-00000000000c"
-	roleID      = "0191a000-0000-7000-8000-00000000000d"
-	userRoleID  = "0191a000-0000-7000-8000-00000000000e"
-	categoryID  = "0191a000-0000-7000-8000-000000000010"
-	itemChaiID  = "0191a000-0000-7000-8000-000000000011"
-	itemThaliID = "0191a000-0000-7000-8000-000000000012"
-	variantID   = "0191a000-0000-7000-8000-000000000013"
-	modSmallID  = "0191a000-0000-7000-8000-000000000014"
-	modLargeID  = "0191a000-0000-7000-8000-000000000015"
+	tenantID   = "0191a000-0000-7000-8000-000000000001"
+	brandID    = "0191a000-0000-7000-8000-000000000002"
+	outletID   = "0191a000-0000-7000-8000-00000000000a"
+	deviceID   = "0191a000-0000-7000-8000-00000000000b"
+	cashierID  = "0191a000-0000-7000-8000-00000000000c"
+	roleID     = "0191a000-0000-7000-8000-00000000000d"
+	userRoleID = "0191a000-0000-7000-8000-00000000000e"
+
+	// M5 criterion 5. TWO approval ceilings are required, not one: the
+	// refusal must name who CAN approve instead (section 64), and
+	// RolesAbleToApprove finds that by looking for a role whose
+	// po_approval_limit_paise covers the order total. With a single role
+	// seeded, the refusal is correct and names nobody, which is the half of
+	// the message that tells the caller what to do next.
+	//
+	// The buyer holds procurement.approve with the LOW ceiling and is the
+	// caller that gets refused. The owner role carries the HIGH ceiling and
+	// deliberately has no user: RolesAbleToApprove selects role rows, so a
+	// role with no holder is enough to make the message name it, and seeding
+	// a second login nobody uses would be fixture noise.
+	buyerRoleID     = "0191a000-0000-7000-8000-000000000020"
+	ownerRoleID     = "0191a000-0000-7000-8000-000000000021"
+	buyerID         = "0191a000-0000-7000-8000-000000000022"
+	buyerUserRoleID = "0191a000-0000-7000-8000-000000000023"
+
+	buyerEmail = "buyer@holler.test"
+
+	// 50,000.00 and 500,000.00 rupees, in paise. Criterion 5 raises an order
+	// between the two, so the same order is over the buyer's ceiling and
+	// under the owner's.
+	buyerApprovalLimitPaise = 5_000_000
+	ownerApprovalLimitPaise = 50_000_000
+
+	// A MINIMAL, ID-MATCHED slice of the edge seeder's inventory.
+	//
+	// inventory_item is CLOUD->EDGE config, but only the edge has ever seeded
+	// it: edge/database/src/bin/devseed.rs writes 32 items straight into
+	// SQLite under ids 0191e800-0000-7000-8000-{seq}, and this seeder wrote
+	// none, so Postgres held ZERO inventory rows for the seeded outlet. Both
+	// supplier_item.inventory_item_id and purchase_order_line.inventory_item_id
+	// are NOT NULL REFERENCES inventory_item(id), so no supplier and no
+	// purchase order could be raised through the API at all.
+	//
+	// The ids MATCH the edge's deliberately -- the two stores must agree about
+	// which row is which. But note what that costs: once both seeders have run,
+	// a row's PRESENCE at the edge is no longer evidence that it TRAVELLED
+	// there. Proving transport needs an empty edge and a real config pull, and
+	// nothing hosts one today (ADR-020). See docs/backlog.md, "the inventory
+	// config push has never moved a row".
+	//
+	// Deliberately a slice, not the whole set: mirroring all 32 items plus
+	// recipes into Go would make a second authority for seed data that drifts
+	// from the Rust one. These are the items procurement needs.
+	itemAttaID   = "0191e800-0000-7000-8000-000000000010"
+	itemOnionID  = "0191e800-0000-7000-8000-000000000007"
+	itemPaneerID = "0191e800-0000-7000-8000-000000000001"
+	categoryID   = "0191a000-0000-7000-8000-000000000010"
+	itemChaiID   = "0191a000-0000-7000-8000-000000000011"
+	itemThaliID  = "0191a000-0000-7000-8000-000000000012"
+	variantID    = "0191a000-0000-7000-8000-000000000013"
+	modSmallID   = "0191a000-0000-7000-8000-000000000014"
+	modLargeID   = "0191a000-0000-7000-8000-000000000015"
 )
 
 const (
@@ -136,6 +185,33 @@ func seed(ctx context.Context, pool postgres.Pool, passwordHash string) error {
 			ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, updated_at = EXCLUDED.updated_at`,
 			[]any{roleID, tenantID, now}},
 
+		{"role buyer", `INSERT INTO role
+			(id, tenant_id, code, name, po_approval_limit_paise, created_at, updated_at)
+			VALUES ($1, $2, 'BUYER', 'Buyer', $3, $4, $4)
+			ON CONFLICT (id) DO UPDATE SET
+				name = EXCLUDED.name,
+				po_approval_limit_paise = EXCLUDED.po_approval_limit_paise,
+				updated_at = EXCLUDED.updated_at`,
+			[]any{buyerRoleID, tenantID, int64(buyerApprovalLimitPaise), now}},
+
+		{"role owner", `INSERT INTO role
+			(id, tenant_id, code, name, po_approval_limit_paise, created_at, updated_at)
+			VALUES ($1, $2, 'OWNER', 'Owner', $3, $4, $4)
+			ON CONFLICT (id) DO UPDATE SET
+				name = EXCLUDED.name,
+				po_approval_limit_paise = EXCLUDED.po_approval_limit_paise,
+				updated_at = EXCLUDED.updated_at`,
+			[]any{ownerRoleID, tenantID, int64(ownerApprovalLimitPaise), now}},
+
+		{"app_user buyer", `INSERT INTO app_user
+			(id, tenant_id, email, full_name, password_hash, is_active, config_version, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, TRUE, 1, $6, $6)
+			ON CONFLICT (id) DO UPDATE SET
+				password_hash = EXCLUDED.password_hash,
+				is_active = EXCLUDED.is_active,
+				updated_at = EXCLUDED.updated_at`,
+			[]any{buyerID, tenantID, buyerEmail, "Dev Buyer", passwordHash, now}},
+
 		{"app_user", `INSERT INTO app_user
 			(id, tenant_id, email, full_name, password_hash, is_active, config_version, created_at, updated_at)
 			VALUES ($1, $2, $3, $4, $5, TRUE, 1, $6, $6)
@@ -144,6 +220,30 @@ func seed(ctx context.Context, pool postgres.Pool, passwordHash string) error {
 				is_active = EXCLUDED.is_active,
 				updated_at = EXCLUDED.updated_at`,
 			[]any{cashierID, tenantID, cashierEmail, "Dev Cashier", passwordHash, now}},
+
+		{"inventory_item INV-ATTA", `INSERT INTO inventory_item
+			(id, outlet_id, sku, name, category, dimension, reorder_level_micro, is_active, yield_factor_ppm, config_version)
+			VALUES ($1, $2, 'INV-ATTA', 'Atta (Wheat Flour)', 'Dry Goods', 'MASS', 25000000000, TRUE, 1000000, 1)
+			ON CONFLICT (id) DO UPDATE SET
+				name = EXCLUDED.name,
+				dimension = EXCLUDED.dimension`,
+			[]any{itemAttaID, outletID}},
+
+		{"inventory_item INV-ONION", `INSERT INTO inventory_item
+			(id, outlet_id, sku, name, category, dimension, reorder_level_micro, is_active, yield_factor_ppm, config_version)
+			VALUES ($1, $2, 'INV-ONION', 'Onion', 'Vegetables', 'MASS', 20000000000, TRUE, 1000000, 1)
+			ON CONFLICT (id) DO UPDATE SET
+				name = EXCLUDED.name,
+				dimension = EXCLUDED.dimension`,
+			[]any{itemOnionID, outletID}},
+
+		{"inventory_item INV-PANEER", `INSERT INTO inventory_item
+			(id, outlet_id, sku, name, category, dimension, reorder_level_micro, is_active, yield_factor_ppm, config_version)
+			VALUES ($1, $2, 'INV-PANEER', 'Paneer', 'Dairy', 'MASS', 5000000000, TRUE, 1000000, 1)
+			ON CONFLICT (id) DO UPDATE SET
+				name = EXCLUDED.name,
+				dimension = EXCLUDED.dimension`,
+			[]any{itemPaneerID, outletID}},
 
 		{"menu_category", `INSERT INTO menu_category (id, outlet_id, name, sort_order, config_version)
 			VALUES ($1, $2, 'Beverages', 1, 1)
@@ -202,8 +302,8 @@ func seed(ctx context.Context, pool postgres.Pool, passwordHash string) error {
 	// procurement.approve is deliberately NOT here. A cashier does not approve
 	// purchase orders, and this list is cached flat on the edge, where approval
 	// must never happen at all. Criterion 5 needs a role that HOLDS approve with
-	// a po_approval_limit_paise below the order total; that is a separate role
-	// and is not seeded yet.
+	// a po_approval_limit_paise below the order total: that is the BUYER role
+	// seeded below, on its own user, and never this one.
 	for _, p := range []string{
 		"order.create", "order.modify", "table.manage",
 		"inventory.manage", "inventory.count",
@@ -214,6 +314,33 @@ func seed(ctx context.Context, pool postgres.Pool, passwordHash string) error {
 			 ON CONFLICT DO NOTHING`, roleID, p); err != nil {
 			return fmt.Errorf("seeding role_permission %s: %w", p, err)
 		}
+	}
+
+	// The BUYER role: raises and approves purchase orders, under a ceiling.
+	// procurement.approve is what PoApprovalLimitForUser joins on, so a role
+	// carrying a limit without this permission has no effect at all.
+	for _, p := range []string{"procurement.manage", "procurement.approve"} {
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO role_permission (role_id, permission) VALUES ($1, $2)
+			 ON CONFLICT DO NOTHING`, buyerRoleID, p); err != nil {
+			return fmt.Errorf("seeding buyer role_permission %s: %w", p, err)
+		}
+	}
+
+	// The OWNER role exists to be NAMED by the refusal, so it needs the same
+	// permission the query filters on. It has no user by design.
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO role_permission (role_id, permission) VALUES ($1, $2)
+		 ON CONFLICT DO NOTHING`, ownerRoleID, "procurement.approve"); err != nil {
+		return fmt.Errorf("seeding owner role_permission: %w", err)
+	}
+
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO user_role (id, user_id, role_id, outlet_id, created_at)
+		 VALUES ($1, $2, $3, $4, $5)
+		 ON CONFLICT (id) DO NOTHING`,
+		buyerUserRoleID, buyerID, buyerRoleID, outletID, now); err != nil {
+		return fmt.Errorf("seeding buyer user_role: %w", err)
 	}
 
 	// The cashier's role assignment is scoped to the seeded outlet.

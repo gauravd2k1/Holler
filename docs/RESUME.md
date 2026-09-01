@@ -156,6 +156,46 @@ the same reopen can be shown to find the rows when they were written.**
 Caveat, per (a0): this is offline behaviour against locally-seeded edge data. It
 says nothing about transport.
 
+**(a2) CRITERION 5 IS OBSERVED, INCLUDING THE AMEND PATH (2026-09-01).** Against
+the API, per the criterion's own scoping -- `apps/admin` does not exist and is M6,
+so purchase orders are raised through the API and that is the honest statement of
+what M5 delivers.
+
+Seeded for it: role `BUYER` with `po_approval_limit_paise` 5,000,000 (Rs 50,000)
+holding `procurement.manage` + `procurement.approve`, on user `buyer@holler.test`;
+role `OWNER` at 50,000,000 (Rs 500,000) with `procurement.approve` and
+**deliberately no user** -- `RolesAbleToApprove` selects role rows, so a role with
+no holder is enough to be named. Two ceilings are required, not one: with a single
+role the refusal is correct and names nobody, which is the half of the message
+that tells the caller what to do next.
+
+Sequence, all observed:
+
+1. PO raised at 2,500,000 paise (Rs 25,000), **under** the buyer's ceiling ->
+   `PENDING_APPROVAL`.
+2. Buyer approves -> `APPROVED`, `approved_by_user_id` set, `approved_at` set.
+3. Amend upward to 10,000,000 paise (Rs 100,000) -> **`PENDING_APPROVAL`, and
+   `approved_by_user_id` / `approved_at` both cleared.** Confirmed by an
+   independent PostgreSQL read, not only the response body. This is the
+   security-shaped hole T5a closed, and it was previously evidenced only by a Go
+   test.
+4. Buyer re-approves -> **403**, with all three section 64 elements present:
+
+```
+{"code":"po_exceeds_approval_limit","message":"this purchase order exceeds your
+role's approval limit: this purchase order totals 10000000 paise and your role's
+approval limit is 5000000 paise. Next: ask one of these roles to approve it
+instead: [Owner]","total_paise":10000000,"limit_paise":5000000,
+"can_be_approved_by_roles":["Owner"]}
+```
+
+A fifth thing fell out of the run and is worth keeping: **the amend route refuses
+to grant approval.** `PATCH` with `status: "APPROVED"` is rejected with *"may only
+be reached through POST /procurement/purchase-orders/{id}/approve"*, so the
+revocation in step 3 cannot be undone through the same call that triggers it.
+
+Caveat, per (a0): cloud-side only. Says nothing about config transport.
+
 **(a) THE M5 ACCEPTANCE PASS IS MID-FLIGHT AND NOTHING IS OBSERVED YET.** Zero of
 seven criteria are acceptance-observed. Rows 3 and 4 are PARTIALLY observed —
 T4 drove the shipping screens in real Chromium against the dev server and saw the

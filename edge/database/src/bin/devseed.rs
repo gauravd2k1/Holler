@@ -36,6 +36,9 @@ const BRAND_ID: &str = "0191a000-0000-7000-8000-000000000002";
 const OUTLET_ID: &str = "0191a000-0000-7000-8000-00000000000a";
 const DEVICE_ID: &str = "0191a000-0000-7000-8000-00000000000b";
 const CASHIER_ID: &str = "0191a000-0000-7000-8000-00000000000c";
+/// The M5 criterion 5 approver. Matches `buyerID` in `backend/cmd/devseed`.
+const BUYER_ID: &str = "0191a000-0000-7000-8000-000000000022";
+const BUYER_EMAIL: &str = "buyer@holler.test";
 // KDS screen device row (T12, Milestone 2). Next in the fixed devseed
 // sequence after the cashier (...000c). This id is ALSO hand-pinned into
 // apps/kds/.env.dev by the coordinator ahead of this change landing — it
@@ -1369,6 +1372,20 @@ const CASHIER_EMAIL: &str = "cashier@holler.test";
 /// the POS consults that permission nowhere.
 const CASHIER_PERMISSIONS: &str = r#"["order.create","order.modify","table.manage","inventory.manage","inventory.count","procurement.manage"]"#;
 
+/// The buyer's flattened list, mirroring the BUYER role in
+/// `backend/cmd/devseed`.
+///
+/// THE CEILING IS NOT HERE, AND CANNOT BE. `po_approval_limit_paise` lives on
+/// `role`, and THERE IS NO `role` TABLE IN SQLITE AT ALL -- the edge flattens
+/// permissions onto `app_user`. That is by design, not an omission: the edge
+/// must never approve a purchase order, so it has no business holding the
+/// amount that would let it decide. `procurement.approve` appears here only
+/// because the edge caches faithfully what the cloud says about a user, and
+/// the POS consults this permission nowhere
+/// (`apps/pos/src/domain/procurement.ts`).
+const BUYER_PERMISSIONS: &str =
+    r#"["order.create","order.modify","procurement.manage","procurement.approve"]"#;
+
 /// Fixed timestamp for seeded rows. A constant rather than "now" so re-running
 /// the seeder produces an identical database — this crate has no clock
 /// dependency and a dev fixture does not need a real one.
@@ -1504,6 +1521,23 @@ fn seed(db: &Db, password_hash: &str) -> Result<(), holler_edge_database::DbErro
             pin_hash: None,
             is_active: true,
             permissions_json: CASHIER_PERMISSIONS.to_string(),
+            config_version: CONFIG_VERSION,
+            updated_at: SEEDED_AT.to_string(),
+        },
+    )?;
+
+    repo::replace_app_user(
+        conn,
+        &AppUser {
+            id: BUYER_ID.to_string(),
+            tenant_id: TENANT_ID.to_string(),
+            outlet_id: OUTLET_ID.to_string(),
+            email: BUYER_EMAIL.to_string(),
+            full_name: "Dev Buyer".to_string(),
+            password_hash: password_hash.to_string(),
+            pin_hash: None,
+            is_active: true,
+            permissions_json: BUYER_PERMISSIONS.to_string(),
             config_version: CONFIG_VERSION,
             updated_at: SEEDED_AT.to_string(),
         },
