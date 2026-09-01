@@ -216,12 +216,7 @@ impl AppState {
     /// Same as [`AppState::new`], but hosting a caller-supplied [`SyncWorker`]
     /// — for the ADR-020 falsification tests, which must point the worker at a
     /// fake cloud rather than at whatever `HOLLER_CLOUD_BASE_URL` says.
-    pub fn new_with_sync(
-        db: Db,
-        outlet_id: String,
-        device_id: String,
-        worker: SyncWorker,
-    ) -> Self {
+    pub fn new_with_sync(db: Db, outlet_id: String, device_id: String, worker: SyncWorker) -> Self {
         Self {
             db: Arc::new(Mutex::new(db)),
             outlet_id,
@@ -291,10 +286,51 @@ impl AppState {
                     break;
                 }
             };
+
+            // THREE STREAMS, NOT ONE. `pump_outbox` routes orders and table
+            // sessions; a goods receipt is `("goods_receipt_note",
+            // "GoodsReceiptRecorded")`, which that router does not map at all --
+            // it reports the row as `unrouted_skipped` and leaves it pending
+            // forever. Procurement has its own pump, and the two high-volume
+            // stock streams have a third. Hosting one of three would have left
+            // every GRN, return, transfer and ledger entry sitting in an outbox
+            // that a drain reported as "nothing to send".
+            let procurement = match worker.pump_procurement(&mut db, DRAIN_BATCH_LIMIT) {
+                Ok(report) => report,
+                Err(e) => {
+                    eprintln!("holler-pos: {phase} procurement drain failed: {e}");
+                    break;
+                }
+            };
+            let ranged = match worker.pump_ranged_streams(&mut db, DRAIN_BATCH_LIMIT) {
+                Ok(report) => report,
+                Err(e) => {
+                    eprintln!("holler-pos: {phase} stock stream drain failed: {e}");
+                    break;
+                }
+            };
             drop(db);
 
-            acked += report.published.len();
-            let progressed = !report.published.is_empty();
+            acked += report.published.len()
+                + procurement.published.len()
+                + ranged.ledger_acked.len()
+                + ranged.gap_acked.len();
+            let progressed = !report.published.is_empty()
+                || !procurement.published.is_empty()
+                || !ranged.ledger_acked.is_empty()
+                || !ranged.gap_acked.is_empty();
+
+            // A stream that stopped is reported by its own name: "the drain
+            // stopped" without saying WHICH stream is the swallowed-stderr
+            // failure from the e2e-scenario sweep, one layer in.
+            for (name, stop) in [
+                ("procurement", &procurement.stopped),
+                ("stock streams", &ranged.stopped),
+            ] {
+                if let Some(reason) = stop {
+                    eprintln!("holler-pos: {phase} {name} drain stopped: {reason:?}");
+                }
+            }
 
             match report.stopped {
                 // No route to the cloud: the shop-floor case. Stop now. The

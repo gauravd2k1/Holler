@@ -152,6 +152,27 @@ attempts, gives up on a deadline, leaves the rows in the outbox, and exits. The
 startup drain picks them up. A shutdown path that hangs waiting for a network
 that is not coming is a worse defect than the one this ADR fixes.
 
+### Correction, 2026-09-02: the host must drive THREE pumps, not one
+
+The first implementation called `pump_outbox` alone, and that is not the outbox.
+`worker::pump_outbox` routes orders and table sessions; a goods receipt is
+`("goods_receipt_note", "GoodsReceiptRecorded")`, which that router does not map
+at all — it reports the row as `unrouted_skipped` and leaves it pending. Ledger
+entries and stock gaps are a third stream again (`pump_ranged_streams`), and
+procurement has its own (`pump_procurement`) carrying the per-entry retry budget.
+
+**So the drain would have reported success while every GRN, purchase return,
+transfer and ledger entry stayed in the outbox.** Worse than the ordering trap
+this ADR already warns about: that one publishes nothing and says nothing, this
+one publishes nothing and says *"drain published 0 rows"*, which reads as an
+empty outbox rather than an unrouted one.
+
+Found while writing the procedure to close M5 criterion 6 — by asking which code
+path a GRN actually takes, rather than assuming "the outbox" was one thing. The
+drain now runs all three pumps and names the stream in every stop message,
+because "the drain stopped" without saying which stream is the swallowed-stderr
+failure from the CI sweep, one layer in.
+
 ### Scope of the first implementation
 
 Landed: the worker is constructed in the POS Tauri process, held in `AppState`
