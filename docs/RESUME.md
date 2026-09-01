@@ -1,7 +1,7 @@
 # M5 resume state — 2026-08-31
 
-`main` is at **`310d3a1`**. Contracts are **FROZEN at v0.6.2**; migrations run
-through **sqlite 0029 / postgres 0030**. **ALL 16 CI JOBS ARE GREEN** as of
+Contracts are **FROZEN at v0.6.3** (ADR-021); migrations run
+through **sqlite 0030 / postgres 0031**. **ALL 16 CI JOBS ARE GREEN** as of
 `310d3a1` (run 33335138157, 2026-08-30) — the first fully green run in the
 repository's readable history, and the first `e2e-scenario` pass since at least
 2026-08-12. All four standing red jobs are fixed and CI-confirmed (§2b).
@@ -235,6 +235,29 @@ has no caller, so the inbound half is unhosted and the
 inventory-config-push backlog item stays open. There is also no periodic pump
 yet -- a till open all day whose uplink returns mid-service does not replay until
 it closes. Criterion 6 is now *reachable*; it is not yet *observed*.
+
+**(a4) CRITERION 7 IS OBSERVED, AND 0.6.3 FIXED THE ARITHMETIC UNDER IT
+(2026-09-02).** The live figure — 13 paise/g over three receipts — matched the
+invoices exactly. Checking WHY it matched found two problems the criterion could
+not see.
+
+1. **Per-receipt rounding.** `unit_cost_paise` is a RATE, rounded to whole paise
+   once per receipt, and the average summed that rate. The error is ±0.5 paise on
+   a per-gram figure, so it scales inversely with price: **+20% at 2.5 paise/g**,
+   one-directional per item, worst on cheap staples. The acceptance dataset
+   passed only because 10, 10 and 18 divide evenly — it was chosen to make the
+   average vary, not to make the rounding fail. Fixed by ADR-021 / contracts
+   0.6.3: the ledger stores `line_total_paise` and the division happens once.
+2. **An undocumented definition.** The averaging query is UNBOUNDED, so what is
+   implemented is a **lifetime cumulative purchase-weighted average, not weighted
+   average cost of stock on hand**. Only half of that was ever decided. NOT
+   folded into 0.6.3; filed in `docs/backlog.md` against the first pilot.
+
+**Criterion 7 is definition-neutral as written** ("after two receipts at
+different prices") so it passes under either definition and cannot report which
+one shipped. That is the retro line for this milestone: an acceptance criterion
+satisfied by either of two definitions cannot tell you which one you built.
+
 
 **(a) THE M5 ACCEPTANCE PASS IS MID-FLIGHT AND NOTHING IS OBSERVED YET.** Zero of
 seven criteria are acceptance-observed. Rows 3 and 4 are PARTIALLY observed —
@@ -504,8 +527,9 @@ database, and the fail-fast CI job shape that hid four pushes of verdicts.
 counter reset; `formatter_never_repeats_past_the_old_wrap_point` drives past the
 old collision point (25975).
 
-**Contracts are FROZEN at v0.6.2**, cross-checked against
-`packages/contracts/package.json` by `scripts/check-milestone-marker.mjs`.
+**Contracts are FROZEN at v0.6.3**, cross-checked against
+`packages/contracts/package.json` by `scripts/check-milestone-marker.mjs` — which
+caught this very line claiming 0.6.2 after the bump, and failed CI for it.
 
 ---
 
