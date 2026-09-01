@@ -73,11 +73,7 @@ fn lock_db(state: &AppState) -> AppResult<std::sync::MutexGuard<'_, Db>> {
 /// current one, and a `DAILY` invoice series reset mid-service. One
 /// implementation now: `holler_edge_database::repo::compute_outlet_business_date`,
 /// which honours `outlet.timezone` and `outlet.day_start_time`.
-fn business_date_for(
-    db: &Db,
-    outlet_id: &str,
-    instant_iso: &str,
-) -> AppResult<String> {
+fn business_date_for(db: &Db, outlet_id: &str, instant_iso: &str) -> AppResult<String> {
     Ok(holler_edge_database::repo::compute_outlet_business_date(
         db.connection(),
         outlet_id,
