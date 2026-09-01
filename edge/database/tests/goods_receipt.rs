@@ -918,3 +918,301 @@ fn an_outbound_transfer_posts_a_stock_transfer_origin_never_manual() {
         "no procurement path may write MANUAL after contracts 0.6.2"
     );
 }
+
+// ---------------------------------------------------------------------------
+// contracts 0.6.3 / ADR-021 — the ledger stores the INVOICED TOTAL, not only a
+// rounded per-unit rate.
+// ---------------------------------------------------------------------------
+
+/// FALSIFICATION (§66). Written to FAIL against the pre-0.6.3 code, where the
+/// ledger carried only `unit_cost_paise` and weighted average was summed from
+/// that rate.
+///
+/// The price is chosen so the rate does NOT divide evenly. 4 sacks at
+/// Rs 2,375 = Rs 9,500 = 950,000 paise over 4 x 50 kg = 200,000 g, which is
+/// exactly 4.75 paise/g. Rounded half away from zero that rate is stored as 5,
+/// and an average summed from it reads 5 — a +5.26% overstatement, permanently,
+/// on every gram.
+///
+/// The assertion is on the STORED ROW, not only on the average. Testing the
+/// average alone would still pass if some other path kept rounding first: the
+/// defect is that the exact money was never written down, and that is what this
+/// pins.
+#[test]
+fn the_ledger_stores_the_invoiced_total_exactly_not_a_rounded_rate() {
+    let mut db = configured();
+    db.record_goods_receipt(receipt(
+        "grn-precision",
+        None,
+        Some(SUPPLIER),
+        vec![line(RICE, "SACK", 4, 237_500, "MASS")],
+    ))
+    .expect("a receipt at a price that does not divide evenly must still land");
+
+    let (total, rate): (Option<i64>, Option<i64>) = db
+        .connection()
+        .query_row(
+            "SELECT line_total_paise, unit_cost_paise FROM stock_ledger_entry \
+             WHERE source_grn_id = 'grn-precision'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("read the posted ledger row");
+
+    // The money the invoice actually said, to the paise. This is the assertion
+    // that fails on the old code, where the column did not exist at all.
+    assert_eq!(
+        total,
+        Some(950_000),
+        "the ledger must carry the invoiced total exactly: 4 sacks at Rs 2,375 is Rs 9,500"
+    );
+
+    // The rate is still stored and is still rounded — fine, because it is a
+    // display figure and no longer an averaging input. Pinned here so the loss
+    // it carries stays visible rather than being quietly assumed away.
+    assert_eq!(
+        rate,
+        Some(5),
+        "4.75 paise/g rounds half away from zero to 5 — the rounding that used to reach the average"
+    );
+
+    let average = db
+        .weighted_average_cost_paise(OUTLET, RICE)
+        .expect("read wac")
+        .expect("one costed receipt must produce an average");
+    assert_eq!(
+        average, 5,
+        "950,000 paise over 200,000 g is 4.75, which rounds ONCE, at the end"
+    );
+}
+
+/// The same defect where it accumulates: two receipts whose rates each round in
+/// the same direction. Rate-summed, the answer inherits both roundings;
+/// total-summed it inherits neither until the final division.
+#[test]
+fn two_receipts_at_uneven_prices_do_not_accumulate_rounding() {
+    let mut db = configured();
+    // 4 sacks at Rs 2,375 -> 950,000 paise, exactly 4.75 paise/g (stored 5).
+    db.record_goods_receipt(receipt(
+        "grn-a",
+        None,
+        Some(SUPPLIER),
+        vec![line(RICE, "SACK", 4, 237_500, "MASS")],
+    ))
+    .expect("first receipt");
+    // 4 sacks at Rs 2,625 -> 1,050,000 paise, exactly 5.25 paise/g (stored 5).
+    db.record_goods_receipt(receipt(
+        "grn-b",
+        None,
+        Some(SUPPLIER),
+        vec![line(RICE, "SACK", 4, 262_500, "MASS")],
+    ))
+    .expect("second receipt");
+
+    let average = db
+        .weighted_average_cost_paise(OUTLET, RICE)
+        .expect("read wac")
+        .expect("average");
+
+    // Computed from the INVOICES, not from the ledger, so this cannot agree
+    // with the code by sharing its arithmetic.
+    let invoiced_paise: i128 = 950_000 + 1_050_000;
+    let grams_received: i128 = 400_000;
+    assert_eq!(i128::from(average), invoiced_paise / grams_received);
+    assert_eq!(average, 5);
+}
+
+/// REGRESSION GUARD, not a falsification: it passes today by design.
+///
+/// A positive count adjustment is valued at the current average, so folding it
+/// back in would let a count drag the purchase-weighted figure. It is kept out
+/// by `stock::count` writing NO cost at all — one layer earlier than the
+/// averaging filter.
+///
+/// **`line_total_paise IS NOT NULL` is NOT what defends this.** Whoever adds a
+/// cost to a count adjustment will very likely add a total with it: the two
+/// travel together by convention now, and the filter would admit the row. THIS
+/// TEST IS THE DEFENCE. It fails the day a count adjustment is costed, which is
+/// a change that would look like an improvement.
+#[test]
+fn count_adjustments_are_uncosted_and_never_enter_the_average() {
+    let mut db = configured();
+    db.record_goods_receipt(receipt(
+        "grn-base",
+        None,
+        Some(SUPPLIER),
+        vec![line(RICE, "SACK", 4, 250_000, "MASS")],
+    ))
+    .expect("receipt");
+
+    let before = db
+        .weighted_average_cost_paise(OUTLET, RICE)
+        .expect("read wac")
+        .expect("average");
+
+    // ACTUALLY POST A COUNT ADJUSTMENT. Asserting COUNT(*) = 0 over a table
+    // that contains no count adjustments at all is green on absent data -- it
+    // passes whatever stock::count does, which makes it worthless as a guard.
+    // Falsified: with count.rs temporarily costing its rows, the version of
+    // this test without this block still passed.
+    db.open_stock_count(holler_edge_database::model::NewStockCount {
+        id: "count-guard".to_string(),
+        outlet_id: OUTLET.to_string(),
+        started_at: "2026-08-29T09:00:00Z".to_string(),
+        counted_by_user_id: Some(USER.to_string()),
+        note: None,
+    })
+    .expect("open the count");
+    db.add_or_update_stock_count_line(
+        "count-guard",
+        OUTLET,
+        holler_edge_database::model::NewStockCountLine {
+            inventory_item_id: RICE.to_string(),
+            // MORE than the receipt put in, so the adjustment is POSITIVE --
+            // the case that would drag the average upward if it were costed.
+            counted_quantity_micro: 300 * KG,
+            note: None,
+        },
+    )
+    .expect("count a line");
+    db.complete_stock_count("count-guard", OUTLET, "2026-08-29T09:30:00Z")
+        .expect("complete the count");
+
+    let adjustments: i64 = db
+        .connection()
+        .query_row(
+            "SELECT COUNT(*) FROM stock_ledger_entry WHERE origin = 'COUNT_ADJUSTMENT'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("count adjustment rows");
+    assert!(
+        adjustments > 0,
+        "fixture assertion: the count must have posted an adjustment, or every assertion below is green on absent data"
+    );
+
+    let costed_adjustments: i64 = db
+        .connection()
+        .query_row(
+            "SELECT COUNT(*) FROM stock_ledger_entry \
+             WHERE origin = 'COUNT_ADJUSTMENT' AND unit_cost_paise IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )
+        .expect("count costed adjustments");
+    assert_eq!(
+        costed_adjustments, 0,
+        "no path may write a cost onto a count adjustment: it is valued AT the average, and costing it would let a count move the purchase price"
+    );
+
+    let after = db
+        .weighted_average_cost_paise(OUTLET, RICE)
+        .expect("read wac")
+        .expect("average");
+    assert_eq!(before, after);
+}
+
+/// The overflow bound, stated and covered.
+///
+/// `quantity_applied_micro * unit_cost_paise` must fit `i64` wherever it is
+/// still formed — the 0030/0031 backfill expression, and the drift relation.
+/// Quantity is bounded at 1e15 micro-units by
+/// `stock_ledger_entry_quantity_is_bounded`, so the product overflows once the
+/// rate passes about 9,223 paise per base unit (i64::MAX / 1e15). The averaging
+/// path no longer forms that product at all — it sums money and multiplies by
+/// 1e6 inside an `i128` — which is the point: the bound constrains the legacy
+/// expression, not the new one.
+#[test]
+fn the_cost_product_bound_is_documented_and_reachable() {
+    const MAX_QUANTITY_MICRO: i128 = 1_000_000_000_000_000;
+    let max_safe_rate = i128::from(i64::MAX) / MAX_QUANTITY_MICRO;
+    assert_eq!(
+        max_safe_rate, 9223,
+        "at the 1e15 quantity bound the rate may not exceed 9,223 paise per base unit before quantity x rate overflows i64"
+    );
+
+    // One expensive row through the real receipt path: 1 sack of 50 kg at
+    // Rs 40,000 is 800 paise/g, and the exact total survives.
+    let mut db = configured();
+    db.record_goods_receipt(receipt(
+        "grn-bound",
+        None,
+        Some(SUPPLIER),
+        vec![line(RICE, "SACK", 1, 4_000_000, "MASS")],
+    ))
+    .expect("an expensive receipt must land");
+
+    let total: Option<i64> = db
+        .connection()
+        .query_row(
+            "SELECT line_total_paise FROM stock_ledger_entry WHERE source_grn_id = 'grn-bound'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("read total");
+    assert_eq!(total, Some(4_000_000));
+
+    let average = db
+        .weighted_average_cost_paise(OUTLET, RICE)
+        .expect("read wac")
+        .expect("average");
+    assert_eq!(average, 80, "4,000,000 paise over 50,000 g is 80 paise/g");
+}
+
+/// THE DRIFT TEST the module doc used to only claim. For every costed receipt
+/// row, the stored rate must be exactly what deriving it from the stored total
+/// produces — one expression, one place that can be wrong.
+///
+/// This is what replaces a cross-aggregate trigger: nothing forces
+/// `line_total_paise` to equal the invoiced money, but the two columns can
+/// never disagree about the arithmetic between them.
+#[test]
+fn the_stored_rate_is_always_derived_from_the_stored_total() {
+    let mut db = configured();
+    for (id, price) in [
+        ("grn-d1", 237_500),
+        ("grn-d2", 262_500),
+        ("grn-d3", 250_000),
+        ("grn-d4", 1),
+    ] {
+        db.record_goods_receipt(receipt(
+            id,
+            None,
+            Some(SUPPLIER),
+            vec![line(RICE, "SACK", 3, price, "MASS")],
+        ))
+        .expect("receipt");
+    }
+
+    let conn = db.connection();
+    let mut stmt = conn
+        .prepare(
+            "SELECT quantity_applied_micro, unit_cost_paise, line_total_paise \
+             FROM stock_ledger_entry WHERE line_total_paise IS NOT NULL",
+        )
+        .expect("prepare");
+    let rows: Vec<(i64, i64, i64)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .expect("query")
+        .map(|r| r.expect("row"))
+        .collect();
+    assert_eq!(rows.len(), 4, "every receipt must have posted a costed row");
+
+    for (quantity_micro, rate, total) in rows {
+        // Half away from zero, matching convert.rs. Written out rather than
+        // calling the crate's helper, so the test cannot agree with the code by
+        // sharing the function that might be wrong.
+        let numerator = i128::from(total) * 1_000_000;
+        let denominator = i128::from(quantity_micro);
+        let expected = if numerator >= 0 {
+            (numerator + denominator / 2) / denominator
+        } else {
+            (numerator - denominator / 2) / denominator
+        };
+        assert_eq!(
+            i128::from(rate),
+            expected,
+            "unit_cost_paise must be derived from line_total_paise, never computed independently"
+        );
+    }
+}

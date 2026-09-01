@@ -1282,6 +1282,17 @@ pub struct NewStockLedgerEntry {
     /// them would let issuing stock move the purchase price
     /// (`crate::procurement::cost`).
     pub unit_cost_paise: Option<i64>,
+    /// Contracts 0.6.3 (ADR-021): the EXACT money this row is worth, unrounded,
+    /// as invoiced — and the ONLY input to weighted average cost.
+    ///
+    /// `Some(_)` on a receipt and NOWHERE ELSE. `unit_cost_paise` is a derived
+    /// per-base-unit RATE, rounded to whole paise once per receipt, so a
+    /// weighted average summed from rates inherits a rounding it can never
+    /// recover (+/-0.5 paise per gram is +20% at 2.5 paise/g). Only a receipt
+    /// has an invoiced total; wastage, counts, variance and outbound movements
+    /// are valued AT the average, so writing `quantity x rate` for them would
+    /// fabricate precision and feed it back into the average that produced it.
+    pub line_total_paise: Option<i64>,
     /// Contracts 0.5.5 (`packages/contracts/sqlite/0023_stock_count_integrity.sql`):
     /// typed provenance for a `COUNT_ADJUSTMENT` row, no FK (the same
     /// no-FK provenance discipline as `recipe_id`/`source_order_id`) —
@@ -1387,6 +1398,8 @@ pub struct StockLedgerEntry {
     pub modifier_name: Option<String>,
     pub modifier_delta_version: Option<i64>,
     pub unit_cost_paise: Option<i64>,
+    /// Contracts 0.6.3 — see [`NewStockLedgerEntry::line_total_paise`].
+    pub line_total_paise: Option<i64>,
     /// Contracts 0.5.5 — see [`NewStockLedgerEntry::source_stock_count_id`].
     pub source_stock_count_id: Option<String>,
     /// Contracts 0.6.0 (`packages/contracts/sqlite/0027_m5_procurement.sql`):

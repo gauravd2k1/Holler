@@ -220,6 +220,10 @@ pub(crate) fn complete_stock_count(
             // no-FK provenance — the fix for the gap this crate flagged
             // when it had only `note` to link with.
             unit_cost_paise: None,
+            // No invoiced total: this origin is valued AT the average, not by an
+            // invoice, so writing a rounded quantity x rate product here would
+            // fabricate precision and feed it back into the average (0.6.3).
+            line_total_paise: None,
             source_stock_count_id: Some(stock_count_id.to_string()),
             source_grn_id: None,
             source_purchase_return_id: None,

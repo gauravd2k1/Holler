@@ -577,7 +577,12 @@ pub(crate) fn record_goods_receipt(
             modifier_delta_id: None,
             modifier_name: None,
             modifier_delta_version: None,
+            // 0.6.3: the total is the FACT (it is what the invoice said) and
+            // the rate is DERIVED from it, in one expression in
+            // `convert::convert_line`. They are never computed independently
+            // from the entered price, and a drift test pins the relation.
             unit_cost_paise: Some(resolved_line.conversion.unit_cost_paise),
+            line_total_paise: Some(resolved_line.conversion.line_total_paise),
             source_stock_count_id: None,
             source_grn_id: Some(req.id.clone()),
             source_purchase_return_id: None,

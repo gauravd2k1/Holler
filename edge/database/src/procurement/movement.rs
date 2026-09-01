@@ -403,6 +403,11 @@ fn post_outbound_ledger_entry(
         modifier_name: None,
         modifier_delta_version: None,
         unit_cost_paise: Some(unit_cost_paise),
+        // Costed, but NOT invoiced: an outbound movement is valued at the
+        // average it is leaving, so it has no total to state. It never enters
+        // the average — a purchase return therefore leaves the purchase-weighted
+        // figure untouched (ADR-021 consequence 4).
+        line_total_paise: None,
         source_stock_count_id: None,
         source_grn_id: None,
         source_purchase_return_id,

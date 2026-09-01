@@ -41,6 +41,7 @@ use rusqlite::{params, Connection};
 
 use crate::error::DbResult;
 use crate::inventory::round_ratio_half_away_from_zero;
+use crate::procurement::convert::MICRO;
 
 /// The weighted average cost of one item at one outlet, in integer paise
 /// per BASE unit, or `None` when this outlet has never recorded a costed
@@ -58,11 +59,11 @@ pub(crate) fn weighted_average_cost_paise(
 ) -> DbResult<Option<i64>> {
     let (total_quantity_micro, total_value): (i64, i64) = conn.query_row(
         "SELECT COALESCE(SUM(quantity_applied_micro), 0),
-                COALESCE(SUM(quantity_applied_micro * unit_cost_paise), 0)
+                COALESCE(SUM(line_total_paise), 0)
          FROM stock_ledger_entry
          WHERE outlet_id = ?1
            AND inventory_item_id = ?2
-           AND unit_cost_paise IS NOT NULL
+           AND line_total_paise IS NOT NULL
            AND quantity_applied_micro > 0",
         params![outlet_id, inventory_item_id],
         |row| Ok((row.get(0)?, row.get(1)?)),
@@ -72,8 +73,16 @@ pub(crate) fn weighted_average_cost_paise(
         return Ok(None);
     }
 
-    let rounded =
-        round_ratio_half_away_from_zero(i128::from(total_value), i128::from(total_quantity_micro));
+    // SCALE. `line_total_paise` is money; `quantity_applied_micro` is
+    // MICRO-units. The old `SUM(quantity x rate)` form cancelled the 10^6
+    // implicitly because the rate was already per BASE unit -- summing money
+    // directly does not, so the numerator carries the factor explicitly or
+    // every average comes back a millionth of its true size. The i128
+    // accumulator is what makes that multiplication safe.
+    let rounded = round_ratio_half_away_from_zero(
+        i128::from(total_value).saturating_mul(i128::from(MICRO)),
+        i128::from(total_quantity_micro),
+    );
     Ok(i64::try_from(rounded).ok())
 }
 
@@ -88,7 +97,25 @@ mod tests {
     const OUTLET: &str = "outlet-1";
     const RICE: &str = "item-rice";
 
+    /// Posts with the total DERIVED from the rate. Only sound for fixtures
+    /// whose numbers divide evenly -- which is exactly why it cannot be used
+    /// for the precision test below.
     fn post(db: &mut Db, quantity_micro: i64, unit_cost_paise: Option<i64>, entry_type: &str) {
+        let derived = unit_cost_paise
+            .filter(|_| quantity_micro > 0)
+            .map(|c| (i128::from(quantity_micro) * i128::from(c) / 1_000_000) as i64);
+        post_with_total(db, quantity_micro, unit_cost_paise, derived, entry_type)
+    }
+
+    /// Posts a row stating BOTH figures independently, the way a receipt does:
+    /// the invoiced total is the fact, the rate is derived from it.
+    fn post_with_total(
+        db: &mut Db,
+        quantity_micro: i64,
+        unit_cost_paise: Option<i64>,
+        line_total_paise: Option<i64>,
+        entry_type: &str,
+    ) {
         let conn = db.connection_mut();
         let tx = conn.transaction().expect("begin");
         let entry = NewStockLedgerEntry {
@@ -122,6 +149,7 @@ mod tests {
             modifier_name: None,
             modifier_delta_version: None,
             unit_cost_paise,
+            line_total_paise,
             source_stock_count_id: None,
             source_grn_id: None,
             source_purchase_return_id: None,

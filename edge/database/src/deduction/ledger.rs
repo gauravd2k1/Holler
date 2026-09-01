@@ -72,9 +72,9 @@ pub(crate) fn insert_stock_ledger_entry(
              source_order_id, source_order_item_id, reason_code, note, occurred_at, business_date,
              created_by_user_id, modifier_delta_id, modifier_name, modifier_delta_version,
              unit_cost_paise, source_stock_count_id, source_grn_id,
-             source_purchase_return_id, source_stock_transfer_out_id)
+             source_purchase_return_id, source_stock_transfer_out_id, line_total_paise)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
-                 ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)",
+                 ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)",
         params![
             id,
             e.outlet_id,
@@ -103,6 +103,7 @@ pub(crate) fn insert_stock_ledger_entry(
             e.source_grn_id,
             e.source_purchase_return_id,
             e.source_stock_transfer_out_id,
+            e.line_total_paise,
         ],
     )?;
     Ok(())
@@ -306,6 +307,10 @@ fn deduct_one_line(
                     modifier_name: None,
                     modifier_delta_version: None,
                     unit_cost_paise: None,
+                    // No invoiced total: this origin is valued AT the average, not by an
+                    // invoice, so writing a rounded quantity x rate product here would
+                    // fabricate precision and feed it back into the average (0.6.3).
+                    line_total_paise: None,
                     source_stock_count_id: None,
                     source_grn_id: None,
                     source_purchase_return_id: None,
@@ -466,6 +471,10 @@ fn deduct_modifiers_for_line(
                 modifier_name: Some(format!("{}: {}", modifier.group_name, modifier.option_name)),
                 modifier_delta_version: Some(delta.config_version),
                 unit_cost_paise: None,
+                // No invoiced total: this origin is valued AT the average, not by an
+                // invoice, so writing a rounded quantity x rate product here would
+                // fabricate precision and feed it back into the average (0.6.3).
+                line_total_paise: None,
                 source_stock_count_id: None,
                 source_grn_id: None,
                 source_purchase_return_id: None,

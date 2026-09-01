@@ -163,6 +163,15 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0029_ledger_origin_procurement.sql",
         include_str!("../../../packages/contracts/sqlite/0029_ledger_origin_procurement.sql"),
     ),
+    // 0.6.3 (ADR-021). A SECOND rebuild of stock_ledger_entry, adding
+    // line_total_paise. 0029 having carried its triggers and indexes back is
+    // NOT evidence that this one does: assert_ledger_rebuild_survived below
+    // proves it by making the append-only trigger actually FIRE, and by
+    // checking the durable entry_seq counter still leads the table.
+    (
+        "0030_ledger_line_total.sql",
+        include_str!("../../../packages/contracts/sqlite/0030_ledger_line_total.sql"),
+    ),
 ];
 
 /// Applies any migrations not yet reflected in `PRAGMA user_version`. Safe
@@ -183,12 +192,86 @@ pub fn apply_all(conn: &Connection) -> DbResult<()> {
     for (name, sql) in MIGRATIONS.iter().skip(current) {
         conn.execute_batch(sql)
             .map_err(|e| DbError::Migration(format!("applying {name}: {e}")))?;
+        if *name == "0030_ledger_line_total.sql" {
+            assert_ledger_rebuild_survived(conn)?;
+        }
         let applied = MIGRATIONS
             .iter()
             .position(|(n, _)| n == name)
             .expect("name is from MIGRATIONS")
             + 1;
         conn.pragma_update(None, "user_version", applied as i64)?;
+    }
+
+    Ok(())
+}
+
+/// Proves that the 0030 rebuild carried its guarantees across, INSTEAD OF
+/// assuming it because 0029 did.
+///
+/// Two things a `DROP TABLE` rebuild silently loses, both of which pass every
+/// existing test when lost:
+///
+/// 1. **The append-only triggers.** Nothing in the suite tries to UPDATE a
+///    ledger row expecting to fail, so a ledger left mutable looks identical to
+///    a ledger that is not. Checking `sqlite_master` for the trigger NAME is
+///    not enough -- a trigger can exist and be attached to the wrong table
+///    after a rename. So this attempts a real UPDATE and requires it to be
+///    REJECTED, by the append-only trigger specifically.
+/// 2. **The `entry_seq` counter.** `stock_ledger_sequence` is a separate table,
+///    so a rebuild does not touch it -- but nothing proved the two stay in
+///    step. A counter that fell behind would re-issue marks the cloud has
+///    already seen, regress below its high-water mark and wedge replay: the
+///    0.5.8 failure, reintroduced by a migration.
+fn assert_ledger_rebuild_survived(conn: &Connection) -> DbResult<()> {
+    let rows: i64 = conn.query_row("SELECT COUNT(*) FROM stock_ledger_entry", [], |r| r.get(0))?;
+    if rows > 0 {
+        // A real mutation attempt, not a schema lookup. The trigger must abort
+        // it; anything else means the ledger came back writable.
+        match conn.execute(
+            "UPDATE stock_ledger_entry SET note = 'migration-guard-probe'",
+            [],
+        ) {
+            Ok(_) => {
+                return Err(DbError::Migration(
+                    "0030 left stock_ledger_entry WRITABLE: an UPDATE succeeded where the append-only trigger should have aborted it. The rebuild dropped its triggers and did not restore them."
+                        .to_string(),
+                ))
+            }
+            Err(e) => {
+                let message = e.to_string();
+                if !message.contains("append-only") {
+                    return Err(DbError::Migration(format!(
+                        "0030: an UPDATE on stock_ledger_entry was rejected, but not by the append-only trigger: {message}"
+                    )));
+                }
+            }
+        }
+    }
+
+    // The counter must not fall BEHIND the table. Equality after a rebuild is
+    // the failure this guards: the next allocation would collide with an
+    // existing mark rather than extend past it.
+    let mut stmt = conn.prepare(
+        "SELECT s.outlet_id, s.last_value, COALESCE(MAX(e.entry_seq), 0)
+         FROM stock_ledger_sequence s
+         LEFT JOIN stock_ledger_entry e ON e.outlet_id = s.outlet_id
+         GROUP BY s.outlet_id, s.last_value",
+    )?;
+    let counters = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, i64>(2)?,
+        ))
+    })?;
+    for counter in counters {
+        let (outlet_id, last_value, max_seq) = counter?;
+        if last_value < max_seq {
+            return Err(DbError::Migration(format!(
+                "0030 left the entry_seq counter BEHIND the ledger for outlet {outlet_id}: stock_ledger_sequence.last_value is {last_value} but MAX(entry_seq) is {max_seq}. The next allocation would re-issue a mark the cloud has already seen and wedge ranged replay (contracts 0.5.8)."
+            )));
+        }
     }
 
     Ok(())

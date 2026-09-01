@@ -164,6 +164,10 @@ mod tests {
                 modifier_name: None,
                 modifier_delta_version: None,
                 unit_cost_paise: None,
+                // No invoiced total: this origin is valued AT the average, not by an
+                // invoice, so writing a rounded quantity x rate product here would
+                // fabricate precision and feed it back into the average (0.6.3).
+                line_total_paise: None,
                 source_stock_count_id: None,
                 source_grn_id: None,
                 source_purchase_return_id: None,

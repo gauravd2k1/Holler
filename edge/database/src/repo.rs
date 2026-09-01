@@ -5542,6 +5542,11 @@ fn stock_ledger_entry_from_row(row: &rusqlite::Row) -> rusqlite::Result<StockLed
         source_grn_id: row.get(24)?,
         source_purchase_return_id: row.get(25)?,
         source_stock_transfer_out_id: row.get(26)?,
+        // APPENDED AT INDEX 27 ON PURPOSE (0.6.3). Inserting a column into the
+        // middle of this projection shifts every later index with no compiler
+        // error and no type error -- most of the tail is TEXT, so the values
+        // would simply come back wrong. New columns go on the END.
+        line_total_paise: row.get(27)?,
     })
 }
 
@@ -5549,7 +5554,7 @@ const STOCK_LEDGER_ENTRY_COLUMNS: &str = "id, outlet_id, entry_seq, inventory_it
     inventory_item_name, dimension, entry_type, origin, quantity_applied_micro, recipe_id, \
     recipe_version, recipe_name, source_order_id, source_order_item_id, reason_code, note, \
     occurred_at, business_date, created_by_user_id, modifier_delta_id, modifier_name, \
-    modifier_delta_version, unit_cost_paise, source_stock_count_id, source_grn_id, \n    source_purchase_return_id, source_stock_transfer_out_id";
+    modifier_delta_version, unit_cost_paise, source_stock_count_id, source_grn_id, \n    source_purchase_return_id, source_stock_transfer_out_id, line_total_paise";
 
 /// Fetches the exact row a just-completed insert wrote, by `(outlet_id,
 /// entry_seq)` — the table's own uniqueness key (0016) — so
