@@ -85,6 +85,7 @@ writes them to `apps\pos\.env.dev` and `run-dev.ps1` loads them.
 | `HOLLER_OUTLET_ID` | Which outlet this till belongs to. Scopes login, menu, tables and orders. |
 | `HOLLER_DEVICE_ID` | This till's device row. Stamped onto every order. |
 | `HOLLER_DB_KEY_HEX` | 64 hex chars (32 bytes) — AES-256-GCM key for the edge database's encryption at rest (ADR-011). |
+| `HOLLER_CLOUD_BASE_URL`, `HOLLER_TENANT_ID`, `HOLLER_DEVICE_TOKEN` | ADR-020. The POS process hosts the sync worker; these three enable it and are written by the bootstrap's step 3b. **All three or none** — a worker with a URL and no credential 401s every request and burns retry budget doing it. Absent, sync is disabled, the POS says so at startup, and everything else works: the outlet is offline-first by design. The token is issued by `POST /devices/enroll` (once only, ADR-017) or by the rotate route on later runs, and lives in `.env.dev` and nowhere else. |
 | `HOLLER_LAN_BIND_ADDR` | Optional (T12). Bind address for the embedded KDS LAN server. Defaults to `0.0.0.0:9310` if unset — see the Milestone 2 section below. Never fatal to POS startup if binding fails. |
 
 **There is no default key, deliberately.** `dev-bootstrap.ps1` used to carry a

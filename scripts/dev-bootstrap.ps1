@@ -63,7 +63,18 @@ param(
     # write lands somewhere you can open. See
     # edge/printer/src/transport/file_sink.rs for what that does and does not
     # establish (it establishes nothing about real device I/O).
-    [string]$PrinterFileSinkDir = ""
+    [string]$PrinterFileSinkDir = "",
+
+    # Where the POS sync worker sends replays (ADR-020). Also the API this
+    # script enrols this till against. Never fatal if nothing is listening.
+    [string]$CloudBaseUrl = "http://localhost:8080",
+
+    # The principal used to enrol. POST /devices/enroll is gated on
+    # outlet.manage, which the seeded cashier and buyer deliberately do NOT
+    # hold: outlet.manage also gates the compliance config writes, so granting
+    # it to a till operator would hand them the GSTIN printed on every invoice.
+    [string]$SyncEnrollEmail = "owner@holler.test",
+    [string]$SyncEnrollPassword = "holler123"
 )
 
 # Best-effort LAN IPv4 address for this machine, used to build
@@ -192,6 +203,119 @@ try {
     Remove-Item Env:\HOLLER_SEED_BILLING -ErrorAction SilentlyContinue
 }
 
+# --- 3b. sync credential (ADR-020) -------------------------------------------
+# The POS process HOSTS the sync worker, and it needs three variables together:
+# HOLLER_CLOUD_BASE_URL, HOLLER_TENANT_ID and HOLLER_DEVICE_TOKEN. All three or
+# none -- a worker with a URL and no credential 401s every request and burns
+# retry budget doing it.
+#
+# NOTHING HERE MAY FAIL THE BOOTSTRAP. Sync disabled is a legitimate development
+# state: the outlet works offline by design (ADR-013), the POS logs which
+# variables were missing, and every other seeded surface is unaffected. The
+# common case is simply that the API is not running yet -- dev-up.ps1 starts the
+# backend AFTER this script, so a first run on a cold machine reaches this point
+# with nothing listening. Re-run the bootstrap once the API is up.
+$syncEnvLines = @()
+$deviceToken = $null
+
+# A fixed name, because POST /devices/enroll matches an existing device by
+# (tenant, outlet, name). That is what makes this step re-runnable.
+$syncDeviceName = "Holler Dev Till"
+
+$apiUp = $false
+try {
+    Invoke-RestMethod -Uri "$CloudBaseUrl/health" -TimeoutSec 3 | Out-Null
+    $apiUp = $true
+} catch {
+    $apiUp = $false
+}
+
+if (-not $apiUp) {
+    Write-Host "`n[3b/4] sync credential SKIPPED: no API at $CloudBaseUrl" -ForegroundColor Yellow
+    Write-Host "  The POS will start with sync disabled and say so. Start the backend and re-run" -ForegroundColor Yellow
+    Write-Host "  this bootstrap to enroll -- re-running is safe." -ForegroundColor Yellow
+} else {
+    Write-Host "`n[3b/4] enrolling this till's sync credential..." -ForegroundColor Cyan
+    try {
+        $tenantId = $values['HOLLER_TENANT_ID']
+        $authHeaders = @{ 'X-Tenant-ID' = $tenantId }
+        $loginBody = @{
+            email     = $SyncEnrollEmail
+            password  = $SyncEnrollPassword
+            outlet_id = $values['HOLLER_OUTLET_ID']
+        } | ConvertTo-Json
+        $session = Invoke-RestMethod -Uri "$CloudBaseUrl/auth/login" -Method Post `
+            -Body $loginBody -ContentType 'application/json' -Headers $authHeaders
+        $headers = @{
+            'X-Tenant-ID'   = $tenantId
+            'Authorization' = "Bearer $($session.access_token)"
+        }
+
+        # Enrollment is ONCE-ONLY: a second enroll of the same device returns
+        # 409 "device already enrolled; rotate its credential instead" (ADR-017 --
+        # the plaintext token is issued exactly once). So look first, and pick
+        # the matching route.
+        #
+        # The lookup goes through psql because there is deliberately no device
+        # LIST route, and the 409 body does not carry the device id. Acceptable
+        # here and nowhere else: this script already requires Docker and already
+        # talks to this database directly. A production enrollment flow is a
+        # separate, operator-facing thing (docs/backlog.md).
+        $existingId = (docker exec holler-postgres-1 psql -U holler -d holler -t -A -c `
+            "SELECT d.id FROM device d JOIN device_credential c ON c.device_id = d.id AND c.revoked_at IS NULL WHERE d.outlet_id = '$($values['HOLLER_OUTLET_ID'])' AND d.name = '$syncDeviceName' LIMIT 1;" 2>$null)
+        if ($existingId) { $existingId = $existingId.Trim() }
+
+        if ($existingId) {
+            $rotateBody = @{ label = "dev-bootstrap" } | ConvertTo-Json
+            $enrolled = Invoke-RestMethod -Uri "$CloudBaseUrl/devices/$existingId/credentials/rotate" `
+                -Method Post -Body $rotateBody -ContentType 'application/json' -Headers $headers
+            Write-Host "rotated the existing credential for device $existingId"
+        } else {
+            $enrollBody = @{
+                outlet_id = $values['HOLLER_OUTLET_ID']
+                kind      = 'POS'
+                name      = $syncDeviceName
+                label     = 'dev-bootstrap'
+            } | ConvertTo-Json
+            $enrolled = Invoke-RestMethod -Uri "$CloudBaseUrl/devices/enroll" -Method Post `
+                -Body $enrollBody -ContentType 'application/json' -Headers $headers
+            Write-Host "enrolled device $($enrolled.device_id)"
+        }
+
+        $deviceToken = $enrolled.token
+        if ([string]::IsNullOrWhiteSpace($deviceToken)) {
+            throw "the response carried no token"
+        }
+
+        # NOTE the device id: the POS stamps this on what it sends, so the
+        # credential and the identity must agree.
+        $syncEnvLines = @(
+            "HOLLER_CLOUD_BASE_URL=$CloudBaseUrl",
+            "HOLLER_TENANT_ID=$tenantId",
+            "HOLLER_DEVICE_TOKEN=$deviceToken"
+        )
+        Write-Host "sync ENABLED for this till (token written to .env.dev only)" -ForegroundColor Cyan
+    } catch {
+        $detail = $_.ErrorDetails.Message
+        if (-not $detail) { $detail = $_.Exception.Message }
+        Write-Host "[3b/4] sync credential SKIPPED: $detail" -ForegroundColor Yellow
+        Write-Host "  Not fatal. The POS starts with sync disabled and logs which variables" -ForegroundColor Yellow
+        Write-Host "  were missing. Enrollment needs a principal holding outlet.manage" -ForegroundColor Yellow
+        Write-Host "  (owner@holler.test is seeded with it); override with -SyncEnrollEmail." -ForegroundColor Yellow
+        if ($detail -match "authentication required") {
+            # ADR-012 deliberately returns the SAME response for a bad password
+            # and for a throttled one, so this cannot be distinguished from the
+            # outside. Five attempts per fifteen-minute fixed window, held in
+            # process memory -- so several bootstrap runs in a row can trip it,
+            # and restarting the backend clears it.
+            Write-Host "  A 401 here can ALSO be the login rate limiter, which is intentionally" -ForegroundColor Yellow
+            Write-Host "  indistinguishable from a wrong password (ADR-012). Repeated bootstrap" -ForegroundColor Yellow
+            Write-Host "  runs can trip it; restart the backend or wait out the 15-minute window." -ForegroundColor Yellow
+        }
+        $syncEnvLines = @()
+    }
+}
+
 # --- 4. env files for the launchers ------------------------------------------
 # apps/pos/run-dev.ps1 reads this instead of hardcoding device identity and the
 # encryption key. Gitignored: it carries the edge database key.
@@ -204,6 +328,10 @@ $envLines = @(
     "HOLLER_DB_KEY_HEX=$DbKeyHex",
     "HOLLER_LAN_BIND_ADDR=0.0.0.0:$LanPort"
 )
+# ADR-020. Appended only when all three were obtained; the POS treats a partial
+# set as no set. THE TOKEN LIVES HERE AND NOWHERE ELSE -- .env.dev is gitignored,
+# and no committed file in this repository carries a device token.
+$envLines += $syncEnvLines
 # run-dev.ps1 exports every KEY=VALUE it finds here into the POS process, so
 # naming the sink in this file is all it takes to route prints to disk.
 if ($PrinterFileSinkDir -ne "") {
