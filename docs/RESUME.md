@@ -196,6 +196,46 @@ revocation in step 3 cannot be undone through the same call that triggers it.
 
 Caveat, per (a0): cloud-side only. Says nothing about config transport.
 
+**(a3) ADR-020 IS IMPLEMENTED: `edge/sync` HAS A HOST (2026-09-01).** The first
+time in five milestones that anything shipping constructs a `SyncWorker`.
+
+- `apps/pos/src-tauri` now depends on `holler-edge-sync`. Before this, NO
+  `Cargo.toml` in the repository did.
+- The worker lives in `AppState` beside the `LanServerHandle`, built from
+  `HOLLER_CLOUD_BASE_URL` + `HOLLER_TENANT_ID` + `HOLLER_DEVICE_TOKEN`. All three
+  or none: a worker with a URL and no credential 401s every request and burns
+  retry budget doing it. Absence disables sync and is **never fatal to startup**,
+  the same rule the LAN server follows.
+- `Mutex<Option<SyncWorker>>`, because `SyncWorker` keeps its enrollment flag in a
+  `Cell` and is `Send` but not `Sync`, while Tauri managed state must be `Sync`.
+  Wrapped at the consumer rather than changing that `Cell`: the sync crate
+  documents itself as driven by one caller, and this host is that caller.
+- Drains on launch (`AppState::open`) and on `RunEvent::Exit` **before**
+  `shutdown_in_place`.
+
+**Both ADR claims falsified, not asserted** —
+`apps/pos/src-tauri/tests/adr020_outbox_drain.rs`, 2/2 against a real encrypted
+file database and a real `tiny_http` cloud:
+
+1. **Ordering.** Same state, same worker, same cloud: **3 rows published before
+   the seal, 0 ingest calls after it**, with three rows deliberately left pending
+   so "published nothing" cannot be read as "had nothing to publish". **The ADR
+   was wrong about the failure mode and is corrected:** a post-seal drain does not
+   silently do nothing, it **panics** -- `Db::connection` is
+   `expect("edge database handle used after shutdown")` (`lib.rs:208`), observed
+   firing. Worse and louder, same conclusion: nothing replays.
+2. **Boundedness.** Pointed at a refused port with 5 rows pending, the drain
+   returns rather than hanging, and **all 5 rows survive** -- giving up is not
+   discarding.
+
+`cargo check --all-targets` clean on all three seam manifests.
+
+**What this does NOT do, and must not be read as doing:** the config pull still
+has no caller, so the inbound half is unhosted and the
+inventory-config-push backlog item stays open. There is also no periodic pump
+yet -- a till open all day whose uplink returns mid-service does not replay until
+it closes. Criterion 6 is now *reachable*; it is not yet *observed*.
+
 **(a) THE M5 ACCEPTANCE PASS IS MID-FLIGHT AND NOTHING IS OBSERVED YET.** Zero of
 seven criteria are acceptance-observed. Rows 3 and 4 are PARTIALLY observed —
 T4 drove the shipping screens in real Chromium against the dev server and saw the

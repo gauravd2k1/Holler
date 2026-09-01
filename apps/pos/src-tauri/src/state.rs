@@ -38,6 +38,8 @@ use std::sync::{Arc, Mutex};
 use holler_edge_database::crypto::EncryptionKey;
 use holler_edge_database::Db;
 use holler_edge_device::{server, Hub, LanServerHandle};
+use holler_edge_sync::{StopReason, SyncWorker, WorkerConfig};
+use std::time::{Duration, Instant};
 
 /// Default bind address for the embedded KDS LAN server. Fixed and
 /// documented (not `:0`) so it can be written into a KDS's
@@ -45,6 +47,24 @@ use holler_edge_device::{server, Hub, LanServerHandle};
 /// for the same constant and the reasoning behind picking a fixed port at
 /// all. Overridable with `HOLLER_LAN_BIND_ADDR`.
 pub const DEFAULT_LAN_BIND_ADDR: &str = "0.0.0.0:9310";
+
+/// How long the shutdown drain may spend trying to reach the cloud before it
+/// gives up and lets the process exit (ADR-020).
+///
+/// AN OUTLET CLOSING WITH NO UPLINK IS THE NORMAL CASE, NOT AN ERROR. The
+/// drain attempts, gives up on this deadline, leaves the rows in the outbox
+/// and exits; the startup drain picks them up next trading day. A shutdown
+/// that blocks waiting for a network that is not coming is a worse defect
+/// than the one hosting the worker fixes -- it would strand a cashier at a
+/// till that will not close.
+///
+/// Sized against `HttpClient`'s own 5s connect timeout so at least one
+/// attempt can complete and fail honestly before the deadline bites.
+pub const SHUTDOWN_DRAIN_BUDGET: Duration = Duration::from_secs(20);
+
+/// Outbox rows to request per pump call. Bounded so one drain cannot walk an
+/// unbounded backlog while a deadline is running.
+const DRAIN_BATCH_LIMIT: i64 = 200;
 
 pub struct AppState {
     pub db: Arc<Mutex<Db>>,
@@ -58,6 +78,18 @@ pub struct AppState {
     /// `LanServerHandle` documents that dropping it does not itself stop the
     /// server, so this is book-keeping, not a correctness requirement.
     lan_handle: Mutex<Option<LanServerHandle>>,
+    /// The ADR-020 sync host. `None` when this node has no cloud
+    /// configuration (no base URL, tenant or device token) -- the ordinary
+    /// case for a till that has never been enrolled, and NEVER fatal to
+    /// startup, for the same reason the LAN server is not: Milestone 1's
+    /// acceptance requires a cashier to work with no uplink at all.
+    /// `Mutex` because `SyncWorker` keeps its enrollment-verified flag in a
+    /// `Cell` and is therefore `Send` but not `Sync`, while Tauri managed
+    /// state must be `Sync`. Wrapping here rather than changing that `Cell`
+    /// to an atomic keeps the change inside the consumer: the sync crate
+    /// documents itself as driven by ONE caller, and this host is that one
+    /// caller.
+    sync: Mutex<Option<SyncWorker>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -121,13 +153,25 @@ impl AppState {
             }
         };
 
-        Ok(Self {
+        let sync = build_sync_worker(&outlet_id, &device_id);
+
+        let state = Self {
             db,
             outlet_id,
             device_id,
             hub,
             lan_handle: Mutex::new(lan_handle),
-        })
+            sync: Mutex::new(sync),
+        };
+
+        // ADR-020: DRAIN ON LAUNCH, BEFORE ANYTHING ELSE -- ahead of the first
+        // sale of the day, not lazily whenever a timer first fires. Together
+        // with the shutdown drain this turns "syncs while the till is open"
+        // into "the day reaches the cloud at both ends of every trading day",
+        // which is a sentence that can be said to a restaurant.
+        state.drain_outbox("startup", SHUTDOWN_DRAIN_BUDGET);
+
+        Ok(state)
     }
 
     /// Wraps an already-open `Db` (e.g. `Db::open_in_memory_for_tests()`) in
@@ -145,6 +189,7 @@ impl AppState {
             device_id,
             hub: None,
             lan_handle: Mutex::new(None),
+            sync: Mutex::new(None),
         }
     }
 
@@ -158,6 +203,7 @@ impl AppState {
             device_id,
             hub: Some(hub),
             lan_handle: Mutex::new(None),
+            sync: Mutex::new(None),
         }
     }
 
@@ -167,6 +213,120 @@ impl AppState {
     /// are not force-closed (see `LanServerHandle::shutdown`'s own doc) —
     /// acceptable on process exit, where they are about to be torn down by
     /// the OS regardless.
+    /// Same as [`AppState::new`], but hosting a caller-supplied [`SyncWorker`]
+    /// — for the ADR-020 falsification tests, which must point the worker at a
+    /// fake cloud rather than at whatever `HOLLER_CLOUD_BASE_URL` says.
+    pub fn new_with_sync(
+        db: Db,
+        outlet_id: String,
+        device_id: String,
+        worker: SyncWorker,
+    ) -> Self {
+        Self {
+            db: Arc::new(Mutex::new(db)),
+            outlet_id,
+            device_id,
+            hub: None,
+            lan_handle: Mutex::new(None),
+            sync: Mutex::new(Some(worker)),
+        }
+    }
+
+    /// Seals and closes the edge database, exactly as the `RunEvent::Exit` hook
+    /// does. Exposed so a test can assert what a drain finds AFTER the seal.
+    pub fn seal_for_tests(&self) {
+        let mut db = match self.db.lock() {
+            Ok(db) => db,
+            Err(e) => e.into_inner(),
+        };
+        let _ = db.shutdown_in_place();
+    }
+
+    /// Drains `local_outbox` toward the cloud, bounded by `budget` (ADR-020).
+    ///
+    /// Returns the number of rows acknowledged. A no-op returning 0 when this
+    /// node has no cloud configuration -- an unenrolled till is not an error.
+    ///
+    /// BOUNDED, AND THE BOUND IS THE POINT. Every pass checks the deadline
+    /// before starting another, and a transport failure stops immediately
+    /// rather than retrying: with the WAN down, retrying inside a shutdown path
+    /// only spends the budget to reach the same answer. Offline is the expected
+    /// outcome here, not a failure to report loudly.
+    ///
+    /// MUST BE CALLED BEFORE `Db::shutdown_in_place`. The drain needs a live
+    /// database connection; after the seal it would find nothing to send and
+    /// would silently succeed at doing nothing -- precisely the shape of defect
+    /// that passes review (ADR-020).
+    pub fn drain_outbox(&self, phase: &str, budget: Duration) -> usize {
+        // Lock order is ALWAYS sync-then-db. The drain takes the database
+        // lock inside this one; taking them in the other order anywhere else
+        // would deadlock a shutdown path, which is the worst place for one.
+        let guard = match self.sync.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        let Some(worker) = guard.as_ref() else {
+            return 0;
+        };
+        let deadline = Instant::now() + budget;
+        let mut acked = 0usize;
+
+        loop {
+            if Instant::now() >= deadline {
+                eprintln!(
+                    "holler-pos: {phase} outbox drain hit its {}s budget; rows still pending stay in local_outbox and the next drain picks them up",
+                    budget.as_secs()
+                );
+                break;
+            }
+
+            let mut db = match self.db.lock() {
+                Ok(db) => db,
+                Err(e) => e.into_inner(),
+            };
+            let report = match worker.pump_outbox(&mut db, DRAIN_BATCH_LIMIT) {
+                Ok(report) => report,
+                Err(e) => {
+                    eprintln!("holler-pos: {phase} outbox drain failed: {e}");
+                    break;
+                }
+            };
+            drop(db);
+
+            acked += report.published.len();
+            let progressed = !report.published.is_empty();
+
+            match report.stopped {
+                // No route to the cloud: the shop-floor case. Stop now. The
+                // rows are safe in the outbox and nothing is lost by waiting.
+                Some(StopReason::Offline) => {
+                    eprintln!(
+                        "holler-pos: {phase} outbox drain found no route to the cloud; {acked} row(s) sent, the rest stay pending"
+                    );
+                    break;
+                }
+                Some(reason) => {
+                    eprintln!(
+                        "holler-pos: {phase} outbox drain stopped after {acked} row(s): {reason:?}"
+                    );
+                    break;
+                }
+                // Backlog exhausted for this pass. Another pass only helps if
+                // this one actually moved rows.
+                None => {
+                    if !progressed {
+                        break;
+                    }
+                }
+            }
+        }
+
+        if acked > 0 {
+            eprintln!("holler-pos: {phase} outbox drain published {acked} row(s)");
+        }
+        acked
+    }
+
     pub fn shutdown_lan_server(&self) {
         let handle = self
             .lan_handle
@@ -175,6 +335,50 @@ impl AppState {
             .take();
         if let Some(handle) = handle {
             handle.shutdown();
+        }
+    }
+}
+
+/// Builds the ADR-020 sync host from the environment, or `None` when this node
+/// has no cloud configuration.
+///
+/// `HOLLER_CLOUD_BASE_URL`, `HOLLER_TENANT_ID` and `HOLLER_DEVICE_TOKEN` are all
+/// required together: a worker with a URL and no credential would fail every
+/// request with a 401 and burn retry budget doing it.
+///
+/// ABSENCE IS NOT AN ERROR AND MUST NEVER BE FATAL. A till that has never been
+/// enrolled still takes orders, bills, prints and receives goods -- that is
+/// Milestone 1's acceptance and ADR-013's whole premise. The same rule the LAN
+/// server follows: log what is disabled, and start anyway.
+///
+/// The device token is read from the environment and handed to `WorkerConfig`,
+/// which documents that it is never logged, never placed in an error and never
+/// persisted by that crate. It is not echoed here either.
+fn build_sync_worker(outlet_id: &str, device_id: &str) -> Option<SyncWorker> {
+    let base_url = env::var("HOLLER_CLOUD_BASE_URL")
+        .ok()
+        .filter(|s| !s.is_empty());
+    let tenant_id = env::var("HOLLER_TENANT_ID").ok().filter(|s| !s.is_empty());
+    let device_token = env::var("HOLLER_DEVICE_TOKEN")
+        .ok()
+        .filter(|s| !s.is_empty());
+
+    match (base_url, tenant_id, device_token) {
+        (Some(base_url), Some(tenant_id), Some(device_token)) => {
+            eprintln!("holler-pos: sync worker hosted, cloud at {base_url}");
+            Some(SyncWorker::new(WorkerConfig {
+                tenant_id,
+                outlet_id: outlet_id.to_string(),
+                device_id: device_id.to_string(),
+                base_url,
+                device_token,
+            }))
+        }
+        _ => {
+            eprintln!(
+                "holler-pos: sync worker disabled (HOLLER_CLOUD_BASE_URL, HOLLER_TENANT_ID and HOLLER_DEVICE_TOKEN are required together); the outlet works offline and nothing replays"
+            );
+            None
         }
     }
 }

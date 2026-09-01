@@ -10,7 +10,7 @@ pub mod error;
 pub mod ids;
 pub mod state;
 
-use state::AppState;
+use state::{AppState, SHUTDOWN_DRAIN_BUDGET};
 use tauri::Manager;
 
 /// Builds and runs the Tauri application. Split out of `main.rs` so
@@ -103,6 +103,21 @@ pub fn run() {
                 // the temporary `State` guard, so the lock may outlive it.
                 let state: &AppState = app_handle.state::<AppState>().inner();
                 state.shutdown_lan_server();
+
+                // ADR-020: DRAIN THE OUTBOX BEFORE THE SEAL, NOT AFTER.
+                //
+                // Ordering is load-bearing and the failure is silent. The
+                // drain needs a live database connection; `shutdown_in_place`
+                // below seals the file and closes it, so a drain moved after
+                // that call finds nothing to send, reports success, and
+                // replays nothing forever -- and reads perfectly in review.
+                //
+                // Bounded on purpose: an outlet closing with no uplink is the
+                // NORMAL case, so this attempts, gives up on
+                // SHUTDOWN_DRAIN_BUDGET, leaves the rows and lets the process
+                // exit. A till that will not close is worse than a day that
+                // replays tomorrow morning instead.
+                state.drain_outbox("shutdown", SHUTDOWN_DRAIN_BUDGET);
                 match state.db.lock() {
                     Ok(mut db) => {
                         if let Err(e) = db.shutdown_in_place() {

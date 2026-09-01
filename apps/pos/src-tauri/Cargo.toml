@@ -46,8 +46,16 @@ holler-edge-printer = { path = "../../../edge/printer" }
 # standalone edge/device bin target.
 holler-edge-device = { path = "../../../edge/device" }
 
+# ADR-020: the POS process HOSTS the sync worker. Before this dependency
+# existed, nothing in the repository depended on holler-edge-sync at all, so
+# the config pull and every replay stream could only be driven by a test.
+holler-edge-sync = { path = "../../../edge/sync" }
+
 [dev-dependencies]
 tempfile = "3"
+# ADR-020 falsification: a fake cloud that acks, so the drain can be shown to
+# publish BEFORE the seal and publish nothing AFTER it.
+tiny_http = "0.12"
 argon2 = { version = "0.5", default-features = false, features = ["alloc"] }
 base64 = "0.22"
 rand = "0.8"

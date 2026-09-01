@@ -132,14 +132,45 @@ handler already seals the edge database via `Db::shutdown_in_place()` (ADR-011:
 the decrypted SQLite caching Argon2id hashes must not be left on disk). The
 drain needs a live database connection, so it runs **before** the seal, in the
 same handler, after `shutdown_lan_server()`. A drain placed after the seal
-silently does nothing — and, like everything else in this ADR, would look
-correct in review.
+cannot publish anything at all.
+
+**Correction, verified 2026-09-01.** This ADR first said such a drain would
+*silently do nothing*. It does something worse and louder. `Db::connection` is
+`self.conn.as_ref().expect("edge database handle used after shutdown")`, so a
+drain below the seal **panics inside the exit handler**
+(`edge/database/src/lib.rs:208`). Falsified both ways in
+`apps/pos/src-tauri/tests/adr020_outbox_drain.rs`: the same state, same worker
+and same fake cloud publishes 3 rows before the seal and reaches the cloud zero
+times after it, with three rows deliberately left pending so "published
+nothing" cannot be read as "had nothing to publish". The conclusion is
+unchanged and the reason is sharper: **nothing replays**, and the ordering is
+load-bearing.
 
 **The shutdown drain must be bounded and must never block exit indefinitely.**
 An outlet closing with no uplink is the normal case, not an error: the drain
 attempts, gives up on a deadline, leaves the rows in the outbox, and exits. The
 startup drain picks them up. A shutdown path that hangs waiting for a network
 that is not coming is a worse defect than the one this ADR fixes.
+
+### Scope of the first implementation
+
+Landed: the worker is constructed in the POS Tauri process, held in `AppState`
+beside the `LanServerHandle`, drained on launch inside `AppState::open`, and
+drained again from `RunEvent::Exit` before the seal. That is the guarantee this
+ADR names -- both ends of every trading day.
+
+**Not landed: the periodic pump while the till is open.** This ADR calls it an
+optimisation on top of the guarantee and it stays one. The cost of leaving it
+out should be stated rather than discovered: a till open all day, whose uplink
+returns mid-service, will not replay until it closes. Nothing is lost -- the
+rows sit in `local_outbox`, which is what it is for.
+
+**Also not landed: the config pull still has no caller.** `pull_and_apply_config`
+remains driven only by tests. This ADR hosts the OUTBOUND half, which is the half
+M1's acceptance and M5's criterion 6 both need; the inbound half is what the
+inventory-config-push item in `docs/backlog.md` waits on. Hosting one direction
+is not hosting both, and that backlog entry must not be closed on the strength of
+this change.
 
 ## Consequences
 
