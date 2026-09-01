@@ -36,6 +36,44 @@ rule is that **no criterion may be evidenced by a test harness**. The test is a
 good one — real `cmd/api`, real PostgreSQL, real socket, real ADR-017 enrollment
 — and it is still a harness driving a worker no product code constructs.
 
+### What this actually costs: the offline-first promise has never been demonstrated
+
+This is not a wiring tidy-up, and framing it as one would be the third mistake
+in the same family.
+
+Holler's differentiator is one sentence: **the restaurant keeps trading when the
+internet is down, and the day catches up afterwards.** The first half is real and
+has been exercised repeatedly -- the edge takes orders, prints, bills, deducts
+stock and receives goods with no uplink, and M1-M5 have observed it doing so.
+
+**The second half has no host and never has.** `local_outbox` has been written by
+many paths since Milestone 1 and drained by none. Across five milestones, "and
+then it catches up" has been a claim about code that exists, not about behaviour
+anyone has seen. Every acceptance run that mattered stopped at the edge boundary,
+because nothing could carry it further.
+
+So implementing this ADR is not plumbing. **It is what makes the central product
+promise testable for the first time.**
+
+**Why was this not done in Milestone 1?** -- the next reader's question, and it
+deserves a real answer rather than an implied lapse. M1's offline-replay item was
+written as an acceptance criterion and the crate to satisfy it was built,
+reviewed and tested. What was never built was the caller. Nothing failed: the unit
+tests passed because they construct the worker themselves, the integration tests
+passed because they do too, and CI stayed green because a crate with no consumer
+still compiles. The criterion was then recorded as met on the strength of that
+green suite. Every later milestone inherited the shape and added its own replay
+stream to a pump nobody started -- M5's T3 landed cursors and a per-entry retry
+budget into a worker with no host.
+
+The lesson generalises past sync, which is why this is a section and not a status
+line: **a test that constructs its own subject cannot detect that nothing else
+constructs it.** The project already knows the narrow form -- "a column nothing
+reads is a column that does not exist" (contracts 0.5.2, again at 0.5.9), and "a
+deduction test proves deduction only for the path its caller takes" (M4 criterion
+1). This is the same defect at crate scale, and it survived longest because it was
+largest.
+
 This is the project's recurring failure at crate scale. "A column nothing reads
 is a column that does not exist" (contracts 0.5.2, again at 0.5.9) becomes: **a
 crate nothing calls is a crate that does not exist.** Every guard was green

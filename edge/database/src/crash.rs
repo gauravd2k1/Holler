@@ -45,6 +45,24 @@ pub const AFTER_CONFIRM_BEFORE_DEDUCT: &str = "after_confirm_before_deduct";
 /// agreeing means neither is there.
 pub const AFTER_GRN_BEFORE_LEDGER: &str = "after_grn_before_ledger";
 
+/// Fires AFTER the goods-receipt transaction COMMITS and BEFORE the database
+/// is sealed -- the positive control criterion 2 needs, and the mirror of
+/// [`AFTER_GRN_BEFORE_LEDGER`].
+///
+/// Without it, criterion 2's crash run reads "0 receipts, 0 ledger rows", and
+/// that is indistinguishable from a receipt path that silently writes nothing.
+/// The absence only means something once the SAME reopen can be shown to find
+/// the rows when they were in fact written.
+///
+/// It must fire after the commit, not before it. An abort inside the
+/// transaction rolls everything back, so a reopen finds nothing either way and
+/// the control proves as little as no control at all. It must also fire before
+/// the seal: a clean exit seals and deletes the decrypted file, and an
+/// encrypted database cannot be read by an independent reopen. Aborting in this
+/// window is the only state in which committed receipt and ledger rows are on
+/// disk and readable.
+pub const AFTER_LEDGER_BEFORE_COMMIT: &str = "after_ledger_before_commit";
+
 /// The environment variable naming the point to abort at. Absent (the normal
 /// case, including every test that is not about crashing) means no point
 /// fires.

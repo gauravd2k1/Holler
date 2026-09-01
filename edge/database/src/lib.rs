@@ -819,6 +819,9 @@ impl Db {
         let tx = self.connection_mut().transaction()?;
         let result = procurement::receipt::record_goods_receipt(&tx, req)?;
         tx.commit()?;
+        // Criterion 2's positive control: committed, not yet sealed, so an
+        // independent reopen can read what the receipt actually wrote.
+        crash::maybe_abort(crash::AFTER_LEDGER_BEFORE_COMMIT);
         Ok(result)
     }
 
@@ -835,6 +838,9 @@ impl Db {
         let tx = self.connection_mut().transaction()?;
         let result = procurement::receipt::record_goods_receipt_with_outbox(&tx, req, outbox_meta)?;
         tx.commit()?;
+        // Criterion 2's positive control: committed, not yet sealed, so an
+        // independent reopen can read what the receipt actually wrote.
+        crash::maybe_abort(crash::AFTER_LEDGER_BEFORE_COMMIT);
         Ok(result)
     }
 

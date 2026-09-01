@@ -130,6 +130,32 @@ works" — and after both seeders have run under matching ids, a row's presence 
 not evidence that it travelled. Proving transport needs an empty start and a real
 pull, which is why it waits on the host.
 
+**(a1) CRITERION 2 IS OBSERVED, BOTH WAYS (2026-09-01).** Driven through
+`crashpoint --grn`, which calls `Db::record_goods_receipt` -- the same entry point
+the POS uses -- against a copy of the real sealed edge database, and read back by
+an independent reopen with `sqlite3`:
+
+| Run | `goods_receipt_note` | `grn_line` | `stock_ledger_entry` |
+|---|---|---|---|
+| abort at `after_grn_before_ledger` | 0 | 0 | 0 |
+| abort at `after_ledger_before_commit` | 1 | 1 | 1 |
+
+Positive row: `PURCHASE | 5000000000 micro | unit_cost 4 paise | entry_seq 21 |
+origin GOODS_RECEIPT | business_date 2026-08-23`. Both aborts terminated
+abnormally (`0xC0000409`), not by a clean exit.
+
+**The second crash point was added for this run and is the point of it.** Before
+it, criterion 2 rested on "0 rows everywhere" plus a `UNIQUE` violation -- and 0
+rows is exactly what a receipt path that silently wrote nothing would also
+produce. `AFTER_LEDGER_BEFORE_COMMIT` fires after the commit and before the seal,
+the only window in which committed rows are on disk and readable: aborting inside
+the transaction rolls back and proves as little as no control at all, and a clean
+exit seals and takes the plaintext with it. **An absence means something only when
+the same reopen can be shown to find the rows when they were written.**
+
+Caveat, per (a0): this is offline behaviour against locally-seeded edge data. It
+says nothing about transport.
+
 **(a) THE M5 ACCEPTANCE PASS IS MID-FLIGHT AND NOTHING IS OBSERVED YET.** Zero of
 seven criteria are acceptance-observed. Rows 3 and 4 are PARTIALLY observed —
 T4 drove the shipping screens in real Chromium against the dev server and saw the
