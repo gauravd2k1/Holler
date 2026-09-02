@@ -31,6 +31,52 @@ use std::sync::Arc;
 
 use holler_edge_sync::HttpClient;
 
+/// Reads a whole HTTP request — headers, then exactly `Content-Length` body
+/// bytes — before the caller answers.
+///
+/// **A single `read` here made this file fail roughly once in thirty, on an
+/// IDLE machine, and the failure looked exactly like the product defect the
+/// file exists to catch.** Diagnosed 2026-09-02: both attempts died on
+/// `os error 10054` (WSAECONNRESET), instantly — no timeout was involved.
+///
+/// The mechanism is a Windows socket rule, not a race in the product. Closing
+/// a socket that still holds UNREAD received bytes sends an RST, and an RST
+/// **discards whatever is still in the send buffer** — including the 201 this
+/// server had already written. So whenever the client's request arrived in
+/// more than one TCP segment, one `read` left the tail unread, the drop at the
+/// end of the loop iteration reset the connection, and the response the test
+/// had already sent was destroyed in flight. The client then reported a
+/// transport failure on a request the server had genuinely answered.
+///
+/// Draining the request first means the close is an orderly FIN and the
+/// response survives. **Read the whole request before you answer it** applies
+/// to every fake server in this repository, and two others here answer after
+/// one `read`.
+fn read_whole_request(stream: &mut TcpStream) {
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 1024];
+    loop {
+        let Ok(n) = stream.read(&mut chunk) else { return };
+        if n == 0 {
+            return;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+
+        let Some(head_end) = buf.windows(4).position(|w| w == b"\r\n\r\n") else {
+            continue; // headers not complete yet
+        };
+        let head = String::from_utf8_lossy(&buf[..head_end]).to_lowercase();
+        let content_length = head
+            .lines()
+            .find_map(|line| line.strip_prefix("content-length:"))
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .unwrap_or(0);
+        if buf.len() >= head_end + 4 + content_length {
+            return; // headers and the whole body are in hand
+        }
+    }
+}
+
 /// A server that DROPS the first connection without answering, then serves
 /// normally — the shape of a pooled socket the peer has already closed.
 ///
@@ -52,8 +98,7 @@ fn server_that_kills_the_first_connection() -> (String, Arc<AtomicUsize>) {
                 drop(stream);
                 continue;
             }
-            let mut buf = [0u8; 2048];
-            let _ = stream.read(&mut buf);
+            read_whole_request(&mut stream);
             let body = b"{}";
             let response = format!(
                 "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -132,8 +177,11 @@ fn an_http_status_is_never_retried() {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
             counter.fetch_add(1, Ordering::SeqCst);
-            let mut buf = [0u8; 2048];
-            let _ = stream.read(&mut buf);
+            // Same rule as the server above: answer only after the whole
+            // request is drained, or the close resets the connection and takes
+            // this 422 with it — which would read as a transport failure and
+            // make this test assert the opposite of what it means to.
+            read_whole_request(&mut stream);
             let body = b"{\"error\":\"nope\"}";
             let response = format!(
                 "HTTP/1.1 422 Unprocessable Entity\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",

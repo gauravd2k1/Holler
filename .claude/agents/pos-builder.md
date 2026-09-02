@@ -30,7 +30,7 @@ You implement exactly ONE assigned app-side task in `apps/pos/`, `apps/kds/`, or
 ## Before reporting done
 Run inside the assigned app directory:
 1. `pnpm typecheck` (or `pnpm tsc --noEmit` if no script)
-2. `pnpm test 2>&1 | tail -40`
+2. `node <repo-root>/scripts/assert-tests-ran.mjs vitest -- pnpm test` — **never pipe it through `tail`**: that reports `tail`'s exit status, and `vitest run -t <typo>` skips every test and exits 0. The guard fails when zero tests execute.
 3. `pnpm build` only if the task requires a production build check.
 Fix failures before reporting.
 

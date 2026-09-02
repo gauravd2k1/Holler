@@ -29,7 +29,7 @@ You implement exactly ONE assigned Rust task in `edge/<service>/` or the Rust si
 ## Before reporting done
 Run inside the assigned crate:
 1. `cargo build`
-2. `cargo test 2>&1 | tail -40`
+2. `node <repo-root>/scripts/assert-tests-ran.mjs cargo -- cargo test` — **never `cargo test 2>&1 | tail -40`**: a pipe reports `tail`'s exit status, so a suite that could not run at all reads as a pass, and a filter matching no test prints `0 passed` and exits 0. The guard fails when zero tests execute.
 3. `cargo clippy -- -D warnings` if clippy is configured.
 Fix failures before reporting.
 

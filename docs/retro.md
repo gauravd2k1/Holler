@@ -1271,3 +1271,97 @@ and a bare `cargo test` at the repository root both failed here — no `make` on
 PATH in the Bash tool, no workspace manifest at the root — and **both exited 0
 through a pipe**. Two "green" lines were reported before the pipeline was
 noticed. A command that cannot run is not a command that passed.
+
+## 2026-09-02 — A suite that runs nothing, and a fake server that destroyed its own reply
+
+Two findings from auditing one false green. They are unrelated in mechanism and
+identical in shape: **the failure looked exactly like the thing it was hiding.**
+
+### 1. Zero executed tests is indistinguishable from a passing suite
+
+The instruction was `cargo test -p holler-edge-sync` and `make check-seams`.
+Neither could run here — there is no workspace `Cargo.toml` at the repository
+root, and `make` is not on PATH in the Bash tool — and both were reported green,
+because `cmd 2>&1 | tail` reports **`tail`'s** exit status, which is 0.
+
+That is the visible half. The audit asked the wider question — *what else can
+execute nothing and exit 0?* — and every runner in the project can, confirmed by
+experiment rather than assumed:
+
+| Invocation | What it prints | Exit |
+|---|---|---|
+| `cargo test <filter-typo>` | `0 passed; 2 filtered out` | **0** |
+| `cargo test --exact <truncated name>` | same | **0** |
+| `go test -run <typo> ./...` | `ok pkg 0.3s [no tests to run]` | **0** |
+| `vitest run -t <typo>` | `Tests 230 skipped` | **0** |
+
+The `--exact` row was not hypothetical: the first attempt at reproducing the
+`stale_connection` failure ran a **truncated** test name under `--exact`,
+reported `QUIET: 0 failures / 20`, and had executed **nothing, twenty times**. A
+measurement of a flake, made of no measurements. It was caught only because the
+number was too clean for a defect that had just been observed.
+
+**The rule:** a suite that runs nothing must be as loud as a suite that fails,
+and the reportable figure is **the count of tests executed**, never "passed".
+`scripts/assert-tests-ran.mjs` enforces it — it tees the runner's output, parses
+the runner's own summary, and fails on zero executions or a missing summary. It
+is wired into every test step in `ci.yml` and into all three builder agent files
+and the verifier's rubric. It was falsified on all three runners before being
+trusted: each zero-case observed failing, each real suite observed passing.
+
+Two guards already existed for two *other* ways to run nothing —
+`check-gated-tests.mjs` (a `required-features` target is not built, not run, and
+not reported as skipped) and CI's `assert no silent skips` (an unset
+`HOLLER_TEST_DATABASE_URL` made every Postgres-backed test skip while `go test`
+printed `ok` for twelve packages). Three separate mechanisms, one property.
+**The property is what to guard, not the instance.**
+
+### 2. `stale_connection.rs` was not a flake, and not the hardware finding either
+
+It was reclassified as a probable ADR-013 target-hardware defect: it failed under
+CPU contention, and a bare 4GB spinning-disk till is contended by definition. The
+hypothesis was reasonable, and measuring it dismantled it in three steps.
+
+- **It failed on an idle machine**, roughly 1 run in 30 — so contention was
+  never necessary.
+- **It failed in 0.00 seconds.** No timeout was involved. The agent's timeouts
+  (connect 5s, read 15s, write 15s, `HttpClient::new`) were never approached.
+- **Both attempts died on `os error 10054`** — WSAECONNRESET — which is the
+  server resetting the connection, not the client giving up.
+
+The cause is in the test's own fake server. It answered after a **single**
+`read`, so whenever the client's request arrived as more than one TCP segment the
+tail went unread; closing a socket with unread received data sends an RST on
+Windows, and **an RST discards the send buffer** — including the 201 the server
+had already written. The test then saw a transport failure on a request that had
+genuinely been answered.
+
+So the test manufactured, intermittently, the exact false-offline it exists to
+detect. **A test that can produce its own subject cannot distinguish the product
+having the defect from itself having it.** Same family as the criteria in this
+log that pass on either of two worlds; here the two worlds were "the retry gave
+up" and "the reply was destroyed in flight", and the assertion could not tell
+them apart.
+
+Fixed by draining the whole request — headers plus `Content-Length` bytes —
+before replying, in **both** fake servers in the file. Measured after: **0
+failures in 200 runs idle, and 0 in 100 runs with 48 busy loops on 24 cores.**
+Before: ~1 in 30 idle.
+
+Two things worth keeping beyond the fix:
+
+- **Read the whole request before you answer it.** Every hand-rolled test server
+  in this repository is a candidate; two in this one file had the bug.
+- **"It fails under load" is a hypothesis, not a diagnosis.** Load makes segment
+  boundaries likelier, so contention was a real *correlate* and a false *cause* —
+  and a fix aimed at it (a longer timeout, a retry loop, an `#[ignore]`) would
+  have left the defect in place while making the evidence disappear. The
+  measurement that killed the hypothesis took ten minutes: run it 200 times on a
+  quiet box.
+
+And the answer to the question that mattered most, since a false offline is
+expensive: **this never risked the retry budget.** A transport failure is
+classified transient and charges nothing — `is_permanent_rejection` only ever
+sees an HTTP status, and transport errors do not reach it — so no ceiling could
+fire on a healthy network from this path. The cost of the defect was confined to
+the test.

@@ -215,12 +215,27 @@ Two notes a future session needs, because both cost time here:
   `cargo test` both fail, and the failure can exit **0** through a pipe — so a
   green-looking line proved nothing. Run the three seam manifests directly, or
   run `make` from PowerShell.
-- **`edge/sync`'s `stale_connection.rs` failed once and has not reproduced.**
-  `a_connection_killed_without_a_response_is_retried_rather_than_called_offline`
-  reported `HttpTransport` on the first run after a cold build, while three
-  `cargo check` jobs were saturating the machine; it passed alone immediately
-  after and 3/3 in repeat full-suite runs. Recorded as load-sensitive rather than
-  dismissed — filed in `docs/backlog.md`.
+- **`edge/sync`'s `stale_connection.rs` failure is DIAGNOSED AND FIXED, and it
+  was neither a flake nor a hardware finding.** It failed on an **idle** machine
+  about 1 run in 30, in **0.00 s**, on **`os error 10054`** (WSAECONNRESET) — no
+  timeout was involved (the agent's are connect 5 s, read 15 s, write 15 s). The
+  test's own fake server answered after a single `read`, so a request split
+  across TCP segments left bytes unread; closing such a socket on Windows sends
+  an RST, and an RST **discards the send buffer, including the 201 already
+  written**. The test therefore manufactured, intermittently, the exact
+  false-offline it exists to detect. Fixed by draining the whole request in both
+  fake servers in that file: **0 failures in 200 idle runs, 0 in 100 runs under
+  48 busy loops on 24 cores**, against ~1 in 30 before. No retry budget was ever
+  at risk — a transport failure is classified transient and charges nothing.
+
+- **Every command in the table above now runs through
+  `node scripts/assert-tests-ran.mjs`, which fails a job that executes zero
+  tests.** The counts are re-measured through it as of 2026-09-02:
+  `edge/database` **316**, `edge/sync` **56**, `edge/printer` **45**,
+  `edge/device` **11**, `apps/pos/src-tauri` **80**, `apps/pos` **230**,
+  `apps/kds` **30**, `packages/contracts` **67**. `backend` could not be
+  re-measured — PostgreSQL is not running (Docker Desktop is down), and its
+  suite is the one that must never be run with `HOLLER_SKIP_PG_TESTS=1`.
 
 ---
 

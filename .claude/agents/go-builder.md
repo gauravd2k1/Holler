@@ -30,7 +30,7 @@ Load nothing else unless a file you must integrate with is explicitly named in y
 ## Before reporting done
 Run inside `backend/`:
 1. `go build ./...`
-2. `go test ./internal/<context>/... 2>&1 | tail -40`
+2. `node <repo-root>/scripts/assert-tests-ran.mjs go -- go test ./internal/<context>/...` — **never pipe it through `tail`**: that reports `tail`'s exit status, and `go test -run <typo>` prints `ok ... [no tests to run]` and exits 0 regardless. The guard fails when zero tests execute.
 Fix failures before reporting. Never claim success without executed verification.
 
 ## Report format (max 150 words)

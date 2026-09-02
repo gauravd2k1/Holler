@@ -27,7 +27,19 @@
 > Two traps that cost time and will again: **there is no workspace `Cargo.toml`
 > at the repository root and `make` is not on PATH in the Bash tool**, and both
 > failures can exit **0** through a pipe, so a green-looking line can prove
-> nothing. One load-sensitive test flake is filed rather than dismissed.
+> nothing. That is now structural: **every test step runs through
+> `node scripts/assert-tests-ran.mjs`, which fails on zero executed tests**, in
+> `ci.yml`, in all three builder agent files and in the verifier's rubric.
+>
+> The `stale_connection.rs` failure was **not** a flake and **not** the ADR-013
+> hardware finding it was reclassified as. Measured: it failed on an idle machine
+> ~1 run in 30, in 0.00s, on `os error 10054` — the test's own fake server
+> answered after a single `read`, and closing a socket with unread bytes RSTs the
+> connection and **discards the reply already in the send buffer**. Fixed by
+> draining the whole request in both fake servers in that file; 0 failures in 200
+> idle runs and 0 in 100 under 48 busy loops on 24 cores. No timeout was ever
+> involved, and no retry budget was ever at risk — transport failures are
+> classified transient and charge nothing.
 
 Contracts are **FROZEN at v0.6.3** (ADR-021); migrations run
 through **sqlite 0030 / postgres 0031**. **ALL 16 CI JOBS ARE GREEN** as of
@@ -107,10 +119,27 @@ the Go sources change, i.e. only during falsification. Fixed with
 
 ### Test counts — command and date, or it is not a number
 
+**Every command in this table now runs through
+`node scripts/assert-tests-ran.mjs <runner> -- <command>`, which FAILS when a
+command executes zero tests** — a filter matching nothing, a gated-out target, a
+suite that skipped everything, or a command that never ran at all all exit 0
+otherwise (CLAUDE.md; `docs/retro.md`, 2026-09-02). **Record the count executed,
+never "passed".** And never pipe a test command through `tail`: the pipeline
+reports `tail`'s status, which is how two suites that could not run at all were
+reported green on 2026-09-02.
+
 | Suite | Result | Command | Measured |
 |---|---|---|---|
-| `apps/pos` | **206** | `pnpm test` | **2026-08-28** |
-| `edge/database` | 262 | `cargo test` | 2026-08-24 |
+| `apps/pos` | **230** | `pnpm test` | **2026-09-02** |
+| `apps/kds` | **30** | `pnpm test` | **2026-09-02** |
+| `packages/contracts` | **67** | `npx vitest run` | **2026-09-02** |
+| `edge/database` | **316** | `cargo test` | **2026-09-02** |
+| `edge/sync` | **56** | `cargo test` | **2026-09-02** |
+| `edge/printer` | **45** | `cargo test` | **2026-09-02** |
+| `edge/device` | **11** | `cargo test` | **2026-09-02** |
+| `apps/pos/src-tauri` | **80** | `cargo test` | **2026-09-02** |
+| `apps/pos` (superseded) | 206 | `pnpm test` | 2026-08-28 |
+| `edge/database` (superseded) | 262 | `cargo test` | 2026-08-24 |
 | `edge/database` crash durability (criterion 2) | 2 | `cargo test --features crash-points --test crash_durability` | 2026-08-24 |
 | `edge/sync` | 42 | `cargo test` | 2026-08-24 |
 | `edge/sync` cloud replay (criterion 6) | 2 | `cargo test --features cloud-e2e --test cloud_replay` | 2026-08-24 |

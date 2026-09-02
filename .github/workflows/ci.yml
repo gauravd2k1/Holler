@@ -97,7 +97,7 @@ jobs:
       - name: migrate
         run: cd backend && go run ./cmd/devseed
       - name: test
-        run: cd backend && go test -count=1 ./...
+        run: cd backend && node ../scripts/assert-tests-ran.mjs go -- go test -count=1 ./...
       # Guard the guard: the suite must not be able to report success without
       # actually running the Postgres-backed tests. If this ever prints a
       # nonzero count, the job above is green on skips and is lying.
@@ -120,14 +120,14 @@ jobs:
         with:
           go-version: "1.22"
       - name: go drift test
-        run: cd packages/contracts/go && go test ./...
+        run: cd packages/contracts/go && node ../../../scripts/assert-tests-ran.mjs go -- go test ./...
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
       - name: install contracts deps
         run: cd packages/contracts && npm install --no-save zod typescript vitest
       - name: ts drift test
-        run: cd packages/contracts && npx vitest run
+        run: cd packages/contracts && node ../../scripts/assert-tests-ran.mjs vitest -- npx vitest run
       # The Rust edge crates have no generated contract binding (deferred until
       # a fourth Rust consumer — ADR-011 addendum, 0.2.2), so their event_type
       # literals are unbound strings. A mismatch fails silently at replay: the
@@ -234,10 +234,10 @@ jobs:
       # unguarded until 0.2.3 — keep this list matching the edge/ directory.
       - name: test
         run: |
-          cd edge/database && cargo test
-          cd ../sync && cargo test
-          cd ../printer && cargo test
-          cd ../device && cargo test
+          node scripts/assert-tests-ran.mjs cargo -- cargo test --manifest-path edge/database/Cargo.toml
+          node scripts/assert-tests-ran.mjs cargo -- cargo test --manifest-path edge/sync/Cargo.toml
+          node scripts/assert-tests-ran.mjs cargo -- cargo test --manifest-path edge/printer/Cargo.toml
+          node scripts/assert-tests-ran.mjs cargo -- cargo test --manifest-path edge/device/Cargo.toml
 
   # M4 acceptance criterion 2: "kill the POS between confirm and deduction ->
   # order and ledger agree on reopen", judged against the crash rather than
@@ -271,7 +271,7 @@ jobs:
       # waits for the abnormal exit, and reopens the same sealed file.
       - name: crash durability (M4 criterion 2)
         working-directory: edge/database
-        run: cargo test --features crash-points --test crash_durability
+        run: node ../../scripts/assert-tests-ran.mjs cargo -- cargo test --features crash-points --test crash_durability
 
   # Style only. Split out of `pos` so a lint or type error can never again
   # hide that app's test and build results -- see the note at the top of this
@@ -324,7 +324,7 @@ jobs:
           workspaces: edge/sync -> target
       - name: edge -> cloud ledger replay (M4 criterion 6)
         working-directory: edge/sync
-        run: cargo test --features cloud-e2e --test cloud_replay
+        run: node ../../scripts/assert-tests-ran.mjs cargo -- cargo test --features cloud-e2e --test cloud_replay
 
   pos-style:
     runs-on: ubuntu-latest
@@ -367,7 +367,7 @@ jobs:
       - name: install
         run: cd apps/pos && pnpm install --frozen-lockfile
       - name: test
-        run: cd apps/pos && pnpm test
+        run: cd apps/pos && node ../../scripts/assert-tests-ran.mjs vitest -- pnpm test
       - name: build
         run: cd apps/pos && pnpm build
 
@@ -417,7 +417,7 @@ jobs:
       - name: install
         run: cd apps/kds && pnpm install --frozen-lockfile
       - name: test
-        run: cd apps/kds && pnpm test
+        run: cd apps/kds && node ../../scripts/assert-tests-ran.mjs vitest -- pnpm test
       - name: build
         run: cd apps/kds && pnpm build
 
@@ -525,7 +525,7 @@ jobs:
       - name: build bridge
         run: cd tests/integration/kds-lan-bridge && cargo build
       - name: real socket session
-        run: cd tests/integration/kds-lan && pnpm test
+        run: cd tests/integration/kds-lan && node ../../../scripts/assert-tests-ran.mjs vitest -- pnpm test
 
   # e2e-scenario-harness: an autonomous, randomized end-to-end scenario
   # harness for the full POS<->kitchen lifecycle (docs/retro.md, five
@@ -659,4 +659,4 @@ jobs:
       - name: build devseed (spawned by the harness at startup)
         run: cargo build --manifest-path edge/database/Cargo.toml --bin devseed
       - name: reduced randomized run (fixed seed, CI)
-        run: cd tests/e2e-scenario/orchestrator && pnpm test
+        run: cd tests/e2e-scenario/orchestrator && node ../../../scripts/assert-tests-ran.mjs vitest -- pnpm test

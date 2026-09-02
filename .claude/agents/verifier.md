@@ -19,10 +19,12 @@ Other agents' uncommitted work is usually sitting in the tree alongside what you
 If you believe verification genuinely requires changing a tracked file, STOP and report that as a blocker. An unverified claim is recoverable; a destroyed track is not.
 
 ## Procedure
-1. Run the module's targeted tests, compressed:
-   - Go: `cd backend && go test ./internal/<context>/... 2>&1 | tail -40`
-   - App: `cd apps/<app> && pnpm test 2>&1 | tail -40` and `pnpm typecheck 2>&1 | tail -20`
-   - Rust: `cd <crate> && cargo test 2>&1 | tail -40`
+1. Run the module's targeted tests **through `scripts/assert-tests-ran.mjs`**, which fails when a command executes zero tests:
+   - Go: `cd backend && node ../scripts/assert-tests-ran.mjs go -- go test ./internal/<context>/...`
+   - App: `cd apps/<app> && node ../../scripts/assert-tests-ran.mjs vitest -- pnpm test`, plus `pnpm typecheck`
+   - Rust: `node scripts/assert-tests-ran.mjs cargo -- cargo test --manifest-path <crate>/Cargo.toml`
+
+   **A SUITE THAT RUNS NOTHING IS AN AUTOMATIC FAIL, NOT A PASS.** Zero executed tests and a passing suite are indistinguishable from the outside, and every runner here has a way to produce it: a `cargo test` filter matching no name prints `0 passed` and exits 0; `go test -run <typo>` prints `ok ... [no tests to run]` and exits 0; `vitest run -t <typo>` skips all of them and exits 0. So does a command that never ran — a wrong `-p` package, a missing manifest, a tool absent from PATH — once the exit status is swallowed. **Never pipe a test command through `tail`**: the pipeline reports `tail`'s status, which is 0. Report the number of tests executed, not merely "passed"; a count you cannot state is a claim you cannot make.
 2. Grep the changed paths for forbidden patterns:
    - `TODO implement` / `todo!(` / mock business logic
    - `: any` in TypeScript
