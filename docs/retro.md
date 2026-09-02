@@ -1079,3 +1079,58 @@ And the drain's claim about itself is no longer the only evidence: every pass no
 also prints the pending count **read straight from `local_outbox`**, so the
 table's number and the drain's number sit side by side in the same terminal. A
 mis-routing drain cannot make those two agree.
+
+## 2026-09-02 — A test condition the environment cannot produce is not a weak test, it is no test
+
+Every acceptance procedure in this project since Milestone 1 has said some form of
+**"with the network disconnected"**, and the operator has dutifully switched WiFi
+off before receiving, ordering or billing.
+
+**The cloud is `http://localhost:8080`.** Traffic to it never leaves the machine.
+Turning WiFi off — or unplugging every cable, or disabling every adapter — changes
+nothing about its reachability. The step passes identically in all cases, because
+it is not connected to the thing it claims to control.
+
+So the offline condition was never established, in any run, in any milestone. It
+was found when a backend process died for an unrelated reason and the operator
+noticed that *this* was the only thing that had ever made the cloud unreachable.
+
+**The failure is not that the test was weak. It is that it could not fail.** A
+condition the environment cannot produce yields a step that is green regardless
+of the code, which is indistinguishable from a step that is green because the
+code is right.
+
+Same family, third instance this milestone:
+
+- **Criterion 7** was satisfied by either of two cost definitions, so it could not
+  report which one shipped.
+- **`cloud_replay`** proved replay while nothing hosted the worker, because it
+  constructed its own pump.
+- **This**: an offline test against a loopback cloud.
+
+All three assert something true. None of them can distinguish the world where the
+product works from the world where it does not — which is the only thing an
+acceptance criterion is for.
+
+### The rule
+
+**Before running an acceptance step that names a precondition, establish the
+precondition and VERIFY IT INDEPENDENTLY — with a check that fails when the
+precondition is absent.** "WiFi is off" is a description of an action. "A request
+to the cloud base URL is refused" is the precondition, and it is the only form
+that can be wrong out loud.
+
+Offline against a localhost cloud is produced by stopping the process that serves
+it, or pointing the client at an address nothing binds — never by touching the
+network stack.
+
+### And the symptom was not the defect
+
+The same run turned up a `500` on order replay, caused by the cloud seeding 2
+menu items where the edge seeds 43. **Seeding the cloud menu would have made the
+500 disappear, the stream drain, and everything look healthy — while shipping
+both real defects underneath**: a client-data failure reported as a server fault,
+and one unreplayable row stranding 120 behind it.
+
+The dev-seed drift was the STIMULUS. The defects were what it exposed. Fixing the
+stimulus is how both would have shipped, and it would have looked like a fix.
