@@ -26,6 +26,7 @@ pub struct HttpClient {
 /// Outcome of a single HTTP round trip that *did* reach the server (as
 /// opposed to a transport-level failure, which offline degradation treats
 /// differently — see [`crate::worker`]).
+#[derive(Debug)]
 pub enum Reply {
     /// 2xx. Carries the parsed JSON body, if any route needs it.
     Ok(Value),
@@ -74,15 +75,56 @@ impl HttpClient {
     /// refused, timeout — i.e. "we are offline") is reported as
     /// [`SyncError::HttpTransport`]; any HTTP response, success or not, is
     /// a [`Reply`].
+    ///
+    /// **A TRANSPORT FAILURE IS RETRIED ONCE BEFORE IT IS BELIEVED**, because
+    /// the first request after an idle period is not evidence of anything.
+    /// `ureq` pools connections; a keep-alive socket the server closed while
+    /// the till sat idle fails at the transport layer on reuse, exactly like a
+    /// severed uplink. Observed 2026-09-02: a shutdown drain fifteen minutes
+    /// after startup reported "found no route to the cloud" for its first
+    /// stream and then published eight rows through the same client — the
+    /// backend log recorded no request at all for the stream that "went
+    /// offline".
+    ///
+    /// The cost of a false offline is not a retry, it is a STOPPED STREAM: the
+    /// outbox drains in order, so the first stream after any idle period would
+    /// strand its rows while later streams succeed, and tell the operator the
+    /// network was down when it was not.
     pub fn post_json(&self, path: &str, body: &Value) -> Result<Reply, SyncError> {
-        let req = self.authorize(self.agent.post(&self.url(path)));
-        match req.send_json(body.clone()) {
-            Ok(resp) => {
-                let json = resp.into_json::<Value>().unwrap_or(Value::Null);
-                Ok(Reply::Ok(json))
-            }
-            Err(ureq::Error::Status(status, _resp)) => Ok(Reply::Rejected { status }),
-            Err(ureq::Error::Transport(_)) => Err(SyncError::HttpTransport),
+        self.with_one_transport_retry(|| {
+            let req = self.authorize(self.agent.post(&self.url(path)));
+            req.send_json(body.clone())
+        })
+        .map(|resp| Reply::Ok(resp.into_json::<Value>().unwrap_or(Value::Null)))
+        .or_else(|e| match e {
+            SyncError::HttpStatus { status } => Ok(Reply::Rejected { status }),
+            other => Err(other),
+        })
+    }
+
+    /// Runs `attempt`, and on a TRANSPORT failure runs it exactly once more.
+    ///
+    /// One retry, not a loop: a genuinely unreachable cloud must still be
+    /// reported promptly, because the shutdown drain is bounded and an outlet
+    /// closing with no uplink is the normal case (ADR-020). A second attempt
+    /// costs one connect against a dead pool entry; a retry loop would spend
+    /// the shutdown budget discovering what the first two attempts already
+    /// established.
+    ///
+    /// An HTTP STATUS is never retried — the server answered, and answering
+    /// twice would not change its mind.
+    fn with_one_transport_retry(
+        &self,
+        attempt: impl Fn() -> Result<ureq::Response, ureq::Error>,
+    ) -> Result<ureq::Response, SyncError> {
+        match attempt() {
+            Ok(resp) => Ok(resp),
+            Err(ureq::Error::Status(status, _)) => Err(SyncError::HttpStatus { status }),
+            Err(ureq::Error::Transport(_)) => match attempt() {
+                Ok(resp) => Ok(resp),
+                Err(ureq::Error::Status(status, _)) => Err(SyncError::HttpStatus { status }),
+                Err(ureq::Error::Transport(_)) => Err(SyncError::HttpTransport),
+            },
         }
     }
 
@@ -91,14 +133,16 @@ impl HttpClient {
     /// [`SyncError::HttpStatus`] since config pull has no "rejected but
     /// keep going" case — either it worked or it did not.
     pub fn get_json<T: DeserializeOwned>(&self, path: &str) -> Result<T, SyncError> {
-        let req = self.authorize(self.agent.get(&self.url(path)));
-        match req.call() {
-            Ok(resp) => resp
-                .into_json::<T>()
-                .map_err(|e| SyncError::Json(serde_json_error_from_io(e))),
-            Err(ureq::Error::Status(status, _resp)) => Err(SyncError::HttpStatus { status }),
-            Err(ureq::Error::Transport(_)) => Err(SyncError::HttpTransport),
-        }
+        // Same one-retry rule as post_json: the first request after an idle
+        // period may be a dead pooled socket, and `verify_enrollment` runs
+        // through here — so a stale connection here would report the whole
+        // node as offline before a single row was attempted.
+        self.with_one_transport_retry(|| {
+            let req = self.authorize(self.agent.get(&self.url(path)));
+            req.call()
+        })?
+        .into_json::<T>()
+        .map_err(|e| SyncError::Json(serde_json_error_from_io(e)))
     }
 }
 

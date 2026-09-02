@@ -1134,3 +1134,77 @@ and one unreplayable row stranding 120 behind it.
 
 The dev-seed drift was the STIMULUS. The defects were what it exposed. Fixing the
 stimulus is how both would have shipped, and it would have looked like a fix.
+
+## 2026-09-02 — "Offline" was reported for a request that was never sent
+
+The M5 criterion 6 run produced this, in one shutdown drain:
+
+```text
+holler-pos: shutdown drain [orders] published=0 unrouted=36 refused=0
+holler-pos: shutdown outbox drain found no route to the cloud; 8 row(s) sent
+holler-pos: shutdown drain [procurement] published=6 unrouted=0 refused=0
+holler-pos: shutdown drain [stock] published=2 unrouted=0 refused=0
+```
+
+The orders stream "found no route to the cloud" and then, in the same pass,
+through the same client, in the same process, procurement and stock published
+eight rows. The backend's request log settles it: during that entire drain it
+received six `POST /procurement/goods-receipts`, two
+`POST /inventory/ledger-entries`, and **nothing whatsoever from the orders
+stream**. Not a failed request — no request.
+
+The cloud was reachable. The label was wrong.
+
+**Cause:** `ureq` pools connections. The startup drain ran at 11:03 and the
+shutdown drain at 11:18, so the pooled keep-alive socket had been closed by the
+server long before it was reused. Reuse failed at the transport layer, and
+`client.rs` mapped every `ureq::Error::Transport` straight to
+`SyncError::HttpTransport`, which the worker reports as `StopReason::Offline`.
+One attempt, no retry, and the verdict was final.
+
+**Why a false offline is expensive rather than merely wrong.** The outbox drains
+in order, so a stream that stops strands every row behind it. The first stream in
+any drain after an idle period would therefore hit the dead pooled socket, stop,
+and leave its rows pending — while every stream after it succeeded, because the
+next request opened a fresh connection. At an outlet that reads as "sync is
+broken and the network is down", on a night when the network was fine.
+
+**The fix is one retry, and the reasoning for the number matters.** A transport
+failure on the first attempt after idling is not evidence of anything — it is
+equally consistent with a dead pool entry and a severed uplink, and only a second
+attempt separates them. But it is *one* retry, not a loop: the shutdown drain is
+bounded, an outlet closing with no uplink is the normal case (ADR-020), and a
+retry loop would spend the budget rediscovering what two attempts already
+established. An HTTP status is never retried — the server answered, and asking
+again does not change its mind.
+
+### The generalisation, which is the point
+
+**A diagnosis is not a measurement.** `Offline` is a conclusion the client draws
+from one failed syscall, and it was stated to the operator with the same
+confidence as `published=6`, which is a count of things that actually happened.
+Three distinct situations — no listener, listening but refusing, a socket the
+peer already closed — were collapsed into one word, and the word chosen was the
+one that blames the customer's network.
+
+The same session had already built the discriminator: `scripts/check-cloud-unreachable.ps1`
+refuses to say "offline" unless three independent probes agree, and reports
+REACHABLE when it cannot classify a failure. That fail-closed instinct belongs in
+the worker's status reporting too, and is filed.
+
+### And a correction, recorded because the process matters more than the answer
+
+While diagnosing the same run I asserted that `LanServerHandle::shutdown()` hangs
+forever, because it dials its own bind address and `0.0.0.0` is not a dialable
+target. The dial failure is real and was proven. **The hang was not.** The
+process had already exited; my "still running" reading was taken mid-shutdown,
+and the heartbeat join alone takes up to five seconds. I built a mechanism on one
+true fact and one stale observation, and stated it as the explanation.
+
+The operator caught it by asking a simple question I had not asked myself — *are
+you sure closing the window kills it?* — and the answer was no, it had died, and
+the thing still reachable on port 5173 was Vite, not the POS.
+
+**A plausible mechanism that explains the symptom is not the same as the cause.**
+The undialable bind address is still a latent defect and is filed on its own
+merits; it just did not cause this.
