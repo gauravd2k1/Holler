@@ -228,31 +228,60 @@ header names (`Authorization` / `X-Gateway-Authorization` in their Beckn sense).
 first person is in a hurry. A check does not get tired.** Falsified before
 trusted, per §66.
 
-#### The certification cut line — DECIDED
+#### The cut line is TWO-STAGE — DECIDED
 
-**M6 closes on the framework and both adapters proven. ONDC Network Participant
-certification is a NAMED GATE OUTSIDE the milestone**, the same shape as the
-ESC/POS hardware gate: the code is done, the external thing is not.
+**Build what a published schema can verify. Defer what only a live registry can
+verify.** One principle, applied twice.
+
+**Stage 1 — M6.** Framework, both adapters, and the **Beckn message surface**.
+The surface is driven by ONDC's published schemas, so a schema-generated fake
+**actually checks something**, and it is the forcing function that proves the
+internal contract carries an **async callback protocol** rather than a
+REST-shaped one. That is the whole reason ONDC went first.
+
+**Stage 2 — M6.1.** Three items leave M6, **not because they are hard, but
+because nothing we have can verify them**:
+
+- **Ed25519 signing** (BLAKE-512 digest, auth headers, key management) — there is
+  no counterparty to sign for.
+- **Registry `subscribe` + `/on_subscribe` X25519 challenge decryption** — there
+  is no registry to subscribe to.
+- **The public HTTPS callback ingress** — nothing legitimate can call it.
+
+Building them now means **checking crypto against a fake registry we authored** —
+the same shape as a harness proving replay while nothing hosted the worker, and
+the same shape as a fake we write from our own reading of the spec (C-2a).
+A self-authored counterparty cannot falsify a signature scheme; it can only agree
+with it.
+
+**M6.1 is triggered by Phase D completing** — legal entity, whitelisted domain,
+SSL certificate, public callback host. When that lands, the three are built and
+verified **in one stretch against the real registry**, and the **ingress security
+gate is reviewed then, against a surface that actually receives traffic**.
+
+**Certification stays outside both**, the same shape as the ESC/POS hardware
+gate: the code is done, the external thing is not.
 
 Sizing, measured against this repository's own velocity (whole history is 26
 calendar days, 2026-08-07 → 2026-09-02, ~13 commits/day):
 
-| Work | Ours? | Estimate |
-|---|---|---|
-| Internal platform contract, framework, `PlatformNotImplemented` adapters, drift check | yes | 0.5–1 wk |
-| Local sync-REST fake + its adapter + recorded fixtures | yes | 0.5 wk |
-| Beckn surface: `search/select/init/confirm/status/cancel/update` + every `on_*` | yes | 1.5–2 wk |
-| Ed25519 signing, BLAKE-512 digest, auth headers, key management | yes | 0.5–1 wk |
-| Registry `subscribe` + `/on_subscribe` X25519 challenge, key rotation | yes | 0.5 wk |
-| Async callbacks: public HTTPS ingress, dedupe, out-of-order and duplicate `on_*` | yes | 0.5–1 wk |
-| **Phase C build subtotal** | | **4–6 wk** |
-| **NP onboarding + certification** | **NO — a review queue, not a task** | **2–8 wk calendar** |
+| Work | Stage | Ours? | Estimate |
+|---|---|---|---|
+| Internal platform contract, framework, `PlatformNotImplemented` adapters, drift check | M6 | yes | 0.5–1 wk |
+| Local sync-REST fake + its adapter + recorded fixtures | M6 | yes | 0.5 wk |
+| Beckn message surface: `search/select/init/confirm/status/cancel/update` + every `on_*`, against the schema-generated fake | M6 | yes | 1.5–2 wk |
+| **Phase C subtotal in M6** | | | **2.5–3.5 wk** |
+| Ed25519 signing, BLAKE-512 digest, auth headers, key management | **M6.1** | yes | 0.5–1 wk |
+| Registry `subscribe` + `/on_subscribe` X25519 challenge, key rotation | **M6.1** | yes | 0.5 wk |
+| Public HTTPS callback ingress + its security gate, dedupe, out-of-order and duplicate `on_*` | **M6.1** | yes | 0.5–1 wk |
+| **M6.1 subtotal** | | | **1.5–2.5 wk**, starting when Phase D lands |
+| NP onboarding + certification | outside both | **NO — a review queue** | 2–8 wk calendar |
 
-With Phase A (~1 wk) and Phase B (~1.5–2 wk): **M6 as scoped is ~7–9 weeks.**
-Holding certification *inside* the close would make it **9–17 weeks** — up to
-four months, **none of the overrun code**. That is why the cut is here.
+With Phase A (~1 wk) and Phase B (~1.5–2 wk): **M6 is ~5–6.5 weeks.** The earlier
+scope was 7–9; holding certification inside the close would have been 9–17, up to
+four months, **none of the overrun code**.
 
-Three facts drove the decision, and only the first is ours to move:
+Three facts drove both stages, and only the first is ours to move:
 
 1. Certification is a review queue with round-trips on log verification.
 2. Registry subscription needs a **registered legal entity, a whitelisted domain,
@@ -267,9 +296,12 @@ Three facts drove the decision, and only the first is ours to move:
 ### Phase D — NP paperwork (STARTS THIS WEEK, in parallel with Phase A)
 
 **It is the long pole, it consumes no engineering time, and it is the only item
-on the list that cannot be compressed by working faster.** Even with
-certification outside M6, starting now means the gate can clear shortly after M6
-rather than starting from zero.
+on the list that cannot be compressed by working faster.**
+
+**Phase D now sets M6.1's START rather than M6's close** — which is the point of
+the two-stage cut. Nothing in M6 waits on it; everything in M6.1 does. Starting
+it in week one means the registry-verifiable work can begin as soon as the
+paperwork clears, instead of beginning from zero at that moment.
 
 Record, for each step, **what it requires and who has to sign what**:
 
@@ -286,12 +318,18 @@ Record, for each step, **what it requires and who has to sign what**:
 **This table is a status record, not a checklist to tick silently.** An
 unstarted row after Phase A is a schedule fact to report, not a detail.
 
-### The public callback ingress is its own SECURITY GATE
+### M6.1 — the public callback ingress is its own SECURITY GATE
+
+**NOT IN M6.** It arrives with the deferred three, when Phase D lands and there
+is something that can legitimately call it. Recorded here in full so it is not
+rediscovered, and so that no M6 track quietly exposes a public endpoint.
 
 **Reviewed before it accepts a single external request, not after.** This is the
 first publicly addressable, externally-authenticated surface this product has
 ever had — the same register as M2's LAN socket, which needed device enrollment
-before it was trusted.
+before it was trusted. **Reviewing it inside M6 would mean reviewing it against
+traffic we generate ourselves**, which is what the two-stage cut exists to
+avoid.
 
 The gate covers, at minimum:
 
@@ -308,7 +346,7 @@ The gate covers, at minimum:
   that will be noisy.
 
 **Nothing is exposed publicly until this gate is reviewed and its falsifiers have
-been watched failing.**
+been watched failing** — and in M6, nothing is exposed publicly at all.
 
 ---
 
@@ -329,7 +367,7 @@ fail is not a guard, and that includes precondition scripts.
 | 5 | A supplier and pack size created in the admin console makes the next receipt **convert exactly and raise no `NO_SUPPLIER_ITEM`** | Receive **before** creating them → gap recorded, so its absence afterwards means something |
 | 6 | A goods receipt is **readable back in-product** with its line quantities and totals | Field-by-field against the edge row, with a fixture that **populates every provenance field** (contracts 0.5.9's lesson) |
 | 7 | A client-data failure is reported as **4xx with a reason the edge records** | Replay an FK-violating row on the **pre-fix** binary → 500, budget uncharged; after → 4xx, reason stored, row surfaced |
-| 8 | An aggregator order flows **end to end through BOTH adapters** — ONDC (staging if access lands, otherwise the artefact-generated Beckn fake) **and the local sync-REST fake** — **with no branch on platform identity in the core** | **Introduce a platform-specific branch in the core and watch the drift check go RED**, then remove it. A boundary check nobody has watched fail is not a boundary |
+| 8 | An aggregator order flows **end to end through BOTH adapters** — the ONDC/Beckn adapter against the **artefact-generated Beckn fake** (staging needs the registry work deferred to M6.1) **and the second adapter against the local sync-REST fake** — **with no branch on platform identity in the core** | **Introduce a platform-specific branch in the core and watch the drift check go RED**, then remove it. A boundary check nobody has watched fail is not a boundary |
 
 Criterion 4's `taskkill` falsifier **retires the abnormal-exit question (P7's
 sibling) at the same time as it proves the pump**.
