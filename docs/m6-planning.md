@@ -24,8 +24,13 @@ Entry state, verified against the repository rather than asserted:
 
 ## What M6 delivers
 
-1. **Aggregator integration** — Swiggy, Zomato, ONDC. Inbound orders, menu and
-   availability push, order state round-trip, stock-out snooze.
+1. **Aggregator integration — the FRAMEWORK and the ONDC IMPLEMENTATION, NOT a
+   live channel on any platform.** Inbound orders, menu and availability push,
+   order state round-trip, stock-out snooze, behind one internal contract proven
+   by two working adapters. **Swiggy and Zomato are loud placeholders**;
+   ONDC Network Participant certification is a named gate **outside** this
+   milestone. **"Aggregators done" does not mean "orders arriving from Swiggy",
+   and nobody may read it that way six weeks from now.**
 2. **`apps/admin` back office** — menu and pricing, suppliers and pack sizes,
    purchase orders, staff and permissions, goods-receipt list. The directory
    exists and is **empty**; this is a new application.
@@ -108,10 +113,13 @@ PROPOSED, **no tables drawn**).
 
 ## Phase order
 
-**Sync gaps → admin → aggregators.** Aggregator orders flow through the same
-outbox that is wedged today; building on top of it would bury the defect. Admin
-precedes aggregators because acceptance criterion 5 needs it and because
-aggregator menu push needs a menu surface that is not `devseed`.
+**Sync gaps → admin → aggregators, with the NP paperwork (Phase D) running
+alongside Phase A from week one.** Aggregator orders flow through the same outbox
+that is wedged today; building on top of it would bury the defect. Admin precedes
+aggregators because acceptance criterion 5 needs it and because aggregator menu
+push needs a menu surface that is not `devseed`. Phase D is calendar-bound and
+engineering-free, so it starts immediately and in parallel — it is the only item
+that working faster cannot compress.
 
 ### Phase A — the seven sync gaps (NO contract change; starts immediately)
 
@@ -140,6 +148,13 @@ and pack sizes, purchase orders, staff and permissions, goods-receipt list.
 
 ### Phase C — aggregators
 
+**What Phase C actually buys, in one sentence: M6's aggregator phase delivers the
+FRAMEWORK and the ONDC IMPLEMENTATION — not a live channel on any platform.**
+Write it that way everywhere. Six weeks from now nobody may read "aggregators
+done" as "orders arriving from Swiggy". **The framework is the durable asset;
+ONDC is the forcing function that proves it carries an async protocol; the
+channels arrive when access does.**
+
 **Contracts 0.7.0 lands AFTER Phase A is green, not before.** A1–A3 change the
 outbox the aggregator tables will ride on, and bumping contracts across a wedged
 outbox would bury the same defect twice.
@@ -148,6 +163,152 @@ ADR-022 is drafted now and **escalated before a single table is drawn**.
 `order` already carries `external_order_id` and `aggregator_discount_paise`;
 there are **no** aggregator tables anywhere in 0.6.3 — no platform credential, no
 menu/item mapping, no webhook dedupe, no snooze state.
+
+#### Scope: ONDC for real, Swiggy and Zomato as loud placeholders
+
+**ONDC is implemented for real.** Swiggy and Zomato are **adapters behind the
+same internal contract, not implemented**, and the framework around them is built
+properly. Four conditions bind that, and condition 2 is the important one.
+
+**C-1. A placeholder must FAIL LOUDLY, NEVER SILENTLY.** No Swiggy or Zomato
+adapter may return success, return empty, or no-op. Invoking one produces a
+single explicit **`PlatformNotImplemented`** error naming the platform and the
+operation, **at the first line of the call**. No default selection, no fallback
+that quietly routes to it, no config value that can accidentally point at it.
+**An unimplemented adapter that returns a plausible-looking nothing is the same
+defect as a stream reporting `published=0` while rows sat unrouted** — this
+milestone's P1, one layer out.
+
+**C-2. PROVE THE ABSTRACTION WITH TWO WORKING ADAPTERS, NOT ONE.** A one-adapter
+abstraction is indistinguishable from no abstraction: the internal contract
+silently takes the shape of ONDC and nobody notices until the second platform
+arrives and the whole thing is redone. **Same family as a test that constructs
+its own subject.**
+
+So a **second real adapter** is built against a **local fake platform speaking a
+conventional synchronous REST shape** — the documented Swiggy/Zomato style — with
+recorded fixtures. **Not a stub: a working adapter against a working fake.** If
+the internal contract carries ONDC's async callback model and a sync
+request/response model **without special-casing either**, it is right. If it
+needs a branch on platform identity anywhere in the core, it is wrong — and that
+is discovered now for the price of a fake server rather than later for the price
+of a rewrite.
+
+**C-2a. THE BECKN FAKE IS GENERATED FROM ONDC'S PUBLISHED ARTEFACTS, NEVER FROM
+OUR READING OF THE SPEC.** A fake we author proves only that we agree with
+ourselves; conformance against it demonstrates that the adapter matches our
+*interpretation*, not ONDC — and it arrives in the one place where no external
+check exists for six weeks. Generate it from the **official JSON schemas, the
+published example payloads, the reference flows and the applicable layer-2
+config**. **Cite the source and version of every artefact in the fake's own
+header**, so a future session can tell what it was built from.
+
+Reachability checked 2026-09-02: `github.com/ONDC-Official/ONDC-RET-Specifications`
+and `ondc.org` both answer **200**. (Two `raw.githubusercontent.com` paths
+returned 404 — those were *guessed* file paths, not evidence of absence. The
+execution session pins the real paths and their versions.)
+
+**If those artefacts cannot be obtained, say so plainly and label the ONDC
+adapter "UNVERIFIED AGAINST THE SPECIFICATION" in the acceptance file, with
+certification as the only thing that can lift the label.** Do not quietly let a
+self-authored fake stand in for conformance.
+
+**C-3. BE EXPLICIT ABOUT WHICH ARTEFACT IS EVIDENCE OF WHAT.** The local fake
+proves **the contract shape**. Only ONDC staging proves **the integration**.
+Record them **separately** in the acceptance file and never let the fake stand in
+for the real thing — **M5's lesson was that a harness proving replay is not the
+product proving replay, and that mistake cost a milestone.**
+
+**C-4. ENFORCE THE BOUNDARY STRUCTURALLY, NOT BY CONVENTION.** A drift check
+fails the build if any platform-specific identifier appears outside its own
+adapter module: **`swiggy`, `zomato`, `ondc`, `beckn`, `on_search`, `on_confirm`,
+`on_status`, `on_cancel`**, the other `on_*` callback names, and the signing
+header names (`Authorization` / `X-Gateway-Authorization` in their Beckn sense).
+**A documented obligation to keep the core platform-agnostic holds until the
+first person is in a hurry. A check does not get tired.** Falsified before
+trusted, per §66.
+
+#### The certification cut line — DECIDED
+
+**M6 closes on the framework and both adapters proven. ONDC Network Participant
+certification is a NAMED GATE OUTSIDE the milestone**, the same shape as the
+ESC/POS hardware gate: the code is done, the external thing is not.
+
+Sizing, measured against this repository's own velocity (whole history is 26
+calendar days, 2026-08-07 → 2026-09-02, ~13 commits/day):
+
+| Work | Ours? | Estimate |
+|---|---|---|
+| Internal platform contract, framework, `PlatformNotImplemented` adapters, drift check | yes | 0.5–1 wk |
+| Local sync-REST fake + its adapter + recorded fixtures | yes | 0.5 wk |
+| Beckn surface: `search/select/init/confirm/status/cancel/update` + every `on_*` | yes | 1.5–2 wk |
+| Ed25519 signing, BLAKE-512 digest, auth headers, key management | yes | 0.5–1 wk |
+| Registry `subscribe` + `/on_subscribe` X25519 challenge, key rotation | yes | 0.5 wk |
+| Async callbacks: public HTTPS ingress, dedupe, out-of-order and duplicate `on_*` | yes | 0.5–1 wk |
+| **Phase C build subtotal** | | **4–6 wk** |
+| **NP onboarding + certification** | **NO — a review queue, not a task** | **2–8 wk calendar** |
+
+With Phase A (~1 wk) and Phase B (~1.5–2 wk): **M6 as scoped is ~7–9 weeks.**
+Holding certification *inside* the close would make it **9–17 weeks** — up to
+four months, **none of the overrun code**. That is why the cut is here.
+
+Three facts drove the decision, and only the first is ours to move:
+
+1. Certification is a review queue with round-trips on log verification.
+2. Registry subscription needs a **registered legal entity, a whitelisted domain,
+   a valid SSL certificate and a publicly reachable HTTPS callback** — a chain
+   that starts with paperwork, not a sprint. Our cloud is `localhost:8080`.
+   Probed 2026-09-02: `preprod.registry.ondc.org` → **403**;
+   `staging.registry.ondc.org` and two gateways → **no answer**.
+3. Callbacks force an architectural commitment: **the callback endpoint lives in
+   the cloud backend, never the edge** — consistent with ADR-022, since the till
+   has no public address.
+
+### Phase D — NP paperwork (STARTS THIS WEEK, in parallel with Phase A)
+
+**It is the long pole, it consumes no engineering time, and it is the only item
+on the list that cannot be compressed by working faster.** Even with
+certification outside M6, starting now means the gate can clear shortly after M6
+rather than starting from zero.
+
+Record, for each step, **what it requires and who has to sign what**:
+
+| Step | Requires | Signature / owner |
+|---|---|---|
+| Registered legal entity | Incorporation details, GST registration | Operator |
+| Domain whitelisted with ONDC | Owned domain, subscriber id derived from it | Operator |
+| Valid SSL certificate | Public CA cert on that domain | Operator |
+| Publicly reachable HTTPS callback host | Hosting for the cloud backend's ingress | Operator + this track |
+| Registry subscriber keys | Ed25519 signing + X25519 encryption keypairs, generated and stored | This track |
+| `subscribe` submission + `/on_subscribe` challenge | All of the above live simultaneously | This track |
+| Certification / log verification | A working implementation and ONDC's queue | **Not ours** |
+
+**This table is a status record, not a checklist to tick silently.** An
+unstarted row after Phase A is a schedule fact to report, not a detail.
+
+### The public callback ingress is its own SECURITY GATE
+
+**Reviewed before it accepts a single external request, not after.** This is the
+first publicly addressable, externally-authenticated surface this product has
+ever had — the same register as M2's LAN socket, which needed device enrollment
+before it was trusted.
+
+The gate covers, at minimum:
+
+- **A written threat model** for the ingress.
+- **Signature verification failure modes** enumerated: absent header, malformed
+  header, unknown subscriber id, key not in registry, stale key after rotation,
+  valid signature over a mismatched digest. **Each one must have a watched
+  failing test** — §66 applies hardest here.
+- **Replay and duplicate handling**: a dedupe key, a bounded acceptance window,
+  and a decision on what a repeated `on_confirm` does. **Duplicate delivery is
+  normal in this protocol, not an anomaly.**
+- **Rate limiting** on an endpoint anyone on the internet can reach.
+- **No credential material in logs or errors** — the standing rule, on a surface
+  that will be noisy.
+
+**Nothing is exposed publicly until this gate is reviewed and its falsifiers have
+been watched failing.**
 
 ---
 
@@ -162,18 +323,24 @@ fail is not a guard, and that includes precondition scripts.
 | # | Observation | Falsifying condition — watched FIRST |
 |---|---|---|
 | 1 | An aggregator order already received **bills, prints and closes with the cloud provably unreachable** | `scripts/check-cloud-unreachable.ps1` watched printing **STOP with the cloud up**, then all three probes agreeing with the backend stopped **by PID** |
-| 2 | A stock-out at the till **snoozes the item on the platform**, observed on the platform's own sandbox surface | **PARKED — see below.** Would be: snooze with the push path disabled → sandbox still shows the item available |
+| 2 | **ONDC-ONLY.** A stock-out at the till snoozes the item **on ONDC staging**, observed on ONDC's own surface and **named as ONDC-only** in the record | **PARKED behind its trigger — see below.** Would be: snooze with the push path disabled → the platform still shows the item available |
 | 3 | A permanently-rejected outbox row **blocks itself and not its neighbours** | The same fixture on the **pre-fix** binary strands the neighbours; neighbour counts recorded both times |
 | 4 | An order placed offline **reaches the cloud without the operator closing the application** | Kill the app with `taskkill` (so `RunEvent::Exit` never fires) → the row is still pending; then the periodic pump lands it with the window open |
 | 5 | A supplier and pack size created in the admin console makes the next receipt **convert exactly and raise no `NO_SUPPLIER_ITEM`** | Receive **before** creating them → gap recorded, so its absence afterwards means something |
 | 6 | A goods receipt is **readable back in-product** with its line quantities and totals | Field-by-field against the edge row, with a fixture that **populates every provenance field** (contracts 0.5.9's lesson) |
 | 7 | A client-data failure is reported as **4xx with a reason the edge records** | Replay an FK-violating row on the **pre-fix** binary → 500, budget uncharged; after → 4xx, reason stored, row surfaced |
+| 8 | An aggregator order flows **end to end through BOTH adapters** — ONDC (staging if access lands, otherwise the artefact-generated Beckn fake) **and the local sync-REST fake** — **with no branch on platform identity in the core** | **Introduce a platform-specific branch in the core and watch the drift check go RED**, then remove it. A boundary check nobody has watched fail is not a boundary |
 
 Criterion 4's `taskkill` falsifier **retires the abnormal-exit question (P7's
 sibling) at the same time as it proves the pump**.
 
 Criterion 7 was added during planning: **P2 is the milestone's first defect and
 nothing else observes it.**
+
+**Criterion 8 carries the C-3 separation on its face:** the fake proves the
+**contract shape**, ONDC staging proves the **integration**, and the acceptance
+file records them as two rows, never one. The fake never stands in for the real
+thing.
 
 ### Criterion 2 is PARKED, not softened
 
