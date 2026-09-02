@@ -1208,3 +1208,66 @@ the thing still reachable on port 5173 was Vite, not the POS.
 **A plausible mechanism that explains the symptom is not the same as the cause.**
 The undialable bind address is still a latent defect and is filed on its own
 merits; it just did not cause this.
+
+## 2026-09-02 — Acceptance evidence that lives only in a session is lost when the session is
+
+The machine hung. The session restarted. The next session was asked to pick up
+where it stopped, read the git log, read `docs/RESUME.md`, and produced a
+criteria table saying M5 criteria 1, 3, 4 and 6 were unobserved and criterion 6
+should be re-run.
+
+All four had been observed that morning, on real screens, by the operator.
+
+The reconstruction was not hedged. It was stated in the same register as a read
+of the record — a table, with verdicts, offering to resume the run. And the
+strongest evidence against it was already in the context window: `262e03a` is the
+transport-retry fix asked for **after** criterion 6 passed, and its own commit
+message opens *"The M5 criterion 6 shutdown drain reported..."*. The session held
+the commit that came after the evidence and still concluded the evidence did not
+exist.
+
+**The record was the chat.** Four criteria, their preconditions, the figures
+(`GRN/20260902/0002`, Atta 400000 g → 500000 g, `4 sack → 100000 g`,
+`published=6`, outbox 126 → 120, `line_total_paise = 950000`) — none of it was
+committed anywhere. Git held the *fixes the run produced* and none of the run.
+
+### Why this is the same family as the rest of this log
+
+*A test whose subject nothing else constructs cannot detect that nothing else
+constructs it.* Here: **the fact existed and the record of it did not**, and
+nothing in the repository could tell the difference between "observed and
+unrecorded" and "never observed". Both look identical to a fresh session — and
+the fresh session resolved the ambiguity in the direction that discards work, and
+proposed re-running a criterion that had passed.
+
+The M5 pattern, now four instances, is one sentence: **green on absent data.** A
+criterion satisfied by either cost definition. A `cloud_replay` proving replay
+while nothing hosted the worker. An offline test against a loopback cloud. And
+now an acceptance table derived from a repository that contains no acceptance
+evidence — confidently, because nothing was there to contradict it.
+
+### The rule
+
+**A milestone does not close until its acceptance evidence is committed to the
+repository. The chat is not the record.** Every criterion: what was observed, how
+the precondition was established and independently verified, who observed it, and
+on what date. In CLAUDE.md, in all three builder agent files, and in the
+verifier's rubric as an automatic FAIL.
+
+Three corollaries, each earned in this session:
+
+- **Cite the artefact, never the conversation** — the screen, the row, the
+  request log, the PID.
+- **When two reports of the same run disagree, record the contradiction as
+  UNRESOLVED with the query that settles it.** The pre-drain baseline named the
+  pending receipts `0001`/`0002` and the post-drain comparison named them
+  `0002`/`0003`. One is wrong, neither store is readable now, and the honest
+  entry is the open question plus the SQL — not a guess written in the register's
+  voice.
+- **A verifier judges a committed file, not an agent's account of a run.**
+
+And the smaller lesson from the verification that followed: `make check-seams`
+and a bare `cargo test` at the repository root both failed here — no `make` on
+PATH in the Bash tool, no workspace manifest at the root — and **both exited 0
+through a pipe**. Two "green" lines were reported before the pipeline was
+noticed. A command that cannot run is not a command that passed.

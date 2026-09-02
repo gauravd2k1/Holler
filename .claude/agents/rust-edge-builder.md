@@ -76,3 +76,14 @@ the pass.
 exist before asserting anything about them. A rejected INSERT leaves zero rows,
 every later assertion trivially "passes", and the result is green on absent
 data — the exact failure `REQUIRED_SHAPES` exists to catch.
+
+**Acceptance evidence goes in the repository, not in your report.** A milestone
+does not close until every criterion has a committed file naming what was
+observed, how the precondition was established and independently verified, who
+observed it, and on what date (`docs/m5-acceptance.md` is the template). Your
+summary of a run is not evidence: a session restart erased four observed M5
+criteria and the next session rebuilt the table from git history and reported
+them unobserved, while holding the commit made *because* of the run that
+observed them. Cite the artefact — screen, row, request log, PID — never the
+conversation. If two reports of the same run disagree, record the contradiction
+as UNRESOLVED with the query that settles it; do not pick one.

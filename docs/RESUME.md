@@ -1,4 +1,33 @@
-# M5 resume state — 2026-08-31
+# M5 resume state — 2026-09-02
+
+> **M5 IS CLOSED at contracts v0.6.3 (2026-09-02). ALL SEVEN ACCEPTANCE CRITERIA
+> ARE OBSERVED against the shipping binaries, none by a test harness.**
+> **The evidence is `docs/m5-acceptance.md`. Read that file. Do not reconstruct
+> the verdicts from git history — this session did exactly that after a restart
+> and reported four observed criteria as unobserved, while holding the commit
+> (`262e03a`) made *because* of the run that observed them.**
+>
+> Criteria 1, 3, 4 and 6 were observed on real screens on 2026-09-02 by the
+> operator; 2, 5 and 7 on the dates in that file. Criterion 1 is the first time
+> the "network disconnected" precondition was ever established in this project:
+> backend stopped **by PID**, `scripts/check-cloud-unreachable.ps1` agreeing on
+> three probes, after the same script was watched printing `STOP` with the cloud
+> up.
+>
+> **§2(a) below is SUPERSEDED and kept only as the record of what was open before
+> the pass.** Everything it lists as pending is either observed (see the
+> acceptance file) or filed in `docs/backlog.md` as a pilot blocker. The
+> carry-forward list is in `docs/m5-acceptance.md` and in the CLAUDE.md milestone
+> block. **Next work is the M6 kickoff, not another acceptance run — criterion 6
+> must not be re-run.**
+>
+> Close-out verification, executed 2026-09-02 after `262e03a`: `edge/sync` 56
+> passed 3/3 consecutive runs, `edge/database` green, `edge/device` 11 passed,
+> `edge/printer` 45 passed, and all three seam manifests `cargo check` clean.
+> Two traps that cost time and will again: **there is no workspace `Cargo.toml`
+> at the repository root and `make` is not on PATH in the Bash tool**, and both
+> failures can exit **0** through a pipe, so a green-looking line can prove
+> nothing. One load-sensitive test flake is filed rather than dismissed.
 
 Contracts are **FROZEN at v0.6.3** (ADR-021); migrations run
 through **sqlite 0030 / postgres 0031**. **ALL 16 CI JOBS ARE GREEN** as of
@@ -12,8 +41,11 @@ met, and the acceptance pass in §2(a) is the next work.** Read this file first,
 `docs/adr/ADR-019-m5-procurement-contracts.md` **including its three addenda**,
 then the 2026-08-29/30 entries in `docs/retro.md`.
 
-**Every M5 track has landed: T1, T2, T3, T4, T5a, T7a, T7b.** What remains is
-the acceptance pass, which is MID-FLIGHT and has produced no verdicts yet.
+**Every M5 track has landed: T1, T2, T3, T4, T5a, T7a, T7b**, and the acceptance
+pass is COMPLETE — seven of seven, `docs/m5-acceptance.md`. (The sentence here
+previously read "MID-FLIGHT and has produced no verdicts yet"; that was true when
+written and was still being read as current after the pass finished, which is the
+whole reason the acceptance file exists.)
 
 **`apps/admin` does not exist and is M6.** T5 was written as "add supplier and PO
 screens" and is really "create the web admin application, then add them" — a

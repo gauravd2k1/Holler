@@ -61,3 +61,10 @@ Scope: <in-bounds | out-of-bounds paths | unreported: <paths>>
 Foreign: <none | other tracks' paths to exclude from this commit>
 Contracts: <untouched | MODIFIED (auto-fail)>
 ```
+
+**A criterion with no committed evidence is FAIL, not PASS.** A milestone does
+not close until its acceptance evidence is in the repository: what was observed,
+how the precondition was established and independently verified, who observed it,
+on what date. A verdict that exists only in a session transcript is erased by a
+restart, and what replaces it is a reconstruction from git history. Judge the
+committed file, never a builder's account of a run.

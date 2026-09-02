@@ -132,8 +132,33 @@ v0.6.0 (ADR-019) added the Milestone 5 procurement shapes — `supplier`, `suppl
 
 Two cross-cutting rules the 0.4.x line established the hard way: contract-shaped changes cascade across crates that do not share a cargo workspace (see `docs/retro.md` 2026-08-15), so run `make check-seams` after changing any `pub` signature in `edge/` or `apps/pos/src-tauri`; and a migration that exists on disk but is absent from `edge/database/src/migrations.rs`'s `MIGRATIONS` list **never applies** — 0009–0011 sat dead for exactly that reason, and 0005 before them.
 
-## Current milestone: MILESTONE 5 — Procurement
+## Current milestone: MILESTONE 5 — Procurement — **CLOSED 2026-09-02**
 <!-- MILESTONE-MARKER: 5 -->
+
+**M5 IS CLOSED at contracts v0.6.3** (ADR-019 + three addenda, ADR-020, ADR-021;
+migrations through sqlite 0030 / postgres 0031). **All seven acceptance criteria
+were observed against the shipping binaries by the operator, none by a test
+harness. The evidence is `docs/m5-acceptance.md` — read that file, do not
+reconstruct the verdicts from git history.** A session restart once erased the
+transcript that held four of them and the next session rebuilt the table from the
+log alone, concluding they were unobserved while holding the commit made *because*
+of the run that observed them.
+
+Criterion 1 is the first time in any milestone that the "network disconnected"
+precondition was actually established: the backend was stopped by PID and
+`scripts/check-cloud-unreachable.ps1` agreed on three probes — after the same
+script was first watched printing `STOP` while the cloud was up. WiFi off against
+a `localhost` cloud never established anything.
+
+**Carried into M6 as pilot blockers, all in `docs/backlog.md`:** the replay 500
+that wedges the outbox, abnormal exit bypassing the shutdown drain, no periodic
+pump, the unbounded (lifetime, not on-hand) cost definition, tax-inclusive
+purchase prices, the token cloud menu seed, device enrollment having no operator
+flow, and the `outlet.manage` split. **None blocked M5's close; every one blocks a
+pilot.**
+
+The scope and track graph below are kept as the record of what M5 was.
+
 <!-- Checked by scripts/check-milestone-marker.mjs against .claude/current-milestone.
      This block said "MILESTONE 2 — Kitchen" for the whole of M3: every M3 builder
      loaded M2's scope and M2's EXCLUDES as primary context and nothing noticed for
@@ -174,11 +199,22 @@ Both are hardware gates. **Parked 2026-08-20, revisit ~2 September 2026.** A fre
 
 **M3 Billing** is code-complete and functionally exercised, but **NOT acceptance-complete**: it is untagged and blocked on the two PARKED hardware gates above. `docs/RESUME.md` §2 and §6 carry the corrections. Two M3 defects are filed to M6 rather than fixed here, and a builder should not treat either as settled behaviour: `invoice.business_date` is bucketed by **UTC calendar day** (`business_date_from`, `apps/pos/src-tauri/src/commands/billing.rs`), which splits one trading night across two business dates and can reset a `DAILY` invoice series mid-service; and a `reset_policy` whose prefix lacks a matching date token yields duplicate invoice numbers, caught only by the UNIQUE index. `compute_business_date` (`edge/database/src/deduction/business_date.rs`) is the correct function and the stock ledger already uses it.
 
+**M5 Procurement** is **CLOSED at contracts v0.6.3** — seven of seven criteria
+observed on the shipping binaries, evidence in `docs/m5-acceptance.md`. Two
+findings outlive the milestone. **An acceptance criterion satisfied by either of
+two definitions cannot tell you which one you built** (criterion 7 passes under
+both a lifetime and an on-hand cost average, and reports neither). And **a test
+condition the environment cannot produce is not a weak test, it is no test** —
+every "network disconnected" step since M1 was performed by switching WiFi off
+against a cloud at `http://localhost:8080`.
+
 **M4 Inventory & Recipes** is **complete and tagged `m4-complete`** — all seven acceptance criteria observed against the shipping binaries, none evidenced by a test harness. Criterion 1 was CONTESTED for four days and closed by `7e88d1c`: the till hardcoded `variantId: null`, so no sale the POS ever took wrote a ledger row, while the harness that evidenced the criterion selected a variant directly. **A deduction test proves deduction only for the path its caller takes.** Criterion 6 was falsified, not merely observed, and the falsification found a dropped field the 201-echo comparison structurally could not see.
 ## Response rules for agents
 Inspect repo first, output a concise plan, then edit real files. If a task touches >15 files, stop and present the plan instead of proceeding. Report per milestone: Implemented / Verified / Performance / Remaining / Next.
 
 - **To prove a UI-level concern is covered, enumerate the SINKS, not the surfaces.** A screen can be missed; a write path cannot. "Which screens take a quantity?" is a search over a list nobody maintains, answered by recall and confirmation bias. "What command accepts a human quantity, and what writes `stock_ledger_entry`?" is a search over a closed set the code already enforces. Confirming the M4 quantity-echo fix went that way: two Tauri commands accept a quantity, exactly one non-test `INSERT INTO stock_ledger_entry` exists, four origins reach it (`RECIPE`, `MODIFIER_DELTA`, `WASTAGE`, `COUNT_ADJUSTMENT`) — so there is no third entry screen. The same enumeration proved *where an incident came from*: `devseed.rs` writes no ledger rows at all, so a stocked item can only have been stocked by a count. Applies unchanged to permission checks, audit writes, print paths and sync emitters — anywhere the question is "have I found all of them".
+
+- **A MILESTONE DOES NOT CLOSE UNTIL ITS ACCEPTANCE EVIDENCE IS COMMITTED TO THE REPOSITORY. THE CHAT IS NOT THE RECORD.** Every criterion needs a committed file naming what was observed, how the precondition was established and verified, who observed it, and on what date — `docs/m5-acceptance.md` is the template. A verdict that exists only in a session transcript is erased by a restart, and what replaces it is a reconstruction from git history stated with the confidence of a read: M5 criteria 1, 3, 4 and 6 were all observed on real screens and were then reported as unobserved by the next session, which was holding the commit made *because* of the run that observed them. **Same family as a test whose subject nothing else constructs — the fact existed, the record of it did not.** Corollaries: cite the artefact (screen, row, request log, PID) not the conversation; when two reports of the same run disagree, record the contradiction as UNRESOLVED with the query that settles it rather than picking one; and a criterion is not closed by an agent's summary of a run, only by evidence a later session can re-read.
 
 - **A RESTART IS VERIFIED BY THE NEW PROCESS'S IDENTITY — PID or start time — NEVER BY THE PORT ANSWERING.** The old process answers identically, so "the health check passes" is consistent with "nothing restarted". This has already cost a debugging detour: a backend restart failed to bind 8080 while the original kept serving, so an in-memory rate-limit window that the restart was meant to clear persisted, and the unchanged symptom read as a credential fault. Kill by port, confirm the port is free, start, then confirm a NEW pid. Same shape as the ADR-020 post-seal drain and the 0.5.2 auto-fill guard: **the action reports success while doing nothing, and it reads correctly in review.** Applies to every service restarted in this project.
 
