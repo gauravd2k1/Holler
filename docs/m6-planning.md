@@ -348,9 +348,26 @@ The gate covers, at minimum:
 **Nothing is exposed publicly until this gate is reviewed and its falsifiers have
 been watched failing** — and in M6, nothing is exposed publicly at all.
 
+**CLARIFICATION A BUILDER MUST NOT GET WRONG.** "Expose no public endpoint in M6"
+does **not** mean "do not build the callback receive path". **The callback
+receive path IS BUILT IN M6 and is reachable LOCALLY ONLY** — that is what the
+schema-generated Beckn fake calls, and it is the async half that makes having two
+adapters prove anything at all. What defers to M6.1 is the **public HTTPS
+ingress** — the internet-facing host, the signature verification against a live
+registry, and this security gate.
+
+Read the other way, a builder deletes the async shape, both adapters collapse to
+request/response, and **M6 C8 stops proving the one thing it exists to prove.**
+
 ---
 
 ## Acceptance criteria — APPROVED
+
+**THESE ARE M6 CRITERIA. "C1".."C8" IN ANY M6 CONTEXT MEAN THE ROWS BELOW,
+NEVER M5's.** M5's seven are closed and live in `docs/m5-acceptance.md`; its
+criterion 6 must not be re-run and its criterion 7 (weighted average cost) is a
+different thing entirely from **M6 C7** (a client-data failure reported as 4xx).
+Write **"M6 C7"** in full whenever the number appears in a prompt or a report.
 
 Every criterion names **the observation and the falsifying condition**, because
 M5's binding lesson is that *a criterion satisfied by two different
@@ -375,10 +392,61 @@ sibling) at the same time as it proves the pump**.
 Criterion 7 was added during planning: **P2 is the milestone's first defect and
 nothing else observes it.**
 
-**Criterion 8 carries the C-3 separation on its face:** the fake proves the
-**contract shape**, ONDC staging proves the **integration**, and the acceptance
-file records them as two rows, never one. The fake never stands in for the real
-thing.
+**M6 C8 IS SHAPE-ONLY, AND THE ACCEPTANCE FILE MUST SAY SO IN THOSE WORDS.**
+With staging deferred to M6.1, **both** adapters now run against fakes we
+authored — one generated from ONDC's published artefacts, one written by us. So
+C8 proves the **contract shape twice and the integration zero times**. Left
+unlabelled, M6 closes with C8 green and a reader takes it as "ONDC works", which
+is exactly the substitution C-3 exists to prevent.
+
+Therefore:
+
+- **M6 C8 is recorded as `SHAPE ONLY — no integration evidence`.**
+- **The integration row travels to M6.1 as an explicitly UNMET row** (M6.1 C1,
+  below). It is carried, not closed, and never merged into C8.
+- The artefact-generated fake is the strongest available check on shape and the
+  weakest possible check on integration. Both halves of that sentence go in the
+  acceptance file.
+
+### M6.1's criteria and its close condition
+
+M6.1 is triggered by Phase D landing. It carries two rows out of M6 and adds its
+own close condition, so that "M6.1 is done" cannot be claimed the way "aggregators
+are done" could have been.
+
+| # | Observation | Falsifying condition |
+|---|---|---|
+| **M6.1 C1** | **CARRIED FROM M6 AS UNMET.** An aggregator order flows end to end against **ONDC staging** — the real counterparty, not a fake we authored — proving the **integration** that M6 C8 explicitly does not | Point the adapter at staging with the signing path disabled → the request is rejected by ONDC, not by us |
+| **M6.1 C2** | Every enumerated **signature-verification failure mode** is rejected by the public ingress: absent header, malformed header, unknown subscriber id, key absent from the registry, stale key after rotation, valid signature over a mismatched digest | **Each mode watched failing first**, individually. §66 applies hardest on the first internet-facing surface this product has ever had |
+| **M6.1 C3** | A **duplicate and an out-of-order `on_*` callback** are handled per the recorded decision, not merely tolerated | Deliver the same `on_confirm` twice → the second is recognised as a duplicate rather than producing a second effect |
+
+**M6.1's close condition:** all three observed, the ingress security gate
+reviewed against traffic it did not generate, and **`aggregator_order` documents
+arriving from the real registry**.
+
+**Certification has its own landing and is NOT M6.1's close condition.** It is a
+named gate — the ESC/POS shape — with the trigger *"ONDC NP certification granted"*,
+filed in `docs/backlog.md`. Its duration is a review queue, not a task, and a
+milestone whose close depends on someone else's queue is a milestone that stops
+closing. **A live channel on ONDC is what certification buys; neither M6 nor M6.1
+delivers one.**
+
+### The zero-tests-executed audit — DONE, not outstanding
+
+Recorded here because the review that produced these amendments read it as
+outstanding, and the repository says otherwise.
+
+**Executed 2026-09-02, commit `1b51df0`.** All three runners were probed
+empirically rather than assumed — `cargo test <filter typo>`, `go test -run
+<typo>`, `vitest run -t <typo>` each execute nothing and exit **0** — and
+`scripts/assert-tests-ran.mjs` now fails a job on zero executions and is wired
+into **13 CI steps**, the three builder agent files and the verifier's rubric.
+Every suite count was re-measured through it (`edge/database` 316, `edge/sync` 56,
+`apps/pos` 230, and the rest in `docs/m5-acceptance.md`).
+
+**The one residue is Playwright** (`pnpm test:e2e`, KDS), whose summary format the
+guard does not parse — **already filed in `docs/backlog.md` with an M6 trigger.**
+That row is the whole of what remains, and it needs no new landing.
 
 ### Criterion 2 is PARKED, not softened
 
