@@ -9,6 +9,7 @@ import (
 
 	"github.com/holler/backend/internal/platform/httpx"
 	"github.com/holler/backend/internal/platform/postgres"
+	"github.com/holler/backend/internal/platform/storage"
 	contracts "github.com/holler/contracts"
 	"github.com/jackc/pgx/v5"
 )
@@ -106,7 +107,7 @@ func (r *PostgresRepository) InsertOrder(ctx context.Context, tenantID, deviceID
 		order.Timestamps.ConfirmedAt, order.SchemaVersion,
 	)
 	if err != nil {
-		return StoredOrder{}, false, fmt.Errorf("ordering: inserting order: %w", err)
+		return StoredOrder{}, false, storage.Wrap("ordering: inserting order", err)
 	}
 
 	stored, getErr := r.GetByID(ctx, tenantID, order.HollerOrderID)
@@ -234,7 +235,7 @@ func (r *PostgresRepository) AppendItem(ctx context.Context, tenantID string, or
 		item.ID, orderID, item.MenuItemID, item.VariantID, item.Quantity, item.UnitPricePaise, item.LineTotalPaise, item.Notes, tenantID,
 	)
 	if err != nil {
-		return false, fmt.Errorf("ordering: appending item: %w", err)
+		return false, storage.Wrap("ordering: appending item", err)
 	}
 	return tag.RowsAffected() > 0, nil
 }
@@ -274,7 +275,7 @@ func (r *PostgresRepository) UpdateStatus(ctx context.Context, tenantID, orderID
 		string(newStatus), newVersion, orderID, expectedCurrentVersion, tenantID,
 	)
 	if err != nil {
-		return StoredOrder{}, false, fmt.Errorf("ordering: updating status: %w", err)
+		return StoredOrder{}, false, storage.Wrap("ordering: updating status", err)
 	}
 
 	stored, err := r.GetByID(ctx, tenantID, orderID)
@@ -297,7 +298,7 @@ func (r *PostgresRepository) ConfirmOrder(ctx context.Context, tenantID, orderID
 		string(contracts.OrderStatusConfirmed), newVersion, confirmedAt, orderID, expectedCurrentVersion, tenantID,
 	)
 	if err != nil {
-		return StoredOrder{}, false, fmt.Errorf("ordering: confirming order: %w", err)
+		return StoredOrder{}, false, storage.Wrap("ordering: confirming order", err)
 	}
 
 	stored, err := r.GetByID(ctx, tenantID, orderID)
