@@ -60,7 +60,7 @@ The split that matters: WSL2 hosts the **cloud** dependencies for local developm
 - POS: `pnpm test` / `pnpm tauri dev` inside `apps/pos/`.
 - CI: lint, format, unit, integration, contract-drift check, build, security scan.
 
-## Contracts status: FROZEN at v0.6.3 (Milestone 5 procurement applied; migrations through sqlite 0030 / postgres 0031)
+## Contracts status: FROZEN at v0.6.4 (Milestone 5 procurement applied; M6 A3 sync_outbox_block at sqlite 0031; migrations through sqlite 0031 / postgres 0031)
 <!-- The version and migration numbers on the heading above are checked by
      scripts/check-milestone-marker.mjs against packages/contracts/package.json
      and the migration files on disk. Third staleness of this line (0.4.7,
@@ -189,8 +189,10 @@ removal, not remembered removal. **Correction made while implementing A1
 written.** That function has two callers, `ranged.rs:209` and
 `procurement.rs:248`, and the general outbox is neither — `pump_outbox` holds a
 rejected row whatever the status — while adding the carve-out would have
-regressed the ranged and procurement streams, which already block-and-surface a
-`422` correctly. A1's edge half is therefore a test, not a behaviour change. Interim states, none dropping an order: today loud wedge → after A1 held
+regressed the two RANGED streams, which already block-and-surface a `422`
+correctly (`sync_replay_block`; procurement blocks on the same classifier but
+records it in `local_outbox.attempt_count` plus an in-memory report, not that
+table). A1's edge half is therefore a test, not a behaviour change. Interim states, none dropping an order: today loud wedge → after A1 held
 and still wedging → after A2 skipped and retained → after A3 rejected, budget
 charged, surfaced. **After A2 the row is retained but NOT visible — A2's commit
 message must not claim visibility.** **M6 C7 closes at the end of A3, not A1**: its

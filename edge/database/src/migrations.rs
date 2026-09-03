@@ -172,6 +172,14 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0030_ledger_line_total.sql",
         include_str!("../../../packages/contracts/sqlite/0030_ledger_line_total.sql"),
     ),
+    // 0.6.4 (ADR-023). sync_outbox_block: the general outbox's durable
+    // block-and-budget record, the sibling of sync_replay_block keyed on
+    // local_outbox.id because a general-outbox row has no per-stream ordinal
+    // to key on. EDGE-LOCAL, declared in SINGLE_STORE_MIGRATIONS below.
+    (
+        "0031_sync_outbox_block.sql",
+        include_str!("../../../packages/contracts/sqlite/0031_sync_outbox_block.sql"),
+    ),
 ];
 
 /// Applies any migrations not yet reflected in `PRAGMA user_version`. Safe
@@ -993,6 +1001,17 @@ mod tests {
              leaves the outlet. It ships as its own file precisely so this \
              lint can see it -- inside 0027 the pair would match by stem and \
              the asymmetry would be undeclarable.",
+        ),
+        (
+            "sqlite",
+            "sync_outbox_block.sql",
+            "ADR-023 0.6.4: the record of what THIS outlet gave up on \
+             sending is edge-local, the sync_replay_block precedent one \
+             stream over. A cloud mirror would be a second authority on the \
+             edge's own replay progress, and the cloud already derives what \
+             it did or did not receive from what it actually stored \
+             (ledger_replay_gap is the cloud-side half, and it is \
+             deliberately cloud-only for the mirrored reason).",
         ),
         (
             "postgres",

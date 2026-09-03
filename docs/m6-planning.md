@@ -150,8 +150,10 @@ A1 maps `23503` to **422 `missing_reference`**. The edge's
 `is_permanent_rejection` (`edge/sync/src/ranged.rs`) treats every 400..=499 as
 permanent, so on its own that change makes an FK-violating order **die** — and
 nothing surfaces a permanently-rejected general-outbox row to a human today
-(`sync_replay_block` covers the ranged and procurement streams; the general
-outbox has no per-entry budget at all). A3 is what adds the budget, the ceiling
+(`sync_replay_block` covers the two RANGED streams only -- `ranged.rs` is its
+sole writer; procurement keeps its budget in `local_outbox.attempt_count` and
+reports blocked entries in memory; the general outbox has no per-entry budget at
+all). A3 is what adds the budget, the ceiling
 and the surfacing. Between the two commits the order would be dropped silently,
 which is a **worse** failure mode than today's loud wedge.
 

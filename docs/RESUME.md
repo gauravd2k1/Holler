@@ -1,6 +1,6 @@
 # M5 resume state — 2026-09-02
 
-> **M5 IS CLOSED at contracts v0.6.3 (2026-09-02). ALL SEVEN ACCEPTANCE CRITERIA
+> **M5 IS CLOSED at contracts v0.6.3 (2026-09-02); contracts are now v0.6.4, see below. ALL SEVEN ACCEPTANCE CRITERIA
 > ARE OBSERVED against the shipping binaries, none by a test harness.**
 > **The evidence is `docs/m5-acceptance.md`. Read that file. Do not reconstruct
 > the verdicts from git history — this session did exactly that after a restart
@@ -41,8 +41,9 @@
 > involved, and no retry budget was ever at risk — transport failures are
 > classified transient and charge nothing.
 
-Contracts are **FROZEN at v0.6.3** (ADR-021); migrations run
-through **sqlite 0030 / postgres 0031**. **ALL 16 CI JOBS ARE GREEN** as of
+Contracts are **FROZEN at v0.6.4** (ADR-023 added `sync_outbox_block` for M6 A3;
+ADR-021 remains the M5 baseline); migrations run
+through **sqlite 0031 / postgres 0031**. **ALL 16 CI JOBS ARE GREEN** as of
 `310d3a1` (run 33335138157, 2026-08-30) — the first fully green run in the
 repository's readable history, and the first `e2e-scenario` pass since at least
 2026-08-12. All four standing red jobs are fixed and CI-confirmed (§2b).
@@ -588,7 +589,7 @@ database, and the fail-fast CI job shape that hid four pushes of verdicts.
 counter reset; `formatter_never_repeats_past_the_old_wrap_point` drives past the
 old collision point (25975).
 
-**Contracts are FROZEN at v0.6.3**, cross-checked against
+**Contracts are FROZEN at v0.6.4**, cross-checked against
 `packages/contracts/package.json` by `scripts/check-milestone-marker.mjs` — which
 caught this very line claiming 0.6.2 after the bump, and failed CI for it.
 
