@@ -23,6 +23,7 @@ import {
 } from "../domain/kitchen";
 import { useAuthStore } from "../store/auth";
 import { PrintFailureBanner } from "./PrintFailureBanner";
+import { SyncBlockedBanner } from "./SyncBlockedBanner";
 import { LowStockBanner } from "./LowStockBanner";
 
 // The only reporting permitted in Milestone 1 (CLAUDE.md EXCLUDES: "reporting
@@ -102,6 +103,7 @@ export function OrderListScreen() {
   return (
     <main className="order-list-screen">
       <PrintFailureBanner />
+      <SyncBlockedBanner />
       <LowStockBanner />
       <header>
         <h1>Orders</h1>

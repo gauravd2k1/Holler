@@ -777,6 +777,52 @@ export async function listBlockedReplays(): Promise<SyncReplayBlock[]> {
   }
 }
 
+/** One general-outbox row this outlet has given up on sending (contracts
+ * 0.6.4, ADR-023) — `apps/pos/src-tauri/src/dto.rs` `SyncOutboxBlock`. */
+const SyncOutboxBlockSchema = z.object({
+  outlet_id: z.string(),
+  outbox_id: z.string(),
+  aggregate_type: z.string(),
+  aggregate_id: z.string(),
+  attempts: z.number().int(),
+  last_status: z.number().int().nullable(),
+  last_code: z.string().nullable(),
+  last_error: z.string(),
+  first_attempt_at: z.string(),
+  last_attempt_at: z.string(),
+  blocked_at: z.string().nullable(),
+});
+export type SyncOutboxBlock = z.infer<typeof SyncOutboxBlockSchema>;
+
+/** Orders, tickets and tenders this outlet has STOPPED trying to send. Empty
+ * is the normal answer; anything else means part of a trading day is not
+ * reaching the cloud and will not without intervention.
+ * `apps/pos/src-tauri/src/commands/inventory.rs` `list_blocked_outbox_rows`. */
+export async function listBlockedOutboxRows(): Promise<SyncOutboxBlock[]> {
+  try {
+    const raw = await invoke<unknown[]>("list_blocked_outbox_rows");
+    return raw.map((b) => SyncOutboxBlockSchema.parse(b));
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
+
+/** Rows still being retried that have been failing for a while — surfaced
+ * WITHOUT being abandoned. A transient failure never spends the retry budget
+ * (giving up on good rows during an outage is data loss dressed as
+ * resilience), so without this list a cloud that has been refusing everything
+ * since Tuesday looks exactly like a quiet evening.
+ * `apps/pos/src-tauri/src/commands/inventory.rs`
+ * `list_persistently_failing_outbox_rows`. */
+export async function listPersistentlyFailingOutboxRows(): Promise<SyncOutboxBlock[]> {
+  try {
+    const raw = await invoke<unknown[]>("list_persistently_failing_outbox_rows");
+    return raw.map((b) => SyncOutboxBlockSchema.parse(b));
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
+
 /** The "items sold with no recipe" report (M4 acceptance criterion 5) —
  * `apps/pos/src-tauri/src/commands/inventory.rs` `list_stock_deduction_gaps`. */
 export async function listStockDeductionGaps(): Promise<StockDeductionGap[]> {

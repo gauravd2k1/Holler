@@ -7,7 +7,9 @@ import {
   listBlockedReplays,
   listCurrentStock,
   listDiscountDefinitions,
+  listBlockedOutboxRows,
   listFailedPrintJobs,
+  listPersistentlyFailingOutboxRows,
   listInvoicesForOrder,
   listKotsForOrder,
   listMenuCategories,
@@ -42,6 +44,8 @@ export const queryKeys = {
   currentStock: ["current-stock"] as const,
   stockDeductionGaps: ["stock-deduction-gaps"] as const,
   blockedReplays: ["blocked-replays"] as const,
+  blockedOutboxRows: ["blocked-outbox-rows"] as const,
+  persistentlyFailingOutboxRows: ["persistently-failing-outbox-rows"] as const,
   stockCount: (stockCountId: string) => ["stock-count", stockCountId] as const,
   stockCountLines: (stockCountId: string) => ["stock-count-lines", stockCountId] as const,
   stockCountVarianceReport: (stockCountId: string) =>
@@ -91,6 +95,28 @@ export function useFailedPrintJobsQuery() {
     queryKey: queryKeys.failedPrintJobs,
     queryFn: listFailedPrintJobs,
     refetchInterval: 5000,
+  });
+}
+
+/** M6 A3: rows the till has GIVEN UP on sending. Polled like the print-failure
+ * query, and for the same reason — a condition someone must act on has to
+ * reach the screen without anyone navigating to it. */
+export function useBlockedOutboxRowsQuery() {
+  return useQuery({
+    queryKey: queryKeys.blockedOutboxRows,
+    queryFn: listBlockedOutboxRows,
+    refetchInterval: 15000,
+  });
+}
+
+/** M6 A3: rows still being retried after repeated failures. NOT abandoned —
+ * a transient failure never spends the retry budget — but invisible without
+ * this, which is how a till ends a day looking healthy with nothing sent. */
+export function usePersistentlyFailingOutboxRowsQuery() {
+  return useQuery({
+    queryKey: queryKeys.persistentlyFailingOutboxRows,
+    queryFn: listPersistentlyFailingOutboxRows,
+    refetchInterval: 15000,
   });
 }
 

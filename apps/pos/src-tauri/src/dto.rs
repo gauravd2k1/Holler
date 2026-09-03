@@ -1315,6 +1315,57 @@ impl From<db::SyncReplayBlock> for SyncReplayBlock {
     }
 }
 
+/// One general-outbox row this outlet has given up on sending
+/// (contracts 0.6.4, `sync_outbox_block`, ADR-023).
+///
+/// The sibling of [`SyncReplayBlock`] for the general outbox, and the same
+/// argument: the per-row bound exists so one row the cloud will never accept
+/// cannot hold back the rows behind it, but an outlet that has quietly
+/// stopped sending part of a trading day must not be discovered weeks later.
+/// Halting sync is survivable; halting it silently is not.
+///
+/// Keyed on the outbox row rather than an ordinal, and it names the
+/// AGGREGATE, because that is what an operator recognises: "order A184", not
+/// "outbox row 01a0...".
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SyncOutboxBlock {
+    pub outlet_id: String,
+    pub outbox_id: String,
+    pub aggregate_type: String,
+    pub aggregate_id: String,
+    pub attempts: i64,
+    pub last_status: Option<i64>,
+    /// The cloud's machine-readable reason (`missing_reference` and the
+    /// rest). This is the field a surface should branch on; `last_error` is
+    /// prose for a person to read, never for code to parse.
+    pub last_code: Option<String>,
+    pub last_error: String,
+    pub first_attempt_at: String,
+    pub last_attempt_at: String,
+    /// Present on a row returned by `list_blocked_outbox_rows` (the budget is
+    /// spent); absent on a row returned by
+    /// `list_persistently_failing_outbox_rows`, which is still being retried.
+    pub blocked_at: Option<String>,
+}
+
+impl From<db::SyncOutboxBlock> for SyncOutboxBlock {
+    fn from(b: db::SyncOutboxBlock) -> Self {
+        Self {
+            outlet_id: b.outlet_id,
+            outbox_id: b.outbox_id,
+            aggregate_type: b.aggregate_type,
+            aggregate_id: b.aggregate_id,
+            attempts: b.attempts,
+            last_status: b.last_status,
+            last_code: b.last_code,
+            last_error: b.last_error,
+            first_attempt_at: b.first_attempt_at,
+            last_attempt_at: b.last_attempt_at,
+            blocked_at: b.blocked_at,
+        }
+    }
+}
+
 // ----------------------------------------------- procurement (M5, ADR-019) --
 //
 // Mirror `packages/contracts/src/types/procurement.ts` field-for-field where

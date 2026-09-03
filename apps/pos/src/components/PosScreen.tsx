@@ -16,6 +16,7 @@ import { hasPermission } from "../domain/permissions";
 import { useAuthStore } from "../store/auth";
 import { useCartStore } from "../store/cart";
 import { PrintFailureBanner } from "./PrintFailureBanner";
+import { SyncBlockedBanner } from "./SyncBlockedBanner";
 import { LowStockBanner } from "./LowStockBanner";
 
 // docs/spec/ordering.md §POS layout: TOP search + order-type + table,
@@ -225,6 +226,7 @@ export function PosScreen() {
   return (
     <main className="pos-screen">
       <PrintFailureBanner />
+      <SyncBlockedBanner />
       <LowStockBanner />
       <header className="pos-top-bar">
         <input

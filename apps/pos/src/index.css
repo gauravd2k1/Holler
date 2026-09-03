@@ -475,3 +475,52 @@ button {
   color: #8c8;
   font-size: 0.85rem;
 }
+
+/* ------------------------------------------------ sync blocked banner -- */
+/* M6 A3 / M6 C7: a record the till has GIVEN UP on sending must be visible to
+   a human. Halting sync is survivable; halting it silently is not, and M5
+   ended with 120 rows pending on a till that reported itself healthy.
+
+   PINNED TO THE TOP, not the bottom, deliberately. `.print-failure-banner`
+   sits at bottom:0 and `.stock-banners` stacks at bottom:48px -- and those two
+   were already fixed once for overlapping each other exactly. A third
+   bottom-anchored overlay whose height varies with its content would be the
+   same bug a third time, so this one takes a region nothing else occupies. */
+.sync-blocked-banner {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: 0;
+  z-index: 1002;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  padding: 0.5rem 1rem;
+  background: #4a1d5c;
+  border-bottom: 3px solid #b06fd0;
+  color: #fff;
+}
+.sync-blocked-summary {
+  font-weight: bold;
+}
+.sync-blocked-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  flex: 1;
+}
+.sync-blocked-aggregate {
+  font-weight: bold;
+}
+/* Deliberately not styled as an alarm: the local record is intact and the
+   till is working. What is wrong is upstream, and the wording says so. */
+.sync-blocked-action {
+  opacity: 0.85;
+}
+.sync-failing-summary {
+  opacity: 0.85;
+}

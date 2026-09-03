@@ -72,6 +72,8 @@ pub fn run() {
             commands::inventory::list_current_stock,
             commands::inventory::list_stock_deduction_gaps,
             commands::inventory::list_blocked_replays,
+            commands::inventory::list_blocked_outbox_rows,
+            commands::inventory::list_persistently_failing_outbox_rows,
             commands::inventory::record_wastage,
             commands::inventory::open_stock_count,
             commands::inventory::add_or_update_stock_count_line,

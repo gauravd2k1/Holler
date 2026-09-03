@@ -43,7 +43,7 @@ use tauri::State;
 
 use crate::dto::{
     CurrentStockLine, StockCount, StockCountLine, StockCountVarianceReport, StockDeductionGap,
-    StockLedgerEntry, SyncReplayBlock,
+    StockLedgerEntry, SyncOutboxBlock, SyncReplayBlock,
 };
 use crate::error::{AppError, AppResult};
 use crate::ids::{new_id, now_iso};
@@ -114,6 +114,41 @@ pub fn list_blocked_replays_impl(state: &AppState) -> AppResult<Vec<SyncReplayBl
     let blocked =
         holler_edge_database::repo::list_blocked_replays(db.connection(), &state.outlet_id)?;
     Ok(blocked.into_iter().map(SyncReplayBlock::from).collect())
+}
+
+/// Every general-outbox row this outlet has GIVEN UP on sending (contracts
+/// 0.6.4, ADR-023). Empty is the normal answer; anything else means part of a
+/// trading day is not reaching the cloud and will not without intervention.
+///
+/// M6 A3's surfacing, and the half of M6 C7 that the wire format alone cannot
+/// satisfy: the criterion asks for a reason the edge RECORDS, which means a
+/// person can read it back after a restart.
+pub fn list_blocked_outbox_rows_impl(state: &AppState) -> AppResult<Vec<SyncOutboxBlock>> {
+    let db = lock_db(state)?;
+    let blocked =
+        holler_edge_database::repo::list_blocked_outbox_rows(db.connection(), &state.outlet_id)?;
+    Ok(blocked.into_iter().map(SyncOutboxBlock::from).collect())
+}
+
+/// Rows still being retried that have failed repeatedly — surfaced WITHOUT
+/// being abandoned.
+///
+/// A transient failure never spends the retry budget, deliberately: giving up
+/// on good rows because the cloud was down for a day is data loss dressed as
+/// resilience. But a transient condition that never resolves is invisible
+/// otherwise, which is exactly the "looks healthy while nothing leaves the
+/// till" state M5 ended in. This is the difference between telling someone
+/// and giving up on their data.
+pub fn list_persistently_failing_outbox_rows_impl(
+    state: &AppState,
+) -> AppResult<Vec<SyncOutboxBlock>> {
+    let db = lock_db(state)?;
+    let failing = holler_edge_database::repo::list_persistently_failing_outbox_rows(
+        db.connection(),
+        &state.outlet_id,
+        holler_edge_sync::worker::OUTBOX_ATTENTION_ATTEMPTS,
+    )?;
+    Ok(failing.into_iter().map(SyncOutboxBlock::from).collect())
 }
 
 // ---------------------------------------------------------------- wastage --
@@ -248,6 +283,18 @@ pub fn list_stock_deduction_gaps(state: State<'_, AppState>) -> AppResult<Vec<St
 #[tauri::command]
 pub fn list_blocked_replays(state: State<'_, AppState>) -> AppResult<Vec<SyncReplayBlock>> {
     list_blocked_replays_impl(&state)
+}
+
+#[tauri::command]
+pub fn list_blocked_outbox_rows(state: State<'_, AppState>) -> AppResult<Vec<SyncOutboxBlock>> {
+    list_blocked_outbox_rows_impl(&state)
+}
+
+#[tauri::command]
+pub fn list_persistently_failing_outbox_rows(
+    state: State<'_, AppState>,
+) -> AppResult<Vec<SyncOutboxBlock>> {
+    list_persistently_failing_outbox_rows_impl(&state)
 }
 
 #[tauri::command]
