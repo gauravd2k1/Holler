@@ -36,6 +36,16 @@ can be missed; a write cannot.
 3. Cross-referenced against the twelve `MountIngest` routes, because an edge
    replay is the only caller that can wedge an outbox.
 
+**A CORRECTION THIS DOCUMENT EARNED ON ITS FIRST USE.** The `kitchen.InsertKot`
+row below named the wrong mechanism. The scan reads repository call sites, so it
+saw `fmt.Errorf` wrapping an INSERT with an `order_id` foreign key and inferred a
+500. The service layer pre-checks that parent with `repo.OrderOutlet` and returns
+**404**, so the FK never fires and the failure mode is a different — and worse —
+one. **A sink audit that stops at the repository can name the wrong failure for
+the right route.** The conclusion held (this route mishandles a missing parent);
+the stated cause did not. Read the service path before writing the fix, and
+expect the same correction on the remaining rows.
+
 **Limits, stated so nobody reads more into this than it supports.** The scan
 matches a 40-line window after each call site, so a read-only function sitting
 next to a write can be attributed a write's state; the per-function table below
@@ -58,7 +68,7 @@ answer 500 on exactly the condition A1 fixed for orders.
 | `POST /orders/{id}/items` | `ordering.AppendItem` (`repository.go:238`) | `order_id`, `menu_item_id`, `variant_id` | **classified — Executed, red then green** |
 | `POST /orders` | `ordering.InsertOrder` (`repository.go:110`) | `outlet_id`, `device_id`, `table_id` | classified (Read-verified) |
 | `POST /orders/{id}/confirm`, `/send-to-kitchen`, `/cancel` | `ordering.UpdateStatus`, `ConfirmOrder` | — (UPDATE by id) | classified (Read-verified) |
-| `POST /orders/{id}/kots` | `kitchen.InsertKot` (`repository.go:361`) | **`order_id`** — a KOT for an order the cloud never accepted | **UNCLASSIFIED** |
+| `POST /orders/{id}/kots` | `kitchen.IngestKot` (`service.go:347`), NOT `InsertKot` | **`order_id`** — a KOT for an order the cloud never accepted | **FIXED in A1b — and the mechanism recorded here was WRONG.** `IngestKot` pre-checks with `repo.OrderOutlet`, which returns `ErrNotFound`, so the reply was **404** and the FK was unreachable outside a race. 404 is worse than the assumed 500: the edge classifies it TRANSIENT, so the ticket retried forever AND took a global stop with it, which A2's per-aggregate blocking does not catch. Now 422 `missing_reference`, observed red-then-green |
 | `POST /kots/{kotId}/status` | `kitchen.UpdateKotStatus` (`repository.go:418`) | `kot_id` | **UNCLASSIFIED** |
 | `POST /invoices` | `payments.InsertInvoice` (`repository.go:73`), `insertInvoiceLine` (`:142`) | `outlet_id`, `order_id`, `invoice_series_id`, `menu_item_id` on lines | unique-only → **UNCLASSIFIED for 23503** |
 | `POST /payments` | `payments.InsertPayment` (`repository.go:270`), `insertAllocation` (`:298`) | **`outlet_id`, `order_id`, `cash_shift_id`, `reverses_payment_id`**; allocation's `invoice_id` | **UNCLASSIFIED** |

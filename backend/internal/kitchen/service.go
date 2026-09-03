@@ -2,6 +2,7 @@ package kitchen
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -347,6 +348,27 @@ func (s *Service) IngestKot(ctx context.Context, callerTenantID string, env cont
 
 	orderOutletID, err := s.repo.OrderOutlet(ctx, kot.OrderID)
 	if err != nil {
+		// A REPLAYED ticket for an order the cloud does not have is a
+		// permanent client-data fault, and must not be reported as 404.
+		//
+		// 404 on an ingest route means "no such route" to the edge, which
+		// classifies it as TRANSIENT on purpose: a missing route is a
+		// deployment problem, every row would get the same answer, and
+		// charging it to one row would abandon good rows during a bad
+		// rollout. A missing ORDER is the opposite -- it is about this row,
+		// and no retry will fix it. Left as 404 it is retried forever, and
+		// because a transient status takes a GLOBAL stop rather than M6 A2's
+		// per-aggregate block, one such KOT wedges the entire outbox on every
+		// pump.
+		//
+		// So the distinction is preserved rather than the status swapped:
+		// 404 keeps meaning "no such route", and a missing referenced row
+		// becomes 422 missing_reference, the same answer the foreign-key
+		// path gives since 99875cc. openapi.yaml documents only 200 and 422
+		// for this route, so this moves toward the frozen contract.
+		if errors.Is(err, httpx.ErrNotFound) {
+			return Kot{}, fmt.Errorf("%w: order %s does not exist", httpx.ErrMissingReference, kot.OrderID)
+		}
 		return Kot{}, err
 	}
 	if orderOutletID != env.OutletID {
