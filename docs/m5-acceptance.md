@@ -239,7 +239,7 @@ Two notes a future session needs, because both cost time here:
 
 ---
 
-## Reconciliation: GRN/20260902/0001, 0002, 0003 — UNRESOLVED
+## Reconciliation: GRN/20260902/0001, 0002, 0003 — RESOLVED 2026-09-03
 
 The criterion-6 run produced a contradiction that must not enter the record as
 though it were settled:
@@ -287,6 +287,77 @@ Three rows at the edge with all three present in the cloud and `published_at`
 set on each says the post-drain naming was right; two rows says the baseline was.
 Record the answer here and delete this section's UNRESOLVED heading — do not
 leave it inferred.
+
+### The answer: the POST-DRAIN naming was right, the baseline was wrong
+
+Read 2026-09-03 with Docker up and the sealed edge file readable. **Three rows
+exist in both stores**, and `local_outbox.published_at` — the outbox's own record
+of publication, not an inference from clustering — settles which two were pending
+at the baseline:
+
+| GRN | edge `published_at` | edge `attempt_count` | cloud `ingested_at` |
+|---|---|---|---|
+| `GRN/20260902/0001` | 2026-09-02T05:13:13.287Z | 0 | 2026-09-02 05:13:13.272Z |
+| `GRN/20260902/0002` | 2026-09-02T05:48:26.702Z | 0 | 2026-09-02 05:48:26.692Z |
+| `GRN/20260902/0003` | 2026-09-02T05:48:27.033Z | 0 | 2026-09-02 05:48:27.020Z |
+
+`0001` was published at 05:13, well before the drain; `0002` and `0003` published
+a second apart at 05:48, which is the drain. **So the two receipts pending at the
+baseline were `0002` and `0003`** — the post-drain comparison was correct and the
+pre-drain baseline was wrong. Criterion 1's screen capture of `GRN/20260902/0002`
+at the moment of receipt agrees.
+
+**No verdict changes.** Criterion 6 was judged on `published=6`, the outbox count
+moving 126 → 120, and a field-by-field compare — none of which depends on the
+ordinal.
+
+**The pending-row count is confirmed at exactly 120** (published 75), settling the
+other carried-forward item in the same reading. Its composition is the more useful
+finding, and it is now M6 A2/A3 evidence:
+
+```
+kot          KOTStatusChanged     37   max_attempt_count=0
+kot          KOTCreated           16   max_attempt_count=0
+stock_count  StockCountOpened     12   max_attempt_count=0
+stock_count  StockCountCompleted  10   max_attempt_count=0
+order        OrderConfirmed        8   max_attempt_count=0
+order        OrderReady            8   max_attempt_count=0
+order        SentToKitchen         8   max_attempt_count=0
+order        ItemQuantityChanged   7   max_attempt_count=0
+order        OrderCreated          7   max_attempt_count=0
+order        ItemAdded             6   max_attempt_count=10
+invoice      InvoiceCreated        1   max_attempt_count=0
+```
+
+**One group spent its attempts; 114 rows were never attempted at all.** That is
+head-of-line blocking (M6 A2) and a budget that counts without ever terminating
+(M6 A3), visible in one query.
+
+**Correction to the SQL recorded above: `goods_receipt_note` has no `created_at`
+column in either store.** The cloud query fails with `ERROR: column "created_at"
+does not exist` and the edge query with `no such column: created_at`. The columns
+are `received_at` (when the delivery was taken) and, cloud-side only,
+`ingested_at` (when the replay landed). The cloud query as run:
+
+```sql
+SELECT grn_number, id, received_at, business_date, ingested_at
+  FROM goods_receipt_note
+ WHERE grn_number LIKE 'GRN/20260902/%'
+ ORDER BY grn_number;
+```
+
+**How the edge was read, and what was protected.** `Db::open` applies migrations,
+seals unsealed stock snapshots, writes an unclean-session marker and re-seals on
+close — so opening the artefact would have changed it. Instead the sealed file was
+**copied**, the copy decrypted and opened READ ONLY by a scratchpad-only reader
+that never entered the repository, and the plaintext overwritten and deleted
+afterwards. `edge.db.enc` was never opened: sha256
+`5d1297113003b9664038dfdbefc27289b61b86a9bcf19265dae5d04371a446c7` before and
+after, and the copy carried the same digest. ADR-011's rule that the edge database
+is never copied anywhere unencrypted is kept — what was copied was the sealed
+file.
+
+Recorded by the operator's reading, 2026-09-03, during M6 A1.
 
 ---
 

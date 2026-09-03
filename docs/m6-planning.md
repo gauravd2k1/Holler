@@ -551,11 +551,13 @@ criterion 2 is observed on ONDC and **named ONDC-only** in the record.
 Neither changes any verdict. Settle both the next time Docker is up; the SQL is
 already recorded in `docs/m5-acceptance.md`.
 
-- **The ~120 pending outbox rows** — count not re-verifiable today (PostgreSQL is
-  down and the edge database is encrypted).
-- **The GRN/20260902 ordinal reconciliation** — the pre-drain baseline named the
-  pending receipts `0001`/`0002`, the post-drain comparison named them
-  `0002`/`0003`. One is wrong; recorded as UNRESOLVED rather than guessed.
+- ~~**The ~120 pending outbox rows**~~ — **RESOLVED 2026-09-03: exactly 120**
+  (published 75), and 114 of them have `attempt_count = 0`. See
+  `docs/m5-acceptance.md`.
+- ~~**The GRN/20260902 ordinal reconciliation**~~ — **RESOLVED 2026-09-03: the
+  post-drain naming was right, the baseline was wrong.** Settled on
+  `local_outbox.published_at` (0001 at 05:13, 0002/0003 at 05:48), not on
+  timestamp clustering. See `docs/m5-acceptance.md`.
 
 ---
 

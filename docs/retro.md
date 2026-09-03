@@ -1365,3 +1365,42 @@ classified transient and charges nothing — `is_permanent_rejection` only ever
 sees an HTTP status, and transport errors do not reach it — so no ceiling could
 fire on a healthy network from this path. The cost of the defect was confined to
 the test.
+
+---
+
+## 2026-09-03 — a ruling that names a mechanism must name the code path it acts on
+
+**A REVIEW RULING THAT NAMES A MECHANISM MUST NAME THE CODE PATH IT ACTS ON, OR
+IT IS AN INFERENCE AND MUST BE MARKED AS ONE.**
+
+M6 A1 maps SQLSTATE 23503 to 422. The review that approved it also specified how
+the edge should behave in the gap before A3: add 422 to `is_permanent_rejection`'s
+non-permanent set beside 401/403/404/408/429, so an FK-violating order is held
+rather than abandoned. The invariant behind it was right and still stands — *at no
+commit boundary may an order become droppable with no operator trace* — but the
+mechanism was specified without reading that function's callers.
+
+It has two: `ranged.rs:209` and `procurement.rs:248`. **The general outbox is
+neither.** `pump_outbox` records the attempt, stops, and leaves the row
+unpublished whatever the status is, so an order was already held after A1 and the
+carve-out bought nothing. Worse, building it would have **removed
+block-and-surface from the two streams that have done it correctly since contracts
+0.5.8** — `ranged_replay.rs` asserts a 422 spends the budget, lands in
+`sync_replay_block` and becomes visible on the POS. A fix aimed at a hole that did
+not exist would have opened a real one two streams wide.
+
+The shape is familiar and this is the first time it has been caught in a *ruling*
+rather than in code: **a claim about behaviour is only as good as the call sites
+it was checked against.** Same family as "prove a UI concern by enumerating the
+sinks, not the surfaces", and as the 0.5.2 auto-fill guard — an assertion that
+reads correctly in review and is answered by a query nobody ran.
+
+So: an instruction naming a function, a status code, a table or a flag carries the
+call sites it acts on, or it is labelled an inference for the implementer to
+verify first. A ruling is not exempt from the evidence rule because it came from
+the reviewer.
+
+The invariant was unaffected: A3 adds the budget and the surfacing the general
+outbox has never had, rather than removing a carve-out that was never written.
+A1's edge half became a test — "held, not dropped" — watched failing first by
+patching `pump_outbox` to publish a 4xx-rejected row (`left: 0, right: 1`).
