@@ -498,3 +498,88 @@ fn mis_enrolled_outlet_id_is_rejected_before_any_envelope_is_sent() {
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].id, "outbox-1");
 }
+
+/// M6 A1 — a 422 `missing_reference` from the cloud must leave the row HELD,
+/// never dropped.
+///
+/// THE INVARIANT THIS PINS: *at no commit boundary may an order become
+/// droppable with no operator trace.* A1 changed the cloud to answer an FK
+/// violation with 422 instead of 500. A3 will give the general outbox a
+/// per-entry budget and surface an abandoned row to a human. Between the two,
+/// this test is what says the row is still there — held and retried, which is
+/// the loud failure, not the silent one.
+///
+/// WHY THERE IS NO CARVE-OUT IN `is_permanent_rejection`. The plan expected
+/// A1 to add 422 to the edge's non-permanent set beside 401/403/404/408/429.
+/// The repository says that is unnecessary AND harmful, and the repository
+/// wins. `is_permanent_rejection` has exactly two callers — `ranged.rs:209`
+/// and `procurement.rs:248` — and the general outbox is neither: `pump_outbox`
+/// records the attempt, stops, and leaves the row unpublished whatever the
+/// status is. So an order is already held, with no change at all.
+///
+/// Adding the carve-out would instead REGRESS the two streams that already do
+/// this properly: `ranged_replay.rs` asserts a 422 spends the budget, lands in
+/// `sync_replay_block` and becomes visible on the POS — permanent-and-surfaced,
+/// which is A3's end state, already true there since contracts 0.5.8. Making
+/// 422 transient would take that away and retry a known-bad ledger entry
+/// forever.
+///
+/// A3 therefore does not "remove a carve-out"; it adds the budget and the
+/// surfacing to the general outbox, and its test asserts the row is abandoned
+/// and VISIBLE. That test and this one remain mutually exclusive — this one
+/// requires the row still pending and unblocked, that one requires it blocked
+/// and surfaced — so A3 cannot go green while this behaviour survives.
+#[test]
+fn a_422_missing_reference_holds_the_row_rather_than_dropping_it() {
+    let server = Server::http("127.0.0.1:0").expect("start test server");
+    let addr = server.server_addr();
+    let base_url = format!("http://{addr}");
+    let handle = std::thread::spawn(move || {
+        // verify_enrollment, then two pumps each rejected with the real
+        // post-A1 cloud response for an FK violation.
+        if let Some(req) = recv_before_deadline(&server) {
+            let _ = req.respond(Response::from_string("{}").with_status_code(200));
+        }
+        for _ in 0..2 {
+            if let Some(req) = recv_before_deadline(&server) {
+                let _ = req.respond(
+                    Response::from_string(
+                        "{\"code\":\"missing_reference\",\"message\":\"menu_item_id does not exist\"}",
+                    )
+                    .with_status_code(422),
+                );
+            }
+        }
+    });
+
+    let mut db = Db::open_in_memory_for_tests().expect("open db");
+    seed_outlet_and_device(&db, "outlet-1", "device-1");
+    seed_order_with_outbox(&mut db, "order-1", "outbox-1");
+
+    let worker = SyncWorker::new(worker_config(base_url));
+
+    let first = worker.pump_outbox(&mut db, 10).expect("first pump");
+    assert!(first.published.is_empty());
+    assert_eq!(first.stopped, Some(StopReason::Rejected { status: 422 }));
+
+    // Held: still pending after the refusal, attempt counted.
+    let pending = repo::list_unpublished_outbox(db.connection(), 10).unwrap();
+    assert_eq!(pending.len(), 1, "the row must still be in the outbox");
+    assert_eq!(pending[0].id, "outbox-1");
+    assert_eq!(pending[0].attempt_count, 1);
+
+    // A second pump does not quietly discard it either. Retrying a row the
+    // cloud will refuse again is wasteful; losing it is not survivable, and
+    // until A3 lands the wasteful option is the correct one.
+    let second = worker.pump_outbox(&mut db, 10).expect("second pump");
+    handle.join().unwrap();
+    assert_eq!(second.stopped, Some(StopReason::Rejected { status: 422 }));
+
+    let pending = repo::list_unpublished_outbox(db.connection(), 10).unwrap();
+    assert_eq!(pending.len(), 1, "STILL held on the second refusal");
+    assert_eq!(pending[0].attempt_count, 2);
+
+    // And the order itself is untouched: a refused envelope is not a reason
+    // to have lost what it described.
+    assert!(db.get_order("order-1").unwrap().is_some());
+}

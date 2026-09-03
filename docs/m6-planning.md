@@ -159,14 +159,40 @@ satisfies it only by **un-splitting evidence we deliberately split**, and it mea
 a slip in A3 stops A1 landing at all. **Rejected.** The decision is the additive
 one:
 
-- **A1 lands alone and HOLDS the row.** A1 adds `422` to the edge's
-  non-permanent set alongside `401/403/404/408/429`, with a test asserting the
-  row is **HELD, not rejected**.
-- **A3 removes the carve-out and that test**, and its own test asserts the row is
-  **permanent-and-surfaced**.
-- **The two tests are mutually exclusive by construction**, so **A3 cannot go
-  green while the carve-out survives**. Forced removal, not remembered removal —
-  the same move as every structural guard in this repository.
+- **A1 lands alone and HOLDS the row**, with a test asserting the row is
+  **HELD, not rejected**.
+- **A3 adds the budget and the surfacing to the general outbox**, and its own
+  test asserts the row is **permanent-and-surfaced**.
+- **The two tests are mutually exclusive by construction** — A1's requires the
+  row still pending and unblocked, A3's requires it blocked and visible — so
+  **A3 cannot go green while A1's behaviour survives**. Forced removal, not
+  remembered removal, the same move as every structural guard in this
+  repository.
+
+**CORRECTION, 2026-09-03, made while implementing A1 — the repository wins.**
+The plan said A1 would add `422` to the edge's non-permanent set beside
+`401/403/404/408/429`. **That carve-out is unnecessary AND harmful, and was not
+written.** Two facts, both checked:
+
+- `is_permanent_rejection` has exactly **two** callers — `ranged.rs:209` and
+  `procurement.rs:248`. **The general outbox is neither.** `pump_outbox` records
+  the attempt, stops, and leaves the row unpublished whatever the status is
+  (`worker.rs:374-378`), so an order is **already held** after A1 with no edge
+  change at all. The exposure the invariant was written against does not exist
+  on this path.
+- Adding the carve-out would have **regressed the two streams that already do
+  this correctly**: `ranged_replay.rs` asserts a `422` spends the budget, lands
+  in `sync_replay_block` and becomes visible on the POS — permanent-and-surfaced,
+  which is A3's end state, already true there since contracts 0.5.8. Making
+  `422` transient would have taken that away and retried a known-bad ledger
+  entry forever.
+
+So A1's edge half is **a test, not a behaviour change**: it pins "held, not
+dropped" so A3 cannot quietly remove it. The invariant is unchanged and still
+holds at every boundary; only the mechanism the plan predicted was wrong. **The
+guard was watched failing first** — `pump_outbox` was temporarily patched to mark
+a 4xx-rejected row published, and the test failed with `the row must still be in
+the outbox: left: 0, right: 1`, before the patch was reverted.
 
 Interim states, all acceptable, none dropping an order:
 

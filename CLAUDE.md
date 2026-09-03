@@ -175,16 +175,21 @@ cloud makes the 500 disappear, makes the drain look healthy, and **ships both
 defects looking like a fix.**
 
 **THE A1→A3 SEQUENCING INVARIANT: at no commit boundary may an order become
-droppable with no operator trace.** A1 maps `23503` to **422 `missing_reference`**,
-and `is_permanent_rejection` treats every 400..=499 as permanent — so A1 alone
-would make an FK-violating order **die**, with nothing surfacing a
-permanently-rejected general-outbox row to a human until A3 adds the budget and
-the surfacing. So **A1 lands alone and HOLDS the row**: it adds `422` to the edge's
-non-permanent set beside `401/403/404/408/429`, with a test asserting the row is
-**held, not rejected**. **A3 removes the carve-out and that test**, asserting
-**permanent-and-surfaced** instead. **The two tests are mutually exclusive, so A3
-cannot go green while the carve-out survives** — forced removal, not remembered
-removal. Interim states, none dropping an order: today loud wedge → after A1 held
+droppable with no operator trace.** A1 maps `23503` to **422 `missing_reference`**;
+A3 gives the general outbox the per-entry budget and the surfacing it has never
+had. Until A3 lands, nothing shows a human a permanently-rejected general-outbox
+row, so a row that dies in between dies silently. **A1 lands alone and HOLDS the
+row**, with a test asserting the row is **held,
+not rejected**. **A3 adds the budget and the surfacing to the general outbox**,
+asserting **permanent-and-surfaced** instead. **The two tests are mutually
+exclusive, so A3 cannot go green while A1's behaviour survives** — forced
+removal, not remembered removal. **Correction made while implementing A1
+(2026-09-03): the planned `422` carve-out in `is_permanent_rejection` was NOT
+written.** That function has two callers, `ranged.rs:209` and
+`procurement.rs:248`, and the general outbox is neither — `pump_outbox` holds a
+rejected row whatever the status — while adding the carve-out would have
+regressed the ranged and procurement streams, which already block-and-surface a
+`422` correctly. A1's edge half is therefore a test, not a behaviour change. Interim states, none dropping an order: today loud wedge → after A1 held
 and still wedging → after A2 skipped and retained → after A3 rejected, budget
 charged, surfaced. **After A2 the row is retained but NOT visible — A2's commit
 message must not claim visibility.** **M6 C7 closes at the end of A3, not A1**: its
