@@ -1404,3 +1404,44 @@ The invariant was unaffected: A3 adds the budget and the surfacing the general
 outbox has never had, rather than removing a carve-out that was never written.
 A1's edge half became a test — "held, not dropped" — watched failing first by
 patching `pump_outbox` to publish a 4xx-rejected row (`left: 0, right: 1`).
+
+---
+
+## 2026-09-03 — a pre-check that answers a data fault with a ROUTE status is worse than the 500 it replaced
+
+**A GUARD THAT VALIDATES A REFERENCE MUST ANSWER WITH A STATUS THAT MEANS
+"YOUR DATA IS WRONG", NEVER ONE THAT MEANS "ASK AGAIN LATER" OR "ASK
+SOMEWHERE ELSE". A PRE-CHECK CAN MAKE A PERMANENT FAULT LOOK RETRIABLE, AND
+THAT IS STRICTLY WORSE THAN LEAVING THE DATABASE TO RAISE IT.**
+
+M6 A1b fixed two ingest routes that the sink audit had grouped together. They
+failed in opposite ways.
+
+`payments.IngestPayment` pre-checks nothing, so a payment for an unknown order
+reached Postgres, raised `23503`, and came back **500** — the defect as filed.
+
+`kitchen.IngestKot` pre-checks the parent with `repo.OrderOutlet` and returns
+`httpx.ErrNotFound`, so the same class of fault came back **404** — and that is
+worse. The edge classifies 404 as TRANSIENT on purpose: a missing route is a
+deployment problem, every row gets the same answer, and charging it to one row
+would abandon good rows during a bad rollout. So the KOT retried forever, and
+because a transient status takes a **global stop** rather than A2's
+per-aggregate block, one such ticket wedged the entire outbox on every pump.
+**The careful version of the code was the one with the worse failure mode.**
+
+The lesson is not "do not pre-check". A pre-check gives a better message than a
+constraint name ever will. It is that **the pre-check inherits the
+classification duty from the database**: raise it as the thing it is. Here 404
+must keep meaning "no such route" — that is what makes it safe to retry — and a
+missing referenced row is 422 `missing_reference`, permanent, the same answer
+the foreign-key path gives.
+
+Two corollaries, both live:
+
+- **Any of the ten ingest sinks still unclassified (`docs/backlog.md`) that
+  carries a pre-check may be hiding this same shape**, and it will not look
+  like a 500 in any log. Read the service path, not the repository line.
+- This is the audit correction one layer down. `docs/m6-a1-sink-audit.md`
+  predicted a 500 for the KOT route from its repository call site and was
+  wrong about the mechanism while right about the route. **A scan that stops
+  where the SQL is cannot see a decision made above it.**
