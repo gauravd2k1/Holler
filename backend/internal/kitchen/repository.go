@@ -8,20 +8,11 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/holler/backend/internal/platform/httpx"
 	"github.com/holler/backend/internal/platform/postgres"
+	"github.com/holler/backend/internal/platform/storage"
 )
-
-// pgUniqueViolation is the PostgreSQL SQLSTATE for a unique_violation,
-// mirroring backend/internal/tables's convention.
-const pgUniqueViolation = "23505"
-
-func isUniqueViolation(err error) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == pgUniqueViolation
-}
 
 // Repository is the persistence boundary for the kitchen context. Service
 // depends on this interface, never on pgx directly (CLAUDE.md §Coding
@@ -164,7 +155,7 @@ func (r *pgRepository) InsertStation(ctx context.Context, tx pgx.Tx, s Station) 
 		s.ID, s.OutletID, s.Code, s.Name, s.SortOrder, s.IsActive, s.ConfigVersion,
 	)
 	if err != nil {
-		if isUniqueViolation(err) {
+		if storage.IsUniqueViolation(err) {
 			return fmt.Errorf("%w: station code %q already exists in this outlet", httpx.ErrConflict, s.Code)
 		}
 		return fmt.Errorf("kitchen: inserting station: %w", err)
@@ -238,7 +229,7 @@ func (r *pgRepository) InsertPrinter(ctx context.Context, tx pgx.Tx, p Printer) 
 		p.ID, p.OutletID, p.Name, string(p.ConnectionKind), p.Address, p.PaperWidthMM, p.IsActive, p.ConfigVersion,
 	)
 	if err != nil {
-		if isUniqueViolation(err) {
+		if storage.IsUniqueViolation(err) {
 			return fmt.Errorf("%w: printer name %q already exists in this outlet", httpx.ErrConflict, p.Name)
 		}
 		return fmt.Errorf("kitchen: inserting printer: %w", err)

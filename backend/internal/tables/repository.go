@@ -6,17 +6,11 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/holler/backend/internal/platform/httpx"
 	"github.com/holler/backend/internal/platform/postgres"
+	"github.com/holler/backend/internal/platform/storage"
 )
-
-// pgUniqueViolation is the PostgreSQL SQLSTATE for a unique_violation. Used
-// to translate the uq_table_session_open partial unique index into a clean
-// httpx.ErrConflict rather than letting a raw constraint error reach the
-// client (spec requirement: fail cleanly on a second open session).
-const pgUniqueViolation = "23505"
 
 // Repository is the persistence boundary for the tables context. The
 // service depends on this interface, not on pgx directly.
@@ -111,7 +105,7 @@ func (r *pgRepository) InsertTable(ctx context.Context, tx pgx.Tx, t RestaurantT
 		t.ID, t.OutletID, t.Section, t.Label, t.SeatCount, t.IsActive, t.ConfigVersion,
 	)
 	if err != nil {
-		if isUniqueViolation(err) {
+		if storage.IsUniqueViolation(err) {
 			return fmt.Errorf("%w: table label %q already exists in this outlet", httpx.ErrConflict, t.Label)
 		}
 		return fmt.Errorf("tables: inserting table: %w", err)
@@ -152,7 +146,7 @@ func (r *pgRepository) InsertSession(ctx context.Context, tx pgx.Tx, s TableSess
 		s.OpenedAt, s.ClosedAt, s.Version, s.CreatedAt, s.UpdatedAt,
 	)
 	if err != nil {
-		if isUniqueViolation(err) {
+		if storage.IsUniqueViolation(err) {
 			return fmt.Errorf("%w: table %s already has an open session", httpx.ErrConflict, s.TableID)
 		}
 		return fmt.Errorf("tables: inserting session: %w", err)
@@ -251,9 +245,4 @@ func scanSessionRow(rows pgx.Rows) (TableSession, error) {
 		return TableSession{}, fmt.Errorf("tables: scanning session: %w", err)
 	}
 	return s, nil
-}
-
-func isUniqueViolation(err error) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == pgUniqueViolation
 }

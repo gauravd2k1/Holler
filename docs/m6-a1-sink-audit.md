@@ -42,8 +42,8 @@ next to a write can be attributed a write's state; the per-function table below
 was spot-checked by hand, the per-context counts were not. It cannot tell which
 foreign keys are reachable with real data — only which paths would report a
 violation as a server fault **if** one occurred. And it says nothing about
-whether a given FK is likely to fire; that judgement is in the "exposure" column
-and is reasoning, not measurement.
+whether a given FK is likely to fire; where this document argues that a given
+foreign key matters, that is reasoning about the data model, not measurement.
 
 ---
 
@@ -114,10 +114,14 @@ to size the work, not to cite a specific line.
 
 ## What happens to this list
 
-- **The seven local `isUniqueViolation` helpers migrate to
-  `internal/platform/storage` in A1's second commit**, with a check that fails
-  the build if a new local copy appears. That converts every **unique-only** row
-  above into a classified one for 23503 as well, since `Classify` handles both.
+- ~~The seven local `isUniqueViolation` helpers migrate to
+  `internal/platform/storage`~~ — **DONE** in A1's second commit, with
+  `scripts/check-sqlstate-classifier.mjs` failing the build if a new local copy
+  or a bare SQLSTATE literal appears anywhere under `backend/internal`. Every
+  **unique-only** row above is now classified for 23503 as well, since
+  `Classify` handles both. **The guard was watched failing**: reintroducing
+  `const pgUniqueViolation = "23505"` and an `isUniqueViolation` in
+  `tables/repository.go` produced two named violations and exit 1.
 - **The ingest routes in the table above are A1's remaining work**, in the order
   their exposure warrants: kitchen and payments first.
 - **Non-ingest write paths are NOT A1's scope.** `auth`, `outlet`, `tables`,

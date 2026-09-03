@@ -8,18 +8,13 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 
 	contracts "github.com/holler/contracts"
 
 	"github.com/holler/backend/internal/platform/httpx"
 	"github.com/holler/backend/internal/platform/postgres"
+	"github.com/holler/backend/internal/platform/storage"
 )
-
-// pgUniqueViolation is the PostgreSQL SQLSTATE for a unique_violation,
-// mirroring backend/internal/kitchen and backend/internal/tables's own copy
-// of the same constant.
-const pgUniqueViolation = "23505"
 
 // idxInvoiceOutletSeriesNumber is the constraint name §33's uniqueness rule
 // is enforced by (packages/contracts/postgres/0007_m3_billing.sql). Used to
@@ -32,14 +27,6 @@ const idxInvoiceOutletSeriesNumber = "idx_invoice_outlet_series_number"
 // wire (CLAUDE.md: the business day may cross midnight, so this is never a
 // full timestamp).
 const businessDateLayout = "2006-01-02"
-
-func isUniqueViolation(err error) (*pgconn.PgError, bool) {
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == pgUniqueViolation {
-		return pgErr, true
-	}
-	return nil, false
-}
 
 // PostgresRepository is the Repository implementation backed by the
 // packages/contracts/postgres schema.
@@ -99,7 +86,7 @@ func (r *PostgresRepository) InsertInvoice(ctx context.Context, tenantID string,
 		tenantID,
 	)
 	if err != nil {
-		if pgErr, ok := isUniqueViolation(err); ok && pgErr.ConstraintName == idxInvoiceOutletSeriesNumber {
+		if pgErr, ok := storage.PgErrorOf(err); ok && storage.IsUniqueViolation(err) && pgErr.ConstraintName == idxInvoiceOutletSeriesNumber {
 			return Invoice{}, false, ErrDuplicateInvoiceNumber
 		}
 		return Invoice{}, false, fmt.Errorf("payments: inserting invoice: %w", err)

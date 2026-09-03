@@ -7,21 +7,12 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/holler/backend/internal/platform/httpx"
 	"github.com/holler/backend/internal/platform/postgres"
+	"github.com/holler/backend/internal/platform/storage"
 	contracts "github.com/holler/contracts"
 )
-
-// pgUniqueViolation mirrors backend/internal/inventory's convention: the
-// PostgreSQL SQLSTATE for unique_violation.
-const pgUniqueViolation = "23505"
-
-func isUniqueViolation(err error) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == pgUniqueViolation
-}
 
 // businessDateLayout mirrors backend/internal/inventory and
 // backend/internal/payments: how a Postgres DATE column round-trips through
@@ -243,7 +234,7 @@ func (r *pgRepository) UpsertSupplier(ctx context.Context, tx pgx.Tx, s Supplier
 		s.PaymentTermsDays, s.IsActive, s.ConfigVersion, s.CreatedAt, s.UpdatedAt,
 	)
 	if err != nil {
-		if isUniqueViolation(err) {
+		if storage.IsUniqueViolation(err) {
 			return fmt.Errorf("%w: supplier code %q already exists in this outlet", httpx.ErrConflict, s.Code)
 		}
 		return fmt.Errorf("procurement: upserting supplier: %w", err)
@@ -263,7 +254,7 @@ func (r *pgRepository) UpsertSupplier(ctx context.Context, tx pgx.Tx, s Supplier
 			it.ID, s.ID, it.InventoryItemID, it.PurchaseUnit,
 			it.PackSizeMicro, string(it.QuantityDimension), it.LastPricePaise, it.IsPreferred,
 		); err != nil {
-			if isUniqueViolation(err) {
+			if storage.IsUniqueViolation(err) {
 				return fmt.Errorf("%w: supplier already prices item %s in unit %q",
 					httpx.ErrConflict, it.InventoryItemID, it.PurchaseUnit)
 			}
@@ -375,7 +366,7 @@ func (r *pgRepository) UpsertPurchaseOrder(ctx context.Context, tx pgx.Tx, po Pu
 		po.Notes, po.TotalPaise, po.CreatedAt, po.CreatedAt, po.ConfigVersion,
 	)
 	if err != nil {
-		if isUniqueViolation(err) {
+		if storage.IsUniqueViolation(err) {
 			return fmt.Errorf("%w: po_number %q already exists in this outlet", httpx.ErrConflict, po.PoNumber)
 		}
 		return fmt.Errorf("procurement: upserting purchase order: %w", err)
@@ -392,7 +383,7 @@ func (r *pgRepository) UpsertPurchaseOrder(ctx context.Context, tx pgx.Tx, po Pu
 			l.ID, po.ID, l.InventoryItemID, l.LineNumber, l.PurchaseUnit, l.OrderedQuantityMicro,
 			string(l.QuantityDimension), l.UnitPricePaise, l.LineTotalPaise,
 		); err != nil {
-			if isUniqueViolation(err) {
+			if storage.IsUniqueViolation(err) {
 				return fmt.Errorf("%w: purchase order line_number %d is duplicated", httpx.ErrConflict, l.LineNumber)
 			}
 			return fmt.Errorf("procurement: inserting purchase order line: %w", err)
@@ -674,7 +665,7 @@ func (r *pgRepository) InsertGoodsReceiptNote(ctx context.Context, tx pgx.Tx, te
 		g.BusinessDate, g.Notes, 1,
 	)
 	if err != nil {
-		if isUniqueViolation(err) {
+		if storage.IsUniqueViolation(err) {
 			return fmt.Errorf("%w: grn_number %q already exists in this outlet", httpx.ErrConflict, g.GrnNumber)
 		}
 		return fmt.Errorf("procurement: inserting goods receipt note: %w", err)
@@ -738,7 +729,7 @@ func (r *pgRepository) InsertGrnGap(ctx context.Context, tenantID string, g GrnG
 		string(g.Reason), g.Detail, g.OccurredAt, g.BusinessDate, 1,
 	)
 	if err != nil {
-		if isUniqueViolation(err) {
+		if storage.IsUniqueViolation(err) {
 			return fmt.Errorf("%w: grn_gap %s already exists", httpx.ErrConflict, g.ID)
 		}
 		return fmt.Errorf("procurement: inserting grn gap: %w", err)
@@ -807,7 +798,7 @@ func (r *pgRepository) InsertPurchaseReturn(ctx context.Context, tx pgx.Tx, tena
 		string(p.Reason), p.ReturnedAt, p.ReturnedByUserID, p.BusinessDate, p.Notes, 1,
 	)
 	if err != nil {
-		if isUniqueViolation(err) {
+		if storage.IsUniqueViolation(err) {
 			return fmt.Errorf("%w: return_number %q already exists in this outlet", httpx.ErrConflict, p.ReturnNumber)
 		}
 		return fmt.Errorf("procurement: inserting purchase return: %w", err)
@@ -885,7 +876,7 @@ func (r *pgRepository) InsertStockTransferOut(ctx context.Context, tx pgx.Tx, te
 		s.DispatchedAt, s.DispatchedByUserID, s.BusinessDate, s.Notes, 1,
 	)
 	if err != nil {
-		if isUniqueViolation(err) {
+		if storage.IsUniqueViolation(err) {
 			return fmt.Errorf("%w: transfer_number %q already exists in this outlet", httpx.ErrConflict, s.TransferNumber)
 		}
 		return fmt.Errorf("procurement: inserting stock transfer out: %w", err)
@@ -944,7 +935,7 @@ func (r *pgRepository) InsertSupplierInvoice(ctx context.Context, inv SupplierIn
 		string(inv.Status), inv.CreatedAt, inv.UpdatedAt,
 	)
 	if err != nil {
-		if isUniqueViolation(err) {
+		if storage.IsUniqueViolation(err) {
 			return fmt.Errorf("%w: supplier_invoice_no %q already exists for this supplier", httpx.ErrConflict, inv.SupplierInvoiceNo)
 		}
 		return fmt.Errorf("procurement: inserting supplier invoice: %w", err)
@@ -999,7 +990,7 @@ func (r *pgRepository) InsertSupplierCredit(ctx context.Context, c SupplierCredi
 		c.CreditNoteNo, c.CreditDate, c.AmountPaise, c.CreatedAt, c.UpdatedAt,
 	)
 	if err != nil {
-		if isUniqueViolation(err) {
+		if storage.IsUniqueViolation(err) {
 			return fmt.Errorf("%w: credit_note_no %q already exists for this supplier", httpx.ErrConflict, c.CreditNoteNo)
 		}
 		return fmt.Errorf("procurement: inserting supplier credit: %w", err)
@@ -1231,7 +1222,7 @@ func (r *pgRepository) AmendPurchaseOrder(ctx context.Context, tx pgx.Tx, po Pur
 		po.TotalPaise, time.Now().UTC(), po.ConfigVersion, po.ID,
 	)
 	if err != nil {
-		if isUniqueViolation(err) {
+		if storage.IsUniqueViolation(err) {
 			return fmt.Errorf("%w: po_number %q already exists in this outlet", httpx.ErrConflict, po.PoNumber)
 		}
 		return fmt.Errorf("procurement: amending purchase order: %w", err)
@@ -1251,7 +1242,7 @@ func (r *pgRepository) AmendPurchaseOrder(ctx context.Context, tx pgx.Tx, po Pur
 			l.ID, po.ID, l.InventoryItemID, l.LineNumber, l.PurchaseUnit, l.OrderedQuantityMicro,
 			string(l.QuantityDimension), l.UnitPricePaise, l.LineTotalPaise,
 		); err != nil {
-			if isUniqueViolation(err) {
+			if storage.IsUniqueViolation(err) {
 				return fmt.Errorf("%w: purchase order line_number %d is duplicated", httpx.ErrConflict, l.LineNumber)
 			}
 			return fmt.Errorf("procurement: inserting purchase order line: %w", err)

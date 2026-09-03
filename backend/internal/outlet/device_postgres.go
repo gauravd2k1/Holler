@@ -7,21 +7,10 @@ import (
 	"time"
 
 	"github.com/holler/backend/internal/platform/httpx"
+	"github.com/holler/backend/internal/platform/storage"
 	contracts "github.com/holler/contracts"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 )
-
-// pgUniqueViolation is the PostgreSQL SQLSTATE for a unique_violation,
-// mirroring backend/internal/kitchen/repository.go and
-// backend/internal/tables/repository.go's own copy of the same constant —
-// each bounded context owns its persistence layer independently.
-const pgUniqueViolation = "23505"
-
-func isUniqueViolation(err error) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == pgUniqueViolation
-}
 
 // PostgresRepository also implements DeviceRepository, over
 // packages/contracts/postgres/0008_device_enrollment.sql. Kept in this
@@ -58,7 +47,7 @@ func (r *PostgresRepository) InsertDevice(ctx context.Context, tenantID string, 
 		)
 	`, d.ID, d.OutletID, string(d.Kind), d.Name, d.EnrolledAt, d.CreatedAt, d.UpdatedAt, tenantID)
 	if err != nil {
-		if isUniqueViolation(err) {
+		if storage.IsUniqueViolation(err) {
 			return fmt.Errorf("%w: a device named %q already exists at this outlet", httpx.ErrConflict, d.Name)
 		}
 		return fmt.Errorf("outlet: inserting device: %w", err)
@@ -121,7 +110,7 @@ func (r *PostgresRepository) InsertCredential(ctx context.Context, tx pgx.Tx, c 
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 	`, c.ID, c.DeviceID, c.TenantID, c.OutletID, tokenHash, c.Label, c.CreatedAt, c.ExpiresAt, c.ConfigVersion)
 	if err != nil {
-		if isUniqueViolation(err) {
+		if storage.IsUniqueViolation(err) {
 			// idx_device_credential_active: two live credentials for one
 			// device is a bug, not a state (packages/contracts/postgres/
 			// 0008_device_enrollment.sql). The caller failed to revoke the

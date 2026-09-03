@@ -161,6 +161,14 @@ jobs:
       # stock_ledger_entry provenance columns added at 0.6.0.
       - name: openapi matches the go mirrors
         run: node scripts/check-openapi-go-drift.mjs
+      # Seven bounded contexts each carried a private copy of the same
+      # unique-violation helper and not one of them handled 23503, so a
+      # foreign-key violation on a replayed row came back 500 and wedged every
+      # outbox row behind it (docs/m6-a1-sink-audit.md). Consolidating them
+      # fixed that; this fails the build on the eighth copy, which is what
+      # would otherwise appear next milestone when the reason is forgotten.
+      - name: sqlstate knowledge stays in the classifier
+        run: node scripts/check-sqlstate-classifier.mjs
       # The Go guard in backend/cmd/api/syncconfig_guard_test.go proves the
       # cloud SENDS a config column. It cannot prove an outlet STORES it, and
       # at 0.6.0 four procurement families passed that guard, shipped in every

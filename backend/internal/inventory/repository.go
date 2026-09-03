@@ -7,21 +7,12 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/holler/backend/internal/platform/httpx"
 	"github.com/holler/backend/internal/platform/id"
 	"github.com/holler/backend/internal/platform/postgres"
+	"github.com/holler/backend/internal/platform/storage"
 )
-
-// pgUniqueViolation mirrors backend/internal/kitchen and backend/internal/
-// tables's convention: the PostgreSQL SQLSTATE for unique_violation.
-const pgUniqueViolation = "23505"
-
-func isUniqueViolation(err error) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == pgUniqueViolation
-}
 
 // Repository is the persistence boundary for the inventory context. Service
 // depends on this interface, never on pgx directly (CLAUDE.md §Coding
@@ -196,7 +187,7 @@ func (r *pgRepository) UpsertInventoryItem(ctx context.Context, tx pgx.Tx, item 
 		item.YieldFactorPPM, item.ConfigVersion,
 	)
 	if err != nil {
-		if isUniqueViolation(err) {
+		if storage.IsUniqueViolation(err) {
 			return fmt.Errorf("%w: sku %q already exists in this outlet", httpx.ErrConflict, item.SKU)
 		}
 		return fmt.Errorf("inventory: upserting inventory item: %w", err)
@@ -210,7 +201,7 @@ func (r *pgRepository) UpsertInventoryItem(ctx context.Context, tx pgx.Tx, item 
 			 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 			c.ID, item.ID, c.PackUnitLabel, string(c.SourceDimension), c.Numerator, c.Denominator, item.ConfigVersion,
 		); err != nil {
-			if isUniqueViolation(err) {
+			if storage.IsUniqueViolation(err) {
 				return fmt.Errorf("%w: pack_unit_label %q already exists for this item", httpx.ErrConflict, c.PackUnitLabel)
 			}
 			return fmt.Errorf("inventory: inserting item unit conversion: %w", err)
@@ -313,7 +304,7 @@ func (r *pgRepository) UpsertRecipe(ctx context.Context, tx pgx.Tx, recipe Recip
 		string(recipe.OutputDimension), recipe.OutputQuantityMicro, recipe.ConfigVersion,
 	)
 	if err != nil {
-		if isUniqueViolation(err) {
+		if storage.IsUniqueViolation(err) {
 			return fmt.Errorf("%w: a recipe already exists for menu_item_variant_id %q", httpx.ErrConflict, recipe.MenuItemVariantID)
 		}
 		return fmt.Errorf("inventory: upserting recipe: %w", err)
@@ -583,7 +574,7 @@ func (r *pgRepository) InsertLedgerEntry(ctx context.Context, entry StockLedgerE
 		entry.LineTotalPaise,
 	)
 	if err != nil {
-		if isUniqueViolation(err) {
+		if storage.IsUniqueViolation(err) {
 			return fmt.Errorf("%w: ledger entry id or (outlet_id, entry_seq) already exists", httpx.ErrConflict)
 		}
 		return fmt.Errorf("inventory: inserting ledger entry: %w", err)
@@ -623,7 +614,7 @@ func (r *pgRepository) InsertDeductionGap(ctx context.Context, gap StockDeductio
 		gap.Quantity, string(gap.Reason), gap.OccurredAt, gap.BusinessDate,
 	)
 	if err != nil {
-		if isUniqueViolation(err) {
+		if storage.IsUniqueViolation(err) {
 			return fmt.Errorf("%w: deduction gap id or (outlet_id, entry_seq) already exists", httpx.ErrConflict)
 		}
 		return fmt.Errorf("inventory: inserting deduction gap: %w", err)

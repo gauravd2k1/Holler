@@ -6,23 +6,13 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 
 	contracts "github.com/holler/contracts"
 
 	"github.com/holler/backend/internal/platform/httpx"
 	"github.com/holler/backend/internal/platform/postgres"
+	"github.com/holler/backend/internal/platform/storage"
 )
-
-// pgUniqueViolation is the PostgreSQL SQLSTATE for a unique_violation,
-// mirroring backend/internal/tables and backend/internal/kitchen's own copy
-// of the same constant.
-const pgUniqueViolation = "23505"
-
-func isUniqueViolation(err error) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == pgUniqueViolation
-}
 
 // Repository is the persistence boundary for the T13 config write path:
 // compliance_version, tax_profile, tax_rule, invoice_series,
@@ -134,7 +124,7 @@ func (r *pgRepository) InsertComplianceVersion(ctx context.Context, tx pgx.Tx, c
 		cv.ID, cv.OutletID, cv.Label, cv.EffectiveFrom, cv.Notes, cv.ConfigVersion,
 	)
 	if err != nil {
-		if isUniqueViolation(err) {
+		if storage.IsUniqueViolation(err) {
 			return fmt.Errorf("%w: compliance version label %q already exists in this outlet", httpx.ErrConflict, cv.Label)
 		}
 		return fmt.Errorf("compliance: inserting compliance_version: %w", err)
@@ -191,7 +181,7 @@ func (r *pgRepository) InsertTaxProfile(ctx context.Context, tx pgx.Tx, tp contr
 		tp.ID, tp.OutletID, tp.Code, tp.Name, string(tp.PricingMode), tp.IsDefault, tp.IsActive, tp.ConfigVersion,
 	)
 	if err != nil {
-		if isUniqueViolation(err) {
+		if storage.IsUniqueViolation(err) {
 			return fmt.Errorf("%w: tax profile code %q already exists in this outlet", httpx.ErrConflict, tp.Code)
 		}
 		return fmt.Errorf("compliance: inserting tax_profile: %w", err)
@@ -309,7 +299,7 @@ func (r *pgRepository) InsertInvoiceSeries(ctx context.Context, tx pgx.Tx, s con
 		s.ID, s.OutletID, s.Code, s.PrefixTemplate, string(s.ResetPolicy), s.PaddingWidth, s.IsActive, s.ConfigVersion,
 	)
 	if err != nil {
-		if isUniqueViolation(err) {
+		if storage.IsUniqueViolation(err) {
 			return fmt.Errorf("%w: invoice series code %q already exists in this outlet", httpx.ErrConflict, s.Code)
 		}
 		return fmt.Errorf("compliance: inserting invoice_series: %w", err)
@@ -389,7 +379,7 @@ func (r *pgRepository) InsertDiscountDefinition(ctx context.Context, tx pgx.Tx, 
 		d.EffectiveFrom, d.EffectiveTo, d.ConfigVersion,
 	)
 	if err != nil {
-		if isUniqueViolation(err) {
+		if storage.IsUniqueViolation(err) {
 			return fmt.Errorf("%w: discount code %q already exists in this outlet", httpx.ErrConflict, d.Code)
 		}
 		return fmt.Errorf("compliance: inserting discount_definition: %w", err)
@@ -479,7 +469,7 @@ func (r *pgRepository) InsertFiscalProfile(ctx context.Context, tx pgx.Tx, fp co
 		fp.EffectiveFrom, fp.ConfigVersion,
 	)
 	if err != nil {
-		if isUniqueViolation(err) {
+		if storage.IsUniqueViolation(err) {
 			return fmt.Errorf("%w: outlet already has a fiscal profile effective at this instant", httpx.ErrConflict)
 		}
 		return fmt.Errorf("compliance: inserting outlet_fiscal_profile: %w", err)
