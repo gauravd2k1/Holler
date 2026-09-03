@@ -35,8 +35,13 @@ pub enum SyncError {
     #[error("http transport error contacting cloud")]
     HttpTransport,
 
+    /// The cloud answered and refused. `code` is the machine-readable value
+    /// from its error envelope (`httpx.ErrorBody.code`), which is what the
+    /// edge RECORDS and classifies on -- M6 C7 is closed on that string, not
+    /// on prose, because prose changes whenever someone edits a message.
+    /// `None` when the body was absent or not the error envelope shape.
     #[error("cloud rejected the request: status {status}")]
-    HttpStatus { status: u16 },
+    HttpStatus { status: u16, code: Option<String> },
 
     #[error("json (de)serialization error: {0}")]
     Json(#[from] serde_json::Error),

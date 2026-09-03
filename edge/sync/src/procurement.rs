@@ -245,7 +245,7 @@ impl SyncWorker {
                     return Ok(report);
                 }
 
-                Ok(SendOutcome::Rejected { status }) if is_permanent_rejection(status) => {
+                Ok(SendOutcome::Rejected { status, .. }) if is_permanent_rejection(status) => {
                     repo::increment_outbox_attempt(db.connection(), &row.id)?;
                     let attempts = row.attempt_count + 1;
                     if attempts >= MAX_PROCUREMENT_REPLAY_ATTEMPTS {
@@ -264,7 +264,7 @@ impl SyncWorker {
                     continue;
                 }
 
-                Ok(SendOutcome::Rejected { status }) => {
+                Ok(SendOutcome::Rejected { status, .. }) => {
                     // Transient or device-level. Costs no budget, and the
                     // whole pass stops: the next row would get the same
                     // answer, and spending attempts on it would abandon good

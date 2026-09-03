@@ -63,6 +63,26 @@ pub struct WorkerConfig {
     pub device_token: String,
 }
 
+/// How many times a general-outbox row may be refused for its OWN fault
+/// before the drain gives up on it and shows it to a human.
+///
+/// Matches the ranged streams' budget (`ranged::MAX_ENTRY_REPLAY_ATTEMPTS`)
+/// deliberately: a per-row bound that differs per stream for no stated reason
+/// is the drift ADR-023 already records three mechanisms of.
+///
+/// This bound is spent ONLY by failures that are the row's own fault. A
+/// transient failure increments the count -- so "failing since Tuesday" is
+/// answerable -- and never spends the budget, because abandoning good rows
+/// during an outage is data loss dressed as resilience (ADR-018 0.5.8).
+pub const MAX_OUTBOX_REPLAY_ATTEMPTS: i64 = 5;
+
+/// How many accumulated failures make a still-retrying row worth showing a
+/// human. Lower than the budget: a row failing repeatedly for a reason that is
+/// NOT its fault never blocks, so without this it would never be surfaced at
+/// all, which is the "looks healthy while nothing leaves the till" state M5
+/// ended in.
+pub const OUTBOX_ATTENTION_ATTEMPTS: i64 = 3;
+
 /// Why [`SyncWorker::pump_outbox`] stopped before draining every pending
 /// row. Stopping (rather than skipping ahead) is deliberate: outbox rows are
 /// drained in order, and once one has not been acknowledged, sending a later
@@ -99,6 +119,10 @@ pub struct BlockedAggregate {
     /// Present when the cloud answered; absent when the row could not be
     /// built or its aggregate row was missing locally.
     pub last_status: Option<u16>,
+    /// The cloud's machine-readable reason, carried so a surface can say WHY
+    /// without parsing prose. `None` for a failure that never reached the
+    /// wire.
+    pub last_code: Option<String>,
     pub reason: String,
 }
 
@@ -121,6 +145,14 @@ pub struct PumpReport {
     /// aggregate is blocked. Held to preserve per-aggregate ordering, which
     /// is the guarantee the old global stop was really protecting.
     pub blocked_skipped: Vec<String>,
+    /// Rows whose retry budget ran out this call: the drain will not try them
+    /// again, and each is a durable `sync_outbox_block` row with `blocked_at`
+    /// set. THIS is what a human is shown.
+    pub gave_up: Vec<BlockedAggregate>,
+    /// Rows skipped because a previous drain already gave up on them. Not an
+    /// error and not a new event — reported so "nothing happened this pump" and
+    /// "six rows are permanently abandoned" cannot look the same.
+    pub already_blocked: Vec<String>,
     /// Set if draining stopped before exhausting the pending backlog —
     /// reserved for conditions where the CLOUD is the problem and every row
     /// would get the same answer.
@@ -133,9 +165,11 @@ pub struct PumpReport {
 #[derive(Debug)]
 pub enum SendOutcome {
     Ok(serde_json::Value),
-    /// The cloud was reached and refused this request.
+    /// The cloud was reached and refused this request. `code` is its
+    /// machine-readable reason, recorded with the failure.
     Rejected {
         status: u16,
+        code: Option<String>,
     },
     /// This node's credential is invalid or does not resolve to its
     /// configured outlet (ADR-017 hole 1). Nothing was sent.
@@ -213,7 +247,7 @@ impl SyncWorker {
         if !self.enrollment_verified.get() {
             match self.verify_enrollment() {
                 Ok(()) => self.enrollment_verified.set(true),
-                Err(SyncError::HttpStatus { status }) => {
+                Err(SyncError::HttpStatus { status, .. }) => {
                     return Ok(SendOutcome::NotEnrolled { status });
                 }
                 Err(other) => return Err(other),
@@ -221,7 +255,7 @@ impl SyncWorker {
         }
         Ok(match self.client.post_json(path, body)? {
             Reply::Ok(v) => SendOutcome::Ok(v),
-            Reply::Rejected { status } => SendOutcome::Rejected { status },
+            Reply::Rejected { status, code } => SendOutcome::Rejected { status, code },
         })
     }
 
@@ -280,6 +314,15 @@ impl SyncWorker {
             std::collections::HashSet::new();
 
         for row in pending {
+            // Already given up on by an earlier drain. Retrying it would spend
+            // one request per pump on an answer we have had five times, and
+            // would keep re-blocking its aggregate for a decision already
+            // made and already surfaced.
+            if repo::outbox_row_is_blocked(db.connection(), &self.config.outlet_id, &row.id)? {
+                report.already_blocked.push(row.id.clone());
+                continue;
+            }
+
             let aggregate_key = (row.aggregate_type.clone(), row.aggregate_id.clone());
             if blocked.contains(&aggregate_key) {
                 // A later event for an already-blocked aggregate. Sending it
@@ -310,6 +353,7 @@ impl SyncWorker {
                         aggregate_id: row.aggregate_id.clone(),
                         outbox_id: row.id.clone(),
                         last_status: None,
+                        last_code: None,
                         reason,
                     });
                     continue;
@@ -356,6 +400,7 @@ impl SyncWorker {
                         aggregate_id: row.aggregate_id.clone(),
                         outbox_id,
                         last_status: None,
+                        last_code: None,
                         reason,
                     });
                     continue;
@@ -382,6 +427,7 @@ impl SyncWorker {
                         aggregate_id: row.aggregate_id.clone(),
                         outbox_id: row.id.clone(),
                         last_status: None,
+                        last_code: None,
                         reason,
                     });
                     continue;
@@ -421,6 +467,10 @@ impl SyncWorker {
             match self.post_verified(&route.path, &body) {
                 Ok(SendOutcome::Ok(_)) => {
                     let now = Utc::now().to_rfc3339();
+                    // A row that failed earlier and has now landed leaves no
+                    // alarm behind: a surface full of resolved alarms stops
+                    // being read.
+                    repo::clear_outbox_failure(db.connection(), &self.config.outlet_id, &row.id)?;
                     repo::mark_outbox_published(db.connection(), &row.id, &now)?;
                     repo::update_sync_cursor(
                         db.connection(),
@@ -441,9 +491,45 @@ impl SyncWorker {
                     report.stopped = Some(StopReason::Rejected { status });
                     return Ok(report);
                 }
-                Ok(SendOutcome::Rejected { status }) => {
+                Ok(SendOutcome::Rejected { status, code }) => {
                     self.record_attempt_stop(db, &row.id, true, StopReason::Rejected { status })?;
+                    // COUNTING IS NOT BLOCKING. Every refusal is recorded,
+                    // whatever caused it, so a row failing for days is
+                    // answerable; only a refusal that is this row's own fault
+                    // spends the budget below.
+                    let attempts = repo::record_outbox_failure(
+                        db.connection(),
+                        &self.config.outlet_id,
+                        &row.id,
+                        &row.aggregate_type,
+                        &row.aggregate_id,
+                        Some(status),
+                        code.as_deref(),
+                        &format!("cloud rejected the envelope with status {status}"),
+                        &Utc::now().to_rfc3339(),
+                    )?;
                     if crate::ranged::is_permanent_rejection(status) {
+                        if attempts >= MAX_OUTBOX_REPLAY_ATTEMPTS {
+                            // The budget is spent. The drain stops trying this
+                            // row, which is only survivable because the row is
+                            // now VISIBLE: blocked_at is what a human is shown.
+                            repo::mark_outbox_blocked(
+                                db.connection(),
+                                &self.config.outlet_id,
+                                &row.id,
+                                &Utc::now().to_rfc3339(),
+                            )?;
+                            report.gave_up.push(BlockedAggregate {
+                                aggregate_type: row.aggregate_type.clone(),
+                                aggregate_id: row.aggregate_id.clone(),
+                                outbox_id: row.id.clone(),
+                                last_status: Some(status),
+                                last_code: code.clone(),
+                                reason: format!(
+                                    "given up after {attempts} attempts; last status {status}"
+                                ),
+                            });
+                        }
                         // The cloud says THIS row is wrong and will say so
                         // again. Block its aggregate and keep draining the
                         // others -- the same classifier the ranged and
@@ -454,6 +540,7 @@ impl SyncWorker {
                             aggregate_id: row.aggregate_id.clone(),
                             outbox_id: row.id.clone(),
                             last_status: Some(status),
+                            last_code: code.clone(),
                             reason: format!("cloud rejected the envelope with status {status}"),
                         });
                         continue;

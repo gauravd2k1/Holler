@@ -6400,6 +6400,179 @@ pub fn list_blocked_replays(conn: &Connection, outlet_id: &str) -> DbResult<Vec<
     Ok(rows)
 }
 
+// ---------------------------------------------------------------------------
+// sync_outbox_block — the general outbox's block-and-budget record (ADR-023).
+//
+// Deliberately mirrors the sync_replay_block helpers above rather than
+// inventing a second vocabulary for the same idea. The ONE difference is the
+// key: an outbox row is identified by its id, not by a per-stream ordinal.
+// ---------------------------------------------------------------------------
+
+/// Records one failed send of a general-outbox row and returns the running
+/// attempt count.
+///
+/// COUNTING AND BLOCKING ARE DIFFERENT DECISIONS, which is the whole of M6
+/// A3. EVERY failure increments — including a transient one, so "this row has
+/// been failing since Tuesday" is answerable at all. Whether the row STOPS
+/// being retried is a separate call to [`mark_outbox_blocked`], made only for
+/// a failure that is the row's own fault. Before A3 the general outbox
+/// counted in `local_outbox.attempt_count` and did nothing with the number.
+#[allow(clippy::too_many_arguments)]
+pub fn record_outbox_failure(
+    conn: &Connection,
+    outlet_id: &str,
+    outbox_id: &str,
+    aggregate_type: &str,
+    aggregate_id: &str,
+    last_status: Option<u16>,
+    last_code: Option<&str>,
+    last_error: &str,
+    now: &str,
+) -> DbResult<i64> {
+    conn.query_row(
+        "INSERT INTO sync_outbox_block
+            (outlet_id, outbox_id, aggregate_type, aggregate_id, attempts,
+             last_status, last_code, last_error, first_attempt_at,
+             last_attempt_at, blocked_at)
+         VALUES (?1, ?2, ?3, ?4, 1, ?5, ?6, ?7, ?8, ?8, NULL)
+         ON CONFLICT(outlet_id, outbox_id) DO UPDATE SET
+            attempts = sync_outbox_block.attempts + 1,
+            last_status = excluded.last_status,
+            last_code = excluded.last_code,
+            last_error = excluded.last_error,
+            last_attempt_at = excluded.last_attempt_at
+         RETURNING attempts",
+        params![
+            outlet_id,
+            outbox_id,
+            aggregate_type,
+            aggregate_id,
+            last_status.map(i64::from),
+            last_code,
+            last_error,
+            now
+        ],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
+/// Spends the last of a row's budget: the drain will not try it again, so
+/// this is the moment it becomes something a human must be shown.
+pub fn mark_outbox_blocked(
+    conn: &Connection,
+    outlet_id: &str,
+    outbox_id: &str,
+    now: &str,
+) -> DbResult<()> {
+    conn.execute(
+        "UPDATE sync_outbox_block SET blocked_at = ?3 \
+         WHERE outlet_id = ?1 AND outbox_id = ?2 AND blocked_at IS NULL",
+        params![outlet_id, outbox_id, now],
+    )?;
+    Ok(())
+}
+
+/// A row that failed earlier and has now been accepted leaves no block
+/// behind — a surface full of resolved alarms stops being read, which is the
+/// outcome a table was chosen over a log line to avoid.
+pub fn clear_outbox_failure(conn: &Connection, outlet_id: &str, outbox_id: &str) -> DbResult<()> {
+    conn.execute(
+        "DELETE FROM sync_outbox_block WHERE outlet_id = ?1 AND outbox_id = ?2",
+        params![outlet_id, outbox_id],
+    )?;
+    Ok(())
+}
+
+/// Whether this row has already been given up on, so a drain can skip it
+/// instead of spending a request per pump on an answer it has already had.
+pub fn outbox_row_is_blocked(conn: &Connection, outlet_id: &str, outbox_id: &str) -> DbResult<bool> {
+    let blocked: Option<String> = conn
+        .query_row(
+            "SELECT blocked_at FROM sync_outbox_block \
+             WHERE outlet_id = ?1 AND outbox_id = ?2",
+            params![outlet_id, outbox_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+    Ok(blocked.is_some())
+}
+
+/// Every general-outbox row this outlet has GIVEN UP on — the human-visible
+/// half of the per-row retry bound.
+pub fn list_blocked_outbox_rows(
+    conn: &Connection,
+    outlet_id: &str,
+) -> DbResult<Vec<crate::model::SyncOutboxBlock>> {
+    query_outbox_blocks(
+        conn,
+        "WHERE outlet_id = ?1 AND blocked_at IS NOT NULL \
+         ORDER BY blocked_at ASC, outbox_id ASC",
+        outlet_id,
+    )
+}
+
+/// Rows that are still being retried but have been failing for a while: a
+/// transient condition that never resolves is invisible otherwise.
+///
+/// These are NOT blocked and must not be: abandoning good rows because the
+/// cloud was down for a day is data loss dressed as resilience. They are
+/// surfaced while the drain keeps trying them, which is the difference
+/// between telling someone and giving up.
+pub fn list_persistently_failing_outbox_rows(
+    conn: &Connection,
+    outlet_id: &str,
+    min_attempts: i64,
+) -> DbResult<Vec<crate::model::SyncOutboxBlock>> {
+    let mut stmt = conn.prepare(
+        "SELECT outlet_id, outbox_id, aggregate_type, aggregate_id, attempts, \
+                last_status, last_code, last_error, first_attempt_at, \
+                last_attempt_at, blocked_at \
+         FROM sync_outbox_block \
+         WHERE outlet_id = ?1 AND blocked_at IS NULL AND attempts >= ?2 \
+         ORDER BY first_attempt_at ASC, outbox_id ASC",
+    )?;
+    let rows = stmt
+        .query_map(params![outlet_id, min_attempts], map_outbox_block)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+fn query_outbox_blocks(
+    conn: &Connection,
+    tail: &str,
+    outlet_id: &str,
+) -> DbResult<Vec<crate::model::SyncOutboxBlock>> {
+    let sql = format!(
+        "SELECT outlet_id, outbox_id, aggregate_type, aggregate_id, attempts, \
+                last_status, last_code, last_error, first_attempt_at, \
+                last_attempt_at, blocked_at \
+         FROM sync_outbox_block {tail}"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt
+        .query_map(params![outlet_id], map_outbox_block)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+fn map_outbox_block(row: &rusqlite::Row<'_>) -> rusqlite::Result<crate::model::SyncOutboxBlock> {
+    Ok(crate::model::SyncOutboxBlock {
+        outlet_id: row.get(0)?,
+        outbox_id: row.get(1)?,
+        aggregate_type: row.get(2)?,
+        aggregate_id: row.get(3)?,
+        attempts: row.get(4)?,
+        last_status: row.get(5)?,
+        last_code: row.get(6)?,
+        last_error: row.get(7)?,
+        first_attempt_at: row.get(8)?,
+        last_attempt_at: row.get(9)?,
+        blocked_at: row.get(10)?,
+    })
+}
+
 // ---------------------------------- Milestone 5: procurement (T2, ADR-019) --
 //
 // EVENT TYPES ARE NOT YET FROZEN IN THE CONTRACT. `OUTBOX_EVENT_TYPES` in

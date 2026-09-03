@@ -206,7 +206,7 @@ impl SyncWorker {
                     return Ok(());
                 }
 
-                Ok(SendOutcome::Rejected { status }) if is_permanent_rejection(status) => {
+                Ok(SendOutcome::Rejected { status, .. }) if is_permanent_rejection(status) => {
                     let attempts = repo::record_replay_failure(
                         db.connection(),
                         &outlet_id,
@@ -247,7 +247,7 @@ impl SyncWorker {
                     });
                 }
 
-                Ok(SendOutcome::Rejected { status }) => {
+                Ok(SendOutcome::Rejected { status, .. }) => {
                     // Transient or device-level. Costs no budget.
                     report.stopped = Some(StopReason::Rejected { status });
                     return Ok(());

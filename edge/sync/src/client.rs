@@ -32,7 +32,10 @@ pub enum Reply {
     Ok(Value),
     /// Any other status. The pump must not treat this as "offline" — the
     /// cloud is reachable and said no.
-    Rejected { status: u16 },
+    ///
+    /// `code` is the machine-readable value from the cloud's error envelope,
+    /// carried so the edge can record WHY rather than only that it failed.
+    Rejected { status: u16, code: Option<String> },
 }
 
 impl HttpClient {
@@ -97,7 +100,7 @@ impl HttpClient {
         })
         .map(|resp| Reply::Ok(resp.into_json::<Value>().unwrap_or(Value::Null)))
         .or_else(|e| match e {
-            SyncError::HttpStatus { status } => Ok(Reply::Rejected { status }),
+            SyncError::HttpStatus { status, code } => Ok(Reply::Rejected { status, code }),
             other => Err(other),
         })
     }
@@ -119,10 +122,16 @@ impl HttpClient {
     ) -> Result<ureq::Response, SyncError> {
         match attempt() {
             Ok(resp) => Ok(resp),
-            Err(ureq::Error::Status(status, _)) => Err(SyncError::HttpStatus { status }),
+            Err(ureq::Error::Status(status, resp)) => Err(SyncError::HttpStatus {
+                status,
+                code: error_code_of(resp),
+            }),
             Err(ureq::Error::Transport(_)) => match attempt() {
                 Ok(resp) => Ok(resp),
-                Err(ureq::Error::Status(status, _)) => Err(SyncError::HttpStatus { status }),
+                Err(ureq::Error::Status(status, resp)) => Err(SyncError::HttpStatus {
+                    status,
+                    code: error_code_of(resp),
+                }),
                 Err(ureq::Error::Transport(_)) => Err(SyncError::HttpTransport),
             },
         }
@@ -144,6 +153,20 @@ impl HttpClient {
         .into_json::<T>()
         .map_err(|e| SyncError::Json(serde_json_error_from_io(e)))
     }
+}
+
+
+/// Reads the `code` out of the cloud's error envelope (`{"code": "...",
+/// "message": "..."}`).
+///
+/// Best effort by design: a body that is absent, truncated, or not that shape
+/// yields `None` rather than an error. A refusal must still be reported even
+/// when nothing can be said about why -- losing the refusal to gain the reason
+/// would be a worse trade than the one this exists to make.
+fn error_code_of(resp: ureq::Response) -> Option<String> {
+    resp.into_json::<Value>()
+        .ok()
+        .and_then(|body| body.get("code")?.as_str().map(str::to_string))
 }
 
 // `ureq::Response::into_json` returns `std::io::Error`, not

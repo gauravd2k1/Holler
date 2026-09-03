@@ -201,7 +201,7 @@ fn an_http_status_is_never_retried() {
     assert!(
         matches!(
             reply,
-            holler_edge_sync::client::Reply::Rejected { status: 422 }
+            holler_edge_sync::client::Reply::Rejected { status: 422, .. }
         ),
         "a 422 must surface as Rejected, got {reply:?}"
     );

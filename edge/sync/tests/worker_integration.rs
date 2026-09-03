@@ -21,7 +21,10 @@ use std::time::Duration;
 
 use holler_edge_database::{model, repo, Db};
 use holler_edge_sync::client::HttpClient;
-use holler_edge_sync::worker::{StopReason, SyncWorker, WorkerConfig};
+use holler_edge_sync::worker::{
+    StopReason, SyncWorker, WorkerConfig, MAX_OUTBOX_REPLAY_ATTEMPTS,
+    OUTBOX_ATTENTION_ATTEMPTS,
+};
 use tiny_http::{Response, Server};
 
 /// How long a stand-in cloud waits for a request that should already be on
@@ -749,4 +752,207 @@ fn a_blocked_aggregate_holds_back_its_own_later_events() {
     let pending = repo::list_unpublished_outbox(db.connection(), 10).unwrap();
     let ids: Vec<String> = pending.iter().map(|r| r.id.clone()).collect();
     assert_eq!(ids, vec!["outbox-1".to_string(), "outbox-3".to_string()]);
+}
+
+
+/// M6 A3 — the retry budget, and the durable record that makes spending it
+/// survivable.
+///
+/// COUNTING AND BLOCKING ARE DIFFERENT DECISIONS. Every refusal increments,
+/// whatever caused it, so "this row has been failing since Tuesday" is
+/// answerable at all. Only a refusal that is the ROW's own fault spends the
+/// budget. When the budget runs out the drain stops trying, which is
+/// survivable only because the row is now visible: a `sync_outbox_block` row
+/// with `blocked_at` set (contracts 0.6.4, ADR-023).
+///
+/// M6 C7 is closed on `last_code`, the machine-readable value from the
+/// cloud's error envelope — not on `last_error`, which is prose and would
+/// change whenever someone edited a message string.
+#[test]
+fn a_permanently_refused_row_spends_its_budget_then_becomes_visible() {
+    let server = Server::http("127.0.0.1:0").expect("start test server");
+    let addr = server.server_addr();
+    let base_url = format!("http://{addr}");
+    let handle = std::thread::spawn(move || {
+        // verify_enrollment, then a 422 for every attempt the budget allows.
+        if let Some(req) = recv_before_deadline(&server) {
+            let _ = req.respond(Response::from_string("{}").with_status_code(200));
+        }
+        for _ in 0..MAX_OUTBOX_REPLAY_ATTEMPTS + 2 {
+            if let Some(req) = recv_before_deadline(&server) {
+                let _ = req.respond(
+                    Response::from_string(
+                        "{\"code\":\"missing_reference\",\"message\":\"menu_item_id does not exist\"}",
+                    )
+                    .with_status_code(422),
+                );
+            }
+        }
+    });
+
+    let mut db = Db::open_in_memory_for_tests().expect("open db");
+    seed_outlet_and_device(&db, "outlet-1", "device-1");
+    seed_order_with_outbox(&mut db, "order-1", "outbox-1");
+
+    let worker = SyncWorker::new(worker_config(base_url));
+
+    // Every pump but the last leaves the row inside its budget: recorded, not
+    // given up on.
+    for attempt in 1..MAX_OUTBOX_REPLAY_ATTEMPTS {
+        let report = worker.pump_outbox(&mut db, 10).expect("pump");
+        assert!(
+            report.gave_up.is_empty(),
+            "attempt {attempt} of {MAX_OUTBOX_REPLAY_ATTEMPTS} must not abandon the row"
+        );
+        assert!(
+            repo::list_blocked_outbox_rows(db.connection(), "outlet-1")
+                .unwrap()
+                .is_empty(),
+            "nothing is shown to a human while the row is still being retried"
+        );
+    }
+
+    // The pump that spends the last of the budget.
+    let final_report = worker.pump_outbox(&mut db, 10).expect("final pump");
+    assert_eq!(final_report.gave_up.len(), 1, "the budget is spent");
+    assert_eq!(final_report.gave_up[0].outbox_id, "outbox-1");
+    assert_eq!(final_report.gave_up[0].last_status, Some(422));
+    assert_eq!(
+        final_report.gave_up[0].last_code.as_deref(),
+        Some("missing_reference"),
+        "the machine-readable reason must survive to the report"
+    );
+
+    // The durable half: a row a human can be shown after a restart.
+    let blocked = repo::list_blocked_outbox_rows(db.connection(), "outlet-1").unwrap();
+    assert_eq!(blocked.len(), 1);
+    assert_eq!(blocked[0].outbox_id, "outbox-1");
+    assert_eq!(blocked[0].aggregate_type, "order");
+    assert_eq!(blocked[0].aggregate_id, "order-1");
+    assert_eq!(blocked[0].attempts, MAX_OUTBOX_REPLAY_ATTEMPTS);
+    assert_eq!(blocked[0].last_status, Some(422));
+    assert_eq!(
+        blocked[0].last_code.as_deref(),
+        Some("missing_reference"),
+        "M6 C7 is closed on THIS column: a criterion resting on prose changes \
+         truth value when someone edits a message string"
+    );
+    assert!(
+        blocked[0].blocked_at.is_some(),
+        "blocked_at is what makes the row something to show a human"
+    );
+
+    // And the drain stops paying for it: the next pump skips the row rather
+    // than spending another request on an answer it has had five times.
+    let after = worker.pump_outbox(&mut db, 10).expect("pump after giving up");
+    handle.join().unwrap();
+    assert_eq!(after.already_blocked, vec!["outbox-1".to_string()]);
+    assert!(after.gave_up.is_empty(), "giving up is reported once, not every pump");
+
+    // Never deleted. The row and its order are still there to be repaired.
+    let pending = repo::list_unpublished_outbox(db.connection(), 10).unwrap();
+    assert_eq!(pending.len(), 1);
+    assert!(db.get_order("order-1").unwrap().is_some());
+}
+
+/// A TRANSIENT failure must never spend the budget — abandoning good rows
+/// because the cloud was down for a day is data loss dressed as resilience
+/// (ADR-018 0.5.8) — but it must still COUNT, or a row failing for a week is
+/// invisible, which is the "looks healthy while nothing leaves the till"
+/// state M5 ended in.
+#[test]
+fn a_transient_failure_counts_forever_and_blocks_never() {
+    let server = Server::http("127.0.0.1:0").expect("start test server");
+    let addr = server.server_addr();
+    let base_url = format!("http://{addr}");
+    let handle = std::thread::spawn(move || {
+        if let Some(req) = recv_before_deadline(&server) {
+            let _ = req.respond(Response::from_string("{}").with_status_code(200));
+        }
+        for _ in 0..MAX_OUTBOX_REPLAY_ATTEMPTS + 3 {
+            if let Some(req) = recv_before_deadline(&server) {
+                let _ = req.respond(
+                    Response::from_string("{\"code\":\"internal_error\"}").with_status_code(503),
+                );
+            }
+        }
+    });
+
+    let mut db = Db::open_in_memory_for_tests().expect("open db");
+    seed_outlet_and_device(&db, "outlet-1", "device-1");
+    seed_order_with_outbox(&mut db, "order-1", "outbox-1");
+
+    let worker = SyncWorker::new(worker_config(base_url));
+    for _ in 0..MAX_OUTBOX_REPLAY_ATTEMPTS + 2 {
+        let report = worker.pump_outbox(&mut db, 10).expect("pump");
+        assert!(report.gave_up.is_empty(), "a 5xx is the cloud being unwell, not this row");
+        assert_eq!(report.stopped, Some(StopReason::Rejected { status: 503 }));
+    }
+    handle.join().unwrap();
+
+    assert!(
+        repo::list_blocked_outbox_rows(db.connection(), "outlet-1")
+            .unwrap()
+            .is_empty(),
+        "a transient failure must never end in blocked_at, however often it repeats"
+    );
+
+    // Counted, though — and surfaced while still being retried, which is the
+    // difference between telling someone and giving up on their data.
+    let failing = repo::list_persistently_failing_outbox_rows(
+        db.connection(),
+        "outlet-1",
+        OUTBOX_ATTENTION_ATTEMPTS,
+    )
+    .unwrap();
+    assert_eq!(failing.len(), 1, "a row failing this long must be visible");
+    assert!(failing[0].attempts >= OUTBOX_ATTENTION_ATTEMPTS);
+    assert_eq!(failing[0].last_status, Some(503));
+    assert!(failing[0].blocked_at.is_none(), "surfaced, NOT abandoned");
+}
+
+/// A row that failed and is later accepted must leave no alarm behind: a
+/// surface full of resolved alarms stops being read, which is the outcome a
+/// table was chosen over a log line to avoid.
+#[test]
+fn a_row_that_later_succeeds_clears_its_failure_record() {
+    let server = Server::http("127.0.0.1:0").expect("start test server");
+    let addr = server.server_addr();
+    let base_url = format!("http://{addr}");
+    let handle = std::thread::spawn(move || {
+        if let Some(req) = recv_before_deadline(&server) {
+            let _ = req.respond(Response::from_string("{}").with_status_code(200));
+        }
+        if let Some(req) = recv_before_deadline(&server) {
+            let _ = req.respond(
+                Response::from_string("{\"code\":\"missing_reference\"}").with_status_code(422),
+            );
+        }
+        if let Some(req) = recv_before_deadline(&server) {
+            let _ = req.respond(Response::from_string("{}").with_status_code(201));
+        }
+    });
+
+    let mut db = Db::open_in_memory_for_tests().expect("open db");
+    seed_outlet_and_device(&db, "outlet-1", "device-1");
+    seed_order_with_outbox(&mut db, "order-1", "outbox-1");
+
+    let worker = SyncWorker::new(worker_config(base_url));
+
+    let first = worker.pump_outbox(&mut db, 10).expect("first pump");
+    assert_eq!(first.blocked_aggregates.len(), 1);
+    let failing =
+        repo::list_persistently_failing_outbox_rows(db.connection(), "outlet-1", 1).unwrap();
+    assert_eq!(failing.len(), 1, "the attempt is recorded");
+
+    let second = worker.pump_outbox(&mut db, 10).expect("second pump");
+    handle.join().unwrap();
+    assert_eq!(second.published, vec!["outbox-1".to_string()]);
+
+    let failing =
+        repo::list_persistently_failing_outbox_rows(db.connection(), "outlet-1", 1).unwrap();
+    assert!(failing.is_empty(), "the record goes when the row lands");
+    assert!(repo::list_blocked_outbox_rows(db.connection(), "outlet-1")
+        .unwrap()
+        .is_empty());
 }

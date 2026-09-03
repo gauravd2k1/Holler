@@ -1616,6 +1616,41 @@ pub struct SyncReplayBlock {
     pub blocked_at: Option<String>,
 }
 
+/// A general-outbox row this outlet could not send (`sync_outbox_block`,
+/// contracts 0.6.4, ADR-023) — the durable half of the general outbox's retry
+/// bound, and the sibling of [`SyncReplayBlock`] one stream over.
+///
+/// Keyed on the outbox row id rather than an ordinal, because a general
+/// outbox row has no per-stream counter mark to key on. That difference is
+/// the entire reason this is a separate table rather than a widened
+/// `sync_replay_block`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncOutboxBlock {
+    pub outlet_id: String,
+    pub outbox_id: String,
+    /// Denormalised on purpose: M6 A2 blocks per AGGREGATE, so this is what
+    /// an operator has to be shown, and a human chasing an abandoned row must
+    /// not depend on the outbox row still being joinable to explain it.
+    pub aggregate_type: String,
+    pub aggregate_id: String,
+    pub attempts: i64,
+    /// The cloud's last word: an HTTP status, or `None` when the row never
+    /// got as far as the wire.
+    pub last_status: Option<i64>,
+    /// The MACHINE-READABLE code from the cloud's error envelope
+    /// (`missing_reference` and the rest). This — not `last_error` — is what
+    /// M6 C7's "a reason the edge records" is closed on: prose changes
+    /// whenever someone edits a message string.
+    pub last_code: Option<String>,
+    /// Human-facing prose. Never the only record of why.
+    pub last_error: String,
+    pub first_attempt_at: String,
+    pub last_attempt_at: String,
+    /// `None` while the row is still inside its retry budget. `Some` once the
+    /// budget is spent and the drain has stopped retrying it.
+    pub blocked_at: Option<String>,
+}
+
 // ---------------------------------- Milestone 5: procurement (T2, ADR-019) --
 // `goods_receipt_note`, `purchase_return` and `stock_transfer_out` are
 // EDGE-AUTHORITATIVE (edge->cloud); `grn_line`, `purchase_return_line` and
