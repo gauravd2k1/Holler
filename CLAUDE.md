@@ -174,6 +174,23 @@ RED-THEN-GREEN.** That drift is **the stimulus, not the defect**. Seeding the
 cloud makes the 500 disappear, makes the drain look healthy, and **ships both
 defects looking like a fix.**
 
+**THE A1→A3 SEQUENCING INVARIANT: at no commit boundary may an order become
+droppable with no operator trace.** A1 maps `23503` to **422 `missing_reference`**,
+and `is_permanent_rejection` treats every 400..=499 as permanent — so A1 alone
+would make an FK-violating order **die**, with nothing surfacing a
+permanently-rejected general-outbox row to a human until A3 adds the budget and
+the surfacing. So **A1 lands alone and HOLDS the row**: it adds `422` to the edge's
+non-permanent set beside `401/403/404/408/429`, with a test asserting the row is
+**held, not rejected**. **A3 removes the carve-out and that test**, asserting
+**permanent-and-surfaced** instead. **The two tests are mutually exclusive, so A3
+cannot go green while the carve-out survives** — forced removal, not remembered
+removal. Interim states, none dropping an order: today loud wedge → after A1 held
+and still wedging → after A2 skipped and retained → after A3 rejected, budget
+charged, surfaced. **After A2 the row is retained but NOT visible — A2's commit
+message must not claim visibility.** **M6 C7 closes at the end of A3, not A1**: its
+falsifier requires "reason stored, row surfaced", and no throwaway persistence is
+written in A1 to close it early.
+
 **Phase B — `apps/admin` (~1.5–2 weeks).** A new Vite + React + TypeScript +
 TanStack application; the directory is empty and has never existed. Menu and
 pricing, suppliers and pack sizes, purchase orders, staff and permissions,

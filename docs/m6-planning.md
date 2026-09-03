@@ -141,6 +141,51 @@ RED-THEN-GREEN.** That drift is **the stimulus, not the defect**. Seeding the
 cloud makes the 500 disappear, makes the drain look healthy, and **ships both
 defects looking like a fix**. This sentence goes in the retro verbatim.
 
+#### The A1→A3 sequencing invariant — DECIDED 2026-09-03
+
+**At no commit boundary may an order become droppable with no operator trace.**
+
+A1 maps `23503` to **422 `missing_reference`**. The edge's
+`is_permanent_rejection` (`edge/sync/src/ranged.rs`) treats every 400..=499 as
+permanent, so on its own that change makes an FK-violating order **die** — and
+nothing surfaces a permanently-rejected general-outbox row to a human today
+(`sync_replay_block` covers the ranged and procurement streams; the general
+outbox has no per-entry budget at all). A3 is what adds the budget, the ceiling
+and the surfacing. Between the two commits the order would be dropped silently,
+which is a **worse** failure mode than today's loud wedge.
+
+Two ways to satisfy the invariant were weighed. Collapsing A1+A2+A3 into one push
+satisfies it only by **un-splitting evidence we deliberately split**, and it means
+a slip in A3 stops A1 landing at all. **Rejected.** The decision is the additive
+one:
+
+- **A1 lands alone and HOLDS the row.** A1 adds `422` to the edge's
+  non-permanent set alongside `401/403/404/408/429`, with a test asserting the
+  row is **HELD, not rejected**.
+- **A3 removes the carve-out and that test**, and its own test asserts the row is
+  **permanent-and-surfaced**.
+- **The two tests are mutually exclusive by construction**, so **A3 cannot go
+  green while the carve-out survives**. Forced removal, not remembered removal —
+  the same move as every structural guard in this repository.
+
+Interim states, all acceptable, none dropping an order:
+
+| After | Behaviour |
+|---|---|
+| today | 500, loud wedge |
+| **A1** | 4xx on the wire, row **held**, still wedging |
+| **A2** | row **skipped and retained** — head-of-line blocking gone |
+| **A3** | row **rejected, budget charged, surfaced** to a human |
+
+**Caveat binding on A2's commit message:** after A2 the held row is retained but
+**not visible**. Retained is not dropped, so the invariant holds — but A2 must not
+claim visibility. That is A3's, and **M6 C7 closes at the end of A3**, not A1:
+C7's falsifier requires "reason stored, row surfaced", and both are A3 work. A1
+puts the 4xx and the machine-readable code on the wire and leaves C7 **OPEN**.
+
+No throwaway persistence is written in A1 to close C7 early. A second, weaker
+record replaced one gap later is the exact thing A4 is told not to build.
+
 ### Phase B — `apps/admin`
 
 New Vite + React + TypeScript + TanStack application. Menu and pricing, suppliers
