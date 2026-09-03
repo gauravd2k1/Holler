@@ -82,6 +82,26 @@ pub enum StopReason {
     MalformedPayload { outbox_id: String, reason: String },
 }
 
+/// One aggregate the cloud refused, named so a caller can hold back that
+/// aggregate's later events and — from A3 — show it to a human.
+///
+/// The unit is the AGGREGATE, not the row: ordering is a per-aggregate
+/// guarantee (see [`StopReason`]), so an aggregate is the smallest thing that
+/// can be blocked without either breaking that guarantee or stranding
+/// unrelated rows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockedAggregate {
+    pub aggregate_type: String,
+    pub aggregate_id: String,
+    /// The outbox row that was refused. Its later siblings are reported in
+    /// [`PumpReport::blocked_skipped`], not here.
+    pub outbox_id: String,
+    /// Present when the cloud answered; absent when the row could not be
+    /// built or its aggregate row was missing locally.
+    pub last_status: Option<u16>,
+    pub reason: String,
+}
+
 #[derive(Debug, Default)]
 pub struct PumpReport {
     /// Outbox row ids marked published this call, in the order they were sent.
@@ -94,7 +114,16 @@ pub struct PumpReport {
     /// EDGE_TO_CLOUD authority (§50.1) — a data-integrity bug elsewhere, but
     /// handled by refusing to send rather than panicking or crashing sync.
     pub authority_violations: Vec<String>,
-    /// Set if draining stopped before exhausting the pending backlog.
+    /// Aggregates refused by the cloud (or unbuildable locally) this call.
+    /// The drain continues past them; their own later events do not.
+    pub blocked_aggregates: Vec<BlockedAggregate>,
+    /// Outbox rows left unsent because an EARLIER event for the same
+    /// aggregate is blocked. Held to preserve per-aggregate ordering, which
+    /// is the guarantee the old global stop was really protecting.
+    pub blocked_skipped: Vec<String>,
+    /// Set if draining stopped before exhausting the pending backlog —
+    /// reserved for conditions where the CLOUD is the problem and every row
+    /// would get the same answer.
     pub stopped: Option<StopReason>,
 }
 
@@ -240,24 +269,50 @@ impl SyncWorker {
         let pending = repo::list_unpublished_outbox(db.connection(), limit)?;
         repo::init_sync_state(db.connection(), &self.config.outlet_id)?;
 
+        // Aggregates refused during THIS drain. Ordering is a per-aggregate
+        // guarantee, not a global one (see `StopReason`), so a refusal blocks
+        // the aggregate it belongs to and nothing else. Before A2 the drain
+        // returned on the first refusal: one bad row held back every row
+        // behind it, and the M5 edge database ended with 6 rows carrying 10
+        // attempts and 114 carrying zero -- never sent, never surfaced, on a
+        // till that reported itself healthy.
+        let mut blocked: std::collections::HashSet<(String, String)> =
+            std::collections::HashSet::new();
+
         for row in pending {
+            let aggregate_key = (row.aggregate_type.clone(), row.aggregate_id.clone());
+            if blocked.contains(&aggregate_key) {
+                // A later event for an already-blocked aggregate. Sending it
+                // would let the cloud observe this aggregate's events out of
+                // order, which is the one thing skipping ahead may not cost.
+                report.blocked_skipped.push(row.id.clone());
+                continue;
+            }
+
             let event_json: serde_json::Value = match serde_json::from_str(&row.payload_json) {
                 Ok(v) => v,
                 Err(e) => {
+                    let reason = format!("invalid JSON: {e}");
                     self.record_attempt_stop(
                         db,
                         &row.id,
                         false,
                         StopReason::MalformedPayload {
                             outbox_id: row.id.clone(),
-                            reason: format!("invalid JSON: {e}"),
+                            reason: reason.clone(),
                         },
                     )?;
-                    report.stopped = Some(StopReason::MalformedPayload {
+                    // The row's own payload is wrong. No other aggregate is
+                    // implicated, and no retry will change it.
+                    blocked.insert(aggregate_key.clone());
+                    report.blocked_aggregates.push(BlockedAggregate {
+                        aggregate_type: row.aggregate_type.clone(),
+                        aggregate_id: row.aggregate_id.clone(),
                         outbox_id: row.id.clone(),
-                        reason: format!("invalid JSON: {e}"),
+                        last_status: None,
+                        reason,
                     });
-                    return Ok(report);
+                    continue;
                 }
             };
 
@@ -295,8 +350,15 @@ impl SyncWorker {
                             reason: reason.clone(),
                         },
                     )?;
-                    report.stopped = Some(StopReason::MalformedPayload { outbox_id, reason });
-                    return Ok(report);
+                    blocked.insert(aggregate_key.clone());
+                    report.blocked_aggregates.push(BlockedAggregate {
+                        aggregate_type: row.aggregate_type.clone(),
+                        aggregate_id: row.aggregate_id.clone(),
+                        outbox_id,
+                        last_status: None,
+                        reason,
+                    });
+                    continue;
                 }
                 Err(other) => return Err(other),
             };
@@ -314,11 +376,15 @@ impl SyncWorker {
                             reason: reason.clone(),
                         },
                     )?;
-                    report.stopped = Some(StopReason::MalformedPayload {
+                    blocked.insert(aggregate_key.clone());
+                    report.blocked_aggregates.push(BlockedAggregate {
+                        aggregate_type: row.aggregate_type.clone(),
+                        aggregate_id: row.aggregate_id.clone(),
                         outbox_id: row.id.clone(),
+                        last_status: None,
                         reason,
                     });
-                    return Ok(report);
+                    continue;
                 }
                 Err(e) => return Err(e),
             };
@@ -367,12 +433,34 @@ impl SyncWorker {
                     )?;
                     report.published.push(row.id.clone());
                 }
-                // A mis-enrolled node and a rejected envelope are handled
-                // alike here: both mean the cloud was reached and this row
-                // was not accepted, and the outbox keeps no per-row budget
-                // that the distinction would change.
-                Ok(SendOutcome::Rejected { status } | SendOutcome::NotEnrolled { status }) => {
+                // A mis-enrolled node is NOT this row's fault: every row
+                // would get the same answer, so the drain stops rather than
+                // marching the whole backlog past a credential problem.
+                Ok(SendOutcome::NotEnrolled { status }) => {
                     self.record_attempt_stop(db, &row.id, true, StopReason::Rejected { status })?;
+                    report.stopped = Some(StopReason::Rejected { status });
+                    return Ok(report);
+                }
+                Ok(SendOutcome::Rejected { status }) => {
+                    self.record_attempt_stop(db, &row.id, true, StopReason::Rejected { status })?;
+                    if crate::ranged::is_permanent_rejection(status) {
+                        // The cloud says THIS row is wrong and will say so
+                        // again. Block its aggregate and keep draining the
+                        // others -- the same classifier the ranged and
+                        // procurement pumps use, so the three cannot drift.
+                        blocked.insert(aggregate_key.clone());
+                        report.blocked_aggregates.push(BlockedAggregate {
+                            aggregate_type: row.aggregate_type.clone(),
+                            aggregate_id: row.aggregate_id.clone(),
+                            outbox_id: row.id.clone(),
+                            last_status: Some(status),
+                            reason: format!("cloud rejected the envelope with status {status}"),
+                        });
+                        continue;
+                    }
+                    // 5xx, 401/403/404, 408, 429: the cloud is unwell or this
+                    // node's credential is. Continuing would burn one request
+                    // per pending row for the same answer.
                     report.stopped = Some(StopReason::Rejected { status });
                     return Ok(report);
                 }

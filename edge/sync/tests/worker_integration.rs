@@ -560,7 +560,15 @@ fn a_422_missing_reference_holds_the_row_rather_than_dropping_it() {
 
     let first = worker.pump_outbox(&mut db, 10).expect("first pump");
     assert!(first.published.is_empty());
-    assert_eq!(first.stopped, Some(StopReason::Rejected { status: 422 }));
+    // A2 changed the SHAPE of this outcome and not its substance. Before A2 a
+    // refusal stopped the whole drain, so `stopped` carried it; after A2 a
+    // permanent refusal blocks that aggregate and the drain continues, so it
+    // is reported per-aggregate instead. What this test exists to pin -- the
+    // row is HELD, never dropped -- is asserted below and is unchanged.
+    assert_eq!(first.stopped, None);
+    assert_eq!(first.blocked_aggregates.len(), 1);
+    assert_eq!(first.blocked_aggregates[0].outbox_id, "outbox-1");
+    assert_eq!(first.blocked_aggregates[0].last_status, Some(422));
 
     // Held: still pending after the refusal, attempt counted.
     let pending = repo::list_unpublished_outbox(db.connection(), 10).unwrap();
@@ -573,7 +581,7 @@ fn a_422_missing_reference_holds_the_row_rather_than_dropping_it() {
     // until A3 lands the wasteful option is the correct one.
     let second = worker.pump_outbox(&mut db, 10).expect("second pump");
     handle.join().unwrap();
-    assert_eq!(second.stopped, Some(StopReason::Rejected { status: 422 }));
+    assert_eq!(second.blocked_aggregates.len(), 1, "refused again, still not dropped");
 
     let pending = repo::list_unpublished_outbox(db.connection(), 10).unwrap();
     assert_eq!(pending.len(), 1, "STILL held on the second refusal");
@@ -582,4 +590,157 @@ fn a_422_missing_reference_holds_the_row_rather_than_dropping_it() {
     // And the order itself is untouched: a refused envelope is not a reason
     // to have lost what it described.
     assert!(db.get_order("order-1").unwrap().is_some());
+}
+
+/// M6 A2 — a row the cloud refuses must block ITS OWN aggregate and nothing
+/// else.
+///
+/// THE DEFECT. `pump_outbox` drains oldest-first and returns on the first
+/// refusal, so one unreplayable row strands every row behind it regardless of
+/// what aggregate they belong to. Read out of the M5 edge database on
+/// 2026-09-03: 120 pending rows, of which 6 `order/ItemAdded` rows carried
+/// `attempt_count = 10` and the other 114 — kots, stock counts, an invoice,
+/// other orders — carried **zero**. They had never been attempted at all.
+///
+/// `StopReason`'s own doc comment (worker.rs:66-70) states the requirement
+/// this must satisfy: events for **the same aggregate** must reach the cloud
+/// in order. It says nothing about ordering ACROSS aggregates, and there is
+/// nothing to say — a KOT for one order and a stock count for another are not
+/// ordered with respect to each other by anything.
+///
+/// So the fix is not "keep going regardless": a global stop is still correct
+/// when the CLOUD is the problem (offline, 5xx, 401/403/404, 408, 429), since
+/// every row would get the same answer and continuing just burns requests.
+/// It is wrong when THIS ROW is the problem, which is exactly what
+/// `is_permanent_rejection` already decides for the ranged and procurement
+/// streams.
+///
+/// Watched failing first: on the pre-fix binary the second aggregate is never
+/// attempted, and this test's `published` assertion is empty.
+#[test]
+fn a_refused_row_blocks_its_own_aggregate_and_not_its_neighbours() {
+    let server = Server::http("127.0.0.1:0").expect("start test server");
+    let addr = server.server_addr();
+    let base_url = format!("http://{addr}");
+    let handle = std::thread::spawn(move || {
+        // 1: verify_enrollment. 2: order-1 refused, permanently. 3: order-2
+        // accepted — the request the pre-fix drain never makes.
+        if let Some(req) = recv_before_deadline(&server) {
+            let _ = req.respond(Response::from_string("{}").with_status_code(200));
+        }
+        if let Some(req) = recv_before_deadline(&server) {
+            let _ = req.respond(
+                Response::from_string(
+                    "{\"code\":\"missing_reference\",\"message\":\"menu_item_id does not exist\"}",
+                )
+                .with_status_code(422),
+            );
+        }
+        if let Some(req) = recv_before_deadline(&server) {
+            let _ = req.respond(Response::from_string("{}").with_status_code(201));
+        }
+    });
+
+    let mut db = Db::open_in_memory_for_tests().expect("open db");
+    seed_outlet_and_device(&db, "outlet-1", "device-1");
+    // Two different aggregates. order-1 is older, so it is drained first and
+    // is the one the cloud refuses.
+    seed_order_with_outbox(&mut db, "order-1", "outbox-1");
+    seed_order_with_outbox(&mut db, "order-2", "outbox-2");
+
+    let worker = SyncWorker::new(worker_config(base_url));
+    let report = worker.pump_outbox(&mut db, 10).expect("pump");
+    handle.join().unwrap();
+
+    assert_eq!(
+        report.published,
+        vec!["outbox-2".to_string()],
+        "order-2 has nothing wrong with it and must reach the cloud even though \
+         order-1 was refused — 114 rows sat unattempted behind one bad row in \
+         the M5 database for exactly this reason"
+    );
+
+    // order-1 is held, not dropped, and is named as blocked so A3 has
+    // something to surface.
+    assert_eq!(
+        report.blocked_aggregates.len(),
+        1,
+        "the refusal must be attributed to one aggregate, not to the stream"
+    );
+    assert_eq!(report.blocked_aggregates[0].aggregate_type, "order");
+    assert_eq!(report.blocked_aggregates[0].aggregate_id, "order-1");
+    assert_eq!(report.blocked_aggregates[0].last_status, Some(422));
+
+    let pending = repo::list_unpublished_outbox(db.connection(), 10).unwrap();
+    assert_eq!(pending.len(), 1, "only the refused row stays pending");
+    assert_eq!(pending[0].id, "outbox-1");
+    assert_eq!(pending[0].attempt_count, 1);
+}
+
+/// The other half of the same decision: a SECOND event for an aggregate that
+/// is already blocked must NOT be sent, or the cloud sees that aggregate's
+/// events out of order — which is the guarantee the global stop was
+/// protecting and the one thing A2 may not trade away.
+#[test]
+fn a_blocked_aggregate_holds_back_its_own_later_events() {
+    let server = Server::http("127.0.0.1:0").expect("start test server");
+    let addr = server.server_addr();
+    let base_url = format!("http://{addr}");
+    let handle = std::thread::spawn(move || {
+        if let Some(req) = recv_before_deadline(&server) {
+            let _ = req.respond(Response::from_string("{}").with_status_code(200));
+        }
+        // Only ONE refusal is scripted. If the drain sends order-1's second
+        // event anyway, the responder is out of script and the test fails on
+        // the assertions below rather than hanging.
+        if let Some(req) = recv_before_deadline(&server) {
+            let _ = req.respond(
+                Response::from_string("{\"code\":\"missing_reference\"}").with_status_code(422),
+            );
+        }
+        if let Some(req) = recv_before_deadline(&server) {
+            let _ = req.respond(Response::from_string("{}").with_status_code(201));
+        }
+    });
+
+    let mut db = Db::open_in_memory_for_tests().expect("open db");
+    seed_outlet_and_device(&db, "outlet-1", "device-1");
+    seed_order_with_outbox(&mut db, "order-1", "outbox-1");
+    seed_order_with_outbox(&mut db, "order-2", "outbox-2");
+    // A later event for the ALREADY-blocked order-1.
+    db.connection()
+        .execute(
+            "INSERT INTO local_outbox (id, aggregate_type, aggregate_id, event_type, payload_json, created_at)
+             VALUES ('outbox-3', 'order', 'order-1', 'OrderConfirmed', ?1, '2026-08-07T10:05:00Z')",
+            [serde_json::json!({
+                "event_id": "evt-3",
+                "event_type": "OrderConfirmed",
+                "occurred_at": "2026-08-07T10:05:00Z",
+                "outlet_id": "outlet-1",
+                "schema_version": 1,
+                "data": { "order": { "holler_order_id": "order-1", "total_paise": 12550i64 } }
+            })
+            .to_string()],
+        )
+        .expect("seed later event for the blocked aggregate");
+
+    let worker = SyncWorker::new(worker_config(base_url));
+    let report = worker.pump_outbox(&mut db, 10).expect("pump");
+    handle.join().unwrap();
+
+    assert_eq!(
+        report.published,
+        vec!["outbox-2".to_string()],
+        "a different aggregate still drains"
+    );
+    assert!(
+        report.blocked_skipped.contains(&"outbox-3".to_string()),
+        "order-1's later event must be held behind its blocked predecessor, \
+         never sent ahead of it: {:?}",
+        report.blocked_skipped
+    );
+
+    let pending = repo::list_unpublished_outbox(db.connection(), 10).unwrap();
+    let ids: Vec<String> = pending.iter().map(|r| r.id.clone()).collect();
+    assert_eq!(ids, vec!["outbox-1".to_string(), "outbox-3".to_string()]);
 }

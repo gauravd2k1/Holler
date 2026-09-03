@@ -394,6 +394,24 @@ impl AppState {
                 }
             }
 
+            // A2: a permanently-refused row now blocks its own aggregate and
+            // lets the rest of the outbox drain. Naming the aggregate here is
+            // a LOG LINE, not an operator surface -- stderr may not even be
+            // attached in a windowed release build (A6), and nothing on the
+            // POS shows this. Making a blocked row visible to a human is A3.
+            for blocked in &report.blocked_aggregates {
+                eprintln!(
+                    "holler-pos: {phase} outbox blocked {}/{} (outbox row {}): {}",
+                    blocked.aggregate_type, blocked.aggregate_id, blocked.outbox_id, blocked.reason
+                );
+            }
+            if !report.blocked_skipped.is_empty() {
+                eprintln!(
+                    "holler-pos: {phase} {} row(s) held behind a blocked aggregate to keep its events in order",
+                    report.blocked_skipped.len()
+                );
+            }
+
             match report.stopped {
                 // No route to the cloud: the shop-floor case. Stop now. The
                 // rows are safe in the outbox and nothing is lost by waiting.
