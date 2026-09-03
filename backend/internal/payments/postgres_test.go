@@ -137,9 +137,9 @@ func newFixture(t *testing.T, pool postgres.Pool) fixture {
 
 	complianceSvc := compliance.NewService(compliance.NewRepository(pool))
 	configCtx := auth.WithPrincipal(ctx, auth.AuthenticatedPrincipal{
-		UserID:      "principal-user",
-		TenantID:    org.ID,
-		OutletID:    out.ID,
+		UserID:   "principal-user",
+		TenantID: org.ID,
+		OutletID: out.ID,
 		// billing.manage, not outlet.manage: M5 T7a landed the check the
 		// v0.5.0 approval was conditioned on, so compliance config writes now
 		// gate on the permission that names what they do. This fixture is a

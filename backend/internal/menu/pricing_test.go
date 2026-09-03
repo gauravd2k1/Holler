@@ -9,11 +9,11 @@ import (
 
 func TestComposePrice(t *testing.T) {
 	cases := []struct {
-		name             string
-		basePricePaise   int64
-		variantDelta     int64
-		modifierDeltas   []int64
-		wantTotalPaise   int64
+		name           string
+		basePricePaise int64
+		variantDelta   int64
+		modifierDeltas []int64
+		wantTotalPaise int64
 	}{
 		{"base only", 25000, 0, nil, 25000},
 		{"base plus variant", 25000, 5000, nil, 30000},
