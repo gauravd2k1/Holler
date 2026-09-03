@@ -582,6 +582,12 @@ fn a_422_missing_reference_holds_the_row_rather_than_dropping_it() {
     let second = worker.pump_outbox(&mut db, 10).expect("second pump");
     handle.join().unwrap();
     assert_eq!(second.blocked_aggregates.len(), 1, "refused again, still not dropped");
+    // The status on the SECOND refusal, kept because the pre-A2 version of
+    // this test asserted it and dropping it would let a second refusal of a
+    // different class pass unnoticed. `stopped` cannot carry it any more, so
+    // it is asserted where A2 moved it to.
+    assert_eq!(second.blocked_aggregates[0].last_status, Some(422));
+    assert_eq!(second.blocked_aggregates[0].outbox_id, "outbox-1");
 
     let pending = repo::list_unpublished_outbox(db.connection(), 10).unwrap();
     assert_eq!(pending.len(), 1, "STILL held on the second refusal");
