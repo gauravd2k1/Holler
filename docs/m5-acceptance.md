@@ -357,7 +357,11 @@ after, and the copy carried the same digest. ADR-011's rule that the edge databa
 is never copied anywhere unencrypted is kept — what was copied was the sealed
 file.
 
-Recorded by the operator's reading, 2026-09-03, during M6 A1.
+Recorded by the operator's reading, 2026-09-03, taken during M6 A1 and
+alongside `99875cc` ("fix(m6-a1): report a foreign-key violation as 422, not
+500"), which the 120-row composition above is the evidence for. The reading
+itself changed no file in the repository — it is a query against two stores,
+and this section is its only durable record.
 
 ---
 
