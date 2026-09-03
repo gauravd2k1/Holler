@@ -254,7 +254,7 @@ func (r *PostgresRepository) InsertPayment(ctx context.Context, tenantID string,
 		tenantID,
 	)
 	if err != nil {
-		return Payment{}, false, fmt.Errorf("payments: inserting payment: %w", err)
+		return Payment{}, false, storage.Wrap("payments: inserting payment", err)
 	}
 	inserted := tag.RowsAffected() > 0
 	if inserted {
@@ -282,7 +282,7 @@ func (r *PostgresRepository) insertAllocation(ctx context.Context, paymentID str
 		a.ID, paymentID, a.InvoiceID, a.AmountPaise,
 	)
 	if err != nil {
-		return fmt.Errorf("payments: inserting payment_allocation: %w", err)
+		return storage.Wrap("payments: inserting payment_allocation", err)
 	}
 	return nil
 }

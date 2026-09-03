@@ -71,7 +71,7 @@ answer 500 on exactly the condition A1 fixed for orders.
 | `POST /orders/{id}/kots` | `kitchen.IngestKot` (`service.go:347`), NOT `InsertKot` | **`order_id`** — a KOT for an order the cloud never accepted | **FIXED in A1b — and the mechanism recorded here was WRONG.** `IngestKot` pre-checks with `repo.OrderOutlet`, which returns `ErrNotFound`, so the reply was **404** and the FK was unreachable outside a race. 404 is worse than the assumed 500: the edge classifies it TRANSIENT, so the ticket retried forever AND took a global stop with it, which A2's per-aggregate blocking does not catch. Now 422 `missing_reference`, observed red-then-green |
 | `POST /kots/{kotId}/status` | `kitchen.UpdateKotStatus` (`repository.go:418`) | `kot_id` | **UNCLASSIFIED** |
 | `POST /invoices` | `payments.InsertInvoice` (`repository.go:73`), `insertInvoiceLine` (`:142`) | `outlet_id`, `order_id`, `invoice_series_id`, `menu_item_id` on lines | unique-only → **UNCLASSIFIED for 23503** |
-| `POST /payments` | `payments.InsertPayment` (`repository.go:270`), `insertAllocation` (`:298`) | **`outlet_id`, `order_id`, `cash_shift_id`, `reverses_payment_id`**; allocation's `invoice_id` | **UNCLASSIFIED** |
+| `POST /payments` | `payments.InsertPayment` (`repository.go:270`), `insertAllocation` (`:298`) | **`outlet_id`, `order_id`, `cash_shift_id`, `reverses_payment_id`**; allocation's `invoice_id` | **FIXED in A1b — mechanism as recorded.** Unlike the KOT route, `IngestPayment` pre-checks nothing, so 23503 reached the driver and returned 500. Observed red (`payment_order_id_fkey (SQLSTATE 23503)`, unmapped) then green as 422 `missing_reference` |
 | `POST /cash-shifts`, `/cash-shifts/{id}/close` | `payments.InsertCashShift`, `CloseCashShift`, `insertMovement` | `outlet_id`, `cash_shift_id`, `created_by_user_id` | **UNCLASSIFIED** |
 | `POST /inventory/ledger-entries` | `inventory.InsertLedgerEntry` (`repository.go:560`) | `inventory_item_id`, `outlet_id`, `source_stock_count_id` | unique-only → **UNCLASSIFIED for 23503** |
 | `POST /inventory/counts` | `inventory.InsertStockCount` (`repository.go:782`) | `outlet_id`, `inventory_item_id` on lines | **UNCLASSIFIED** |
@@ -132,8 +132,15 @@ to size the work, not to cite a specific line.
   `Classify` handles both. **The guard was watched failing**: reintroducing
   `const pgUniqueViolation = "23505"` and an `isUniqueViolation` in
   `tables/repository.go` produced two named violations and exit 1.
-- **The ingest routes in the table above are A1's remaining work**, in the order
-  their exposure warrants: kitchen and payments first.
+- ~~The ingest routes in the table above are A1's remaining work~~ — **kitchen and
+  payments are DONE as A1b**, each with its own red-then-green. The remaining ten
+  are filed in `docs/backlog.md` with a trigger, not carried here: a list of known
+  defects living only in a document nobody re-reads is how they float.
+- **Expect the A1b correction to repeat.** Two routes, two different failure modes:
+  the KOT route pre-checked its parent and answered **404** (worse than a 500,
+  because the edge treats 404 as transient), while the payment route pre-checked
+  nothing and answered **500**. The scan cannot tell those apart, so each remaining
+  row needs its service path read before its fix is written.
 - **Non-ingest write paths are NOT A1's scope.** `auth`, `outlet`, `tables`,
   `compliance` and most of `menu` are called by a human through a browser, where
   a 500 is a bad error message rather than a wedged outbox. They are worth
