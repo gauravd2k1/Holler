@@ -113,6 +113,9 @@ Until that is fixed, the working sequence is:
 
 ```
 # 1. backend only, bootstrap skipped
+#    -AdminOrigin defaults to http://localhost:5175 and sets
+#    HOLLER_CORS_ALLOWED_ORIGINS. WITHOUT IT apps/admin fails every request
+#    with "Failed to fetch" and neither log says why.
 .\scripts\dev-up.ps1 -SkipInfra -SkipSeed -NoKds -NoPos
 Get-NetTCPConnection -LocalPort 8080 -State Listen | Select-Object OwningProcess
 #    verify a NEW pid -- the port answering proves nothing
@@ -122,6 +125,11 @@ $env:HOLLER_DB_KEY_HEX = (Select-String -Path apps\pos\.env.dev -Pattern '^HOLLE
 $env:HOLLER_DB_KEY_HEX.Length          # MUST print 64
 .\scripts\dev-bootstrap.ps1 -SkipInfra -WithBilling
 #    [3b/4] must say "enrolling" or "rotating", never SKIPPED
+
+# 3a. the back office (optional; needs the CORS origin above)
+cd appsdmin; pnpm dev        # http://localhost:5175
+#     sign in as owner@holler.test / holler123 -- the CASHIER cannot manage
+#     the menu, and that is deliberate (§50.1: the till never authors one)
 
 # 3. the till -- ONE terminal, not two
 $env:HOLLER_SYNC_PUMP_INTERVAL_SECS = "10"

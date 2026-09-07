@@ -56,6 +56,11 @@ param(
     # about real device I/O -- see edge/printer/src/transport/file_sink.rs.
     [string]$PrinterFileSinkDir = "",
 
+    # Browser origin the API will serve cross-origin. Matches apps/admin's Vite
+    # port (5175, strictPort). Overridable for a second machine or a different
+    # port; comma-separate for more than one.
+    [string]$AdminOrigin = "http://localhost:5175",
+
     [switch]$NoBackend,
     [switch]$NoKds,
     [switch]$NoPos,
@@ -173,7 +178,15 @@ if ($NoBackend) {
     Write-Note "nothing in the M1-M4 offline acceptance path needs it"
 } else {
     Write-Step 3 "starting the backend API on :8080..."
-    $cmd = "`$env:DATABASE_URL='$DatabaseUrl'; `$env:TOKEN_SIGNING_KEY='$TokenSigningKey'; go run ./cmd/api"
+    # HOLLER_CORS_ALLOWED_ORIGINS: the admin console (apps/admin) is the first
+    # cross-origin BROWSER client this API has ever had -- the POS is a Tauri
+    # window and the KDS talks to the edge over the LAN, so neither sends an
+    # Origin header at all. Without this the console fails every request with
+    # "Failed to fetch" and nothing useful appears in either log.
+    #
+    # Exact origin, no wildcard, and the API has no default: an unset allowlist
+    # serves no browser rather than serving every browser.
+    $cmd = "`$env:DATABASE_URL='$DatabaseUrl'; `$env:TOKEN_SIGNING_KEY='$TokenSigningKey'; `$env:HOLLER_CORS_ALLOWED_ORIGINS='$AdminOrigin'; go run ./cmd/api"
     Start-ServiceWindow "holler-backend" (Join-Path $repo "backend") $cmd | Out-Null
 }
 

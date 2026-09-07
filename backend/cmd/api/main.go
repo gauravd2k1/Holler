@@ -181,6 +181,16 @@ func buildRouter(pool postgres.Pool, cfg config.Config) *chi.Mux {
 	syncConfig := newSyncConfigHandler(outletSvc, menuSvc, tablesSvc, kitchenSvc, complianceSvc, inventorySvc, procurementSvc, authSvc, deviceSvc)
 
 	router := httpx.NewRouter()
+
+	// CORS FIRST, BEFORE EVERY OTHER MIDDLEWARE AND EVERY ROUTE. A preflight
+	// carries no Authorization header, so anything that authenticates ahead of
+	// this would 401 the OPTIONS request -- and the browser reports that as an
+	// opaque CORS failure with no detail, which is exactly the "Failed to
+	// fetch" that has no cause in any log.
+	//
+	// Empty allowlist emits no headers and changes nothing for existing
+	// callers: the POS, the KDS and the edge sync client send no Origin at all.
+	router.Use(httpx.CORS(cfg.AllowedCORSOrigins))
 	router.Get("/health", health.Handler)
 
 	// POST /auth/login|refresh|logout are unauthenticated by definition; the

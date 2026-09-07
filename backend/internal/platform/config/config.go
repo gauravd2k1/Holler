@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -21,6 +22,18 @@ type Config struct {
 	// literal in cmd/api — always sourced from here, so a deployment can
 	// relocate the contracts checkout without a code change.
 	ContractsDir string
+
+	// AllowedCORSOrigins is the exact allowlist of browser origins this API
+	// serves cross-origin, from HOLLER_CORS_ALLOWED_ORIGINS (comma-separated).
+	//
+	// NO DEFAULT, AND EMPTY IS A REAL ANSWER: with nothing set the API emits no
+	// CORS headers at all and every cross-origin browser request fails. That is
+	// the correct failure for a misconfigured deployment. A convenience default
+	// of localhost:5175 was considered and rejected -- the same reasoning that
+	// removed the hardcoded default database key from dev-bootstrap.ps1: a
+	// default is consent by omission, and the one that ships is whichever
+	// nobody had to choose.
+	AllowedCORSOrigins []string
 }
 
 // Load reads configuration from the environment, applying defaults only for
@@ -28,9 +41,10 @@ type Config struct {
 // signing key is a startup error, never a generated fallback.
 func Load() (Config, error) {
 	cfg := Config{
-		Port:         envOr("PORT", "8080"),
-		DatabaseURL:  os.Getenv("DATABASE_URL"),
-		ContractsDir: envOr("CONTRACTS_DIR", "../packages/contracts/postgres"),
+		Port:               envOr("PORT", "8080"),
+		DatabaseURL:        os.Getenv("DATABASE_URL"),
+		ContractsDir:       envOr("CONTRACTS_DIR", "../packages/contracts/postgres"),
+		AllowedCORSOrigins: splitAndTrim(os.Getenv("HOLLER_CORS_ALLOWED_ORIGINS")),
 	}
 
 	if cfg.DatabaseURL == "" {
@@ -85,4 +99,22 @@ func IntEnvOr(key string, fallback int) (int, error) {
 		return 0, fmt.Errorf("config: %s is not an integer: %w", key, err)
 	}
 	return n, nil
+}
+
+// splitAndTrim turns "a, b ,c" into ["a","b","c"], dropping empties so a
+// trailing comma or a blank variable yields an EMPTY allowlist rather than one
+// containing "" -- an empty-string origin would never match a real Origin
+// header, but it would make the list look populated to anyone printing it.
+func splitAndTrim(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if trimmed := strings.TrimSpace(p); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
 }
