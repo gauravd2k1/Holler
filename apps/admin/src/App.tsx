@@ -49,7 +49,7 @@ export function App() {
     <main>
       <header>
         <span>
-          {principal.email} · outlet {principal.outlet_id}
+          {principal.full_name} · outlet {principal.outlet_id}
         </span>
         <button
           type="button"

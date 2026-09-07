@@ -1,4 +1,8 @@
 import { z } from "zod";
+import {
+  AuthenticatedPrincipalSchema,
+  type AuthenticatedPrincipal,
+} from "@holler/contracts";
 
 /**
  * The access token for this browser session.
@@ -13,19 +17,28 @@ import { z } from "zod";
  */
 let accessToken: string | null = null;
 
+/**
+ * THE PRINCIPAL SHAPE COMES FROM THE CONTRACT, NOT FROM THIS FILE.
+ *
+ * An earlier version of this module hand-wrote the principal object and got it
+ * wrong: it declared an `email` field the principal has never carried, and
+ * omitted `full_name`, `authenticated_offline` and `schema_version`. Sign-in
+ * then failed at the parse step with `principal.email Required` -- AFTER a
+ * successful login, which made it read like an auth fault when it was a
+ * contract fault entirely inside the client.
+ *
+ * `packages/contracts` is the source of truth and it already exported this
+ * schema. Re-describing a contract shape by hand is the same defect as a column
+ * nothing reads, pointed the other way: a shape described twice is a shape that
+ * disagrees with itself the moment one side moves.
+ */
 const SessionSchema = z.object({
   access_token: z.string(),
   refresh_token: z.string(),
-  principal: z.object({
-    user_id: z.string(),
-    tenant_id: z.string(),
-    outlet_id: z.string(),
-    email: z.string(),
-    permissions: z.array(z.string()),
-  }),
+  principal: AuthenticatedPrincipalSchema,
 });
 
-export type Principal = z.infer<typeof SessionSchema>["principal"];
+export type Principal = AuthenticatedPrincipal;
 
 let principal: Principal | null = null;
 

@@ -156,3 +156,41 @@ export const SyncEnvelopeSchema = z
     message: "direction violates the §50.1 authority rule for this aggregate_type",
   });
 export type SyncEnvelope = z.infer<typeof SyncEnvelopeSchema>;
+
+/**
+ * 0.7.0 (ADR-024) — the enumeration that makes an error `code` safe to branch
+ * on.
+ *
+ * Before this the error body was typed `{ code: string, message: string }` with
+ * no enumeration anywhere, while the edge branches on the value — so a rename
+ * on the cloud side was a silent behaviour change at the edge that no drift
+ * test could see. M6 A1 put `missing_reference` on the wire and the edge reads
+ * it; 0.7.0 adds two more routes that return codes.
+ *
+ * CONSUMERS MUST READ THIS SET RATHER THAN STRING LITERALS. An enum nothing
+ * consumes is a column nothing reads, pointed at a wire field.
+ */
+export const ErrorCodeSchema = z.enum([
+  "missing_reference",
+  "envelope_route_mismatch",
+  "po_exceeds_approval_limit",
+  "immutable_field",
+  "invalid_input",
+  "conflict",
+  "not_found",
+  "internal_error",
+]);
+export type ErrorCode = z.infer<typeof ErrorCodeSchema>;
+
+/**
+ * The error body every route returns.
+ *
+ * `message` is human-readable and NEVER machine-parsed: it carries no SQLSTATE,
+ * no constraint name and no SQL, and M6 A1 pinned that with an explicit leak
+ * test. Branch on `code`.
+ */
+export const ErrorResponseSchema = z.object({
+  code: ErrorCodeSchema,
+  message: z.string(),
+});
+export type ErrorResponse = z.infer<typeof ErrorResponseSchema>;

@@ -9,6 +9,7 @@ import {
   type SupplierWithItems,
   type GoodsReceiptPage,
 } from "@holler/contracts";
+import { ErrorResponseSchema } from "@holler/contracts";
 import { z } from "zod";
 import { authHeader } from "./session";
 
@@ -45,18 +46,6 @@ export function tenantId(): string {
   return TENANT_ID;
 }
 
-/**
- * The error shape every route returns, narrowed to the 0.7.0 enum.
- *
- * `code` is what a caller branches on and `message` is for a human — the
- * message deliberately carries no SQLSTATE, constraint name or SQL, and a leak
- * test on the backend pins that.
- */
-const ErrorBodySchema = z.object({
-  code: z.string(),
-  message: z.string(),
-});
-
 export class ApiError extends Error {
   readonly code: string;
   readonly status: number;
@@ -90,7 +79,7 @@ async function request<T>(path: string, schema: z.ZodType<T>, init?: RequestInit
     // that a client-data failure reported as a server error tells the caller
     // to retry something that will never succeed.
     const body = await response.json().catch(() => null);
-    const parsed = ErrorBodySchema.safeParse(body);
+    const parsed = ErrorResponseSchema.safeParse(body);
     throw new ApiError(
       response.status,
       parsed.success ? parsed.data.code : "unknown",

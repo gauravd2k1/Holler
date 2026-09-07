@@ -186,3 +186,34 @@ var OutboxEventTypes = []string{
 	EventTypePurchaseReturned,
 	EventTypeStockDispatched,
 }
+
+// ErrorCode is the enumeration of every `code` an error body can carry, added
+// at 0.7.0 (ADR-024). Mirrors src/types/sync.ts.
+//
+// WHY IT EXISTS. The error body was typed `{ code: string, message: string }`
+// with no enumeration, while the EDGE BRANCHES ON THE VALUE -- so a rename here
+// was a silent behaviour change at the edge that no drift test could see. A
+// constant set makes a rename a compile error on this side and a drift failure
+// across the wire.
+type ErrorCode string
+
+const (
+	// ErrorCodeMissingReference is a foreign key the caller's data does not
+	// satisfy: a replayed order item naming a menu_item the cloud has never
+	// held. M6 A1 put this on the wire; before it, the same condition was a 500.
+	ErrorCodeMissingReference ErrorCode = "missing_reference"
+	// ErrorCodeEnvelopeRouteMismatch is a SyncEnvelope whose aggregate_type or
+	// direction does not match the route it arrived on. Rejected, never coerced.
+	ErrorCodeEnvelopeRouteMismatch ErrorCode = "envelope_route_mismatch"
+	ErrorCodePOExceedsApprovalLimit ErrorCode = "po_exceeds_approval_limit"
+	// ErrorCodeImmutableField is an immutable field present in a PATCH body.
+	// Reported rather than ignored: a caller that believes it changed outlet_id
+	// and did not is worse off than one that got an error.
+	ErrorCodeImmutableField ErrorCode = "immutable_field"
+	ErrorCodeInvalidInput   ErrorCode = "invalid_input"
+	ErrorCodeConflict       ErrorCode = "conflict"
+	ErrorCodeNotFound       ErrorCode = "not_found"
+	// ErrorCodeInternalError carries NO detail by design: the message beside it
+	// never contains SQLSTATE, a constraint name or SQL.
+	ErrorCodeInternalError ErrorCode = "internal_error"
+)
