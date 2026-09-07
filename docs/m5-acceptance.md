@@ -357,6 +357,38 @@ after, and the copy carried the same digest. ADR-011's rule that the edge databa
 is never copied anywhere unencrypted is kept — what was copied was the sealed
 file.
 
+> **CORRECTION, 2026-09-07 — the sentence above is not true of every reading in
+> this milestone, and it is corrected rather than reworded.** "The plaintext
+> overwritten and deleted afterwards" describes the 2026-09-03 reading it was
+> written for. It does **not** describe two earlier M5 acceptance readings: on
+> 2026-09-07, `crit2/edge.db` (2026-08-31) and `crit2-positive/edge.db`
+> (2026-09-01) were found still on disk as **plaintext SQLite**, each beside an
+> `edge.db.open-marker`, together with `acceptance-key.txt` — the 32-byte edge
+> key that opened them — in the same scratchpad directory. Both files therefore
+> survived unencrypted for six and seven days respectively, carrying the cached
+> Argon2id `password_hash` and `pin_hash` rows.
+>
+> The marker on each says why, and it is not carelessness by the reader: those
+> two databases were left by a process that **exited uncleanly**, so
+> `Db::close` never ran and nothing reseals or wipes a plaintext file on the
+> next start. That is a defect in the product, not in the procedure, and it is
+> filed in `docs/backlog.md` with the trigger *before the first pilot* — where
+> the three files' sha256 digests, sizes and mtimes are recorded, because the
+> files themselves were deleted on 2026-09-07 by operator decision once that
+> entry carried their identity.
+>
+> Deleting `acceptance-key.txt` makes the two surviving `edge.db.enc` artefacts
+> in `crit2/` and `crit2-positive/` permanently unopenable. That is accepted:
+> they evidence nothing this file relies on, and the digest above
+> (`5d1297113003b9664038dfdbefc27289b61b86a9bcf19265dae5d04371a446c7`) is a
+> different artefact — the outlet's own sealed database, which was never
+> copied here.
+>
+> **What this does not change:** the 2026-09-03 reading itself, its query
+> results, or any criterion's verdict. What it changes is the claim that the
+> procedure held everywhere in M5. It did not, and the counter-evidence was
+> kept in the record rather than removed to make the sentence true.
+
 Recorded by the operator's reading, 2026-09-03, taken during M6 A1 and
 alongside `99875cc` ("fix(m6-a1): report a foreign-key violation as 422, not
 500"), which the 120-row composition above is the evidence for. The reading
