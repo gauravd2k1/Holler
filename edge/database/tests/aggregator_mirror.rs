@@ -6,9 +6,18 @@
 //! somebody needs to "just update the status locally", split authority arrives
 //! and nothing fails.
 //!
-//! So these tests pin the three properties that would break silently:
-//! idempotency by id, replace-not-merge on version, and the fact that a later
-//! cloud document CANNOT clear a local acceptance.
+//! So these tests pin the properties that would break silently: idempotency by
+//! id, replace-not-merge on version, and — the important one —
+//! **`aggregator_order` CARRIES NO EDGE-WRITTEN COLUMN AT ALL**.
+//!
+//! An earlier version of this table had two, `accepted_at` and
+//! `local_order_id`, guarded by omitting them from the upsert's SET list so a
+//! cloud document could not clear them. That guard worked and was tested. It
+//! was still split authority on a cloud-authoritative aggregate, and the
+//! contract rubric says to split the aggregate rather than guard the column —
+//! so acceptance moved off the table and is DERIVED from the local order that
+//! acceptance creates. The test below is retargeted at that shape: it fails if
+//! anything reintroduces an edge-written column here.
 
 use holler_edge_database::{model, repo, Db};
 
@@ -29,13 +38,11 @@ fn seeded_db() -> Db {
              VALUES ('cat-1', 'outlet-1', 'Beverages', 1, 1);
              INSERT INTO menu_item (id, outlet_id, category_id, name, base_price_paise, is_available, config_version, hsn_sac)
              VALUES ('menu-1', 'outlet-1', 'cat-1', 'Masala Chai', 4500, 1, 1, '9963');
-             -- A REAL order and device too: local_order_id is a foreign key,
-             -- and the acceptance test is worthless if the row it points at
-             -- cannot exist.
+             -- A device, so a test can create an order. NO ORDER IS SEEDED:
+             -- acceptance IS the existence of one, so pre-seeding it would
+             -- pre-satisfy the very thing the derivation test measures.
              INSERT INTO device (id, outlet_id, kind, name, created_at)
-             VALUES ('device-1', 'outlet-1', 'POS', 'Till 1', '2026-09-08T00:00:00Z');
-             INSERT INTO \"order\" (id, outlet_id, device_id, order_type, status, created_at, updated_at)
-             VALUES ('order-9', 'outlet-1', 'device-1', 'DELIVERY', 'CONFIRMED', '2026-09-08T12:05:00Z', '2026-09-08T12:05:00Z');",
+             VALUES ('device-1', 'outlet-1', 'POS', 'Till 1', '2026-09-08T00:00:00Z');",
         )
         .expect("seeding");
     db
@@ -54,8 +61,6 @@ fn document(version: i64, status: &str) -> model::AggregatorOrder {
         stated_total_paise: Some(13887),
         received_at: "2026-09-08T12:00:00Z".to_string(),
         business_date: "2026-09-08".to_string(),
-        accepted_at: None,
-        local_order_id: None,
         created_at: "2026-09-08T12:00:00Z".to_string(),
         updated_at: "2026-09-08T12:00:00Z".to_string(),
     }
@@ -143,52 +148,102 @@ fn a_newer_document_replaces_and_an_older_one_is_ignored() {
     );
 }
 
-/// A LATER CLOUD DOCUMENT MUST NOT CLEAR A LOCAL ACCEPTANCE.
+/// THE MIRROR CARRIES NO ACCEPTANCE STATE, AND ACCEPTANCE IS STILL DERIVABLE.
 ///
-/// `accepted_at` and `local_order_id` record that a HUMAN AT THIS TILL accepted
-/// the document and that an `order` now exists for it. A platform status update
-/// arriving afterwards must not erase that: the local order is
-/// edge-authoritative and already in a kitchen.
+/// This replaces an earlier test that asserted a cloud document could not clear
+/// `accepted_at`. That test passed, and the shape it protected was still wrong:
+/// two edge-written columns on a cloud-authoritative table are split authority
+/// however carefully the upsert is maintained, and they grow — `printed_at` and
+/// `closed_at` were the obvious next two.
 ///
-/// This is the single assertion standing between the mirror and split
-/// authority, and it fails silently if the upsert's SET list ever grows.
+/// The property now asserted is stronger and needs no guard to stay true:
+///
+///   1. `aggregator_order` HAS no acceptance columns, so nothing can clear them
+///      and nothing can drift.
+///   2. Acceptance is derived from the local `order` — the row whose existence
+///      IS the acceptance — and survives any number of later cloud documents,
+///      because a cloud document cannot touch an `order` at all.
+///
+/// If a future change reintroduces an edge-written column on the mirror, part
+/// one fails on the schema.
 #[test]
-fn a_later_cloud_document_cannot_clear_a_local_acceptance() {
+fn the_mirror_has_no_acceptance_columns_and_acceptance_is_derived() {
     let db = seeded_db();
     let lines = vec![line("line-1", "I1", Some("menu-1"))];
     repo::apply_aggregator_order(db.connection(), &document(1, "Accepted"), &lines).expect("v1");
 
-    // The till accepts: this is the ONLY edge-side write to these columns, and
-    // it writes local state, never the platform's.
-    db.connection()
-        .execute(
-            "UPDATE aggregator_order SET accepted_at = '2026-09-08T12:05:00Z', local_order_id = 'order-9'
-             WHERE id = 'doc-1'",
-            [],
-        )
-        .expect("accept");
+    // 1. THE SCHEMA ITSELF. Asserted against the table, not against a struct:
+    // a struct can drop a field while the column lingers, and the column is
+    // what a future writer would reach for.
+    let columns: Vec<String> = {
+        let mut stmt = db
+            .connection()
+            .prepare("SELECT name FROM pragma_table_info('aggregator_order')")
+            .expect("pragma");
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .expect("query")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect");
+        rows
+    };
+    for forbidden in ["accepted_at", "local_order_id", "printed_at", "closed_at"] {
+        assert!(
+            !columns.iter().any(|c| c == forbidden),
+            "aggregator_order grew an edge-written column `{forbidden}`. It is cloud-authoritative:              acceptance and every state that follows it belong on the local order, derived, not stored here"
+        );
+    }
 
-    // A newer platform document arrives.
-    repo::apply_aggregator_order(db.connection(), &document(2, "In-progress"), &lines).expect("v2");
-
-    let (accepted, local): (Option<String>, Option<String>) = db
-        .connection()
-        .query_row(
-            "SELECT accepted_at, local_order_id FROM aggregator_order WHERE id = 'doc-1'",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .expect("read back");
-
-    assert_eq!(
-        accepted.as_deref(),
-        Some("2026-09-08T12:05:00Z"),
-        "a cloud document cleared a local acceptance — the till has an order in a kitchen for a document that now says nobody accepted it"
+    // 2. THE DERIVATION. Nothing accepted yet: no local order exists.
+    assert!(
+        repo::aggregator_order_acceptance(db.connection(), "outlet-1", "EXT-1")
+            .expect("derive")
+            .is_none(),
+        "with no local order there is nothing to accept"
     );
     assert_eq!(
-        local.as_deref(),
-        Some("order-9"),
-        "a cloud document cleared the link to the local order"
+        repo::list_unaccepted_aggregator_orders(db.connection(), "outlet-1")
+            .expect("queue")
+            .len(),
+        1,
+        "an unaccepted document must appear in the queue a till reads"
+    );
+
+    // Accepting IS creating the local order. That is the only write.
+    db.connection()
+        .execute(
+            "INSERT INTO \"order\" (id, outlet_id, device_id, order_type, status, external_order_id, created_at, updated_at)
+             VALUES ('order-9', 'outlet-1', 'device-1', 'DELIVERY', 'CONFIRMED', 'EXT-1', '2026-09-08T12:05:00Z', '2026-09-08T12:05:00Z')",
+            [],
+        )
+        .expect("accept by creating the local order");
+
+    let (accepted_at, local_order_id) =
+        repo::aggregator_order_acceptance(db.connection(), "outlet-1", "EXT-1")
+            .expect("derive")
+            .expect("the local order exists, so the document is accepted");
+    assert_eq!(accepted_at, "2026-09-08T12:05:00Z");
+    assert_eq!(local_order_id, "order-9");
+
+    assert!(
+        repo::list_unaccepted_aggregator_orders(db.connection(), "outlet-1")
+            .expect("queue")
+            .is_empty(),
+        "an accepted document must leave the queue"
+    );
+
+    // 3. AND IT SURVIVES LATER CLOUD DOCUMENTS -- structurally, not by a guard.
+    // A cloud document cannot touch an `order` row, so there is no path by
+    // which this can be cleared.
+    repo::apply_aggregator_order(db.connection(), &document(2, "In-progress"), &lines).expect("v2");
+    repo::apply_aggregator_order(db.connection(), &document(3, "Cancelled"), &lines).expect("v3");
+
+    let still = repo::aggregator_order_acceptance(db.connection(), "outlet-1", "EXT-1")
+        .expect("derive")
+        .expect("acceptance must survive any number of later platform documents");
+    assert_eq!(
+        still.1, "order-9",
+        "a cloud document reached the local order — the till has an order in a kitchen for a document that now says nobody accepted it"
     );
 }
 

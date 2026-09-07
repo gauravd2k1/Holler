@@ -3481,8 +3481,8 @@ pub fn apply_aggregator_order(
         "INSERT INTO aggregator_order
            (id, tenant_id, outlet_id, platform, external_order_id, platform_status,
             document_version, raw_payload, stated_total_paise, received_at, business_date,
-            accepted_at, local_order_id, schema_version, created_at, updated_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,1,?14,?14)
+            schema_version, created_at, updated_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,1,?12,?12)
          ON CONFLICT(id) DO UPDATE SET
             platform_status    = excluded.platform_status,
             document_version   = excluded.document_version,
@@ -3503,12 +3503,6 @@ pub fn apply_aggregator_order(
             doc.stated_total_paise,
             doc.received_at,
             doc.business_date,
-            // NOT taken from the cloud on update: accepted_at and local_order_id
-            // record that a HUMAN AT THIS TILL accepted the document, and a
-            // later platform message must never clear that. They appear in the
-            // INSERT only so a first arrival has them null.
-            doc.accepted_at,
-            doc.local_order_id,
             doc.updated_at,
         ],
     )?;
@@ -3551,17 +3545,25 @@ pub fn apply_aggregator_order(
 /// The operational queue the till surface reads. An order sitting unaccepted is
 /// the failure mode ADR-022's operator-confirmed decision creates, and it is
 /// named there rather than discovered later.
+///
+/// ACCEPTANCE IS DERIVED, NOT STORED. A document is accepted exactly when a
+/// local `order` exists carrying its external_order_id -- because accepting IS
+/// creating that order. There is no accepted_at column to read and none to keep
+/// in step with reality, which is the point: a denormalised copy of a fact can
+/// disagree with the fact, and this one cannot.
 pub fn list_unaccepted_aggregator_orders(
     conn: &Connection,
     outlet_id: &str,
 ) -> DbResult<Vec<AggregatorOrder>> {
     let mut stmt = conn.prepare(
-        "SELECT id, tenant_id, outlet_id, platform, external_order_id, platform_status,
-                document_version, raw_payload, stated_total_paise, received_at, business_date,
-                accepted_at, local_order_id, created_at, updated_at
-           FROM aggregator_order
-          WHERE outlet_id = ?1 AND accepted_at IS NULL
-          ORDER BY received_at",
+        "SELECT a.id, a.tenant_id, a.outlet_id, a.platform, a.external_order_id, a.platform_status,
+                a.document_version, a.raw_payload, a.stated_total_paise, a.received_at,
+                a.business_date, a.created_at, a.updated_at
+           FROM aggregator_order a
+           LEFT JOIN \"order\" o
+             ON o.outlet_id = a.outlet_id AND o.external_order_id = a.external_order_id
+          WHERE a.outlet_id = ?1 AND o.id IS NULL
+          ORDER BY a.received_at",
     )?;
     let rows = stmt
         .query_map(params![outlet_id], |row| {
@@ -3577,14 +3579,39 @@ pub fn list_unaccepted_aggregator_orders(
                 stated_total_paise: row.get(8)?,
                 received_at: row.get(9)?,
                 business_date: row.get(10)?,
-                accepted_at: row.get(11)?,
-                local_order_id: row.get(12)?,
-                created_at: row.get(13)?,
-                updated_at: row.get(14)?,
+                created_at: row.get(11)?,
+                updated_at: row.get(12)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
+}
+
+/// Whether a document has been accepted, and by which local order.
+///
+/// THE DERIVATION, IN ONE PLACE. Acceptance is not stored anywhere: accepting a
+/// document IS creating the local `order` for it, so the order's existence is
+/// the fact and its `created_at` is the time. Returns `(accepted_at,
+/// local_order_id)`.
+///
+/// Deriving rather than storing is what makes `aggregator_order` a pure
+/// read-only mirror on the edge. A stored copy would be an edge-written column
+/// on a cloud-authoritative table -- split authority, which the contract rubric
+/// says to fix by splitting the aggregate rather than by guarding the column.
+pub fn aggregator_order_acceptance(
+    conn: &Connection,
+    outlet_id: &str,
+    external_order_id: &str,
+) -> DbResult<Option<(String, String)>> {
+    conn.query_row(
+        "SELECT created_at, id FROM \"order\"
+          WHERE outlet_id = ?1 AND external_order_id = ?2
+          ORDER BY created_at LIMIT 1",
+        params![outlet_id, external_order_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .optional()
+    .map_err(Into::into)
 }
 
 /// The down-path cursor. EDGE-LOCAL: one outlet's record of how far it has read.

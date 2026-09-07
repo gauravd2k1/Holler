@@ -45,7 +45,7 @@
 > four traps are in `docs/M6 kickoff.md`; the defect is in `docs/backlog.md`.
 >
 > Contracts FROZEN at **v0.8.0** (ADR-022, M6 Phase C aggregator shapes);
-> migrations through **sqlite 0033 / postgres 0033**.
+> migrations through **sqlite 0034 / postgres 0034**.
 
 ---
 

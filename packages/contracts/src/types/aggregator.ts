@@ -73,11 +73,15 @@ export const AggregatorOrderSchema = z.object({
   received_at: z.string(),
   business_date: z.string(),
 
-  // NULL means "arrived, not yet accepted" — a visible operational state, not a
-  // missing value. Creation of the local order is OPERATOR-CONFIRMED, never
-  // automatic (ADR-022 addendum §2).
-  accepted_at: z.string().nullable(),
-  local_order_id: z.string().uuid().nullable(),
+  // ACCEPTANCE IS NOT A FIELD HERE, AND ITS ABSENCE IS THE DESIGN.
+  //
+  // Accepting a document IS creating the local `order` for it, so acceptance is
+  // DERIVED from that order's existence: accepted_at is its created_at and the
+  // local order is its id, joined on external_order_id. An earlier version of
+  // this shape carried both as columns on aggregator_order, guarded so a cloud
+  // document could not clear them — that guard worked and was still split
+  // authority on a cloud-authoritative aggregate. The rubric says split the
+  // aggregate rather than guard the column (ADR-022 addendum 2).
 
   lines: z.array(AggregatorOrderLineSchema),
   schema_version: z.literal(1),

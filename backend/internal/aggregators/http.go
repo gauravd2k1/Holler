@@ -190,7 +190,7 @@ func (r *pgRepository) QueryDocuments(ctx context.Context, where string, args []
 	rows, err := r.pool.Query(ctx,
 		`SELECT id, tenant_id, outlet_id, platform, external_order_id, platform_status,
 		        document_version, raw_payload, stated_total_paise, received_at, business_date,
-		        accepted_at, local_order_id, updated_at
+		        updated_at
 		   FROM aggregator_order`+where, args...)
 	if err != nil {
 		return nil, storage.Wrap("aggregators: querying documents", err)
@@ -201,21 +201,16 @@ func (r *pgRepository) QueryDocuments(ctx context.Context, where string, args []
 	for rows.Next() {
 		var d DocumentRow
 		var receivedAt, businessDate time.Time
-		var acceptedAt *time.Time
 		if err := rows.Scan(
 			&d.Order.ID, &d.Order.TenantID, &d.Order.OutletID, &d.Order.Platform,
 			&d.Order.ExternalOrderID, &d.Order.PlatformStatus, &d.Order.DocumentVersion,
 			&d.Order.RawPayload, &d.Order.StatedTotalPaise, &receivedAt, &businessDate,
-			&acceptedAt, &d.Order.LocalOrderID, &d.UpdatedAt,
+			&d.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("aggregators: scanning document: %w", err)
 		}
 		d.Order.ReceivedAt = receivedAt.UTC().Format(time.RFC3339)
 		d.Order.BusinessDate = businessDate.Format("2006-01-02")
-		if acceptedAt != nil {
-			s := acceptedAt.UTC().Format(time.RFC3339)
-			d.Order.AcceptedAt = &s
-		}
 		d.Order.SchemaVersion = 1
 		d.Order.Lines = []contracts.AggregatorOrderLine{}
 		out = append(out, d)

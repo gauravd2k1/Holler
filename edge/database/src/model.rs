@@ -2186,7 +2186,17 @@ pub struct PurchaseOrderLineConfig {
 // --- aggregator_order (M6 Phase C, contracts 0.8.0, ADR-022) -----------------
 //
 // CLOUD-AUTHORITATIVE. The edge holds these as a READ-ONLY MIRROR: it receives
-// them from the cloud down-path and never authors one. The local `order` it
+// them from the cloud down-path and never authors one. NO EXCEPTIONS -- there
+// is no edge-written column on this struct, and there must never be one.
+//
+// Acceptance is NOT a column here. Accepting a document IS creating the local
+// `order` for it, so acceptance is derived: a document is accepted exactly when
+// an `order` exists whose external_order_id matches, that order's created_at is
+// the acceptance time, and its id is the local order. See
+// `aggregator_order_acceptance`. An earlier version carried accepted_at and
+// local_order_id on this struct, guarded by omitting them from the upsert --
+// that guard worked and was still split authority on a cloud-authoritative
+// table. The local `order` it
 // creates from a document is edge-authoritative and syncs up like every other
 // order, linked by external_order_id.
 //
@@ -2212,11 +2222,6 @@ pub struct AggregatorOrder {
     pub stated_total_paise: Option<i64>,
     pub received_at: String,
     pub business_date: String,
-    /// NULL means "arrived, not yet accepted" — a visible operational state.
-    /// Written by the till when a human accepts, and never overwritten by a
-    /// later cloud document.
-    pub accepted_at: Option<String>,
-    pub local_order_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }

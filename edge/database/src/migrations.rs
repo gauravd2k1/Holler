@@ -193,6 +193,13 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0033_aggregator_pull_cursor.sql",
         include_str!("../../../packages/contracts/sqlite/0033_aggregator_pull_cursor.sql"),
     ),
+    // Makes the edge's aggregator_order mirror PURE: the two edge-written
+    // columns move off a cloud-authoritative table, and acceptance is derived
+    // from the local order that acceptance creates.
+    (
+        "0034_aggregator_mirror_is_pure.sql",
+        include_str!("../../../packages/contracts/sqlite/0034_aggregator_mirror_is_pure.sql"),
+    ),
 ];
 
 /// Applies any migrations not yet reflected in `PRAGMA user_version`. Safe

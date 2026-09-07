@@ -75,10 +75,12 @@ func (r *pgRepository) UpsertDocument(ctx context.Context, tx pgx.Tx, doc contra
 	// regression: a platform that retries an earlier state must not walk the
 	// document backwards.
 	//
-	// accepted_at and local_order_id are DELIBERATELY NOT in the update list.
-	// They are written by the operator-confirmed accept at the till, and a
-	// later platform message must never clear the fact that a human accepted
-	// this order (ADR-022 addendum §2).
+	// THERE ARE NO ACCEPTANCE COLUMNS TO PROTECT ANY MORE. An earlier version
+	// kept accepted_at and local_order_id out of this SET list so a later cloud
+	// document could not clear them; they have since moved off the table
+	// entirely, because guarding an edge-written column on a
+	// cloud-authoritative aggregate is still split authority (ADR-022 addendum
+	// 2). Acceptance is derived from the local order's existence.
 	tag, err := tx.Exec(ctx,
 		`INSERT INTO aggregator_order
 		   (id, tenant_id, outlet_id, platform, external_order_id, platform_status,

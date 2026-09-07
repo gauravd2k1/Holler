@@ -168,12 +168,7 @@ func ToAggregatorOrder(id, tenantID, outletID string, in InboundOrder, lineIDs [
 		StatedTotalPaise: in.StatedTotalPaise,
 		ReceivedAt:       in.ReceivedAt,
 		BusinessDate:     in.BusinessDate,
-		// Both nil on arrival, and that is the operational state "arrived, not
-		// yet accepted". Creation of the local order is OPERATOR-CONFIRMED
-		// (ADR-022 addendum §2), so nothing here may fill these in.
-		AcceptedAt:    nil,
-		LocalOrderID:  nil,
-		Lines:         lines,
-		SchemaVersion: 1,
+		Lines:            lines,
+		SchemaVersion:    1,
 	}
 }

@@ -215,24 +215,60 @@ one cannot see.
 | **Rides the A5 periodic loop, inside the same database lock** | No second pump host. A document apply interleaving with an outbox pump on one SQLite connection is the fault that appears as a corrupt read once a month |
 | **A failed pull keeps what the till has, logs, shows nothing** | Offline is normal here. A new aggregator order *cannot* arrive while the uplink is down — that is the guarantee, not a fault to alarm a cashier about |
 
-## The rule that must not erode
+## The rule, with no exception to maintain
 
-**The edge holds `aggregator_order` as a READ-ONLY MIRROR.** There is exactly
-one writer on the edge side — the apply function the pull calls — and no
-till-side command may reach this table. The edge creates its own `order` from a
-document, linked by `external_order_id`, and that order is edge-authoritative.
+**The edge holds `aggregator_order` as a READ-ONLY MIRROR. It carries no
+edge-written column at all.** One writer on the edge side — the apply function
+the pull calls — and nothing else may touch the table.
 
-**Two columns are the exception, and they are the exception in one direction
-only.** `accepted_at` and `local_order_id` record that a human at THIS till
-accepted the document. They are written locally and are **deliberately absent
-from the upsert's SET list**, so a later cloud document cannot clear them — a
-platform status update must not erase the fact that an order is already in a
-kitchen. That single omission is what stands between this mirror and split
-authority, and it is pinned by a test that was watched failing with those two
-columns added back:
+### The version of this that was wrong, and why it was wrong even though it worked
 
-> `a cloud document cleared a local acceptance — the till has an order in a
-> kitchen for a document that now says nobody accepted it`
+The first cut of the down-path gave the mirror two edge-written columns,
+`accepted_at` and `local_order_id`, and protected them by omitting them from the
+upsert's SET list so a later cloud document could not clear them. That guard
+worked. It was tested, and the test was watched failing with the columns added
+back.
 
-**If a future change adds any other edge write path to `aggregator_order`, it is
-split authority and it is wrong.**
+**It was still split authority.** Two edge-written columns on a
+cloud-authoritative aggregate are split authority however carefully the SET list
+is maintained, and the contract rubric says what to do about that directly: *no
+split-authority columns — split the aggregate instead.* A guard is a documented
+obligation, and this repository's history is a list of documented obligations
+that held right up until they didn't. It also grows: `printed_at` and
+`closed_at` are the obvious next two, each arriving with the same reasoning and
+the same guard.
+
+### What replaced it: nothing, because acceptance was always derivable
+
+**Accepting a document IS creating the local `order` for it.** So:
+
+| Question | Answer, derived |
+|---|---|
+| Is this document accepted? | An `order` exists whose `external_order_id` matches |
+| When was it accepted? | That order's `created_at` |
+| Which local order is it? | That order's `id` |
+
+No second table, no denormalised copy, and nothing that can drift from the fact
+it describes. `repo::aggregator_order_acceptance` is the single place that join
+lives, and the unaccepted queue a till reads is a `LEFT JOIN … WHERE o.id IS
+NULL`. Contracts 0.8.0 migrations sqlite/postgres 0034 drop the columns from
+both stores — the cloud too, because nothing writes them there either and a
+column nothing writes is a column that does not exist.
+
+### The test that keeps it true
+
+`edge/database/tests/aggregator_mirror.rs` asserts against **the schema**, not
+against a struct — a struct can drop a field while the column lingers, and the
+column is what a future writer reaches for:
+
+> `aggregator_order grew an edge-written column 'accepted_at'. It is
+> cloud-authoritative: acceptance and every state that follows it belong on the
+> local order, derived, not stored here`
+
+Watched failing with the drop commented out. It names `printed_at` and
+`closed_at` alongside the two that existed, so the next attempt fails on arrival
+rather than after review.
+
+**Acceptance now survives later cloud documents STRUCTURALLY rather than by a
+guard**: a cloud document cannot touch an `order` row, so there is no path by
+which it could be cleared.

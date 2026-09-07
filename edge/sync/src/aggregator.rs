@@ -45,8 +45,6 @@ struct WireDocument {
     stated_total_paise: Option<i64>,
     received_at: String,
     business_date: String,
-    accepted_at: Option<String>,
-    local_order_id: Option<String>,
     lines: Vec<WireLine>,
 }
 
@@ -101,11 +99,6 @@ pub fn pull_and_apply_aggregator_orders(
             stated_total_paise: doc.stated_total_paise,
             received_at: doc.received_at.clone(),
             business_date: doc.business_date.clone(),
-            // Taken from the cloud only on a FIRST arrival. The upsert
-            // deliberately does not overwrite them, because they record that a
-            // human at THIS till accepted the document.
-            accepted_at: doc.accepted_at.clone(),
-            local_order_id: doc.local_order_id.clone(),
             created_at: doc.received_at.clone(),
             updated_at: doc.received_at.clone(),
         };

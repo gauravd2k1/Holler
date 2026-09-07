@@ -78,12 +78,12 @@ type AggregatorOrder struct {
 	ReceivedAt   string `json:"received_at"`
 	BusinessDate string `json:"business_date"`
 
-	// NULL means "arrived, not yet accepted" -- a visible operational state,
-	// not a missing value. Creation of the local order is OPERATOR-CONFIRMED,
-	// never automatic (ADR-022 addendum §2): an unmappable document must not
-	// put unresolved lines into a kitchen.
-	AcceptedAt   *string `json:"accepted_at"`
-	LocalOrderID *string `json:"local_order_id"`
+	// ACCEPTANCE IS NOT A FIELD HERE, AND ITS ABSENCE IS THE DESIGN. Accepting
+	// a document IS creating the local `order` for it, so acceptance is DERIVED
+	// from that order's existence and joined on ExternalOrderID. Carrying it
+	// here would be an edge-written value on a cloud-authoritative aggregate --
+	// split authority, which the rubric says to fix by splitting the aggregate
+	// rather than by guarding the column (ADR-022 addendum 2).
 
 	Lines []AggregatorOrderLine `json:"lines"`
 
