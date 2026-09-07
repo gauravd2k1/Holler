@@ -64,6 +64,16 @@ const (
 	AggregateTypeGrnGap           AggregateType = "grn_gap"
 	AggregateTypePurchaseReturn   AggregateType = "purchase_return"
 	AggregateTypeStockTransferOut AggregateType = "stock_transfer_out"
+
+	// Milestone 6 Phase C (ADR-022, contracts 0.8.0). THE ONLY
+	// CLOUD-AUTHORITATIVE ORDER SHAPE IN THIS PRODUCT.
+	//
+	// aggregator_order_line is deliberately absent -- a child row travelling
+	// inside its parent's payload, like invoice_line and grn_line.
+	// aggregator_platform_credential, aggregator_item_map and
+	// aggregator_callback_receipt are absent for the refresh_token reason:
+	// cloud-only, and the edge has no use for any of them.
+	AggregateTypeAggregatorOrder AggregateType = "aggregator_order"
 )
 
 type SyncDirection string
@@ -146,6 +156,20 @@ var AggregateAuthority = map[AggregateType]SyncDirection{
 	AggregateTypePurchaseReturn: SyncDirectionEdgeToCloud,
 	// Outbound half only. TRANSFER_IN and goods-in-transit are M8.
 	AggregateTypeStockTransferOut: SyncDirectionEdgeToCloud,
+
+	// Milestone 6 Phase C (ADR-022). CLOUD_TO_EDGE, and it is the only ORDER
+	// shape in this product that syncs down.
+	//
+	// An aggregator order is an inbound DOCUMENT from a system the till cannot
+	// receive from directly -- the till has no public address. The local
+	// `order` created from it stays EDGE_TO_CLOUD above, so the two are
+	// separate aggregates rather than one aggregate switching authority by
+	// channel, which §50.1 forbids outright.
+	//
+	// The guarantee this buys, and it is published: a new aggregator order
+	// cannot ARRIVE while the uplink is down; one that has already arrived is
+	// fully operable offline.
+	AggregateTypeAggregatorOrder: SyncDirectionCloudToEdge,
 }
 
 type SyncEnvelope struct {

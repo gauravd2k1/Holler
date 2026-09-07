@@ -180,6 +180,14 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0031_sync_outbox_block.sql",
         include_str!("../../../packages/contracts/sqlite/0031_sync_outbox_block.sql"),
     ),
+    // M6 Phase C, contracts 0.8.0 (ADR-022). The edge half of the aggregator
+    // shapes: aggregator_order (CLOUD-AUTHORITATIVE, syncs down,
+    // replace-not-merge) and its child lines. The three cloud-only tables ship
+    // as postgres/0033 and are declared in SINGLE_STORE_MIGRATIONS.
+    (
+        "0032_m6_aggregator.sql",
+        include_str!("../../../packages/contracts/sqlite/0032_m6_aggregator.sql"),
+    ),
 ];
 
 /// Applies any migrations not yet reflected in `PRAGMA user_version`. Safe
@@ -943,6 +951,11 @@ mod tests {
     /// The declaration IS the guard: adding the missing counterpart now fails
     /// this test, and the failure names the reason the file is missing.
     const SINGLE_STORE_MIGRATIONS: &[(&str, &str, &str)] = &[
+        (
+            "postgres",
+            "aggregator_cloud_only.sql",
+            "ADR-022 addendum §1: three shapes that never reach an edge.              aggregator_platform_credential -- the till has no public address              and never talks to a platform, so an outlet cannot spend a              credential it would hold (the refresh_token/device_credential              precedent). aggregator_item_map -- resolution happens at the              cloud when a document arrives, so the edge receives lines already              naming local menu items; mirroring the map gives two resolvers              that can disagree. aggregator_callback_receipt -- the cloud's              record of what arrived at the cloud, the inbound mirror of              sync_outbox_block. Split into its own file because this guard              pairs by STEM, so single-store tables inside the mirrored 0032              would be undeclarable.",
+        ),
         (
             "sqlite",
             "edge_device_credential_cache.sql",

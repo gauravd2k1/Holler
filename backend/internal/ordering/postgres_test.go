@@ -230,7 +230,13 @@ func TestPostgresRepository_OrderRoundTripPersistsContractsV024Fields(t *testing
 	svc := ordering.NewService(ordering.NewPostgresRepository(pool))
 
 	orderID := id.New()
-	externalOrderID := "zomato-order-42"
+	// Platform-neutral by construction. This fixture used to name a real
+	// delivery platform, until the M6 Phase C boundary check
+	// (scripts/check-aggregator-boundary.mjs) flagged it: an external order id
+	// is DATA, and a fixture naming a platform teaches the next reader that
+	// naming one in the ordering context is normal. The test asserts nothing
+	// about who sent the order, so nothing is lost by saying so.
+	externalOrderID := "ext-order-42"
 	paymentSource := "cash"
 	env := envelopeFor(orderID, fx.tenantID, fx.outletID, 1)
 	order := orderFor(orderID, fx.outletID)

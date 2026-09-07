@@ -64,6 +64,16 @@ export const AggregateTypeSchema = z.enum([
   "grn_gap",
   "purchase_return",
   "stock_transfer_out",
+  // Milestone 6 Phase C additions (ADR-022, 0.8.0). THE ONLY
+  // CLOUD-AUTHORITATIVE ORDER SHAPE IN THIS PRODUCT: an inbound document from
+  // a platform the till cannot receive from directly.
+  //
+  // aggregator_order_line is deliberately absent — a child row travelling
+  // inside its parent's payload, like invoice_line and grn_line.
+  // aggregator_platform_credential, aggregator_item_map and
+  // aggregator_callback_receipt are absent for the refresh_token reason:
+  // cloud-only, and the edge has no use for any of them.
+  "aggregator_order",
 ]);
 export type AggregateType = z.infer<typeof AggregateTypeSchema>;
 
@@ -136,6 +146,14 @@ export const AGGREGATE_AUTHORITY: Record<AggregateType, SyncDirection> = {
   // Outbound half only. TRANSFER_IN and goods-in-transit are M8: a transfer
   // spans two edge databases, which is multi-outlet machinery.
   stock_transfer_out: "EDGE_TO_CLOUD",
+
+  // Milestone 6 Phase C (ADR-022). CLOUD_TO_EDGE, and it is the only ORDER
+  // shape in this product that syncs down. An aggregator order is an inbound
+  // DOCUMENT from a system the till cannot receive from directly — the till has
+  // no public address. The local `order` created from it stays EDGE_TO_CLOUD,
+  // so these are two aggregates rather than one that switches authority by
+  // channel, which §50.1 forbids outright.
+  aggregator_order: "CLOUD_TO_EDGE",
 };
 
 export const SyncEnvelopeSchema = z

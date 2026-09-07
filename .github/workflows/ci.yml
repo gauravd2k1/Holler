@@ -169,6 +169,17 @@ jobs:
       # would otherwise appear next milestone when the reason is forgotten.
       - name: sqlstate knowledge stays in the classifier
         run: node scripts/check-sqlstate-classifier.mjs
+      # M6 Phase C (C-4). A one-adapter abstraction is indistinguishable from no
+      # abstraction, and the tell is always a platform's name appearing where it
+      # has no business being. By the time anyone notices, the second platform
+      # has arrived and the whole thing is redone. This fails the build on any
+      # platform name, callback action or signing header outside
+      # backend/internal/aggregators/adapters/ -- and it was watched going RED
+      # on an injected branch before it was trusted, because a boundary nobody
+      # has seen fail is not a boundary. It found a real pre-existing leak on
+      # its first run.
+      - name: platform vocabulary stays inside its adapter
+        run: node scripts/check-aggregator-boundary.mjs
       # The Go guard in backend/cmd/api/syncconfig_guard_test.go proves the
       # cloud SENDS a config column. It cannot prove an outlet STORES it, and
       # at 0.6.0 four procurement families passed that guard, shipped in every

@@ -18,3 +18,5 @@ export * from "./types/payment";
 export * from "./types/inventory";
 // Milestone 5 additions (0.6.0, ADR-019).
 export * from "./types/procurement";
+// Milestone 6 Phase C additions (0.8.0, ADR-022).
+export * from "./types/aggregator";
