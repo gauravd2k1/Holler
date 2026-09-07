@@ -154,6 +154,20 @@ bumping contracts across a wedged outbox buries the same defect twice.
 
 ### Scope — three deliverables, in this order, ~5–6.5 weeks
 
+**⚠ STATUS 2026-09-07 — PHASE A IS CLOSED AND M6 C7 IS CLOSED. READ
+`docs/M6 kickoff.md` FIRST, THEN `docs/m6-acceptance.md`. DO NOT RE-RUN C7 AND DO
+NOT RECONSTRUCT ITS VERDICT FROM GIT HISTORY.** Phase A closed with **five of
+seven landed — A1, A1b, A2, A3, A5 — and three carried: A4, A6, A7**, each in
+`docs/backlog.md` with the trigger *before the first pilot*. **Never report it as
+"Phase A complete".** A7 is not cosmetic: **78 rows on the live edge database
+have no route and can never be sent** (55 `kot`, 22 `stock_count`, 1 `invoice`,
+measured 2026-09-07), so the `order` stream replays end to end and nothing else
+replays at all — **A7 must close before any aggregate beyond `order` is expected
+to replay in Phase C.** M6 C7 was observed on the shipping binaries on
+2026-09-07; M6 C3 is still open (its falsifier needs the pre-fix binary).
+**Next work is Phase B, `apps/admin`.** The table below is the ORIGINAL PLAN,
+kept for its reasoning; the state of each row is above.
+
 **Phase A — the seven sync gaps carried out of M5 (~1 week, NO contract change).**
 Sync before aggregators: aggregator orders ride the same outbox that is wedged
 today. Addressed in this order.

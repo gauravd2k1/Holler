@@ -1,4 +1,55 @@
-# M5 resume state — 2026-09-02
+# Resume state — 2026-09-07
+
+> ## READ THIS BLOCK FIRST. THE REST OF THIS FILE IS M5 HISTORY.
+>
+> **Current position: M6 Phase A is CLOSED. M6 C7 is CLOSED. Phase B
+> (`apps/admin`) is the next work.** Nothing is mid-flight, no branch is open,
+> no test is red, everything is committed and pushed.
+>
+> **Start at `docs/M6 kickoff.md`** — it carries the current position, the
+> operational runbook, and the judgment call outstanding for Phase B. Then
+> `docs/m6-acceptance.md` for criteria and evidence, and `docs/backlog.md` for
+> every deferred item.
+>
+> **Phase A closed with FIVE of seven gaps landed — A1, A1b, A2, A3, A5 — and
+> THREE carried: A4, A6, A7.** Never report it as "Phase A complete". A7 is the
+> one that matters: **78 rows on the live edge database have no route and can
+> never be sent** (55 `kot`, 22 `stock_count`, 1 `invoice`, measured
+> 2026-09-07). The `order` stream replays end to end; nothing else replays at
+> all, and **A7 must close before any aggregate beyond `order` is expected to
+> replay in Phase C.**
+>
+> **M6 C7 was observed on the shipping binaries on 2026-09-07 by the operator**
+> — seven rows on the till, each `order <id> · 5 attempts · missing_reference
+> (HTTP 422)`, matching `sync_outbox_block` field for field, surviving an
+> unclean exit and WAL-replay crash recovery. Backend identity verified by a NEW
+> pid (60872, created 15:48:56), not by the port answering. **Do not re-run it,
+> and do not reconstruct its verdict from git history** — the evidence is in
+> `docs/m6-acceptance.md`. Reconstructing verdicts after a restart is exactly
+> what cost M5 four criteria that had in fact been observed.
+>
+> **M6 C3 is NOT closed** — its observation came in passing during the C7 run
+> (order rows published 74 → 84 while five aggregates were blocked), but its
+> falsifier needs the pre-fix binary with neighbour counts recorded both times,
+> and that exists only in tests.
+>
+> **A5 landed at `4d12363`**: the periodic sync pump. Before it, `drain_outbox`
+> ran at startup and shutdown only, which is why the 2026-09-05 C7 attempt
+> reached 2 attempts and stopped one short of the amber threshold. Interval is
+> 60s by default, overridable with `HOLLER_SYNC_PUMP_INTERVAL_SECS`.
+>
+> **The dev stack has an ordering defect that has now cost two acceptance
+> runs.** `dev-up.ps1` runs the bootstrap before it starts the backend, so
+> `[3b/4]` can never enrol the till's sync credential on a cold start and the
+> POS comes up with **sync silently disabled**. The working sequence and its
+> four traps are in `docs/M6 kickoff.md`; the defect is in `docs/backlog.md`.
+>
+> Contracts FROZEN at **v0.6.4**; migrations through **sqlite 0031 / postgres
+> 0031**.
+
+---
+
+# M5 resume state — 2026-09-02 (HISTORY — superseded by the block above)
 
 > **M5 IS CLOSED at contracts v0.6.3 (2026-09-02); contracts are now v0.6.4, see below. ALL SEVEN ACCEPTANCE CRITERIA
 > ARE OBSERVED against the shipping binaries, none by a test harness.**
