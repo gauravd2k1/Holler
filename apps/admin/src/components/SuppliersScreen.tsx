@@ -43,7 +43,7 @@ export function SuppliersScreen() {
           empty does not block receiving.
         </p>
       ) : (
-        rows.map(({ supplier, items }) => (
+        rows.map((supplier) => (
           <article key={supplier.id}>
             <h2>
               {supplier.name} <small>{supplier.code}</small>
@@ -63,7 +63,7 @@ export function SuppliersScreen() {
                 </tr>
               </thead>
               <tbody>
-                {items.map((it) => (
+                {supplier.items.map((it) => (
                   <tr key={it.id}>
                     <td>{it.inventory_item_id}</td>
                     <td>{it.purchase_unit}</td>

@@ -434,8 +434,23 @@ export type GoodsReceiptPage = z.infer<typeof GoodsReceiptPageSchema>;
  * supplier_item is a CHILD ROW, not an aggregate: it travels inside this
  * bundle rather than on a route of its own, and it has no sync direction.
  */
-export const SupplierWithItemsSchema = z.object({
-  supplier: SupplierSchema,
+export const SupplierWithItemsSchema = SupplierSchema.extend({
   items: z.array(SupplierItemSchema),
 });
 export type SupplierWithItems = z.infer<typeof SupplierWithItemsSchema>;
+
+/**
+ * The envelope `GET /procurement/suppliers` actually returns.
+ *
+ * A WRAPPED OBJECT, NOT A BARE ARRAY, and the supplier fields are FLAT with
+ * `items` beside them -- the Go type embeds Supplier rather than nesting it.
+ * Both of those were got wrong by a hand-written client schema that assumed
+ * `{ suppliers: [{ supplier, items }] }`, which is the shape a reasonable
+ * person would guess and not the shape on the wire.
+ *
+ * Written down here so the next consumer reads it instead of guessing.
+ */
+export const ListSuppliersResponseSchema = z.object({
+  suppliers: z.array(SupplierWithItemsSchema),
+});
+export type ListSuppliersResponse = z.infer<typeof ListSuppliersResponseSchema>;

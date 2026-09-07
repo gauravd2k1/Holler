@@ -1,6 +1,7 @@
 import {
   MenuItemSchema,
   MenuCategorySchema,
+  ListSuppliersResponseSchema,
   SupplierWithItemsSchema,
   GoodsReceiptPageSchema,
   type MenuItem,
@@ -120,11 +121,14 @@ export function patchMenuItem(itemId: string, patch: MenuItemPatch): Promise<Men
 
 // ------------------------------------------------------------- suppliers --
 
-export function listSuppliers(): Promise<SupplierWithItems[]> {
-  return request(
+export async function listSuppliers(): Promise<SupplierWithItems[]> {
+  // The route wraps its result in { suppliers: [...] }. Unwrapped here rather
+  // than in the component, so exactly one place knows the envelope shape.
+  const page = await request(
     `/procurement/suppliers?outlet_id=${OUTLET_ID}`,
-    z.array(SupplierWithItemsSchema),
+    ListSuppliersResponseSchema,
   );
+  return page.suppliers;
 }
 
 export function createSupplier(body: unknown): Promise<SupplierWithItems> {

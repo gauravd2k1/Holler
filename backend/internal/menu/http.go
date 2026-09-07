@@ -97,12 +97,16 @@ func (h *Handlers) listCategories(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, categoriesToWire(categories))
 }
 
+// Same completeness rule as itemWire: every field MenuCategorySchema declares.
+// schema_version was missing here too, and for the same reason -- nothing read
+// this route from a strict client until the admin console.
 type categoryWire struct {
 	ID            string `json:"id"`
 	OutletID      string `json:"outlet_id"`
 	Name          string `json:"name"`
 	SortOrder     int    `json:"sort_order"`
 	ConfigVersion int    `json:"config_version"`
+	SchemaVersion int    `json:"schema_version"`
 }
 
 func categoryToWire(c Category) categoryWire {
@@ -112,6 +116,7 @@ func categoryToWire(c Category) categoryWire {
 		Name:          c.Name,
 		SortOrder:     c.SortOrder,
 		ConfigVersion: c.ConfigVersion,
+		SchemaVersion: 1,
 	}
 }
 
@@ -147,6 +152,26 @@ func (h *Handlers) createCategory(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusCreated, categoryToWire(c))
 }
 
+// itemWire is what /menu/* serves for a menu item.
+//
+// IT MUST CARRY EVERY FIELD MenuItemSchema DECLARES. It did not: tax_profile_id
+// (contracts 0.4.2), hsn_sac (0.4.5) and schema_version were absent from this
+// struct while present in the database, in the domain Item and in the
+// repository's SELECT. So every HTTP reader of a menu item got a row with no
+// tax profile and no HSN/SAC code, silently, from the version each was added.
+//
+// It survived because nothing read this route from a browser until the M6
+// Phase B admin console, and Go's encoder simply omits a field that is not
+// there -- no error, no warning, and a Zod client is the first thing in the
+// system that can see the difference. Contracts 0.5.9 recorded this exact
+// shape: THE ADDITIVE-CHANGE CONSUMER LIST REACHES THE WIRE TYPES, NOT JUST THE
+// SCHEMAS. A column added to both stores is not landed until the Go struct, the
+// Zod schema, the OpenAPI shape and the repository's INSERT/SELECT all carry
+// it.
+//
+// hsn_sac is the one with teeth: an invoice cannot legally issue with a NULL or
+// blank HSN/SAC on any line, so a client that reads this route to check its
+// catalogue was being told every item was unconfigured.
 type itemWire struct {
 	ID             string `json:"id"`
 	OutletID       string `json:"outlet_id"`
@@ -154,7 +179,18 @@ type itemWire struct {
 	Name           string `json:"name"`
 	BasePricePaise int64  `json:"base_price_paise"`
 	IsAvailable    bool   `json:"is_available"`
-	ConfigVersion  int    `json:"config_version"`
+	// Pointers, and serialised as null rather than omitted: NULL is MEANINGFUL
+	// on both. A null tax_profile_id means "use the outlet's default profile",
+	// and a null hsn_sac means "not yet classified" -- which is why an invoice
+	// refuses to issue against it. Omitting the key would make "absent" and
+	// "explicitly unset" indistinguishable to every client.
+	TaxProfileID  *string `json:"tax_profile_id"`
+	HSNSAC        *string `json:"hsn_sac"`
+	ConfigVersion int     `json:"config_version"`
+	// Stamped by the server, never read from the row: the contract pins it to
+	// the literal 1, so a client that validates strictly rejects a body without
+	// it -- as the admin console did.
+	SchemaVersion int `json:"schema_version"`
 }
 
 func itemToWire(i Item) itemWire {
@@ -165,7 +201,10 @@ func itemToWire(i Item) itemWire {
 		Name:           i.Name,
 		BasePricePaise: i.BasePricePaise,
 		IsAvailable:    i.IsAvailable,
+		TaxProfileID:   i.TaxProfileID,
+		HSNSAC:         i.HSNSAC,
 		ConfigVersion:  i.ConfigVersion,
+		SchemaVersion:  1,
 	}
 }
 
