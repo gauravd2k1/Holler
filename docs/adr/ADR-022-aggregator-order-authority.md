@@ -1,8 +1,11 @@
 # ADR-022 — Aggregator orders are two aggregates, not one
 
-- **Status: PROPOSED (draft).** Escalated for approval **before a single table is
-  drawn**. No schema, no `AggregateType` member, no migration accompanies this
-  draft deliberately.
+- **Status: ACCEPTED, 2026-09-08.** Approved to open M6 Phase C. The four
+  questions the draft escalated are settled in the addendum below; the body
+  above is unchanged from the draft that was approved.
+- **Contracts: 0.8.0, not 0.7.0.** The draft targeted 0.7.0 because that was
+  the next bump after Phase A. 0.7.0 was then spent on Phase B's admin routes
+  (ADR-024). The repo wins over the plan: aggregator shapes land at 0.8.0.
 - **Date:** 2026-09-02
 - **Milestone:** M6 (aggregator integration), Phase C
 - **Contracts:** targets **0.7.0**, which lands **after M6 Phase A is green** —
@@ -96,3 +99,91 @@ Recorded now so they are not rediscovered later:
 4. **An inbound document that cannot be mapped to menu items is recorded, not
    refused** — the `grn_gap` precedent from ADR-019. Refusing a delivery order
    that is already cooking is the outage, not the protection.
+
+---
+
+# Addendum, 2026-09-08 — the four open questions, decided
+
+The draft listed four things it "deliberately does not decide" and required them
+settled before 0.8.0 is drawn. Each is decided below **by default rather than by
+escalation**, because none of them is a breaking change, an authority split, or
+a public exposure. Where a default is arguable the argument is recorded, so a
+later session can overturn it on evidence instead of rediscovering it.
+
+## 1. The table set
+
+| Table | Store | Direction | Why |
+|---|---|---|---|
+| `aggregator_order` | both | **cloud→edge**, replace-not-merge | The inbound document. Authority per the body of this ADR |
+| `aggregator_order_line` | both | **child row, no direction** | Travels inside its parent's payload — the `invoice_line` / `grn_line` precedent. Not an aggregate, never given a sync direction |
+| `aggregator_platform_credential` | **Postgres only** | **none, ever** | API keys and platform secrets. **The edge never talks to a platform**: it has no public address, which is the premise of this whole ADR, so an outlet has no use for a credential it cannot spend. The `refresh_token` / `device_credential` precedent, and the same reasoning — credential material does not travel to a machine that does not need it |
+| `aggregator_item_map` | **Postgres only** | **none in stage 1** | Platform item id → `menu_item`. Resolution happens **at the cloud, when the document arrives**, so the edge receives an `aggregator_order` whose lines already name local menu items. Mirroring the map would mean two resolvers that can disagree |
+| `aggregator_callback_receipt` | **Postgres only** | **none, ever** | The webhook dedupe record: `UNIQUE (tenant_id, platform, message_id)`. A platform retries; a duplicate callback must be idempotent. Edge-local equivalents already exist for the other direction (`sync_outbox_block`), and this is the inbound mirror of that idea |
+
+**`aggregator_item_snooze` is NOT drawn in stage 1.** Snooze is M6 **C2**, which
+is PARKED behind platform sandbox access, and the push path that would write it
+does not exist. Drawing a table nothing writes is a column nothing reads with
+extra steps. It arrives with the criterion.
+
+## 2. Order creation from an inbound document: OPERATOR-CONFIRMED, not automatic
+
+**Default taken: the till shows the inbound document and a human accepts it.**
+Creation of the local `order` happens on that accept.
+
+Three reasons, in order of weight:
+
+1. **It matches the actual workflow.** Every aggregator platform has an accept /
+   reject step; a restaurant that cannot refuse an order it has no ingredients
+   for is not a product anyone will run.
+2. **Rule 4 of this ADR makes automatic creation unsafe.** An inbound document
+   that cannot be mapped to menu items is *recorded, not refused* — so automatic
+   creation would put an order with unresolved lines into a kitchen. Recording a
+   document a human then reads is the whole point of recording it.
+3. **It keeps one writer.** The edge creates the local order, as it does for
+   every other channel. Nothing about the aggregator path makes the cloud a
+   creator of `order` rows.
+
+**The cost, stated:** an order sitting unaccepted is a real operational failure
+mode, and this decision creates it. Mitigation is a till surface that makes an
+unaccepted document loud — the same shape as the sync-blocked banner — and that
+is Phase C work, not a later idea.
+
+## 3. A platform cancellation arriving AFTER the till has billed
+
+**Default taken: recorded on the document, surfaced to the operator, and it
+NEVER touches the invoice or the local order automatically.**
+
+`invoice` is immutable with exactly one legal transition (`ISSUED → CANCELLED`,
+contracts 0.5.0), and that transition is an operator action with an audit trail.
+A platform message must not be able to void a bill: it is money, it is a legal
+document, and the platform's view and the till's view can legitimately disagree
+— exactly the ADR-019 situation where both numbers are right and reconciling
+them silently is the defect.
+
+So the cancellation lands on `aggregator_order`, the till shows it beside the
+local order, and a human decides. **This is the case most likely to produce a
+money defect** (the draft said so), which is precisely why it is manual.
+
+## 4. Retention of `aggregator_order` documents
+
+**Default taken: kept indefinitely in stage 1. No purge, no archive, no TTL.**
+
+It is the inbound record of what an external system asked for, and the thing
+anyone would reach for in a dispute about an order that was billed, refunded or
+cancelled. Deletion semantics are also unresolved repository-wide — the
+cloud→edge config path has no tombstone at all, filed at Phase B close — and
+inventing a retention rule for one table while that is open would set a
+precedent by accident.
+
+Filed for revisit when volume justifies it, which is a real trigger and not a
+polite deferral: a busy delivery outlet generates thousands of these a month.
+
+## What this addendum does NOT decide, and will not be quietly assumed
+
+- **Nothing about signing, the registry, or a public callback endpoint.** Those
+  are M6.1. In M6 the callback receive path is built and reachable **locally
+  only**.
+- **Nothing about snooze**, per §1.
+- **No live channel on any platform.** Stage 1 delivers the framework and two
+  adapters against fakes. C8 is **SHAPE ONLY** and the acceptance file says so
+  in those words.
