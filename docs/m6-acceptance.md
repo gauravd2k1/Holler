@@ -19,6 +19,74 @@ watched failing first (§66).
 
 ---
 
+## Phase B — CLOSED 2026-09-08 WITH THREE SURFACES BUILT AND TWO CARRIED, NOT ALL FIVE
+
+**Say it in those words.** Phase B was scoped as five admin surfaces. **Three
+were built: menu and pricing, suppliers and pack sizes, the goods-receipt
+list.** **Two were deferred: purchase orders, and staff and permissions**, each
+in `docs/backlog.md` with the trigger *before the first pilot*. Staff and
+permissions is pilot work rather than milestone work: today the only way to
+create a user is `devseed`, so a real outlet would have one cashier and no way
+to add, remove or lock out staff.
+
+| Surface | State |
+|---|---|
+| Menu and pricing | **BUILT** — observed rendering with live data, 2026-09-08 |
+| Suppliers and pack sizes | **BUILT** — observed, 2026-09-08 |
+| Goods-receipt list | **BUILT** — observed, 2026-09-08 |
+| Purchase orders | **DEFERRED** — backlog, before first pilot |
+| Staff and permissions | **DEFERRED** — backlog, before first pilot |
+
+### The observation, 2026-09-08, by the operator
+
+All three tabs rendered in a real browser at `http://localhost:5175`, signed in
+as `owner@holler.test`, against the running backend and a live Postgres.
+Screenshots taken of each.
+
+- **Menu and pricing** — Masala Chai at **45.00** and Veg Thali at 220.00, with
+  categories, the availability column, and the "edits change the cloud, not the
+  tills" note. The 45.00 is itself evidence: the item seeds at 4000 paise and
+  reads 4500 because `PATCH /menu/items/{itemId}` was exercised against this
+  database and the change persisted.
+- **Suppliers and pack sizes** — Pune Grain Traders (SUP-GRAIN), one pack size
+  of 50000 base units against purchase unit SACK, dimension MASS shown as
+  stored, and the create form with an **empty** dimension selector.
+- **Goods receipts** — four receipts (GRN/20260902/0003 down to
+  GRN/20260901/0003), each with **Entered / Pack size / Base quantity** as three
+  separate columns, `4 x 25000 = 100000` consistent on every line, line totals
+  formatted as money, and `no purchase order · no supplier recorded` where those
+  links are null.
+
+**`hsn_sac` reads "not set — cannot be billed" on both menu items, and that is
+CORRECT.** `backend/cmd/devseed/main.go` inserts `menu_item` without an
+`hsn_sac` column at all, so the cloud's two rows genuinely carry NULL. Filed as
+a seed gap. It is worth recording precisely because it looks like the wire
+defect it is not: before the fix a missing KEY made Zod reject the whole
+response, and now a real NULL renders as an absence.
+
+### Five defects found between "build green" and "screens working"
+
+Every one invisible to `tsc`, `pnpm build`, and both test suites — which is
+CLAUDE.md's build-green-is-not-dev-works rule demonstrated five times in one
+sitting.
+
+| # | Defect | Fix |
+|---|---|---|
+| 1 | **No CORS anywhere in the API.** Every browser that had ever called it was same-origin or not a browser: the POS is a Tauri window, the KDS talks to the edge over the LAN. `apps/admin` is the first cross-origin browser client this API has ever had | `eb8fb38` |
+| 2 | **The client hand-wrote the login principal** and declared an `email` field it has never carried. Sign-in authenticated, then failed at the parse step | `153bbb4` |
+| 3 | **Stale Vite prebundle** — `@holler_contracts.js` was 6.5 hours older than the source, so new exports resolved to nothing and the page was blank. Same defect as the POS white screen of 2026-08-20 | `b7bfefb` |
+| 4 | **`itemWire` carried 7 fields where `MenuItemSchema` declares 10** — `tax_profile_id`, `hsn_sac` and `schema_version` were in the database, the domain type and the SELECT, and absent from the struct that goes on the wire. Shipping since 0.4.2 | `3371b91` |
+| 5 | **`SupplierWithItems` was hand-written as `{supplier, items}` in a bare array.** The wire is flat, inside a `{suppliers: […]}` envelope | `3371b91` |
+
+**Two of the five were mine (2 and 5), and both have the same cause: I wrote a
+shape from memory instead of reading the contract.** Both now come from
+`packages/contracts`. Defect 4 is the same failure in the other direction and
+had been shipping for months — **the admin console is the first strict client
+this API has ever had, and it found a months-old wire defect within minutes of
+first contact.**
+
+---
+
 ## Phase A — CLOSED 2026-09-07 WITH THREE OF SEVEN GAPS CARRIED, NOT ALL SEVEN LANDED
 
 **Say it in those words.** Phase A was scoped as seven sync gaps (A1–A7).
@@ -65,8 +133,8 @@ beyond `order` is expected to replay.**
 | C2 | Stock-out snoozes on ONDC staging | **PARKED** behind platform sandbox access |
 | C3 | A permanently-rejected row blocks itself and not its neighbours | **CODE COMPLETE, AWAITING OBSERVATION** — see below |
 | C4 | An offline order reaches the cloud without the operator closing the app | **A5 LANDED, AWAITING OBSERVATION** — the periodic pump exists; the `taskkill` falsifier has not been run |
-| C5 | Supplier and pack size created in admin convert on the next receipt | NOT STARTED (Phase B) |
-| C6 | A goods receipt is readable back in-product | NOT STARTED (Phase B) |
+| C5 | Supplier and pack size created in admin convert on the next receipt | **UNBLOCKED** — the admin surface exists and renders (Phase B closed 2026-09-08); the criterion itself is unobserved, and its falsifier (receive BEFORE creating them, watch the gap) has not been run |
+| C6 | A goods receipt is readable back in-product | **UNBLOCKED** — the list and detail routes exist and the screen renders live receipts with all three quantity fields; the field-by-field comparison against the edge row is unobserved |
 | C7 | A client-data failure is reported as 4xx with a reason the edge records | **CLOSED — observed 2026-09-07** on the shipping binaries, both halves of the falsifier watched |
 | C8 | An aggregator order flows through both adapters | NOT STARTED (Phase C) |
 

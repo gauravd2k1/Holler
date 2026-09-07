@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError, createSupplier, listSuppliers, outletId } from "../lib/api";
 import { formatMicro, parseToMicro } from "../lib/quantity";
+import { formatPaise } from "../lib/money";
 
 /**
  * Suppliers and pack sizes.
@@ -70,7 +71,14 @@ export function SuppliersScreen() {
                     <td>{formatMicro(it.pack_size_micro)}</td>
                     {/* Shown, not inferred. See the header. */}
                     <td>{it.quantity_dimension}</td>
-                    <td>{it.last_price_paise ?? "—"}</td>
+                    {/*
+                      Formatted, never raw. last_price_paise is integer paise
+                      and rendering it bare put "250000" on screen where a buyer
+                      reads a price -- off by a factor of 100 to anyone not
+                      thinking in paise, on the one screen where they are
+                      comparing what a supplier charges.
+                    */}
+                    <td>{it.last_price_paise === null ? "—" : formatPaise(it.last_price_paise)}</td>
                   </tr>
                 ))}
               </tbody>
