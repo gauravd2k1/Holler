@@ -19,6 +19,44 @@ watched failing first (§66).
 
 ---
 
+## Phase A — CLOSED 2026-09-07 WITH THREE OF SEVEN GAPS CARRIED, NOT ALL SEVEN LANDED
+
+**Say it in those words.** Phase A was scoped as seven sync gaps (A1–A7).
+**Five landed: A1, A1b, A2, A3, A5.** **Three were deferred: A4, A6, A7**, each
+filed in `docs/backlog.md` with the trigger *before the first pilot*. A report
+that says "Phase A complete" without naming the three is wrong, and the largest
+of them is not cosmetic — A7 means **78 outbox rows on the live edge database
+have no route and can never be sent** (55 `kot`, 22 `stock_count`, 1 `invoice`,
+measured 2026-09-07).
+
+| ID | Gap | State |
+|---|---|---|
+| A1 | Cloud returns 500 for a client-data failure | **LANDED** — one SQLSTATE classifier, `99875cc`, `ab6c201` |
+| A1b | Two more ingest paths report client-data failures as 500/404 | **LANDED** — `856616b`, `3f7abaa` |
+| A2 | Head-of-line blocking strands the whole outbox | **LANDED** — `07d7968`, `59c2ea3` |
+| A3 | Retry budget never spends; nothing surfaces a blocked row | **LANDED** — `c95dc24`, `078d4e5`, `c8147ef` |
+| A5 | No periodic sync pump | **LANDED** — `4d12363` |
+| A4 | `Offline` conflates four states | **DEFERRED** — reporting half only; backlog, before first pilot |
+| A6 | Shutdown drain silent; window close does not exit the process | **DEFERRED** — backlog, before first pilot |
+| A7 | ~120 rows pending with no edge route | **DEFERRED** — 78 rows measured; backlog, before first pilot |
+
+**The sequencing invariant held.** *At no commit boundary may an order become
+droppable with no operator trace.* A1 landed alone and held the row; A2 retained
+it without making it visible, and its commit message said so; A3 added the
+budget and the surfacing; A5 made the surfacing reachable without a restart
+loop. The 2026-09-07 C7 run is the end-to-end evidence for that chain.
+
+**What Phase A was for, and whether it is met.** The stated reason to do sync
+before aggregators was that aggregator orders ride the same outbox, and a wedged
+outbox would bury the same defect twice. That is met for the `order` stream: a
+permanently-refused row blocks itself, is charged, is surfaced, and its
+neighbours drain. It is **not** met for `kot`, `invoice`, `payment`, `cash_shift`
+or `stock_count`, which A7 leaves unroutable. **Contracts may proceed to 0.7.0
+on the strength of the order stream; A7 must be closed before any aggregate
+beyond `order` is expected to replay.**
+
+---
+
 ## Status summary
 
 | # | Criterion | State |
@@ -29,16 +67,94 @@ watched failing first (§66).
 | C4 | An offline order reaches the cloud without the operator closing the app | **A5 LANDED, AWAITING OBSERVATION** — the periodic pump exists; the `taskkill` falsifier has not been run |
 | C5 | Supplier and pack size created in admin convert on the next receipt | NOT STARTED (Phase B) |
 | C6 | A goods receipt is readable back in-product | NOT STARTED (Phase B) |
-| C7 | A client-data failure is reported as 4xx with a reason the edge records | **PARTLY OBSERVED 2026-09-05** — 422 and the stored reason observed on the shipping binaries; the surfacing half not reached (2 attempts, threshold 3). See below |
+| C7 | A client-data failure is reported as 4xx with a reason the edge records | **CLOSED — observed 2026-09-07** on the shipping binaries, both halves of the falsifier watched |
 | C8 | An aggregator order flows through both adapters | NOT STARTED (Phase C) |
 
 ---
 
 ## M6 C7 — a client-data failure is reported as 4xx with a reason the edge records
 
-**State: CODE COMPLETE, NOT CLOSED.** Every mechanism the criterion names is
-built, falsified and green. **Nobody has watched it happen on the shipping
-binaries**, so by this project's own rule the criterion stays open.
+**State: CLOSED. Observed end to end on the shipping binaries, 2026-09-07, by
+the operator.** Both halves of the falsifier were watched: the pre-fix 500 on
+2026-09-03, and the post-fix 422-stored-and-surfaced on 2026-09-07. Nothing
+below is evidenced by a test harness.
+
+### The closing observation, 2026-09-07
+
+**Preconditions, each verified rather than assumed.** Backend restarted after
+the previous instance was killed: `api.exe` **PID 60872**, created 15:48:56,
+`/health` 200 — a NEW pid, not the port answering (the old PID 8800 was killed
+and port 8080 confirmed free first). Cloud seeded with its two-item menu; the
+edge seeded with 39 items across 8 categories, so the drift the criterion needs
+was intact. The till's sync credential was enrolled with the backend already
+listening — `[3b/4] rotating ... sync ENABLED`, device
+`01a05d10-cba7-7876-9958-65f9a6ca2fe7`. **That step had silently failed on the
+two previous attempts** and is the reason they produced nothing; see the
+`dev-up.ps1` ordering defect in `docs/backlog.md`. Pump interval set to 10s via
+`HOLLER_SYNC_PUMP_INTERVAL_SECS`.
+
+**What the operator saw.** A purple banner at the top of the till, listing seven
+rows, each reading `order <aggregate_id> · 5 attempts · missing_reference (HTTP
+422)`, headed "7 records will not reach the cloud" and closing "Nothing is lost
+locally — these need someone to look at them."
+
+**What the database held at that moment** (read from `sync_outbox_block` while
+the application was open, on a copy):
+
+| aggregate_id | attempts | last_status | last_code | blocked_at (UTC) |
+|---|---|---|---|---|
+| `01a04210-8e03-7540-a480-d0fde09d14b3` | 5 | 422 | `missing_reference` | 11:21:45.021 |
+| `01a04219-1241-71c2-b689-1ea22414f8d1` | 5 | 422 | `missing_reference` | 11:21:45.109 |
+| `01a04266-710b-7730-bc2f-910a7dc68931` | 5 | 422 | `missing_reference` | 11:21:45.208 |
+| `01a042dc-fab8-7f92-9e29-f04cb5346292` | 5 | 422 | `missing_reference` | 11:21:45.316 |
+| `01a06ee5-67f8-76d2-a4b7-caf41e1fc1d1` | 5 | 422 | `missing_reference` | 11:21:56.288 |
+| `01a04210-…` (2nd outbox row) | 5 | 422 | `missing_reference` | 11:22:16.787 |
+| `01a04210-…` (3rd outbox row) | 5 | 422 | `missing_reference` | 11:23:07.431 |
+
+Four of those five orders are the ones rejected on **2026-09-05** and they
+survived a machine restart and a full reseed to be surfaced here.
+
+**The "records" half, tested harder than planned.** Closing the POS window did
+NOT terminate the process (see the finding below), so the relaunch exercised
+`crypto::recover_crash_leftovers` rather than a clean reopen: SQLite replayed
+the WAL, the merged state was resealed superseding a sealed file 79 minutes
+stale, and the plaintext was wiped. `edge.db.enc` went 1335324 bytes @16:13 →
+1343516 @17:32 and `edge.db-wal` 626272 → 0. **After the relaunch the banner
+showed the same seven rows, same ids, same attempt counts, same code.** The
+reason is durable across an unclean exit and a WAL replay, which is a stronger
+observation than the clean restart originally specified.
+
+### Findings from the observation — none blocking C7, all real
+
+1. **The banner prints `aggregate_id`, so one order appears three times.** The
+   three `01a04210` entries are three distinct outbox rows of one four-item
+   order (`01a04210-a428-…`, `01a04210-a6f6-…`, `01a04211-d7f2-…`, all
+   `ItemAdded`). Once a row exhausts its budget and is abandoned, the drain
+   moves to the next row of the same aggregate, which spends its own five
+   attempts and blocks ~30s later. Two consequences: the count climbs toward
+   roughly twenty entries for what is five orders, and an operator reads that
+   as twenty lost orders; and fully surfacing one order costs five attempts
+   PER EVENT, not five in total.
+2. **The banner covers the top bar.** `position: fixed; top: 0` with
+   content-dependent height — at seven rows it hides the search box and the
+   DINE_IN / TAKEAWAY / DELIVERY / Select table / Orders / Stock row entirely.
+   The CSS comment claims this region is "a region nothing else occupies"; it
+   is the top bar's region. This is the third fixed overlay colliding, which
+   is what that comment set out to avoid.
+3. **Closing the window does not exit the POS under `tauri dev`.**
+   `holler-pos.exe` PID 78528 remained alive after the window was closed, with
+   the pump still ticking (WAL written two minutes later) and the database
+   still open and unsealed. `RunEvent::Exit` never fired, so the shutdown drain
+   never ran. Sits beside A6.
+
+### C3 evidence collected in passing, NOT sufficient to close it
+
+During the run, order rows published 74 → 84 while five aggregates were
+blocked; 24 order rows remained pending across 13 distinct aggregates. So
+neighbours drained while blocked rows did not, which is C3's observation — but
+C3's falsifier requires the same fixture on the **pre-fix** binary with
+neighbour counts recorded both times, and that has only been done in tests.
+**C3 stays open.**
 
 ### The falsifying condition, watched first
 
