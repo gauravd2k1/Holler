@@ -32,6 +32,11 @@ type Repository interface {
 	ResolveMenuItem(ctx context.Context, tenantID, outletID, platform, externalItemID string) (*string, error)
 
 	WithTx(ctx context.Context, fn func(tx pgx.Tx) error) error
+
+	// QueryDocuments serves C1's down-path. The WHERE clause and args are built
+	// by the handler because the ordering and the cursor are a transport
+	// concern; the repository owns only the scan.
+	QueryDocuments(ctx context.Context, where string, args []any) ([]DocumentRow, error)
 }
 
 type pgRepository struct{ pool postgres.Pool }

@@ -2182,3 +2182,56 @@ pub struct PurchaseOrderLineConfig {
     pub unit_price_paise: i64,
     pub line_total_paise: i64,
 }
+
+// --- aggregator_order (M6 Phase C, contracts 0.8.0, ADR-022) -----------------
+//
+// CLOUD-AUTHORITATIVE. The edge holds these as a READ-ONLY MIRROR: it receives
+// them from the cloud down-path and never authors one. The local `order` it
+// creates from a document is edge-authoritative and syncs up like every other
+// order, linked by external_order_id.
+//
+// The guarantee that split buys, and it is published: a new aggregator order
+// cannot ARRIVE while the uplink is down; one that has already arrived is fully
+// operable offline.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AggregatorOrder {
+    pub id: String,
+    pub tenant_id: String,
+    pub outlet_id: String,
+    /// Data, never a discriminator. Nothing on the edge branches on it.
+    pub platform: String,
+    pub external_order_id: String,
+    /// The platform's own state string, verbatim. A platform status NEVER
+    /// writes `order.status` — one writer, as ADR-014 requires for `kot.status`.
+    pub platform_status: String,
+    /// Replace-not-merge compares on this.
+    pub document_version: i64,
+    /// The raw inbound payload, kept whole: the record of what an external
+    /// system actually asked for.
+    pub raw_payload: String,
+    pub stated_total_paise: Option<i64>,
+    pub received_at: String,
+    pub business_date: String,
+    /// NULL means "arrived, not yet accepted" — a visible operational state.
+    /// Written by the till when a human accepts, and never overwritten by a
+    /// later cloud document.
+    pub accepted_at: Option<String>,
+    pub local_order_id: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// A child row, travelling with its document. No sync direction of its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AggregatorOrderLine {
+    pub id: String,
+    pub aggregator_order_id: String,
+    pub line_number: i64,
+    pub external_item_id: String,
+    pub external_item_name: String,
+    /// NULL when nothing local matched, and the NULL is load-bearing: an
+    /// unmappable line is recorded, not refused (ADR-022 rule 4).
+    pub menu_item_id: Option<String>,
+    pub quantity: i64,
+    pub stated_unit_price_paise: Option<i64>,
+}

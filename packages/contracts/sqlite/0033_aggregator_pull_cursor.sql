@@ -1,0 +1,26 @@
+-- M6 Phase C, C1's down-path. EDGE-LOCAL, SQLITE ONLY.
+--
+-- Declared in SINGLE_STORE_MIGRATIONS with its reason. A pull cursor is one
+-- outlet's record of how far IT has read; the cloud has no use for it and must
+-- not hold a second copy, for the same reason invoice_sequence and
+-- stock_balance_snapshot stay edge-local. A mirrored cursor is a second opinion
+-- about what an outlet has seen.
+--
+-- Note the deliberate contrast with sync_state's OTHER cursors: those two are
+-- outbound high-water marks (edge -> cloud). This is the first INBOUND one, and
+-- it exists because aggregator_order is the first non-config aggregate that
+-- travels cloud -> edge. Config rides last_applied_config_version, which is a
+-- single integer for a whole bundle; a document stream needs a position within
+-- an ordered sequence instead.
+
+-- Keyset position, opaque to SQLite: the base64 of (updated_at, id) the cloud
+-- handed back. NULL means "nothing pulled yet", which is the correct starting
+-- state and is distinguishable from "pulled and found nothing" (that leaves the
+-- previous cursor in place).
+--
+-- NULLABLE WITH NO DEFAULT, DELIBERATELY. Contracts 0.5.8's lesson was that a
+-- NOT NULL column with a constant default on an existing table passes on an
+-- empty database and dies on the second row under a UNIQUE key. There is no
+-- UNIQUE here, but the same reasoning says an absent cursor should read as
+-- absent rather than as a sentinel somebody has to remember the meaning of.
+ALTER TABLE sync_state ADD COLUMN aggregator_pull_cursor TEXT;

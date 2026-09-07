@@ -188,6 +188,11 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0032_m6_aggregator.sql",
         include_str!("../../../packages/contracts/sqlite/0032_m6_aggregator.sql"),
     ),
+    // C1's down-path cursor. EDGE-LOCAL, declared in SINGLE_STORE_MIGRATIONS.
+    (
+        "0033_aggregator_pull_cursor.sql",
+        include_str!("../../../packages/contracts/sqlite/0033_aggregator_pull_cursor.sql"),
+    ),
 ];
 
 /// Applies any migrations not yet reflected in `PRAGMA user_version`. Safe
@@ -951,6 +956,11 @@ mod tests {
     /// The declaration IS the guard: adding the missing counterpart now fails
     /// this test, and the failure names the reason the file is missing.
     const SINGLE_STORE_MIGRATIONS: &[(&str, &str, &str)] = &[
+        (
+            "sqlite",
+            "aggregator_pull_cursor.sql",
+            "M6 Phase C, C1: sync_state.aggregator_pull_cursor is one outlet's              record of how far IT has read the aggregator_order stream. The              cloud has no use for it and must not hold a second copy -- the              invoice_sequence and stock_balance_snapshot precedent. A mirrored              cursor is a second opinion about what an outlet has seen. Note              also that it is the first INBOUND cursor on this table: the other              two are outbound high-water marks.",
+        ),
         (
             "postgres",
             "aggregator_cloud_only.sql",

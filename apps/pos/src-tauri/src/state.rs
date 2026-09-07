@@ -428,6 +428,26 @@ impl AppState {
                         "holler-pos: {phase} config pull failed ({e}); keeping the last applied config"
                     ),
                 }
+
+                // M6 Phase C, C1: the aggregator down-path, on the SAME loop
+                // and inside the SAME lock as the config pull above and the
+                // outbox pump below. No second pump host -- a document apply
+                // interleaving with an outbox pump on one SQLite connection is
+                // the fault that shows up as a corrupt read once a month.
+                //
+                // OFFLINE-SAFE BY THE SAME DEFAULT: a failed pull keeps what
+                // the till already has, logs, and surfaces nothing. No banner.
+                // A new aggregator order cannot ARRIVE while the uplink is
+                // down -- that is ADR-022's published guarantee, not a fault
+                // to alarm a cashier about -- and every document already here
+                // stays fully operable.
+                match worker.pull_aggregator_orders(&mut db) {
+                    Ok(0) => {}
+                    Ok(n) => eprintln!("holler-pos: {phase} pulled {n} aggregator order document(s)"),
+                    Err(e) => eprintln!(
+                        "holler-pos: {phase} aggregator pull failed ({e}); keeping the documents this till already holds"
+                    ),
+                }
             }
         }
 

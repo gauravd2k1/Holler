@@ -187,3 +187,52 @@ polite deferral: a busy delivery outlet generates thousands of these a month.
 - **No live channel on any platform.** Stage 1 delivers the framework and two
   adapters against fakes. C8 is **SHAPE ONLY** and the acceptance file says so
   in those words.
+
+---
+
+# Addendum 2, 2026-09-08 — the cloud→edge down-path (M6 C1)
+
+**Why it is in M6 and not M6.1.** M6 C1 requires a received aggregator order to
+bill, print and close with the cloud provably unreachable. That is this ADR's
+published guarantee, and it is unreachable unless the document gets to a till in
+the first place — `aggregator_order` is the first non-config aggregate to travel
+cloud→edge, and nothing carried it. It is also verifiable without a registry, a
+signature or a public endpoint, so it belongs on this side of the cut. Deferring
+it would have meant the framework never reached a till at all.
+
+**Scope, deliberately narrow.** `aggregator_order` only, not a general
+down-sync framework. A framework built for one caller is a framework shaped by
+one caller, and the second aggregate to need this will have requirements this
+one cannot see.
+
+| Decision | Why |
+|---|---|
+| **Pull, not push** | The till has no address the cloud can reach — the premise of this whole ADR |
+| **Keyset cursor on `(updated_at, id)`** | Documents are rewritten while an outlet pages (a status change), and an OFFSET walk silently skips or repeats rows. `updated_at` rather than `received_at` because a document whose status changed **must travel again** — ordered by arrival, a cancellation would never reach the till cooking the order |
+| **Cursor is edge-local** (`sync_state.aggregator_pull_cursor`, SQLite only) | One outlet's record of how far IT has read. A mirrored cursor is a second opinion about what an outlet has seen — the `invoice_sequence` precedent |
+| **Cursor advances only after a page is applied** | Moving ahead of what was written skips a document permanently and silently |
+| **Idempotent by `id`, replace-not-merge on `document_version`** | The pull is at-least-once by construction: a drain that dies after writing and before advancing re-reads the page. Without idempotency every crash would double an outlet's delivery orders |
+| **Rides the A5 periodic loop, inside the same database lock** | No second pump host. A document apply interleaving with an outbox pump on one SQLite connection is the fault that appears as a corrupt read once a month |
+| **A failed pull keeps what the till has, logs, shows nothing** | Offline is normal here. A new aggregator order *cannot* arrive while the uplink is down — that is the guarantee, not a fault to alarm a cashier about |
+
+## The rule that must not erode
+
+**The edge holds `aggregator_order` as a READ-ONLY MIRROR.** There is exactly
+one writer on the edge side — the apply function the pull calls — and no
+till-side command may reach this table. The edge creates its own `order` from a
+document, linked by `external_order_id`, and that order is edge-authoritative.
+
+**Two columns are the exception, and they are the exception in one direction
+only.** `accepted_at` and `local_order_id` record that a human at THIS till
+accepted the document. They are written locally and are **deliberately absent
+from the upsert's SET list**, so a later cloud document cannot clear them — a
+platform status update must not erase the fact that an order is already in a
+kitchen. That single omission is what stands between this mirror and split
+authority, and it is pinned by a test that was watched failing with those two
+columns added back:
+
+> `a cloud document cleared a local acceptance — the till has an order in a
+> kitchen for a document that now says nobody accepted it`
+
+**If a future change adds any other edge write path to `aggregator_order`, it is
+split authority and it is wrong.**

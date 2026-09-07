@@ -27,6 +27,7 @@
 
 pub mod backoff;
 pub mod client;
+pub mod aggregator;
 pub mod config;
 pub mod envelope;
 pub mod error;

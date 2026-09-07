@@ -3452,6 +3452,169 @@ pub fn get_device_credential_cache_by_id(
 
 // ---------------------------------------------------------------- sync_state --
 
+// --- aggregator_order: THE READ-ONLY MIRROR (M6 Phase C, C1) -----------------
+//
+// aggregator_order is CLOUD-AUTHORITATIVE (ADR-022). The edge RECEIVES these
+// rows and never authors one. There is deliberately no insert, update or delete
+// here that a till-side command could reach: the only writer is
+// `apply_aggregator_order`, which exists to apply what the cloud sent.
+//
+// IF A FUTURE CHANGE ADDS AN EDGE WRITE PATH TO THIS TABLE, IT IS SPLIT
+// AUTHORITY AND IT IS WRONG. The edge creates its OWN `order` from a document,
+// linked by external_order_id, and that order is edge-authoritative and syncs
+// up like every other one. That is the whole shape of ADR-022 and the reason a
+// delivery-heavy outlet can still bill with the line down.
+
+/// Applies one cloud document. IDEMPOTENT BY `id`, and replace-not-merge on
+/// `document_version`: an older or equal version is ignored outright, exactly as
+/// `apply_bundle` ignores an older config bundle.
+///
+/// Returns true when the row was actually written, so a caller can tell "caught
+/// up" from "applied nothing because it was stale" -- the two look identical
+/// from a row count and mean different things.
+pub fn apply_aggregator_order(
+    conn: &Connection,
+    doc: &AggregatorOrder,
+    lines: &[AggregatorOrderLine],
+) -> DbResult<bool> {
+    let changed = conn.execute(
+        "INSERT INTO aggregator_order
+           (id, tenant_id, outlet_id, platform, external_order_id, platform_status,
+            document_version, raw_payload, stated_total_paise, received_at, business_date,
+            accepted_at, local_order_id, schema_version, created_at, updated_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,1,?14,?14)
+         ON CONFLICT(id) DO UPDATE SET
+            platform_status    = excluded.platform_status,
+            document_version   = excluded.document_version,
+            raw_payload        = excluded.raw_payload,
+            stated_total_paise = excluded.stated_total_paise,
+            received_at        = excluded.received_at,
+            updated_at         = excluded.updated_at
+         WHERE excluded.document_version > aggregator_order.document_version",
+        params![
+            doc.id,
+            doc.tenant_id,
+            doc.outlet_id,
+            doc.platform,
+            doc.external_order_id,
+            doc.platform_status,
+            doc.document_version,
+            doc.raw_payload,
+            doc.stated_total_paise,
+            doc.received_at,
+            doc.business_date,
+            // NOT taken from the cloud on update: accepted_at and local_order_id
+            // record that a HUMAN AT THIS TILL accepted the document, and a
+            // later platform message must never clear that. They appear in the
+            // INSERT only so a first arrival has them null.
+            doc.accepted_at,
+            doc.local_order_id,
+            doc.updated_at,
+        ],
+    )?;
+    if changed == 0 {
+        return Ok(false);
+    }
+
+    // Lines replaced wholesale with their document. A document is a snapshot of
+    // what the platform currently says; half an old one beside half a new one is
+    // a state neither system ever described.
+    conn.execute(
+        "DELETE FROM aggregator_order_line WHERE aggregator_order_id = ?1",
+        params![doc.id],
+    )?;
+    for l in lines {
+        conn.execute(
+            "INSERT INTO aggregator_order_line
+               (id, aggregator_order_id, line_number, external_item_id, external_item_name,
+                menu_item_id, quantity, stated_unit_price_paise, schema_version)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,1)",
+            params![
+                l.id,
+                doc.id,
+                l.line_number,
+                l.external_item_id,
+                l.external_item_name,
+                // NULL when nothing local matched, and the NULL is load-bearing:
+                // an unmappable line is recorded, not refused (ADR-022 rule 4).
+                l.menu_item_id,
+                l.quantity,
+                l.stated_unit_price_paise,
+            ],
+        )?;
+    }
+    Ok(true)
+}
+
+/// Documents this outlet holds that no human has accepted yet.
+///
+/// The operational queue the till surface reads. An order sitting unaccepted is
+/// the failure mode ADR-022's operator-confirmed decision creates, and it is
+/// named there rather than discovered later.
+pub fn list_unaccepted_aggregator_orders(
+    conn: &Connection,
+    outlet_id: &str,
+) -> DbResult<Vec<AggregatorOrder>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, tenant_id, outlet_id, platform, external_order_id, platform_status,
+                document_version, raw_payload, stated_total_paise, received_at, business_date,
+                accepted_at, local_order_id, created_at, updated_at
+           FROM aggregator_order
+          WHERE outlet_id = ?1 AND accepted_at IS NULL
+          ORDER BY received_at",
+    )?;
+    let rows = stmt
+        .query_map(params![outlet_id], |row| {
+            Ok(AggregatorOrder {
+                id: row.get(0)?,
+                tenant_id: row.get(1)?,
+                outlet_id: row.get(2)?,
+                platform: row.get(3)?,
+                external_order_id: row.get(4)?,
+                platform_status: row.get(5)?,
+                document_version: row.get(6)?,
+                raw_payload: row.get(7)?,
+                stated_total_paise: row.get(8)?,
+                received_at: row.get(9)?,
+                business_date: row.get(10)?,
+                accepted_at: row.get(11)?,
+                local_order_id: row.get(12)?,
+                created_at: row.get(13)?,
+                updated_at: row.get(14)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// The down-path cursor. EDGE-LOCAL: one outlet's record of how far it has read.
+pub fn get_aggregator_pull_cursor(conn: &Connection, outlet_id: &str) -> DbResult<Option<String>> {
+    conn.query_row(
+        "SELECT aggregator_pull_cursor FROM sync_state WHERE outlet_id = ?1",
+        params![outlet_id],
+        |row| row.get(0),
+    )
+    .optional()
+    .map(|v| v.flatten())
+    .map_err(Into::into)
+}
+
+/// Advanced ONLY after a page has been applied, never before. A cursor moved
+/// ahead of what was written is how a document is skipped permanently and
+/// silently -- the failure ADR-018 §0.5.8 spent a whole mechanism avoiding on
+/// the outbound side.
+pub fn set_aggregator_pull_cursor(
+    conn: &Connection,
+    outlet_id: &str,
+    cursor: &str,
+) -> DbResult<()> {
+    conn.execute(
+        "UPDATE sync_state SET aggregator_pull_cursor = ?2 WHERE outlet_id = ?1",
+        params![outlet_id, cursor],
+    )?;
+    Ok(())
+}
+
 pub fn get_sync_state(conn: &Connection, outlet_id: &str) -> DbResult<Option<SyncState>> {
     conn.query_row(
         "SELECT outlet_id, last_pushed_outbox_id, last_applied_config_version,

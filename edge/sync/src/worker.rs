@@ -291,6 +291,16 @@ impl SyncWorker {
         crate::config::pull_and_apply_config(db, &self.client, &self.config.outlet_id)
     }
 
+    /// Pulls `aggregator_order` documents and applies them (M6 Phase C, C1).
+    ///
+    /// Reuses this worker's authenticated client, and takes no lock of its own:
+    /// the caller holds the database lock, so a document apply can never
+    /// interleave with an outbox pump or a config apply against the same
+    /// connection.
+    pub fn pull_aggregator_orders(&self, db: &mut Db) -> SyncResult<usize> {
+        crate::aggregator::pull_and_apply_aggregator_orders(db, &self.client, &self.config.outlet_id)
+    }
+
     /// Confirms this worker's `device_token` is a currently-valid credential
     /// that resolves to `config.outlet_id` (ADR-017 hole 1). Pings
     /// `GET /sync/config` — the one route that already enforces
