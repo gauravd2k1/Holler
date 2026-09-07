@@ -26,10 +26,10 @@ watched failing first (§66).
 | C1 | Aggregator order bills and closes with the cloud unreachable | NOT STARTED (Phase C) |
 | C2 | Stock-out snoozes on ONDC staging | **PARKED** behind platform sandbox access |
 | C3 | A permanently-rejected row blocks itself and not its neighbours | **CODE COMPLETE, AWAITING OBSERVATION** — see below |
-| C4 | An offline order reaches the cloud without the operator closing the app | NOT STARTED (A5) |
+| C4 | An offline order reaches the cloud without the operator closing the app | **A5 LANDED, AWAITING OBSERVATION** — the periodic pump exists; the `taskkill` falsifier has not been run |
 | C5 | Supplier and pack size created in admin convert on the next receipt | NOT STARTED (Phase B) |
 | C6 | A goods receipt is readable back in-product | NOT STARTED (Phase B) |
-| C7 | A client-data failure is reported as 4xx with a reason the edge records | **CODE COMPLETE, AWAITING OBSERVATION** — see below |
+| C7 | A client-data failure is reported as 4xx with a reason the edge records | **PARTLY OBSERVED 2026-09-05** — 422 and the stored reason observed on the shipping binaries; the surfacing half not reached (2 attempts, threshold 3). See below |
 | C8 | An aggregator order flows through both adapters | NOT STARTED (Phase C) |
 
 ---
@@ -91,8 +91,71 @@ order from the till, failed it against the real backend, and shown the operator
 the result** — and `docs/backlog.md` still carries "`edge/sync` has no host", so
 the worker is only reachable from a test process at all.
 
+### The 2026-09-05 attempt — the post-fix half PARTLY observed, and why it fell short
+
+An operator run was made on 2026-09-05 and **did not close the criterion**. It is
+recorded here rather than discarded, because what it produced is evidence and
+because the reason it fell short changed the criterion itself.
+
+**What the run produced, read back from `sync_outbox_block` on 2026-09-07** (the
+edge database, queried directly; four rows, all `aggregate_type = order`):
+
+| aggregate_id | attempts | last_status | last_code | first → last attempt (UTC) |
+|---|---|---|---|---|
+| `01a04210-8e03-7540-a480-d0fde09d14b3` | 2 | 422 | `missing_reference` | 00:05:00.949 → 00:05:02.886 |
+| `01a04219-1241-71c2-b689-1ea22414f8d1` | 2 | 422 | `missing_reference` | 00:05:01.283 → 00:05:02.971 |
+| `01a04266-710b-7730-bc2f-910a7dc68931` | 2 | 422 | `missing_reference` | 00:05:01.732 → 00:05:03.070 |
+| `01a042dd`* → `01a042dc-fab8-7f92-9e29-f04cb5346292` | 2 | 422 | `missing_reference` | 00:05:02.217 → 00:05:03.169 |
+
+`last_error` on all four: `cloud rejected the envelope with status 422`. Times are
+UTC; the operator observed them as 05:35 IST. The items ordered were Malai Tikka,
+Mixed Veg Curry, Palak Paneer, Paneer Butter Masala, Egg Bhurji, Fish Curry and
+Chana Masala — **none of them among the two the cloud seeds**, which is what the
+criterion's precondition requires.
+
+**So the wire half and the storage half ARE observed on the shipping binaries:**
+a client-data failure was reported as 422 with `missing_reference`, the reason was
+stored durably, and it survived both the process dying and a machine restart.
+
+**The surfacing half was not, and the banner was correctly absent.** Every row
+stands at `attempts = 2` with `blocked_at` NULL, and the two queries behind
+`SyncBlockedBanner` select on exactly those columns:
+`list_blocked_outbox_rows` needs `blocked_at IS NOT NULL`;
+`list_persistently_failing_outbox_rows` needs `attempts >= OUTBOX_ATTENTION_ATTEMPTS`.
+2 < 3 and 2 < 5, so both returned empty and the component returned `null`. The
+run stopped **one attempt short of the amber condition and three short of the
+purple one**. Nothing here is a defect in the banner.
+
+**Why it stopped at two attempts, and the correction it forces.** Before M6 A5,
+`drain_outbox` had exactly two callers — startup and `RunEvent::Exit`. Attempts
+could therefore only accrue when a human started or stopped the application, so
+"watch five pumps" with the window open could not move the counter at all. **The
+observation is only reachable with the periodic pump present**, which supersedes
+the earlier startup/shutdown-only note in this section's closing steps.
+
+### The falsifier, corrected
+
+The criterion's falsifier as originally written — *"after → 4xx, reason stored,
+row surfaced"* — reads as one event and is three, separated by a threshold a
+single order and a few pumps cannot cross. Stated exactly, with the constants it
+depends on (`edge/sync/src/worker.rs`):
+
+- **4xx on the wire** and **reason stored** happen on the FIRST rejection.
+- **Row surfaced, still retrying (amber)** requires `attempts >= OUTBOX_ATTENTION_ATTEMPTS`, which is **3**.
+- **Row surfaced, given up on (purple)** requires `attempts >= MAX_OUTBOX_REPLAY_ATTEMPTS`, which is **5**, at which point `blocked_at` is set.
+
+**A single order with a few pumps cannot satisfy this criterion**, and any future
+run that reports it satisfied without naming an attempt count of at least 3 has
+not observed the surfacing half. This correction was made on 2026-09-07 after the
+2026-09-05 run failed for precisely this reason.
+
 ### What closing it requires
 
+0. **A5 (the periodic pump) present in the running binary.** Without it the
+   attempt counter only moves when the application starts or stops, and the
+   thresholds above are reachable only by a restart loop no operator would ever
+   perform — a condition the environment cannot naturally produce, which M5's
+   retro already names as no test at all.
 1. Backend up in its own window via `scripts/dev-up.ps1`, **verified by a NEW
    pid** — not by the port answering (`docs/retro.md`; an old process answers
    identically).
@@ -100,12 +163,20 @@ the worker is only reachable from a test process at all.
    cloud menu against the edge's 43 makes this the default, not a contrivance.
    **The menu seed drift must stay untouched until then**: seeding the cloud
    makes the 500 disappear and ships both defects looking like a fix.
-3. Watch the drain: the order is refused 422, its neighbours still publish, the
-   budget spends over five pumps, and the row lands in `sync_outbox_block`.
+3. Watch the drain: the order is refused 422, its neighbours still publish, and
+   the row lands in `sync_outbox_block`. **Then keep watching**: the budget
+   spends one attempt per pump, and the row is not visible to anyone until the
+   third.
 4. **Read the banner off the screen** and record what it says, with the
-   `aggregate_id` and the code it displays.
+   `aggregate_id`, the code it displays, and **the attempt count at the moment it
+   appeared**.
 5. Restart the POS and confirm the banner still says it — that is the half
    "a reason the edge **records**" actually asserts.
+
+\* The fourth row's `outbox_id` is `01a042dd-125b-7423-87e4-ac38b9edd069`; its
+`aggregate_id` is the value in the table. The two differ by one character at the
+prefix and are easy to transpose — noted so a later reader does not read it as an
+inconsistency.
 
 ---
 

@@ -33,6 +33,7 @@
 
 use std::env;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use holler_edge_database::crypto::EncryptionKey;
@@ -66,6 +67,81 @@ pub const SHUTDOWN_DRAIN_BUDGET: Duration = Duration::from_secs(20);
 /// unbounded backlog while a deadline is running.
 const DRAIN_BATCH_LIMIT: i64 = 200;
 
+/// Environment override for [`periodic_drain_interval`], in whole seconds.
+/// Exists so an acceptance run can watch several pumps inside one sitting
+/// without waiting out the production cadence; absent or unparseable falls
+/// back to the default rather than failing startup, because a mistyped
+/// interval must never stop a till from opening.
+pub const PERIODIC_DRAIN_INTERVAL_ENV: &str = "HOLLER_SYNC_PUMP_INTERVAL_SECS";
+
+/// How often the periodic drain runs while the till is open (M6 A5).
+///
+/// THE DRAIN USED TO RUN AT STARTUP AND SHUTDOWN ONLY, so an abnormal exit --
+/// a power cut, a `taskkill`, the machine restarting under the operator --
+/// meant the day never left the till, and the next drain was whenever someone
+/// next launched the application. That is the state M5 ended in with 120 rows
+/// pending. A timer is the whole fix: it calls the SAME already-bounded
+/// `drain_outbox`, so every guarantee that path already carries -- the
+/// deadline, the per-aggregate blocking, the retry budget, the classification
+/// of transient versus permanent -- is inherited rather than restated.
+///
+/// Sixty seconds is chosen against the failure it prevents, not against
+/// throughput: the loss window for an abnormal exit becomes a minute of
+/// trading rather than a service. It is comfortably longer than
+/// `SHUTDOWN_DRAIN_BUDGET`, so two drains cannot stack up behind each other
+/// even when the cloud is unreachable and every pass runs to its deadline.
+pub const DEFAULT_PERIODIC_DRAIN_INTERVAL: Duration = Duration::from_secs(60);
+
+/// How long the periodic loop waits between checks of its stop flag. The
+/// interval is served as a sequence of these rather than one long sleep so a
+/// shutdown is not held up by a timer that has just gone back to sleep --
+/// a till that will not close is the defect ADR-020 spent a budget avoiding.
+const PUMP_STOP_POLL: Duration = Duration::from_millis(200);
+
+/// The periodic drain interval, honouring [`PERIODIC_DRAIN_INTERVAL_ENV`].
+pub fn periodic_drain_interval() -> Duration {
+    match env::var(PERIODIC_DRAIN_INTERVAL_ENV) {
+        Ok(raw) => match raw.trim().parse::<u64>() {
+            Ok(secs) if secs > 0 => Duration::from_secs(secs),
+            _ => {
+                eprintln!(
+                    "holler-pos: {PERIODIC_DRAIN_INTERVAL_ENV}={raw:?} is not a positive whole number of seconds; using the {}s default",
+                    DEFAULT_PERIODIC_DRAIN_INTERVAL.as_secs()
+                );
+                DEFAULT_PERIODIC_DRAIN_INTERVAL
+            }
+        },
+        Err(_) => DEFAULT_PERIODIC_DRAIN_INTERVAL,
+    }
+}
+
+/// Drives `tick` every `interval` until `stop` is set.
+///
+/// Split out of the thread body, and taking the tick as a closure, so the
+/// timing and shutdown behaviour can be tested without a Tauri window, a
+/// database or a network -- the parts of a periodic pump that actually go
+/// wrong are "it never fires" and "it will not stop", and both are observable
+/// here. THE FLAG IS CHECKED BEFORE THE FIRST TICK as well as between ticks:
+/// a loop that fires once on the way out is a drain running against a sealed
+/// database.
+pub fn run_periodic_drain_loop<F: FnMut()>(stop: &AtomicBool, interval: Duration, mut tick: F) {
+    loop {
+        let deadline = Instant::now() + interval;
+        while Instant::now() < deadline {
+            if stop.load(Ordering::SeqCst) {
+                return;
+            }
+            std::thread::sleep(
+                PUMP_STOP_POLL.min(deadline.saturating_duration_since(Instant::now())),
+            );
+        }
+        if stop.load(Ordering::SeqCst) {
+            return;
+        }
+        tick();
+    }
+}
+
 pub struct AppState {
     pub db: Arc<Mutex<Db>>,
     pub outlet_id: String,
@@ -90,6 +166,15 @@ pub struct AppState {
     /// documents itself as driven by ONE caller, and this host is that one
     /// caller.
     sync: Mutex<Option<SyncWorker>>,
+    /// Set once, on the way out, to stop the M6 A5 periodic drain.
+    ///
+    /// ORDERING IS THE WHOLE POINT OF THIS FLAG. The exit path seals the
+    /// database (`Db::shutdown_in_place`), and a pump that acquires the
+    /// database lock after that seal would be draining a closed connection.
+    /// The flag is set before the shutdown drain and re-checked by the loop
+    /// INSIDE the database lock, so the two orderings that exist -- pump
+    /// first, or seal first -- both end with the pump declining to run.
+    pump_stop: Arc<AtomicBool>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -162,6 +247,7 @@ impl AppState {
             hub,
             lan_handle: Mutex::new(lan_handle),
             sync: Mutex::new(sync),
+            pump_stop: Arc::new(AtomicBool::new(false)),
         };
 
         // ADR-020: DRAIN ON LAUNCH, BEFORE ANYTHING ELSE -- ahead of the first
@@ -190,6 +276,7 @@ impl AppState {
             hub: None,
             lan_handle: Mutex::new(None),
             sync: Mutex::new(None),
+            pump_stop: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -204,6 +291,7 @@ impl AppState {
             hub: Some(hub),
             lan_handle: Mutex::new(None),
             sync: Mutex::new(None),
+            pump_stop: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -224,7 +312,20 @@ impl AppState {
             hub: None,
             lan_handle: Mutex::new(None),
             sync: Mutex::new(Some(worker)),
+            pump_stop: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// A handle on the M6 A5 stop flag, for the timer thread.
+    pub fn pump_stop_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.pump_stop)
+    }
+
+    /// Stops the periodic drain. Called from the `RunEvent::Exit` hook BEFORE
+    /// the shutdown drain and the seal, so no pump can be started against a
+    /// database that is about to close. Idempotent.
+    pub fn stop_periodic_drain(&self) {
+        self.pump_stop.store(true, Ordering::SeqCst);
     }
 
     /// Seals and closes the edge database, exactly as the `RunEvent::Exit` hook
@@ -306,6 +407,16 @@ impl AppState {
                 Ok(db) => db,
                 Err(e) => e.into_inner(),
             };
+            // M6 A5. Re-checked HERE, holding the database lock, not only in
+            // the timer loop: the exit path sets this flag and then takes the
+            // same lock to seal, so a pump that was already waiting on the
+            // lock would otherwise wake up and drain a sealed database. The
+            // shutdown drain itself runs before the flag matters -- it is
+            // called from the exit path, which sets the flag after it.
+            if self.pump_stop.load(Ordering::SeqCst) && phase == "periodic" {
+                drop(db);
+                break;
+            }
             let report = match worker.pump_outbox(&mut db, DRAIN_BATCH_LIMIT) {
                 Ok(report) => report,
                 Err(e) => {

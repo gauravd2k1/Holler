@@ -10,7 +10,7 @@ pub mod error;
 pub mod ids;
 pub mod state;
 
-use state::{AppState, SHUTDOWN_DRAIN_BUDGET};
+use state::{periodic_drain_interval, run_periodic_drain_loop, AppState, SHUTDOWN_DRAIN_BUDGET};
 use tauri::Manager;
 
 /// Builds and runs the Tauri application. Split out of `main.rs` so
@@ -30,6 +30,45 @@ pub fn run() {
                 )
             });
             app.manage(state);
+
+            // M6 A5: THE PERIODIC SYNC PUMP.
+            //
+            // Before this, `drain_outbox` had exactly two callers -- startup
+            // and `RunEvent::Exit` -- so a till that exited abnormally never
+            // drained at all, and the day's orders waited for whenever
+            // somebody next launched the application. A power cut at an
+            // outlet is not an edge case; it is Tuesday.
+            //
+            // The timer calls the SAME bounded drain, so nothing about
+            // classification, blocking, the retry budget or the deadline is
+            // restated here -- restating any of it is how the three block
+            // mechanisms ADR-023 records came to differ. This function's
+            // whole job is WHEN, never WHAT.
+            let pump_handle = app.handle().clone();
+            let interval = periodic_drain_interval();
+            std::thread::Builder::new()
+                .name("holler-sync-pump".to_string())
+                .spawn(move || {
+                    let stop = pump_handle.state::<AppState>().inner().pump_stop_flag();
+                    run_periodic_drain_loop(&stop, interval, || {
+                        let state: &AppState = pump_handle.state::<AppState>().inner();
+                        state.drain_outbox("periodic", SHUTDOWN_DRAIN_BUDGET);
+                    });
+                })
+                // A till whose pump thread will not spawn still sells, prints
+                // and bills; it just syncs at both ends of the day as it did
+                // before A5. Loud, and NOT fatal -- the ADR-020 rule that a
+                // sync failure never takes down the POS. The handle is
+                // dropped deliberately: the thread runs until the stop flag
+                // is set, and joining it on exit would trade a till that
+                // will not close for a thread that is about to be reaped.
+                .map(drop)
+                .unwrap_or_else(|e| {
+                    eprintln!(
+                        "holler-pos: could not start the periodic sync pump ({e});                          this till will drain at startup and shutdown only"
+                    );
+                });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -104,6 +143,12 @@ pub fn run() {
                 // `inner()` reborrows from the app handle rather than from
                 // the temporary `State` guard, so the lock may outlive it.
                 let state: &AppState = app_handle.state::<AppState>().inner();
+                // M6 A5: STOP THE PUMP FIRST, before the drain and well
+                // before the seal. A pump that starts after
+                // `shutdown_in_place` is draining a closed database, and the
+                // failure mode is the silent one -- it would find nothing to
+                // send and report success.
+                state.stop_periodic_drain();
                 state.shutdown_lan_server();
 
                 // ADR-020: DRAIN THE OUTBOX BEFORE THE SEAL, NOT AFTER.
