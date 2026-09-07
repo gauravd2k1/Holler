@@ -1185,3 +1185,62 @@ func (s *Service) AmendPurchaseOrder(ctx context.Context, tenantID, purchaseOrde
 	}
 	return po, nil
 }
+
+// ListGoodsReceipts and GetGoodsReceipt serve the admin read path
+// (contracts 0.7.0, ADR-024).
+//
+// WHAT THESE RETURN IS A REPLICA. A GRN is edge-authoritative (ADR-019): the
+// outlet recorded it and the cloud holds a copy. Any surface rendering this
+// must label it as the cloud's copy, for the same reason PO receipt progress
+// is shown from both sides and never reconciled -- the outlet's own view may
+// legitimately differ, and inventing a single number would mean choosing which
+// truth to hide.
+//
+// Read-only by construction: there is no update or delete beside these. A
+// receipt is corrected by an appended purchase_return, never by an edit.
+func (s *Service) ListGoodsReceipts(ctx context.Context, outletID string, limit int, cursor string) ([]GoodsReceiptNote, string, error) {
+	notes, next, err := s.repo.ListGoodsReceiptNotes(ctx, outletID, limit, cursor)
+	if err != nil {
+		return nil, "", err
+	}
+	// Lines are fetched per note rather than in one join: a join would repeat
+	// the note across its lines and the assembly code that un-repeats them is
+	// where a line goes missing when a page boundary lands mid-note.
+	for i := range notes {
+		lines, err := s.repo.GrnLines(ctx, notes[i].ID)
+		if err != nil {
+			return nil, "", err
+		}
+		notes[i].Lines = lines
+	}
+	return notes, next, nil
+}
+
+// GetGoodsReceipt returns one receipt with its lines and its gaps.
+//
+// Gaps travel with the receipt because a gap is the record of what could not
+// be matched about THIS receipt; one that arrived by another path could not be
+// joined to it.
+func (s *Service) GetGoodsReceipt(ctx context.Context, outletID, grnID string) (GoodsReceiptNote, []GrnGap, error) {
+	note, found, err := s.repo.GetGoodsReceiptNoteForOutlet(ctx, outletID, grnID)
+	if err != nil {
+		return GoodsReceiptNote{}, nil, err
+	}
+	if !found {
+		// 404 whether it does not exist or belongs to another outlet. An
+		// identifier is not a security boundary (§74), and a caller must not
+		// be able to tell the two apart.
+		return GoodsReceiptNote{}, nil, httpx.ErrNotFound
+	}
+	lines, err := s.repo.GrnLines(ctx, note.ID)
+	if err != nil {
+		return GoodsReceiptNote{}, nil, err
+	}
+	note.Lines = lines
+
+	gaps, err := s.repo.GrnGapsForGrn(ctx, note.ID)
+	if err != nil {
+		return GoodsReceiptNote{}, nil, err
+	}
+	return note, gaps, nil
+}

@@ -273,6 +273,24 @@ impl SyncWorker {
         }
     }
 
+    /// Pulls `GET /sync/config` and applies it, reusing this worker's own
+    /// authenticated client (M6, ADR-024).
+    ///
+    /// EXISTS BECAUSE THE PULL HAD NO PRODUCTION CALLER.
+    /// `config::pull_and_apply_config` has been in this crate since M1 and
+    /// until now its only caller in the entire repository was a test, so a
+    /// price edited in the cloud never reached a till at all. Same shape as
+    /// A5 (a drain with no timer) and A7 (ingest routes with no edge
+    /// resolver): the mechanism written, the caller absent, every suite
+    /// green.
+    ///
+    /// The caller holds the database lock; this takes no lock of its own, so
+    /// a config apply and an outbox pump can never interleave against the
+    /// same connection.
+    pub fn pull_config(&self, db: &mut Db) -> SyncResult<bool> {
+        crate::config::pull_and_apply_config(db, &self.client, &self.config.outlet_id)
+    }
+
     /// Confirms this worker's `device_token` is a currently-valid credential
     /// that resolves to `config.outlet_id` (ADR-017 hole 1). Pings
     /// `GET /sync/config` — the one route that already enforces

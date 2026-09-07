@@ -149,3 +149,23 @@ to size the work, not to cite a specific line.
 **None of the unclassified rows has been observed failing.** When each is fixed
 it gets the same treatment `ordering` got — a test asserting the post-fix
 contract, watched red first — or it does not count as fixed.
+
+---
+
+## Added at contracts 0.7.0 (ADR-024), 2026-09-07
+
+Two write/read paths landed for the M6 Phase B admin console. Both go through
+`storage.Wrap`, so neither can report a client-data failure as a 500.
+
+| Sink | Path | SQLSTATE risk | Status |
+|---|---|---|---|
+| `menu.UpdateItem` | `PATCH /menu/items/{itemId}` | `23503` on `category_id`, `23505` on any unique key | **Wrapped.** Executed against a live Postgres: an immutable field in the body is `400 invalid_input`, a blank `hsn_sac` is `400 invalid_input` with a reason, and another outlet's id is `404 not_found`. |
+| `procurement.ListGoodsReceiptNotes` / `GetGoodsReceiptNoteForOutlet` / `GrnGapsForGrn` | `GET /procurement/goods-receipts[/{grnId}]` | read paths; a malformed cursor is the only caller-supplied input | **Wrapped.** A bad cursor is `invalid_input` rather than a 500. |
+
+**What is NOT executed on the menu sink:** the `23503` path itself. The guards
+above were observed on the shipping binary, but a `category_id` that does not
+exist has not been driven through this route against a live database, so the
+FK-to-4xx mapping here is Read-verified rather than Executed. It inherits A1's
+classifier, which IS executed on the ordering path — but "inherits" is an
+argument, not an observation, and the difference is exactly what the A1 audit
+was written to stop papering over.

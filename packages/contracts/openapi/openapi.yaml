@@ -528,6 +528,62 @@ paths:
         "404":
           description: Not found
 
+  /menu/items/{itemId}:
+    patch:
+      tags: [menu]
+      summary: >
+        Edit a menu item. Added at 0.7.0 (ADR-024).
+
+        CONFIG, cloud->edge (§50.1): the cloud is the only author of a menu
+        item and the till never writes one, so the edit belongs here and there
+        is no authority question to answer.
+
+        MUTABLE: name, base_price_paise, category_id, tax_profile_id, hsn_sac.
+        REJECTED WITH 400 invalid_input IF PRESENT: id, outlet_id, tenant_id,
+        is_available. (400 rather than 422 because httpx maps ErrInvalidInput
+        that way for every route in this codebase; the status is the house
+        convention, the `code` is the part a caller branches on.)
+
+        is_available is excluded DELIBERATELY. POST /menu/items/{itemId}/
+        availability already owns it and is an EDGE->CLOUD replay route, so
+        accepting it here would make the cloud a second writer of a field the
+        outlet authors -- the split §50.1 exists to prevent.
+
+        hsn_sac may be changed but NOT cleared: an invoice cannot issue with a
+        NULL or blank HSN/SAC on any line (0.4.5), so blanking it here would
+        break billing at every till that later syncs the row.
+
+        config_version is server-assigned and increments on every accepted
+        edit, so GET /sync/config's since_version filter carries it to the
+        edge.
+      parameters:
+        - $ref: "#/components/parameters/MenuItemId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MenuItemPatch" }
+      responses:
+        "200":
+          description: The updated item.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MenuItem" }
+        "404":
+          description: >
+            No such item IN THIS TENANT. A well-formed itemId belonging to
+            another tenant returns 404, never 403 and never 200: an identifier
+            is not a security boundary (§74).
+        "409":
+          description: Duplicate, via the shared SQLSTATE classifier.
+        "400":
+          description: >
+            An immutable field was present in the body, or hsn_sac was blank,
+            or the patch named no mutable field at all. Code `invalid_input`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
   /menu/items/{itemId}/availability:
     post:
       summary: >
@@ -1743,7 +1799,78 @@ paths:
                   total_paise: { type: integer }
                   limit_paise: { type: integer, nullable: true }
 
+  /procurement/goods-receipts/{grnId}:
+    get:
+      tags: [procurement]
+      summary: >
+        One goods receipt with its lines AND its grn_gap rows. Added at 0.7.0
+        (ADR-024). READ-ONLY REPLICA.
+
+        A GRN is EDGE-AUTHORITATIVE (ADR-019). What this route returns is the
+        CLOUD'S COPY of what an outlet recorded, and any surface rendering it
+        must label it as the replica -- it is not the outlet's live view, and
+        the two may legitimately differ exactly as PO receipt progress does.
+
+        Gaps travel with the receipt because a gap is the record of what could
+        not be matched about THIS receipt; a gap that arrived by another path
+        could not be joined to it. Same reasoning that puts both aggregate
+        types on the one ingest route.
+
+        Exists alongside the list so a field-by-field comparison (M6 C6) runs
+        against one whole record rather than a list entry that may carry a
+        projection: a criterion compared against a summary proves the summary.
+      parameters:
+        - name: grnId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The receipt, its lines, and its gaps.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GoodsReceiptDetail" }
+        "404":
+          description: No such receipt IN THIS TENANT.
+
   /procurement/goods-receipts:
+    get:
+      tags: [procurement]
+      summary: >
+        List goods receipts for an outlet, newest first. Added at 0.7.0
+        (ADR-024). READ-ONLY REPLICA -- see the by-id route for what that
+        means and why it is labelled.
+
+        Returns the immutable snapshot. Every line carries
+        entered_quantity_micro, base_quantity_micro AND
+        pack_size_micro_applied -- ALL THREE, because ADR-019 §3 requires
+        "what did they actually type?" to stay answerable from the row, and a
+        projection that drops the entered quantity destroys exactly that.
+        line_total_paise (0.6.3) is the exact invoiced money the row is worth.
+
+        purchase_order_id, supplier_id and each line's purchase_order_line_id
+        are returned AS NULL where they are null. A GRN NEVER BLOCKS ON A PO
+        and no read path may imply that it did.
+
+        Paginated because receipts accumulate for the life of an outlet and an
+        unbounded list is a slow outage rather than a fast one.
+      parameters:
+        - name: outlet_id
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+        - name: cursor
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: A page of receipts.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GoodsReceiptPage" }
     post:
       summary: >
         Replay a goods receipt recorded at the edge. Added at 0.6.0 (ADR-019).
@@ -2093,6 +2220,162 @@ components:
         format: uuid
 
   schemas:
+    ErrorCode:
+      type: string
+      description: >
+        Added at 0.7.0 (ADR-024). THE ENUMERATION THAT MAKES `code` SAFE TO
+        BRANCH ON.
+
+        Before this the error body was typed `{ code: string, message: string }`
+        with no enumeration anywhere, while the edge branches on the value --
+        so a rename on the cloud side was a silent behaviour change at the
+        edge that no drift test could see. A1 put missing_reference on the
+        wire and the edge reads it; 0.7.0 adds two more routes that return
+        codes, so the enum lands here rather than after the branching spreads.
+
+        THE EDGE CLASSIFIER MUST READ THIS GENERATED SET, NOT STRING LITERALS.
+        An enum nothing consumes is a column nothing reads.
+      enum:
+        - missing_reference
+        - envelope_route_mismatch
+        - po_exceeds_approval_limit
+        - immutable_field
+        - invalid_input
+        - conflict
+        - not_found
+        - internal_error
+
+    ErrorResponse:
+      type: object
+      required: [code, message]
+      properties:
+        code: { $ref: "#/components/schemas/ErrorCode" }
+        message:
+          type: string
+          description: >
+            Human-readable and NEVER machine-parsed. It carries no SQLSTATE, no
+            constraint name and no SQL: A1 pinned that with an explicit leak
+            test.
+
+    MenuItemPatch:
+      type: object
+      additionalProperties: false
+      description: >
+        Added at 0.7.0 (ADR-024). Every field optional -- a PATCH sets what it
+        names and leaves the rest. `additionalProperties: false` is
+        load-bearing: an immutable field in the body must be a 422, never a
+        silent ignore, because a caller that believes it changed outlet_id and
+        did not is worse off than one that got an error.
+      properties:
+        name: { type: string, minLength: 1 }
+        base_price_paise:
+          type: integer
+          minimum: 0
+          description: Integer paise. Never a decimal on the wire.
+        category_id:
+          type: string
+          format: uuid
+          description: Must resolve inside the same outlet.
+        tax_profile_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Null falls back to the outlet default (0.4.2).
+        hsn_sac:
+          type: string
+          minLength: 1
+          description: >
+            May be changed, NEVER cleared. An invoice cannot issue with a NULL
+            or blank HSN/SAC on any line (0.4.5).
+
+    GoodsReceiptLineRead:
+      type: object
+      required:
+        [id, inventory_item_id, entered_quantity_micro,
+         base_quantity_micro, quantity_dimension]
+      properties:
+        id: { type: string, format: uuid }
+        purchase_order_line_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: NULL when the receipt had no matching order line.
+        inventory_item_id: { type: string, format: uuid }
+        entered_quantity_micro:
+          type: integer
+          format: int64
+          description: What the receiver actually typed, in micro-units.
+        base_quantity_micro:
+          type: integer
+          format: int64
+          description: The converted quantity, in the item's base unit.
+        pack_size_micro_applied:
+          type: integer
+          format: int64
+          description: >
+            The pack size used for the conversion. NOT NULL on grn_line
+            (postgres 0028) with a CHECK > 0: every received line converted
+            through some pack size, and storing it is what makes a
+            1000x-wrong receipt explainable from the row.
+        quantity_dimension:
+          type: string
+          description: >
+            The unit the AUTHOR chose, never derived from the referent (0.5.2).
+        line_total_paise:
+          type: integer
+          format: int64
+          description: >
+            The exact invoiced money this line is worth (0.6.3). NOT NULL on
+            grn_line -- every received line has an invoiced total. Do not
+            confuse it with stock_ledger_entry.line_total_paise, which IS
+            nullable because only a receipt origin has one.
+
+    GoodsReceiptNoteRead:
+      type: object
+      required: [id, outlet_id, grn_number, received_at, business_date, lines]
+      properties:
+        id: { type: string, format: uuid }
+        outlet_id: { type: string, format: uuid }
+        grn_number: { type: string }
+        purchase_order_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: NULL when goods arrived against no order at all.
+        supplier_id:
+          type: string
+          format: uuid
+          nullable: true
+        received_at: { type: string, format: date-time }
+        business_date: { type: string, format: date }
+        lines:
+          type: array
+          items: { $ref: "#/components/schemas/GoodsReceiptLineRead" }
+
+    GoodsReceiptPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/GoodsReceiptNoteRead" }
+        next_cursor:
+          type: string
+          nullable: true
+          description: Absent or null when this is the last page.
+
+    GoodsReceiptDetail:
+      type: object
+      required: [receipt, gaps]
+      properties:
+        receipt: { $ref: "#/components/schemas/GoodsReceiptNoteRead" }
+        gaps:
+          type: array
+          description: >
+            The grn_gap rows recorded for THIS receipt. Empty is the normal
+            case; a non-empty array is what a buyer acts on.
+          items: { $ref: "#/components/schemas/GrnGap" }
+
     SyncDirection:
       type: string
       enum: [EDGE_TO_CLOUD, CLOUD_TO_EDGE]

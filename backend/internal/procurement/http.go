@@ -73,6 +73,100 @@ func (h *Handler) Mount(r chi.Router) {
 		Post("/procurement/supplier-credits", h.createSupplierCredit)
 	r.With(auth.RequirePermission(PermissionManage)).
 		Get("/procurement/supplier-credits", h.listSupplierCredits)
+
+	// 0.7.0 (ADR-024). READ-ONLY, and read-only is structural rather than a
+	// convention: there is no PATCH or DELETE beside these, because a receipt
+	// is corrected by an appended purchase_return and never by an edit.
+	r.With(auth.RequirePermission(PermissionManage)).
+		Get("/procurement/goods-receipts", h.listGoodsReceipts)
+	r.With(auth.RequirePermission(PermissionManage)).
+		Get("/procurement/goods-receipts/{grnId}", h.getGoodsReceipt)
+}
+
+func (h *Handler) listGoodsReceipts(w http.ResponseWriter, r *http.Request) {
+	outletID := r.URL.Query().Get("outlet_id")
+	if outletID == "" {
+		httpx.Error(w, fmt.Errorf("%w: outlet_id is required", httpx.ErrInvalidInput))
+		return
+	}
+	limit := 0
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil {
+			httpx.Error(w, fmt.Errorf("%w: limit must be a whole number", httpx.ErrInvalidInput))
+			return
+		}
+		limit = n
+	}
+
+	notes, next, err := h.svc.ListGoodsReceipts(r.Context(), outletID, limit, r.URL.Query().Get("cursor"))
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+
+	page := contracts.GoodsReceiptPage{Items: make([]contracts.GoodsReceiptNoteRead, 0, len(notes))}
+	for _, n := range notes {
+		page.Items = append(page.Items, goodsReceiptToRead(n))
+	}
+	if next != "" {
+		page.NextCursor = &next
+	}
+	httpx.JSON(w, http.StatusOK, page)
+}
+
+func (h *Handler) getGoodsReceipt(w http.ResponseWriter, r *http.Request) {
+	outletID := r.URL.Query().Get("outlet_id")
+	if outletID == "" {
+		httpx.Error(w, fmt.Errorf("%w: outlet_id is required", httpx.ErrInvalidInput))
+		return
+	}
+	note, gaps, err := h.svc.GetGoodsReceipt(r.Context(), outletID, chi.URLParam(r, "grnId"))
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, contracts.GoodsReceiptDetail{
+		Receipt: goodsReceiptToRead(note),
+		Gaps:    gaps,
+	})
+}
+
+// goodsReceiptToRead maps the stored aggregate onto the read shape.
+//
+// ALL THREE QUANTITY FIELDS TRAVEL -- entered, base, and the pack size
+// applied. ADR-019 §3 requires "what did they actually type?" to stay
+// answerable from the row, and a projection that keeps only the base quantity
+// destroys exactly that, silently, on the one screen a buyer would use to
+// investigate a 1000x-wrong receipt.
+//
+// The nullable provenance fields are copied AS NULL where they are null. A GRN
+// never blocks on a PO, so a read path that substituted a placeholder would be
+// asserting a link the receipt does not have.
+func goodsReceiptToRead(n GoodsReceiptNote) contracts.GoodsReceiptNoteRead {
+	lines := make([]contracts.GoodsReceiptLineRead, 0, len(n.Lines))
+	for _, l := range n.Lines {
+		lines = append(lines, contracts.GoodsReceiptLineRead{
+			ID:                   l.ID,
+			PurchaseOrderLineID:  l.PurchaseOrderLineID,
+			InventoryItemID:      l.InventoryItemID,
+			EnteredQuantityMicro: l.EnteredQuantityMicro,
+			BaseQuantityMicro:    l.BaseQuantityMicro,
+			PackSizeMicroApplied: l.PackSizeMicroApplied,
+			QuantityDimension:    string(l.QuantityDimension),
+			LineTotalPaise:       l.LineTotalPaise,
+		})
+	}
+	return contracts.GoodsReceiptNoteRead{
+		ID:              n.ID,
+		OutletID:        n.OutletID,
+		GRNNumber:       n.GrnNumber,
+		PurchaseOrderID: n.PurchaseOrderID,
+		SupplierID:      n.SupplierID,
+		ReceivedAt:      n.ReceivedAt,
+		BusinessDate:    n.BusinessDate,
+		Lines:           lines,
+	}
 }
 
 // MountIngest registers the three edge→cloud replay routes. The caller is

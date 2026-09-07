@@ -101,3 +101,40 @@ func PrincipalFromContext(ctx context.Context) (Principal, bool) {
 }
 
 const permMenuManage = "menu.manage"
+
+// ItemPatch is the mutable field set of PATCH /menu/items/{itemId}
+// (contracts 0.7.0, ADR-024).
+//
+// POINTERS, NOT VALUES, so "absent" and "set to the zero value" stay
+// distinguishable. Without them a PATCH that omitted the price would set it to
+// zero, which on a money column is the worst failure available: silent, and
+// wrong in the customer's favour by the whole price of the item.
+//
+// IsAvailable is absent DELIBERATELY. POST /menu/items/{itemId}/availability
+// owns that column and is an EDGE->CLOUD replay route, so writing it here
+// would make the cloud a second writer of a field the outlet authors (§50.1).
+type ItemPatch struct {
+	Name           *string
+	BasePricePaise *int64
+	CategoryID     *string
+
+	// tax_profile_id has THREE states, not two: absent (leave alone), null
+	// (clear, so the outlet default applies, 0.4.2), and set. TaxProfileIDSet
+	// distinguishes the first from the second -- a bare nil pointer cannot.
+	TaxProfileIDSet bool
+	TaxProfileID    *string
+
+	// HSNSAC may be changed but never cleared: an invoice cannot issue with a
+	// NULL or blank HSN/SAC on any line (0.4.5), so blanking it here would
+	// break billing at every till that later syncs the row.
+	HSNSAC *string
+}
+
+// Empty reports whether this patch would change nothing. A PATCH that names no
+// mutable field is a caller error rather than a no-op success: it means the
+// body carried only fields this route refuses, and answering 200 would tell
+// the caller its edit landed.
+func (p ItemPatch) Empty() bool {
+	return p.Name == nil && p.BasePricePaise == nil && p.CategoryID == nil &&
+		!p.TaxProfileIDSet && p.HSNSAC == nil
+}

@@ -44,6 +44,11 @@ func (h *Handlers) Mount(r chi.Router) {
 		r.Get("/items", h.listItems)
 		r.Post("/items", h.createItem)
 		r.Post("/items/{itemId}/availability", h.setItemAvailability)
+		// 0.7.0 (ADR-024). Menu is cloud config syncing down, so the edit
+		// belongs here. PATCH, not PUT: an amend of an existing row that 404s
+		// rather than creating one, matching the supplier route's precedent.
+		r.With(auth.RequirePermission(auth.PermissionMenuManage)).
+			Patch("/items/{itemId}", h.patchItem)
 		r.With(auth.RequirePermission(auth.PermissionMenuManage)).Put("/items/{itemId}/stations", h.replaceItemStations)
 	})
 }
@@ -280,6 +285,51 @@ func (h *Handlers) createItem(w http.ResponseWriter, r *http.Request) {
 
 type setAvailabilityRequest struct {
 	IsAvailable bool `json:"is_available"`
+}
+
+// patchItemRequest is decoded with DisallowUnknownFields (httpx.DecodeJSON), so
+// an immutable field in the body is a 422 rather than a silent ignore. That is
+// the point: a caller who believes it changed outlet_id and did not is worse
+// off than one who got an error.
+//
+// is_available is absent DELIBERATELY -- see ItemPatch.
+type patchItemRequest struct {
+	Name           *string `json:"name"`
+	BasePricePaise *int64  `json:"base_price_paise"`
+	CategoryID     *string `json:"category_id"`
+	// Double pointer: absent, explicit null, and set are three different
+	// instructions for a nullable column (0.4.2).
+	TaxProfileID **string `json:"tax_profile_id"`
+	HSNSAC       *string  `json:"hsn_sac"`
+}
+
+func (h *Handlers) patchItem(w http.ResponseWriter, r *http.Request) {
+	itemID := chi.URLParam(r, "itemId")
+	outletID := r.URL.Query().Get("outlet_id")
+
+	var req patchItemRequest
+	if err := httpx.DecodeJSON(r, &req); err != nil {
+		httpx.Error(w, err)
+		return
+	}
+
+	patch := ItemPatch{
+		Name:           req.Name,
+		BasePricePaise: req.BasePricePaise,
+		CategoryID:     req.CategoryID,
+		HSNSAC:         req.HSNSAC,
+	}
+	if req.TaxProfileID != nil {
+		patch.TaxProfileIDSet = true
+		patch.TaxProfileID = *req.TaxProfileID
+	}
+
+	item, err := h.svc.UpdateItem(r.Context(), outletID, itemID, patch)
+	if err != nil {
+		httpx.Error(w, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, itemToWire(item))
 }
 
 func (h *Handlers) setItemAvailability(w http.ResponseWriter, r *http.Request) {

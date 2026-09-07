@@ -292,6 +292,38 @@ func (f *fakeRepository) GetGoodsReceiptNoteByID(ctx context.Context, id string)
 	return g, ok, nil
 }
 
+// 0.7.0 (ADR-024) admin read path. Outlet-scoped on purpose: the by-id lookup
+// above is scoped by id alone, which is right for ingest idempotency and wrong
+// for a browser.
+func (f *fakeRepository) GetGoodsReceiptNoteForOutlet(ctx context.Context, outletID, id string) (GoodsReceiptNote, bool, error) {
+	g, ok := f.receipts[id]
+	if !ok || g.OutletID != outletID {
+		return GoodsReceiptNote{}, false, nil
+	}
+	return g, true, nil
+}
+
+func (f *fakeRepository) ListGoodsReceiptNotes(ctx context.Context, outletID string, limit int, cursor string) ([]GoodsReceiptNote, string, error) {
+	out := []GoodsReceiptNote{}
+	for _, g := range f.receipts {
+		if g.OutletID == outletID {
+			out = append(out, g)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID > out[j].ID })
+	return out, "", nil
+}
+
+func (f *fakeRepository) GrnGapsForGrn(ctx context.Context, grnID string) ([]GrnGap, error) {
+	out := []GrnGap{}
+	for _, gap := range f.gaps {
+		if gap.GrnID == grnID {
+			out = append(out, gap)
+		}
+	}
+	return out, nil
+}
+
 func (f *fakeRepository) GrnLines(ctx context.Context, grnID string) ([]GrnLine, error) {
 	return f.receiptLines[grnID], nil
 }

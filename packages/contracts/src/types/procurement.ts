@@ -374,3 +374,68 @@ export const SupplierCreditSchema = z.object({
   schema_version: z.literal(1),
 });
 export type SupplierCredit = z.infer<typeof SupplierCreditSchema>;
+
+/**
+ * 0.7.0 (ADR-024) — the read shapes behind `GET /procurement/goods-receipts`.
+ *
+ * A GRN is EDGE-AUTHORITATIVE (ADR-019). These describe the CLOUD'S REPLICA of
+ * what an outlet recorded; a surface rendering them must label them as the
+ * replica, because the outlet's own view may legitimately differ.
+ *
+ * All three quantity fields travel: ADR-019 §3 requires "what did they
+ * actually type?" to stay answerable from the row, and a projection that keeps
+ * only the base quantity destroys exactly that.
+ */
+export const GoodsReceiptLineReadSchema = z.object({
+  id: z.string().uuid(),
+  // Nullable in both stores, and load-bearing: a GRN never blocks on a PO.
+  purchase_order_line_id: z.string().uuid().nullable(),
+  inventory_item_id: z.string().uuid(),
+  entered_quantity_micro: z.number().int(),
+  base_quantity_micro: z.number().int(),
+  // NOT NULL on grn_line (postgres 0028).
+  pack_size_micro_applied: z.number().int(),
+  // The unit the AUTHOR chose, never derived from the referent (0.5.2).
+  quantity_dimension: z.string(),
+  // NOT NULL on grn_line. Contrast stock_ledger_entry.line_total_paise, which
+  // IS nullable (0.6.3): same name, different column, different nullability.
+  line_total_paise: z.number().int(),
+});
+export type GoodsReceiptLineRead = z.infer<typeof GoodsReceiptLineReadSchema>;
+
+export const GoodsReceiptNoteReadSchema = z.object({
+  id: z.string().uuid(),
+  outlet_id: z.string().uuid(),
+  grn_number: z.string(),
+  purchase_order_id: z.string().uuid().nullable(),
+  supplier_id: z.string().uuid().nullable(),
+  received_at: z.string(),
+  business_date: z.string(),
+  lines: z.array(GoodsReceiptLineReadSchema),
+});
+export type GoodsReceiptNoteRead = z.infer<typeof GoodsReceiptNoteReadSchema>;
+
+export const GoodsReceiptPageSchema = z.object({
+  items: z.array(GoodsReceiptNoteReadSchema),
+  next_cursor: z.string().nullable().optional(),
+});
+export type GoodsReceiptPage = z.infer<typeof GoodsReceiptPageSchema>;
+
+/**
+ * A supplier together with its whole supplier_item price list, which is the
+ * shape `GET /procurement/suppliers` has served since 0.6.0 and the shape
+ * `POST` accepts.
+ *
+ * The Go mirror (`SupplierWithItems`) has existed since 0.6.0; this Zod half
+ * was missing, so every TypeScript consumer had to re-describe it by hand.
+ * Added at 0.7.0 for the admin console -- a shape typed on one side only is
+ * the same defect as a column nothing reads, one language out.
+ *
+ * supplier_item is a CHILD ROW, not an aggregate: it travels inside this
+ * bundle rather than on a route of its own, and it has no sync direction.
+ */
+export const SupplierWithItemsSchema = z.object({
+  supplier: SupplierSchema,
+  items: z.array(SupplierItemSchema),
+});
+export type SupplierWithItems = z.infer<typeof SupplierWithItemsSchema>;

@@ -383,3 +383,70 @@ type SupplierCredit struct {
 	UpdatedAt        string  `json:"updated_at"`
 	SchemaVersion    int     `json:"schema_version"`
 }
+
+// GoodsReceiptLineRead, GoodsReceiptNoteRead and GoodsReceiptPage are the read
+// shapes behind GET /procurement/goods-receipts, added at 0.7.0 (ADR-024).
+//
+// They are READ shapes and deliberately separate from the ingest types: the
+// ingest side is what an edge sends, this is what the cloud serves back, and
+// collapsing the two would let a change to one silently redefine the other.
+//
+// A GRN is EDGE-AUTHORITATIVE (ADR-019) -- what these carry is the cloud's
+// REPLICA of what an outlet recorded.
+// NOTE ON TWO FIELDS THAT ARE NOT HERE. An earlier draft of this shape carried
+// goods_receipt_note_id on the line and ingested_at on the note. Neither
+// survived: a line is always served nested inside its receipt so the parent id
+// is never in doubt, and the repository does not select ingested_at, so the
+// field would have serialised as null on every response. A field the server
+// never populates is worse than no field -- it invites a consumer to branch on
+// an absence that means nothing. Add either back with its reader, not before.
+type GoodsReceiptLineRead struct {
+	ID string `json:"id"`
+	// Nullable, and the absence is load-bearing: a GRN never blocks on a PO.
+	PurchaseOrderLineID *string `json:"purchase_order_line_id"`
+	InventoryItemID     string  `json:"inventory_item_id"`
+	// All three quantity fields travel. ADR-019 §3 requires "what did they
+	// actually type?" to stay answerable from the row, so a projection that
+	// keeps only the base quantity is not acceptable here.
+	EnteredQuantityMicro int64  `json:"entered_quantity_micro"`
+	BaseQuantityMicro    int64  `json:"base_quantity_micro"`
+	// NOT NULL on grn_line (postgres 0028), so a value not a pointer. Note the
+	// contrast with stock_ledger_entry.line_total_paise, which IS nullable
+	// (0.6.3) because only a receipt origin has an invoiced total -- these are
+	// two different columns with the same name and different nullability.
+	PackSizeMicroApplied int64 `json:"pack_size_micro_applied"`
+	// The unit the AUTHOR chose, never derived from the referent (0.5.2).
+	QuantityDimension string `json:"quantity_dimension"`
+	// NOT NULL on grn_line: every received line has an invoiced total.
+	LineTotalPaise int64 `json:"line_total_paise"`
+}
+
+type GoodsReceiptNoteRead struct {
+	ID              string  `json:"id"`
+	OutletID        string  `json:"outlet_id"`
+	GRNNumber       string  `json:"grn_number"`
+	PurchaseOrderID *string `json:"purchase_order_id"`
+	SupplierID      *string `json:"supplier_id"`
+	ReceivedAt      string  `json:"received_at"`
+	BusinessDate    string  `json:"business_date"`
+
+	Lines []GoodsReceiptLineRead `json:"lines"`
+}
+
+type GoodsReceiptPage struct {
+	Items []GoodsReceiptNoteRead `json:"items"`
+	// Nil on the last page. A cursor is opaque to the caller by construction.
+	NextCursor *string `json:"next_cursor"`
+}
+
+// GoodsReceiptDetail is one receipt with its gaps, behind
+// GET /procurement/goods-receipts/{grnId}.
+//
+// Gaps travel WITH the receipt because a gap is the record of what could not
+// be matched about THIS receipt; one that arrived by another path could not be
+// joined to it. Same reasoning that puts both aggregate types on the ingest
+// route.
+type GoodsReceiptDetail struct {
+	Receipt GoodsReceiptNoteRead `json:"receipt"`
+	Gaps    []GrnGap             `json:"gaps"`
+}

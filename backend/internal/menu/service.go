@@ -281,3 +281,37 @@ func requirePermission(ctx context.Context, permission string) error {
 	}
 	return nil
 }
+
+// UpdateItem applies an ItemPatch and returns the updated row
+// (contracts 0.7.0, ADR-024).
+//
+// Config, cloud->edge: the cloud is the only author of a menu item, so there
+// is no authority question here. The bumped outlet config_version is what
+// carries the edit to the till through GET /sync/config's since_version
+// filter -- without it the row changes and no edge ever asks for it again.
+func (s *Service) UpdateItem(ctx context.Context, outletID, itemID string, patch ItemPatch) (Item, error) {
+	if patch.Empty() {
+		return Item{}, fmt.Errorf("%w: no mutable field was supplied", httpx.ErrInvalidInput)
+	}
+	// Blank is rejected here rather than at the column: hsn_sac is NOT NULL in
+	// the store, so an empty string would be accepted by the database and
+	// would then fail invoice issuance at the till, days later and far from
+	// the cause (0.4.5).
+	if patch.HSNSAC != nil && strings.TrimSpace(*patch.HSNSAC) == "" {
+		return Item{}, fmt.Errorf("%w: hsn_sac may be changed but not cleared", httpx.ErrInvalidInput)
+	}
+
+	var updated Item
+	err := s.repo.WithTx(ctx, func(tx pgx.Tx) error {
+		version, err := s.repo.BumpOutletConfigVersion(ctx, tx, outletID)
+		if err != nil {
+			return err
+		}
+		updated, err = s.repo.UpdateItem(ctx, tx, outletID, itemID, patch, version)
+		return err
+	})
+	if err != nil {
+		return Item{}, err
+	}
+	return updated, nil
+}

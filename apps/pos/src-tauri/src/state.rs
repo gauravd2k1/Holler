@@ -394,6 +394,43 @@ impl AppState {
         let deadline = Instant::now() + budget;
         let mut acked = 0usize;
 
+        // ADR-024: PULL CONFIG BEFORE PUSHING (cloud->edge, then edge->cloud).
+        //
+        // `config::pull_and_apply_config` has existed since M1 and until this
+        // change its ONLY caller in the repository was a test, so a price
+        // edited in the admin console never reached a till. The mechanism was
+        // built and unhosted -- the same shape as A5 (a drain with no timer)
+        // and A7 (ingest routes with no edge resolver), and invisible to every
+        // green suite for the same reason.
+        //
+        // OFFLINE-SAFE BY DEFAULT, AND THE DEFAULT IS THE POINT. A failed pull
+        // is logged and nothing else: the till keeps its last applied config
+        // and carries on selling. An outlet with no uplink is the normal case
+        // (ADR-013), so a config pull that surfaced an error to a cashier
+        // would turn the expected condition into an alarm, and one that
+        // refused to continue would stop a shop trading because head office
+        // was unreachable.
+        //
+        // Inside the same database lock as the pump below, deliberately: a
+        // config apply rewrites menu, tax and user rows while a pump reads
+        // and writes the outbox, and the two interleaving on one connection
+        // is the kind of fault that appears as a corrupted read once a month.
+        {
+            let mut db = match self.db.lock() {
+                Ok(db) => db,
+                Err(e) => e.into_inner(),
+            };
+            if !(self.pump_stop.load(Ordering::SeqCst) && phase == "periodic") {
+                match worker.pull_config(&mut db) {
+                    Ok(true) => eprintln!("holler-pos: {phase} config pull applied a new bundle"),
+                    Ok(false) => {}
+                    Err(e) => eprintln!(
+                        "holler-pos: {phase} config pull failed ({e}); keeping the last applied config"
+                    ),
+                }
+            }
+        }
+
         loop {
             if Instant::now() >= deadline {
                 eprintln!(

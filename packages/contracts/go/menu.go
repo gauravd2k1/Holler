@@ -78,3 +78,28 @@ type MenuItemModifier struct {
 	ConfigVersion   int    `json:"config_version"`
 	SchemaVersion   int    `json:"schema_version"`
 }
+
+// MenuItemPatch is the mutable field set of PATCH /menu/items/{itemId},
+// added at 0.7.0 (ADR-024).
+//
+// EVERY FIELD IS A POINTER so "absent" and "set to the zero value" stay
+// distinguishable: a nil Name leaves the name alone, while a non-nil pointer
+// to "" is a caller error the handler rejects. Without pointers a PATCH that
+// omitted a price would silently set it to zero, which on a money field is
+// the worst available failure.
+//
+// IsAvailable is absent DELIBERATELY: POST /menu/items/{itemId}/availability
+// owns it and is an EDGE->CLOUD replay route, so accepting it here would make
+// the cloud a second writer of a field the outlet authors (§50.1).
+type MenuItemPatch struct {
+	Name           *string `json:"name,omitempty"`
+	BasePricePaise *int64  `json:"base_price_paise,omitempty"`
+	CategoryID     *string `json:"category_id,omitempty"`
+	// Double pointer is deliberate: tax_profile_id is itself nullable, so the
+	// three states are absent (leave alone), null (clear to the outlet
+	// default), and set. A single pointer cannot express all three.
+	TaxProfileID **string `json:"tax_profile_id,omitempty"`
+	// May be changed, never cleared: an invoice cannot issue with a NULL or
+	// blank HSN/SAC on any line (0.4.5).
+	HSNSAC *string `json:"hsn_sac,omitempty"`
+}

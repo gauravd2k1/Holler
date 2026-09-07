@@ -17,8 +17,8 @@ removed once and reintroduced by a rewrite. Do not restore it.
 
 **Phase A is CLOSED with five of seven gaps landed and three carried.**
 **M6 C7 is CLOSED**, observed end to end on the shipping binaries on 2026-09-07.
-Contracts are FROZEN at **v0.6.4**; migrations through **sqlite 0031 / postgres
-0031**. **Next work is Phase B, `apps/admin`** — a directory that has never
+Contracts are FROZEN at **v0.7.0** (ADR-024); migrations through **sqlite 0031 /
+postgres 0031**. **Next work is Phase B, `apps/admin`** — a directory that has never
 existed. Nothing is mid-flight; no branch is open; no test is red.
 
 ---

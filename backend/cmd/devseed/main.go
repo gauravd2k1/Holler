@@ -342,7 +342,20 @@ func seed(ctx context.Context, pool postgres.Pool, passwordHash string) error {
 	// hole). A till operator and a buyer are neither technicians nor managers,
 	// and widening their grant to make a fixture convenient is how a dev
 	// shortcut becomes the shipped authorization model.
-	for _, p := range []string{"procurement.approve", "outlet.manage"} {
+	//
+	// menu.manage and procurement.manage were added for the M6 Phase B admin
+	// console (ADR-024). Before this NO SEEDED USER HELD menu.manage AT ALL, so
+	// every menu route 403'd for every dev login and the back office could not
+	// be exercised end to end -- the same shape as the procurement.manage gap
+	// noted above, which is why nothing had ever demonstrated the supplier
+	// pickers populating.
+	//
+	// ON THE OWNER, NOT THE CASHIER, AND THAT IS A §50.1 BOUNDARY RATHER THAN a
+	// preference. The cashier's list is cached FLAT on the edge and a config
+	// pull replaces it, so anything granted there is a permission the till
+	// believes it holds -- and the till must never author a menu item. Menu and
+	// pricing is a management decision made in the cloud.
+	for _, p := range []string{"procurement.approve", "outlet.manage", "menu.manage", "procurement.manage"} {
 		if _, err := pool.Exec(ctx,
 			`INSERT INTO role_permission (role_id, permission) VALUES ($1, $2)
 			 ON CONFLICT DO NOTHING`, ownerRoleID, p); err != nil {

@@ -2,8 +2,10 @@ package procurement
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -83,6 +85,14 @@ type Repository interface {
 	// --- goods_receipt_note + grn_line (EDGE_TO_CLOUD replay) ---------------
 
 	GetGoodsReceiptNoteByID(ctx context.Context, id string) (GoodsReceiptNote, bool, error)
+
+	// 0.7.0 (ADR-024): the admin read path. Outlet-scoped, because the
+	// existing by-id lookup above is scoped by id alone -- correct for ingest
+	// idempotency, wrong for a browser, where a well-formed id from another
+	// tenant must miss rather than match.
+	ListGoodsReceiptNotes(ctx context.Context, outletID string, limit int, cursor string) ([]GoodsReceiptNote, string, error)
+	GetGoodsReceiptNoteForOutlet(ctx context.Context, outletID, id string) (GoodsReceiptNote, bool, error)
+	GrnGapsForGrn(ctx context.Context, grnID string) ([]GrnGap, error)
 	GrnLines(ctx context.Context, grnID string) ([]GrnLine, error)
 	// InsertGoodsReceiptNote stores a receipt and its lines in one
 	// transaction. IT PERFORMS NO PO LOOKUP AND NO PO VALIDATION: a receipt
@@ -690,6 +700,137 @@ func (r *pgRepository) InsertGoodsReceiptNote(ctx context.Context, tx pgx.Tx, te
 		}
 	}
 	return nil
+}
+
+// ListGoodsReceiptNotes serves the admin list (0.7.0, ADR-024).
+//
+// KEYSET PAGINATION ON (received_at, id), NOT OFFSET. Receipts arrive while a
+// buyer is paging; an OFFSET walk silently skips or repeats rows when the set
+// shifts underneath it, and the reader cannot tell. The id breaks ties so the
+// order is total -- two receipts can share a received_at to the second, and a
+// non-total order makes a cursor ambiguous exactly when the shop is busiest.
+func (r *pgRepository) ListGoodsReceiptNotes(ctx context.Context, outletID string, limit int, cursor string) ([]GoodsReceiptNote, string, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	args := []any{outletID, limit + 1}
+	where := ` WHERE outlet_id = $1`
+	if cursor != "" {
+		at, id, err := decodeGrnCursor(cursor)
+		if err != nil {
+			return nil, "", fmt.Errorf("%w: cursor is not valid", httpx.ErrInvalidInput)
+		}
+		args = append(args, at, id)
+		where += ` AND (received_at, id) < ($3, $4)`
+	}
+	rows, err := r.pool.Query(ctx,
+		grnSelect+where+` ORDER BY received_at DESC, id DESC LIMIT $2`, args...)
+	if err != nil {
+		return nil, "", storage.Wrap("procurement: listing goods receipts", err)
+	}
+	defer rows.Close()
+
+	out := []GoodsReceiptNote{}
+	for rows.Next() {
+		var g GoodsReceiptNote
+		var receivedAt, businessDate time.Time
+		if err := rows.Scan(&g.ID, &g.OutletID, &g.PurchaseOrderID, &g.SupplierID, &g.GrnNumber,
+			&g.DeliveryNoteRef, &receivedAt, &g.ReceivedByUserID, &businessDate, &g.Notes); err != nil {
+			return nil, "", fmt.Errorf("procurement: scanning goods receipt: %w", err)
+		}
+		g.ReceivedAt = receivedAt.UTC().Format(time.RFC3339)
+		g.BusinessDate = businessDate.Format(businessDateLayout)
+		g.SchemaVersion = 1
+		g.Lines = []GrnLine{}
+		out = append(out, g)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", fmt.Errorf("procurement: listing goods receipts: %w", err)
+	}
+
+	// The extra row asked for above is the only reliable way to know whether a
+	// next page exists. Reporting a cursor whenever the page came back full
+	// hands the caller one guaranteed empty round trip at the end of every
+	// list.
+	next := ""
+	if len(out) > limit {
+		last := out[limit-1]
+		next = encodeGrnCursor(last.ReceivedAt, last.ID)
+		out = out[:limit]
+	}
+	return out, next, nil
+}
+
+func (r *pgRepository) GetGoodsReceiptNoteForOutlet(ctx context.Context, outletID, id string) (GoodsReceiptNote, bool, error) {
+	var g GoodsReceiptNote
+	var receivedAt, businessDate time.Time
+	err := r.pool.QueryRow(ctx, grnSelect+` WHERE id = $1 AND outlet_id = $2`, id, outletID).Scan(
+		&g.ID, &g.OutletID, &g.PurchaseOrderID, &g.SupplierID, &g.GrnNumber, &g.DeliveryNoteRef,
+		&receivedAt, &g.ReceivedByUserID, &businessDate, &g.Notes)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return GoodsReceiptNote{}, false, nil
+	}
+	if err != nil {
+		return GoodsReceiptNote{}, false, storage.Wrap("procurement: getting goods receipt", err)
+	}
+	g.ReceivedAt = receivedAt.UTC().Format(time.RFC3339)
+	g.BusinessDate = businessDate.Format(businessDateLayout)
+	g.SchemaVersion = 1
+	g.Lines = []GrnLine{}
+	return g, true, nil
+}
+
+// GrnGapsForGrn returns the gaps recorded for one receipt. Empty is the normal
+// case; a non-empty result is what a buyer acts on.
+func (r *pgRepository) GrnGapsForGrn(ctx context.Context, grnID string) ([]GrnGap, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT id, outlet_id, grn_id, grn_line_id, inventory_item_id, reason, detail,
+		        occurred_at, business_date
+		 FROM grn_gap WHERE grn_id = $1 ORDER BY occurred_at, id`, grnID)
+	if err != nil {
+		return nil, storage.Wrap("procurement: listing grn gaps", err)
+	}
+	defer rows.Close()
+	out := []GrnGap{}
+	for rows.Next() {
+		var g GrnGap
+		var reason string
+		var occurredAt, businessDate time.Time
+		if err := rows.Scan(&g.ID, &g.OutletID, &g.GrnID, &g.GrnLineID, &g.InventoryItemID,
+			&reason, &g.Detail, &occurredAt, &businessDate); err != nil {
+			return nil, fmt.Errorf("procurement: scanning grn gap: %w", err)
+		}
+		g.Reason = GrnGapReason(reason)
+		g.OccurredAt = occurredAt.UTC().Format(time.RFC3339)
+		g.BusinessDate = businessDate.Format(businessDateLayout)
+		g.SchemaVersion = 1
+		out = append(out, g)
+	}
+	return out, rows.Err()
+}
+
+// The cursor is opaque to the caller by construction: base64 of the sort key,
+// so a client cannot build one by hand and depend on its shape, and a change
+// to the ordering is not a silent behaviour change for anyone holding an old
+// one -- decode fails and the caller starts a fresh page.
+func encodeGrnCursor(receivedAt, id string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(receivedAt + "|" + id))
+}
+
+func decodeGrnCursor(cursor string) (time.Time, string, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(cursor)
+	if err != nil {
+		return time.Time{}, "", err
+	}
+	parts := strings.SplitN(string(raw), "|", 2)
+	if len(parts) != 2 {
+		return time.Time{}, "", fmt.Errorf("malformed cursor")
+	}
+	at, err := time.Parse(time.RFC3339, parts[0])
+	if err != nil {
+		return time.Time{}, "", err
+	}
+	return at, parts[1], nil
 }
 
 // --- grn_gap ----------------------------------------------------------------

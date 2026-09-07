@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/holler/backend/internal/platform/storage"
 
 	"github.com/jackc/pgx/v5"
 
@@ -29,6 +30,16 @@ type Repository interface {
 	InsertItem(ctx context.Context, tx pgx.Tx, i Item) error
 	GetItem(ctx context.Context, outletID, itemID string) (Item, error)
 	UpdateItemAvailability(ctx context.Context, tx pgx.Tx, itemID string, isAvailable bool, configVersion int) error
+
+	// UpdateItem applies the 0.7.0 PATCH field set (ADR-024) and returns the
+	// updated row. Scoped by outlet as well as id: a well-formed itemID from
+	// another tenant must miss, not match.
+	//
+	// is_available is NOT among the fields it touches. That column is written
+	// only by UpdateItemAvailability, whose caller is an EDGE->CLOUD replay
+	// route -- giving this method a second path to it would make the cloud a
+	// second writer of a field the outlet authors (§50.1).
+	UpdateItem(ctx context.Context, tx pgx.Tx, outletID, itemID string, patch ItemPatch, configVersion int) (Item, error)
 
 	CategoryExists(ctx context.Context, outletID, categoryID string) (bool, error)
 
@@ -164,6 +175,43 @@ func (r *pgRepository) InsertItem(ctx context.Context, tx pgx.Tx, i Item) error 
 		return fmt.Errorf("menu: inserting item: %w", err)
 	}
 	return nil
+}
+
+func (r *pgRepository) UpdateItem(ctx context.Context, tx pgx.Tx, outletID, itemID string, patch ItemPatch, configVersion int) (Item, error) {
+	// COALESCE, not a dynamically built SET list. A hand-assembled statement
+	// with a positional argument list that varies by which fields are present
+	// is where an off-by-one binds the price to the name -- and on a money
+	// column that is a defect nobody sees until a bill is wrong. Every
+	// parameter is bound here whether or not the caller set it, and a nil
+	// pointer leaves the column alone.
+	//
+	// tax_profile_id is the exception, because for it "absent" and "set to
+	// null" are DIFFERENT operations: null means "fall back to the outlet
+	// default" (0.4.2), so a plain COALESCE could never clear it. The
+	// TaxProfileIDSet flag carries that third state.
+	var i Item
+	err := tx.QueryRow(ctx,
+		`UPDATE menu_item SET
+		    name             = COALESCE($3, name),
+		    base_price_paise = COALESCE($4, base_price_paise),
+		    category_id      = COALESCE($5, category_id),
+		    tax_profile_id   = CASE WHEN $6::boolean THEN $7 ELSE tax_profile_id END,
+		    hsn_sac          = COALESCE($8, hsn_sac),
+		    config_version   = $9
+		  WHERE id = $1 AND outlet_id = $2
+		  RETURNING id, outlet_id, category_id, name, base_price_paise, is_available, tax_profile_id, hsn_sac, config_version`,
+		itemID, outletID,
+		patch.Name, patch.BasePricePaise, patch.CategoryID,
+		patch.TaxProfileIDSet, patch.TaxProfileID,
+		patch.HSNSAC, configVersion,
+	).Scan(&i.ID, &i.OutletID, &i.CategoryID, &i.Name, &i.BasePricePaise, &i.IsAvailable, &i.TaxProfileID, &i.HSNSAC, &i.ConfigVersion)
+	if err != nil {
+		// Through the shared classifier (A1): category_id is a foreign key, so
+		// a category that does not exist is a 23503 and must reach the caller
+		// as a 4xx with a reason, never as "httpx: unhandled error".
+		return Item{}, storage.Wrap("menu: updating item", err)
+	}
+	return i, nil
 }
 
 func (r *pgRepository) GetItem(ctx context.Context, outletID, itemID string) (Item, error) {

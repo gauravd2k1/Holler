@@ -62,6 +62,10 @@ const CONSUMER_ROOTS = [
   "apps/pos/src",
   "apps/pos/src-tauri/src",
   "apps/kds/src",
+  // M6 Phase B. Without this the admin console reads a field and the check
+  // still calls it unread, which would push a real consumer into EXEMPT and
+  // hollow out the guard.
+  "apps/admin/src",
   "tests",
 ];
 const CONSUMER_EXTS = new Set([".rs", ".go", ".ts", ".tsx"]);

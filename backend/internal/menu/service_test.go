@@ -83,6 +83,36 @@ func (f *fakeRepository) GetItem(ctx context.Context, outletID, itemID string) (
 	return Item{}, httpx.ErrNotFound
 }
 
+// 0.7.0 (ADR-024). Mirrors the real UPDATE: outlet-scoped, applies only the
+// fields the patch names, and NEVER touches is_available -- that column is
+// written by UpdateItemAvailability alone, whose caller is an edge replay
+// route (§50.1).
+func (f *fakeRepository) UpdateItem(ctx context.Context, tx pgx.Tx, outletID, itemID string, patch ItemPatch, configVersion int) (Item, error) {
+	for idx := range f.items {
+		if f.items[idx].ID != itemID || f.items[idx].OutletID != outletID {
+			continue
+		}
+		if patch.Name != nil {
+			f.items[idx].Name = *patch.Name
+		}
+		if patch.BasePricePaise != nil {
+			f.items[idx].BasePricePaise = *patch.BasePricePaise
+		}
+		if patch.CategoryID != nil {
+			f.items[idx].CategoryID = *patch.CategoryID
+		}
+		if patch.TaxProfileIDSet {
+			f.items[idx].TaxProfileID = patch.TaxProfileID
+		}
+		if patch.HSNSAC != nil {
+			f.items[idx].HSNSAC = patch.HSNSAC
+		}
+		f.items[idx].ConfigVersion = configVersion
+		return f.items[idx], nil
+	}
+	return Item{}, httpx.ErrNotFound
+}
+
 func (f *fakeRepository) UpdateItemAvailability(ctx context.Context, tx pgx.Tx, itemID string, isAvailable bool, configVersion int) error {
 	for idx := range f.items {
 		if f.items[idx].ID == itemID {

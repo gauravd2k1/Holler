@@ -90,3 +90,28 @@ export const MenuItemModifierSchema = z.object({
   schema_version: z.literal(1),
 });
 export type MenuItemModifier = z.infer<typeof MenuItemModifierSchema>;
+
+/**
+ * 0.7.0 (ADR-024) — the mutable field set of `PATCH /menu/items/{itemId}`.
+ *
+ * `.strict()` is load-bearing, not tidiness: an immutable field in the body
+ * must be a 422 rather than a silent ignore. A caller that believes it changed
+ * `outlet_id` and did not is worse off than one that got an error.
+ *
+ * `is_available` is absent DELIBERATELY. `POST /menu/items/{itemId}/availability`
+ * owns it and is an EDGE->CLOUD replay route, so accepting it here would make
+ * the cloud a second writer of a field the outlet authors (§50.1).
+ *
+ * `hsn_sac` may be changed but never cleared: an invoice cannot issue with a
+ * NULL or blank HSN/SAC on any line (0.4.5).
+ */
+export const MenuItemPatchSchema = z
+  .object({
+    name: z.string().min(1).optional(),
+    base_price_paise: z.number().int().min(0).optional(),
+    category_id: z.string().uuid().optional(),
+    tax_profile_id: z.string().uuid().nullable().optional(),
+    hsn_sac: z.string().min(1).optional(),
+  })
+  .strict();
+export type MenuItemPatch = z.infer<typeof MenuItemPatchSchema>;
