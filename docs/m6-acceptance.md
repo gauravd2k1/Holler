@@ -19,6 +19,47 @@ watched failing first (§66).
 
 ---
 
+## Phase C evidence quality — what generating the fake from published artefacts actually bought
+
+**The strongest argument this milestone has produced for generating a fake from
+published artefacts rather than writing one, and it is not a hypothetical.**
+
+The plan's rule (C-2a) was that a self-authored fake proves only that we agree
+with ourselves. The concrete failure it caught was not a field name or a
+format — it was **which side of the protocol we are on**.
+
+A restaurant is the **seller**, the BPP. A buyer app sends `confirm`; we answer
+`on_confirm`. The first cut of the ONDC adapter parsed `on_confirm` as an
+inbound order, which is the **buyer's** view of the protocol — the whole
+integration pointed backwards.
+
+**It passed everything.** ONDC's request and callback envelopes both carry
+`message.order`, so the payload parsed cleanly, the adapter produced a
+well-formed order, and every assertion held. The code was right about the JSON
+and wrong about the direction.
+
+**A hand-written fake could not have caught it, by construction.** We would have
+authored a fixture from the same misunderstanding, and it would have agreed with
+the adapter perfectly — the test constructing its own subject, in the one place
+where no external check exists until certification. What caught it was fetching
+ONDC's own `confirm` example and finding that the message we thought we received
+is the one we are supposed to send.
+
+The mistake also left a trace in the data, which is worth keeping as the tell: a
+buyer-originated `confirm` states the order as **`Created`**, where the seller's
+`on_confirm` says **`Accepted`**. Two different words for two different
+directions, and the fixture that used the wrong one asserted the wrong word.
+
+**What this does and does not license.** It raises confidence in the SHAPE of
+the adapter and in nothing else. C8 is still recorded `SHAPE ONLY — no
+integration evidence`: both fakes are ours, no message has been exchanged with
+an ONDC system, and the integration row travels to M6.1 as an explicitly unmet
+criterion. The artefact-generated fake is the strongest available check on shape
+and the weakest possible check on integration — both halves of that sentence
+belong here.
+
+---
+
 ## THE OBSERVATION SITTING — C1, C5, C6 and C8 in one run
 
 **NOT YET RUN.** Written out before the run so the preconditions are established
@@ -60,16 +101,19 @@ state after the document is on the till, never before.
    entered quantity, the pack size applied and the base quantity, and check the
    arithmetic by hand.
 
-### C6 — the receipt reads back, field by field
+### C6 — the receipt reads back (screen half)
 
 10. Admin console → Goods receipts. Find the receipt from step 8.
-11. **Compare field by field against the edge row**, not against a summary:
+11. **Record every field the screen shows**, not a summary of it:
     `entered_quantity_micro`, `pack_size_micro_applied`, `base_quantity_micro`,
     `quantity_dimension`, `line_total_paise`, and the nullable
     `purchase_order_id` / `supplier_id` / `purchase_order_line_id` **as nulls
     where they are null**.
-12. The edge row is read by the sealed-copy method: copy the database, read the
-    copy, destroy it, original never opened. **Record both sides.**
+
+**The edge-row comparison is step 21, at the very end.** It needs the till
+CLOSED so the database seals, and closing it mid-sitting would mean reopening
+for C1 — two clean shutdowns where one will do, and every extra shutdown is
+another chance to leave the database unsealed (the 2026-09-05 finding).
 
 ### C8 — both adapters, SHAPE ONLY
 
@@ -100,12 +144,36 @@ state after the document is on the till, never before.
     agreement afterwards means something.
 18. **Bill, print and close the order at the till.** Record the invoice number
     and the print outcome.
+
+    **THE PRINT IS EVIDENCED BY THE FILE-SINK TRANSPORT, NOT BY PAPER**, and
+    the row must say so. No thermal printer exists in this environment; the
+    ESC/POS-on-paper gate has been PARKED since 2026-08-20 and is an M3 exit
+    gate, not an M6 one. The file sink proves the byte stream was produced and
+    handed to a transport. It does not prove a device accepted it, and this row
+    carries the same trigger as M3's: **"when a printer is sourced"**.
+    Recording it as "printed" without that qualifier would quietly promote a
+    parked gate to a passed one.
 19. **The negative half:** with the cloud still unreachable, confirm **NO NEW
     aggregator order arrives**. That is not a bug to fix — it is ADR-022's
     published guarantee, and observing it is what makes the positive half
     meaningful rather than lucky.
 20. Restart the backend (**new PID again**), confirm the till's outbox drains
     the order created in step 18.
+
+### Step 21 — CLOSE THE TILL, THEN READ THE EDGE ROW (C6's second half)
+
+**Last, and only once.**
+
+21. Close the POS **from the launching terminal with `Ctrl+C`**, not by the
+    window's X — closing the window leaves `holler-pos.exe` running with the
+    database open and unsealed (observed 2026-09-05). Confirm with
+    `Get-Process holler-pos` that nothing survives, and confirm the directory
+    holds `edge.db.enc` alone: no `edge.db`, no `-wal`, no `edge.db.open-marker`.
+22. Read the receipt row by the **sealed-copy method**: copy the sealed file,
+    decrypt the copy, query it, destroy both, **original never opened**.
+23. **Compare field by field against what step 11 recorded.** C6 is met when the
+    two agree on every field including the nulls — not when they agree on the
+    quantities a summary would show.
 
 ### What must be recorded, for every criterion
 
