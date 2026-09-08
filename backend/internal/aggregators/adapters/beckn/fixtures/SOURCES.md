@@ -11,8 +11,10 @@ certification.
 
 | Artefact | Source | Version | Pinned at |
 |---|---|---|---|
-| `on_confirm` example payload | `github.com/ONDC-Official/ONDC-RET-Specifications`, path `api/components/Examples/B2B/on_confirm/on_confirm_domestic.yaml` | branch `release-2.0.2`, `context.version: 2.0.2` | commit `aa74e5d8e0543f0b7e943d029a08ec10f8b1c0e3`, committed 2024-08-23T05:04:57Z |
-| `on_status` example payload | same repository, path `api/components/Examples/B2B/on_status/on_status.yaml` | branch `release-2.0.2` | same commit |
+| `confirm` example payload | `github.com/ONDC-Official/ONDC-RET-Specifications`, path `api/components/Examples/B2B/confirm/confirm_domestic.yaml` | branch `release-2.0.2`, `context.version: 2.0.2` | commit `aa74e5d8e0543f0b7e943d029a08ec10f8b1c0e3`, committed 2024-08-23T05:04:57Z |
+| `cancel` example payload | same repository, path `api/components/Examples/B2B/cancel/cancel.yaml` | branch `release-2.0.2` | same commit |
+| `status` example payload | derived from the `cancel` envelope with the `status` message shape (`{order_id}`) | branch `release-2.0.2` | same commit |
+| `on_confirm` example payload | same repository, path `api/components/Examples/B2B/on_confirm/on_confirm_domestic.yaml` | branch `release-2.0.2` | same commit |
 | Attribute definitions consulted for field presence | same repository, `api/components/attributes/B2B/on_confirm/on_confirm.yaml`, `.../on_status/on_status.yaml` | branch `release-2.0.2` | same commit |
 
 Retrieved 2026-09-08 via the GitHub API (`gh api repos/ONDC-Official/ONDC-RET-Specifications/...?ref=release-2.0.2`).
@@ -22,6 +24,22 @@ Branches present on the repository at that date: `master`, `release-2.0.2`,
 `draft-b2c_exports`, `draft_ui`, `ret-ui`. **`release-2.0.2` was chosen as the
 only non-draft release branch matching the 2.0.2 version the payloads
 themselves declare in `context.version`.**
+
+## WHICH DIRECTION EACH FIXTURE IS, AND WHY IT MATTERS
+
+**Holler is the SELLER — the BPP.** A buyer app (BAP) sends us `search`,
+`select`, `init`, `confirm`, `status`, `cancel` and `update`; we answer each with
+its `on_*` callback.
+
+- `confirm.json`, `cancel.json`, `status.json` are **INBOUND** — what we receive.
+- `on_confirm.json` is **OUTBOUND** — an example of what we SEND, kept as the
+  reference for the callback shape.
+
+The first cut of this adapter parsed `on_confirm` as an inbound order, which is
+the BUYER's view. It passed, because ONDC's request and callback envelopes share
+`message.order` — the code was right about the JSON and wrong about the
+direction, and no test built from the same assumption could have caught it. The
+fixtures are labelled here so the next reader does not repeat it.
 
 ## What the fixtures preserve verbatim, and why
 

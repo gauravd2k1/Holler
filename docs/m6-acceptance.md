@@ -19,6 +19,103 @@ watched failing first (§66).
 
 ---
 
+## THE OBSERVATION SITTING — C1, C5, C6 and C8 in one run
+
+**NOT YET RUN.** Written out before the run so the preconditions are established
+deliberately rather than discovered mid-sitting, which is how the 2026-09-05 C7
+attempt was lost.
+
+**Order matters and is not arbitrary.** C1's document must arrive **while the
+cloud is reachable**, because ADR-022's guarantee is precisely that a NEW
+aggregator order cannot arrive while the uplink is down. Establish the offline
+state after the document is on the till, never before.
+
+### Step 0 — the stack, verified by identity
+
+1. Backend in its own window: `.\scripts\dev-up.ps1 -SkipInfra -SkipSeed -NoKds -NoPos`
+2. `Get-NetTCPConnection -LocalPort 8080 -State Listen | Select-Object OwningProcess`
+   — **record the PID and confirm it is NEW.** The port answering proves
+   nothing: an old process answers identically, and that has already cost this
+   project a debugging detour.
+3. Bootstrap by hand with the backend already listening (the `dev-up.ps1`
+   ordering defect): `[3b/4]` must say **enrolling** or **rotating**, never
+   SKIPPED. A till with no device token syncs nothing and the whole sitting
+   proves nothing.
+4. Till: `$env:HOLLER_SYNC_PUMP_INTERVAL_SECS = "10"; .\apps\pos\run-dev.ps1`
+
+### C5 — supplier and pack size, FALSIFIER FIRST
+
+**The falsifier runs before the fix, or its absence afterwards means nothing.**
+
+5. **Receive goods BEFORE creating the supplier item.** Record a GRN at the till
+   against an inventory item with no `supplier_item` row.
+6. **Observe the `NO_SUPPLIER_ITEM` gap** on the gaps screen. Record the gap id
+   and reason. *This is the falsifier: without it, step 9's silence is
+   unfalsifiable.*
+7. In the admin console → Suppliers, create the supplier and its pack size.
+   **Choose the dimension explicitly** — the selector is empty by design (0.5.2:
+   auto-filling it makes the mismatch check `x == x` and it can never fire).
+8. Receive the same goods again at the till.
+9. **Observe: converts exactly, and NO new `NO_SUPPLIER_ITEM` gap.** Record the
+   entered quantity, the pack size applied and the base quantity, and check the
+   arithmetic by hand.
+
+### C6 — the receipt reads back, field by field
+
+10. Admin console → Goods receipts. Find the receipt from step 8.
+11. **Compare field by field against the edge row**, not against a summary:
+    `entered_quantity_micro`, `pack_size_micro_applied`, `base_quantity_micro`,
+    `quantity_dimension`, `line_total_paise`, and the nullable
+    `purchase_order_id` / `supplier_id` / `purchase_order_line_id` **as nulls
+    where they are null**.
+12. The edge row is read by the sealed-copy method: copy the database, read the
+    copy, destroy it, original never opened. **Record both sides.**
+
+### C8 — both adapters, SHAPE ONLY
+
+13. Drive an order through the **Beckn adapter** against the artefact-generated
+    fake, and one through the **sync-REST adapter** against its local fake.
+    Record the receipt from each.
+14. **Introduce a platform-specific branch in the core** — e.g.
+    `if in.Platform == "ondc"` in `internal/aggregators/port.go` — and watch
+    `node scripts/check-aggregator-boundary.mjs` go **RED**. Record the output.
+    Remove it and watch it go green. *A boundary nobody has watched fail is not
+    a boundary.*
+15. Record C8 as **`SHAPE ONLY — no integration evidence`** in those words. Both
+    fakes are ours; the contract shape is proven twice and the integration zero
+    times.
+
+### C1 — offline operation, and the negative half
+
+**Both halves, and the order is fixed.**
+
+16. **WITH THE CLOUD REACHABLE**, POST an order document to the local callback
+    path so it lands in Postgres, and let the till's pull bring it down. Confirm
+    the document is on the till — this is what "already received" means, and it
+    cannot be established later.
+17. **Make the cloud provably unreachable by the three-probe method**: stop the
+    backend **by PID** (the one recorded at step 2), then run
+    `scripts\check-cloud-unreachable.ps1` and require **all three probes to
+    agree**. Watch that script print STOP with the cloud UP first, so its
+    agreement afterwards means something.
+18. **Bill, print and close the order at the till.** Record the invoice number
+    and the print outcome.
+19. **The negative half:** with the cloud still unreachable, confirm **NO NEW
+    aggregator order arrives**. That is not a bug to fix — it is ADR-022's
+    published guarantee, and observing it is what makes the positive half
+    meaningful rather than lucky.
+20. Restart the backend (**new PID again**), confirm the till's outbox drains
+    the order created in step 18.
+
+### What must be recorded, for every criterion
+
+The observation, the artefact (screen, row, request log, PID), **who** observed
+it and **when**. A verdict that exists only in a session transcript is erased by
+a restart — M5 lost four criteria that way, and the session that lost them was
+holding the commit made because of the run that observed them.
+
+---
+
 ## Phase B — CLOSED 2026-09-08 WITH THREE SURFACES BUILT AND TWO CARRIED, NOT ALL FIVE
 
 **Say it in those words.** Phase B was scoped as five admin surfaces. **Three
@@ -129,14 +226,14 @@ beyond `order` is expected to replay.**
 
 | # | Criterion | State |
 |---|---|---|
-| C1 | Aggregator order bills and closes with the cloud unreachable | NOT STARTED (Phase C) |
+| C1 | Aggregator order bills and closes with the cloud unreachable | **CODE COMPLETE, AWAITING THE SITTING** — the cloud→edge down-path landed (ADR-022 addendum 2); steps written out below |
 | C2 | Stock-out snoozes on ONDC staging | **PARKED** behind platform sandbox access |
 | C3 | A permanently-rejected row blocks itself and not its neighbours | **CODE COMPLETE, AWAITING OBSERVATION** — see below |
 | C4 | An offline order reaches the cloud without the operator closing the app | **A5 LANDED, AWAITING OBSERVATION** — the periodic pump exists; the `taskkill` falsifier has not been run |
 | C5 | Supplier and pack size created in admin convert on the next receipt | **UNBLOCKED** — the admin surface exists and renders (Phase B closed 2026-09-08); the criterion itself is unobserved, and its falsifier (receive BEFORE creating them, watch the gap) has not been run |
 | C6 | A goods receipt is readable back in-product | **UNBLOCKED** — the list and detail routes exist and the screen renders live receipts with all three quantity fields; the field-by-field comparison against the edge row is unobserved |
 | C7 | A client-data failure is reported as 4xx with a reason the edge records | **CLOSED — observed 2026-09-07** on the shipping binaries, both halves of the falsifier watched |
-| C8 | An aggregator order flows through both adapters | NOT STARTED (Phase C) |
+| C8 | An aggregator order flows through both adapters | **CODE COMPLETE, AWAITING THE SITTING** — both adapters and the boundary check exist; will be recorded `SHAPE ONLY — no integration evidence` |
 
 ---
 

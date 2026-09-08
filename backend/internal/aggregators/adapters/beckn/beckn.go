@@ -99,20 +99,36 @@ type breakupEntry struct {
 	} `json:"item"`
 }
 
-// ParseInbound turns an ONDC callback into this product's vocabulary.
+// ParseInbound turns a BAP's message into this product's vocabulary.
+//
+// WE ARE THE SELLER (BPP), so the messages that arrive here are the
+// buyer-originated ones -- `confirm` above all, which is the one that means an
+// order exists. An earlier version parsed `on_confirm`, which is what a SELLER
+// SENDS: right about the JSON, wrong about the direction, and it passed because
+// ONDC's request and callback envelopes share `message.order`.
+//
+// Order-bearing actions produce an InboundOrder. `cancel` and `status` carry no
+// order document and are handled by the message surface (surface.go), not here.
 func (a *Adapter) ParseInbound(ctx context.Context, raw []byte) (aggregators.InboundOrder, error) {
+	// The context is validated once, by the surface, so message_id and
+	// transaction_id checks live in exactly one place rather than being
+	// restated per action.
+	outer, action, err := ParseEnvelope(raw)
+	if err != nil {
+		return aggregators.InboundOrder{}, err
+	}
+	if !ActionCarriesOrder(action) {
+		return aggregators.InboundOrder{}, fmt.Errorf(
+			"beckn: action %q carries no order document; route it through the message surface", action)
+	}
+
 	var env envelope
 	if err := json.Unmarshal(raw, &env); err != nil {
-		return aggregators.InboundOrder{}, fmt.Errorf("beckn: decoding callback: %w", err)
+		return aggregators.InboundOrder{}, fmt.Errorf("beckn: decoding message: %w", err)
 	}
-	if env.Context.MessageID == "" {
-		// Without it there is no idempotency key, and a platform retry would
-		// produce a second document. Refusing here is correct: this is a
-		// malformed message, not an unmappable one.
-		return aggregators.InboundOrder{}, fmt.Errorf("beckn: callback carries no message_id")
-	}
+	env.Context.MessageID = outer.Context.MessageID
 	if env.Message.Order.ID == "" {
-		return aggregators.InboundOrder{}, fmt.Errorf("beckn: callback carries no order id")
+		return aggregators.InboundOrder{}, fmt.Errorf("beckn: message carries no order id")
 	}
 
 	var rawMap map[string]any

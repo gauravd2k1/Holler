@@ -16,6 +16,13 @@ import (
 
 // M6 Phase C. THE POINT OF THIS FILE IS THE PAIR, NOT EITHER ADAPTER.
 //
+// NOTE THE FIXTURE THESE USE: `confirm.json`, not `on_confirm.json`. We are the
+// SELLER (BPP), so a buyer app sends us `confirm` and we answer `on_confirm`.
+// An earlier version of this test fed `on_confirm` — a message we SEND — into
+// the inbound path, and it passed, because ONDC's request and callback
+// envelopes share `message.order`. Right about the JSON, wrong about the
+// direction, and no test built from the same assumption could have caught it.
+//
 // Both adapters are driven through the SAME aggregators.Adapter interface, with
 // the same assertions, from payloads that look nothing alike: one an ONDC
 // context/message envelope with decimal rupee STRINGS, the other flat JSON with
@@ -107,11 +114,15 @@ func TestBothAdaptersSatisfyTheSameContract(t *testing.T) {
 		wantTotalPaise     int64
 	}{
 		{
-			name:               "asynchronous callback platform",
-			adapter:            beckn.New(resolveKnown("I1", "menu-item-1"), func(context.Context, []byte) error { return nil }),
-			raw:                loadFixture(t, "on_confirm.json"),
-			wantExternalID:     "O1",
-			wantStatus:         "Accepted",
+			name:           "asynchronous callback platform",
+			adapter:        beckn.New(resolveKnown("I1", "menu-item-1"), func(context.Context, []byte) error { return nil }),
+			raw:            loadFixture(t, "confirm.json"),
+			wantExternalID: "O1",
+			// "Created", not "Accepted": a buyer-originated `confirm` states the
+			// order as the BUYER sees it. "Accepted" is what WE would put in the
+			// on_confirm we send back. The two fixtures differing here is the
+			// direction mistake showing up in the data.
+			wantStatus:         "Created",
 			wantLineCount:      2,
 			wantFirstUnitPaise: 4500,
 			wantTotalPaise:     13887,
@@ -204,7 +215,7 @@ func TestBecknRupeeStringsConvertWithoutFloatDrift(t *testing.T) {
 	ctx := context.Background()
 	adapter := beckn.New(resolveKnown("I1", "menu-item-1"), func(context.Context, []byte) error { return nil })
 
-	got, err := adapter.ParseInbound(ctx, loadFixture(t, "on_confirm.json"))
+	got, err := adapter.ParseInbound(ctx, loadFixture(t, "confirm.json"))
 	if err != nil {
 		t.Fatalf("ParseInbound: %v", err)
 	}

@@ -1,0 +1,54 @@
+{
+  "context": {
+    "domain": "ONDC:RET10",
+    "location": { "city": { "code": "std:080" }, "country": { "code": "IND" } },
+    "action": "confirm",
+    "version": "2.0.2",
+    "bap_id": "buyerapp.com",
+    "bap_uri": "https://buyerapp.com/grocery",
+    "bpp_id": "sellerapp.com",
+    "bpp_uri": "https://sellerapp.com/grocery",
+    "transaction_id": "9568beb3-265a-4730-be4e-c00ba2e5e30a",
+    "message_id": "ad33f8db-cc87-4470-961a-e5555869fd3c",
+    "timestamp": "2026-09-08T12:15:30.000Z",
+    "ttl": "PT30S"
+  },
+  "message": {
+    "order": {
+      "id": "O1",
+      "state": "Created",
+      "provider": { "id": "P1", "locations": [{ "id": "L1" }] },
+      "items": [
+        { "id": "I1", "fulfillment_ids": ["F1"], "quantity": { "selected": { "count": 2 } } },
+        { "id": "I2", "fulfillment_ids": ["F1"], "quantity": { "selected": { "count": 1 } } }
+      ],
+      "quote": {
+        "price": { "currency": "INR", "value": "138.87" },
+        "breakup": [
+          {
+            "@ondc/org/item_id": "I1",
+            "@ondc/org/item_quantity": { "count": 2 },
+            "title": "Masala Chai",
+            "@ondc/org/title_type": "item",
+            "price": { "currency": "INR", "value": "90.00" },
+            "item": { "price": { "currency": "INR", "value": "45.00" } }
+          },
+          {
+            "@ondc/org/item_id": "I2",
+            "@ondc/org/item_quantity": { "count": 1 },
+            "title": "Unmappable Regional Special",
+            "@ondc/org/title_type": "item",
+            "price": { "currency": "INR", "value": "8.87" },
+            "item": { "price": { "currency": "INR", "value": "8.87" } }
+          },
+          {
+            "@ondc/org/item_id": "F1",
+            "title": "Delivery charges",
+            "@ondc/org/title_type": "delivery",
+            "price": { "currency": "INR", "value": "40.00" }
+          }
+        ]
+      }
+    }
+  }
+}

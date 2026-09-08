@@ -1,0 +1,17 @@
+{
+  "context": {
+    "domain": "ONDC:RET10",
+    "location": { "city": { "code": "std:080" }, "country": { "code": "IND" } },
+    "action": "status",
+    "version": "2.0.2",
+    "bap_id": "buyerapp.com",
+    "bap_uri": "https://buyerapp.com/grocery",
+    "bpp_id": "sellerapp.com",
+    "bpp_uri": "https://sellerapp.com/grocery",
+    "transaction_id": "9568beb3-265a-4730-be4e-c00ba2e5e30a",
+    "message_id": "3c1e9a44-7b21-4d0e-9a55-0c1f7f2b9a10",
+    "timestamp": "2026-09-08T12:30:00.000Z",
+    "ttl": "PT30S"
+  },
+  "message": { "order_id": "O1" }
+}
