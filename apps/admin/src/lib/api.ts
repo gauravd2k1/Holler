@@ -7,6 +7,8 @@ import {
   type MenuItem,
   type MenuCategory,
   type MenuItemPatch,
+  type Supplier,
+  type SupplierItem,
   type SupplierWithItems,
   type GoodsReceiptPage,
 } from "@holler/contracts";
@@ -131,7 +133,21 @@ export async function listSuppliers(): Promise<SupplierWithItems[]> {
   return page.suppliers;
 }
 
-export function createSupplier(body: unknown): Promise<SupplierWithItems> {
+/**
+ * POST /procurement/suppliers.
+ *
+ * TYPED AGAINST THE CONTRACT, NOT `unknown`. An earlier version took `unknown`
+ * for convenience, and the form built a payload by hand with `is_active` and
+ * `config_version` on the ITEM — neither of which `SupplierItem` has (it
+ * carries `is_preferred` and no config version). The backend decodes with
+ * DisallowUnknownFields, so it answered a bare `invalid_input` with no detail,
+ * and nothing upstream could have caught it: `unknown` disables the one check
+ * that would have.
+ */
+export function createSupplier(body: {
+  supplier: Supplier;
+  items: SupplierItem[];
+}): Promise<SupplierWithItems> {
   return request(`/procurement/suppliers`, SupplierWithItemsSchema, {
     method: "POST",
     body: JSON.stringify(body),

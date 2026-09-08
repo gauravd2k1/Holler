@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError, createSupplier, listSuppliers, outletId } from "../lib/api";
 import { formatMicro, parseToMicro } from "../lib/quantity";
 import { formatPaise } from "../lib/money";
+import type { SupplierItem } from "@holler/contracts";
 
 /**
  * Suppliers and pack sizes.
@@ -110,9 +111,12 @@ function NewSupplierForm({ onCreated }: { onCreated: () => void }) {
       const micro = parseToMicro(packSize);
       if (micro === null) throw new Error("Pack size must be a number, e.g. 50 or 1.5");
 
+      const supplierId = crypto.randomUUID();
+      const now = new Date().toISOString();
+
       return createSupplier({
         supplier: {
-          id: crypto.randomUUID(),
+          id: supplierId,
           outlet_id: outletId(),
           code,
           name,
@@ -123,22 +127,33 @@ function NewSupplierForm({ onCreated }: { onCreated: () => void }) {
           payment_terms_days: 30,
           is_active: true,
           config_version: 0,
+          created_at: now,
+          updated_at: now,
           schema_version: 1,
         },
-        items: itemId === "" ? [] : [
-          {
-            id: crypto.randomUUID(),
-            supplier_id: undefined,
-            inventory_item_id: itemId,
-            purchase_unit: purchaseUnit,
-            pack_size_micro: micro,
-            quantity_dimension: dimension,
-            last_price_paise: null,
-            is_active: true,
-            config_version: 0,
-            schema_version: 1,
-          },
-        ],
+        items:
+          itemId === ""
+            ? []
+            : [
+                {
+                  id: crypto.randomUUID(),
+                  // Stamped by the server too, but sent because the type
+                  // requires it and a client that guesses which fields the
+                  // server will fill is a client that breaks when it stops.
+                  supplier_id: supplierId,
+                  inventory_item_id: itemId,
+                  purchase_unit: purchaseUnit,
+                  pack_size_micro: micro,
+                  // The unit the AUTHOR chose. Never derived from the item.
+                  quantity_dimension: dimension as SupplierItem["quantity_dimension"],
+                  last_price_paise: null,
+                  // is_preferred, NOT is_active. supplier_item has no active
+                  // flag and no config_version -- sending either is an unknown
+                  // field, and the decoder refuses the whole request.
+                  is_preferred: false,
+                  schema_version: 1,
+                },
+              ],
       });
     },
     onSuccess: () => {

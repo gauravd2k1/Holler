@@ -629,14 +629,30 @@ pub fn apply_bundle(
     }
 
     // ADR-017 "Consequences": an empty `users` array is an error, not an
-    // empty set, and this check runs before touching SQLite at all — a
-    // suspect bundle applies nothing rather than replacing tables/menu while
-    // silently zeroing out login credentials. A legitimately staffless
-    // outlet is not a case this backend produces (ListEdgeUserCache reflects
-    // enrolled users), so failing loudly here has no legitimate false
-    // positive to weigh against the M1-acceptance-threatening silent failure
-    // this closes.
-    if bundle.users.is_empty() {
+    // empty set — a suspect bundle applies nothing rather than replacing
+    // tables and menu while leaving an outlet unable to log in. This check
+    // runs before touching SQLite at all.
+    //
+    // ON A FULL BUNDLE ONLY, AND THAT QUALIFIER IS THE FIX FOR A REAL WEDGE.
+    // `/sync/config` filters EVERY family by `since_version`, users included,
+    // so an incremental bundle that carries no users means "no user changed
+    // since your version" — the ordinary case for a menu edit, a tax change or
+    // a new supplier. Applying the guard to those made ANY config change that
+    // did not also touch a user permanently unappliable: the edge refused the
+    // bundle, never advanced its version, and refused the same bundle forever.
+    //
+    // Observed 2026-09-08 during the M6 sitting: a supplier created in the
+    // admin console could not reach a till, and the log repeated
+    // "config_version 15 with an empty users array" every ten seconds. The
+    // till had been stuck at version 12 since the previous day.
+    //
+    // The original reasoning — "a legitimately staffless outlet is not a case
+    // this backend produces" — is TRUE OF A FULL BUNDLE and false of an
+    // incremental one, which is the distinction that was missing. Note also
+    // that `apply_bundle` UPSERTS users and never deletes them, so an empty
+    // array cannot itself zero a credential; the danger ADR-017 names is a
+    // FIRST sync that carries none, which is exactly `since_version == 0`.
+    if since_version == 0 && bundle.users.is_empty() {
         return Err(crate::error::SyncError::EmptyUserCache {
             config_version: bundle.config_version,
         });
@@ -1234,6 +1250,78 @@ mod tests {
         assert!(result.is_err(), "malformed items array must fail to parse");
         let msg = result.err().expect("checked is_err above").to_string();
         assert!(!msg.contains("super-secret-hash"));
+    }
+
+    /// THE OTHER HALF, AND THE ONE THAT WAS MISSING.
+    ///
+    /// An INCREMENTAL bundle (`since_version > 0`) carrying no users must
+    /// APPLY. `/sync/config` filters every family by `since_version`, users
+    /// included, so an empty users array on an incremental pull means "no user
+    /// changed since your version" — the ordinary case for a menu edit, a tax
+    /// change, or a new supplier.
+    ///
+    /// Without this the guard wedged the config pull permanently: any config
+    /// change that did not also touch a user was refused, the edge never
+    /// advanced its version, and it refused the identical bundle forever.
+    /// Observed 2026-09-08 — a supplier created in the admin console could not
+    /// reach a till, and the log repeated "config_version 15 with an empty
+    /// users array" every ten seconds while the till sat at version 12.
+    ///
+    /// Falsified by widening the guard back to every bundle: this test then
+    /// fails with EmptyUserCache and the table row never lands.
+    #[test]
+    fn an_incremental_bundle_with_no_user_changes_applies() {
+        let mut db = Db::open_in_memory_for_tests().expect("open db");
+        repo::upsert_outlet(
+            db.connection(),
+            &model::Outlet {
+                id: "outlet-1".to_string(),
+                brand_id: "brand-1".to_string(),
+                name: "Test Outlet".to_string(),
+                timezone: "Asia/Kolkata".to_string(),
+                config_version: 1,
+                created_at: "2026-09-08T00:00:00Z".to_string(),
+                updated_at: "2026-09-08T00:00:00Z".to_string(),
+            },
+        )
+        .expect("seed outlet");
+
+        let bundle = ConfigBundle {
+            config_version: 15,
+            users: vec![],
+            roles: vec![],
+            tables: vec![WireRestaurantTable {
+                id: "table-9".to_string(),
+                outlet_id: "outlet-1".to_string(),
+                section: "Main".to_string(),
+                label: "T9".to_string(),
+                seat_count: 2,
+                is_active: true,
+                config_version: 15,
+            }],
+            categories: vec![],
+            items: vec![],
+            device_credentials: vec![],
+            ..Default::default()
+        };
+
+        // since_version 12: the till has synced before, so this is incremental.
+        let applied = apply_bundle(&mut db, "outlet-1", 12, bundle)
+            .expect("an incremental bundle with no user changes must apply, not error");
+        assert!(applied, "the bundle was newer and must have been applied");
+
+        let count: i64 = db
+            .connection()
+            .query_row(
+                "SELECT count(*) FROM restaurant_table WHERE id = 'table-9'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count");
+        assert_eq!(
+            count, 1,
+            "the config change never landed — every non-user config change would be unappliable"
+        );
     }
 
     /// ADR-017 "Consequences": an empty `users` array on a bundle that would

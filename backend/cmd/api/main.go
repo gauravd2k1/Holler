@@ -16,6 +16,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/holler/backend/internal/aggregators"
+	"github.com/holler/backend/internal/aggregators/adapters"
 	"github.com/holler/backend/internal/auth"
 	"github.com/holler/backend/internal/compliance"
 	"github.com/holler/backend/internal/health"
@@ -246,6 +248,18 @@ func buildRouter(pool postgres.Pool, cfg config.Config) *chi.Mux {
 	// that break is intentional (ADR-017 "Consequences": "Any existing
 	// caller relying on [a human bearer token here] is broken deliberately;
 	// it was the hole.").
+	// M6 Phase C (ADR-022). THIS FILE NAMES NO PLATFORM, and the boundary check
+	// enforces that: it asks the adapters package for whatever it has. Adding a
+	// platform is one entry in that package's registry and nothing here.
+	aggregatorRepo := aggregators.NewRepository(pool)
+	aggregatorSvc := aggregators.NewService(
+		aggregatorRepo,
+		adapters.All(adapters.Deps{
+			ResolveItem: nil,
+		})...,
+	)
+	aggregatorHandler := aggregators.NewHandler(aggregatorSvc, aggregatorRepo)
+
 	router.Group(func(r chi.Router) {
 		r.Use(outlet.DeviceAuthenticate(deviceSvc))
 
@@ -257,6 +271,16 @@ func buildRouter(pool postgres.Pool, cfg config.Config) *chi.Mux {
 		paymentsHandler.Mount(r)
 		inventoryHandler.MountIngest(r)
 		procurementHandler.MountIngest(r)
+
+		// M6 Phase C. The aggregator down-path (C1) and the inbound callback,
+		// both device-authenticated for the same reason every other route in
+		// this group is: the caller is an enrolled edge node, never a browser.
+		//
+		// THE CALLBACK IS REACHABLE LOCALLY ONLY IN M6. It has no signature
+		// verification and no registry -- M6.1 owns both -- so this listener
+		// must not be publicly routable until it does.
+		aggregatorHandler.MountDeviceRoutes(r)
+		aggregatorHandler.MountLocalCallback(r)
 	})
 
 	return router
