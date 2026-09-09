@@ -62,9 +62,11 @@ belong here.
 
 ## THE OBSERVATION SITTING — C1, C5, C6 and C8 in one run
 
-**NOT YET RUN.** Written out before the run so the preconditions are established
+**PARTLY RUN — see "SITTING RUN OF 2026-09-10" below for where it stands.** The
+plan was written out before the run so the preconditions are established
 deliberately rather than discovered mid-sitting, which is how the 2026-09-05 C7
-attempt was lost.
+attempt was lost. It is kept here unchanged as the plan; the run's state lives in
+its own section.
 
 **Order matters and is not arbitrary.** C1's document must arrive **while the
 cloud is reachable**, because ADR-022's guarantee is precisely that a NEW
@@ -184,6 +186,102 @@ holding the commit made because of the run that observed them.
 
 ---
 
+## SITTING RUN OF 2026-09-10 — IN PROGRESS, STOPPED AFTER STEP 6
+
+**This section is the resume point.** It is written while the sitting is running,
+not after it, so that a restart comes back to a known stage rather than
+reconstructing one from git history. Steps refer to the numbered plan above.
+
+**A prior attempt on 2026-09-08 reached the same screens and was abandoned**
+when it found two defects, both fixed in `0b500d6`: the config pull refused
+every incremental bundle that changed no user, and the aggregator routes were
+never mounted in `main.go`. Nothing from that attempt is evidence.
+
+### Preconditions established 2026-09-10, by Gaurav with Claude driving the stack
+
+- Infra: `holler-postgres-1`, `holler-redis-1` healthy, `holler-nats-1` up,
+  started with `docker compose up -d postgres redis nats`. **Not** `make dev` —
+  the compose file's `backend` service fails to build and is not used here; the
+  backend runs natively.
+- Backend: **PID 12404, started 2026-09-09 20:46:10**, `/health` returning
+  `{"status":"ok"}`. Verified by identity, not by the port answering. An earlier
+  process (PID 37752) was killed because it had started before Postgres existed;
+  port 8080 was confirmed free before the replacement was started.
+- Edge database reseeded by `scripts\dev-bootstrap.ps1 -SkipInfra -WithBilling`,
+  run by the operator because `apps\pos\.env.dev` carries the encryption key and
+  is deny-ruled to the agent. `%APPDATA%\com.holler.pos\edge.db.enc`,
+  1,384,476 bytes, written 2026-09-10 00:50, sealed — no `edge.db`, no `-wal`,
+  no open-marker.
+- Enrollment landed: `device_credential` row for device
+  `01a05d10-cba7-7876-9958-65f9a6ca2fe7` at 2026-09-09 19:20:00Z.
+- POS started by the operator with `HOLLER_SYNC_PUMP_INTERVAL_SECS=10`, signed
+  in as `cashier@holler.test`, which carries `procurement.manage`.
+- Admin dev server on :5175.
+
+**One precondition differs from the plan and is recorded rather than corrected:
+the cloud now holds 990 `menu_item` rows, not 2.** The cloud/edge menu seed drift
+that C7's falsifier depended on is therefore gone. That is harmless — M6 C7 is
+closed and its evidence is committed — but the absence must not be read as a fix.
+
+### C5 — the falsifier, OBSERVED 2026-09-10 (steps 5 and 6)
+
+**Item chosen: Paneer, `INV-PANEER`, dimension MASS.** It is the only seed
+inventory item with no `supplier_item` row in either store — established by
+querying the cloud for seed-range inventory items (`id::text LIKE
+'0191e800-0000-7000-8000-%'`) with no matching `supplier_item`, which returned
+exactly one row. Every other seed item already has one, and receiving against any
+of them would have falsified nothing. This matters because the config bundle
+carries `supplier` and `supplier_item` down to the till, so "the till has no
+supplier item" is not a property of the seed alone.
+
+Entered at the till: purchase unit `kg`, quantity `2`, declared dimension
+**Weight (MASS)** chosen by the operator from the delivery note — the selector is
+empty by design (contracts 0.5.2), and auto-filling it from the item would make
+the check `x == x`. Price ₹400 per kg, no purchase order, no batch, no expiry.
+
+**The echo, read off the screen before saving:**
+
+> 2 kg → 2000g of Paneer
+> 1 kg = 1000g
+> Cost ₹0.40 per base unit · line total ₹800.00
+> No agreed pack size for this supplier and unit
+
+Checked by hand: 2 kg × 1000 = 2000 g base; ₹400/kg ÷ 1000 = 40 paise per gram;
+2000 g × 40 paise = ₹800.00. Agrees.
+
+**Saved as `GRN/20260910/0001`**, business date 2026-09-10, stock increased.
+The receipt screen reported **two gaps**:
+
+- `NO_PURCHASE_ORDER` — "Received with no purchase order — walk-in delivery,
+  standing order or emergency purchase. The goods were received." Correct and not
+  a defect: a GRN never blocks on a PO (ADR-019).
+- `NO_SUPPLIER_ITEM` — "No supplier_item row for this item in unit \"kg\"; the
+  rate was resolved from the unit label instead."
+
+**This is C5's falsifier and it is now watched.** The absence of a
+`NO_SUPPLIER_ITEM` gap at step 9 will therefore mean something.
+
+### Where the run stands
+
+| Step | State |
+|---|---|
+| 0 (stack, by identity) | Done — PIDs and file state above |
+| 5–6 (C5 falsifier) | **Observed**, above |
+| 7 (create supplier + pack size in admin) | **NEXT** |
+| 8–9 (receive again, no gap, arithmetic by hand) | not started |
+| 10–11 (C6 screen half) | not started |
+| 13–15 (C8, both adapters + boundary check RED) | not started |
+| 16–20 (C1, both halves) | not started |
+| 21–23 (close the till, sealed-copy read, C6 field-by-field) | not started |
+
+**To resume after a restart:** verify the stack by identity again — the backend
+PID above is the one to expect, and a different PID means the observations below
+step 0 were made against a process that no longer exists. Do not re-run steps 5
+and 6: the falsifier is watched, `GRN/20260910/0001` exists, and receiving Paneer
+a second time before step 7 would muddy step 9's silence.
+
+---
+
 ## Phase B — CLOSED 2026-09-08 WITH THREE SURFACES BUILT AND TWO CARRIED, NOT ALL FIVE
 
 **Say it in those words.** Phase B was scoped as five admin surfaces. **Three
@@ -298,7 +396,7 @@ beyond `order` is expected to replay.**
 | C2 | Stock-out snoozes on ONDC staging | **PARKED** behind platform sandbox access |
 | C3 | A permanently-rejected row blocks itself and not its neighbours | **CODE COMPLETE, AWAITING OBSERVATION** — see below |
 | C4 | An offline order reaches the cloud without the operator closing the app | **A5 LANDED, AWAITING OBSERVATION** — the periodic pump exists; the `taskkill` falsifier has not been run |
-| C5 | Supplier and pack size created in admin convert on the next receipt | **UNBLOCKED** — the admin surface exists and renders (Phase B closed 2026-09-08); the criterion itself is unobserved, and its falsifier (receive BEFORE creating them, watch the gap) has not been run |
+| C5 | Supplier and pack size created in admin convert on the next receipt | **FALSIFIER OBSERVED 2026-09-10** — `NO_SUPPLIER_ITEM` watched on `GRN/20260910/0001` before the supplier item exists; the criterion's own half (receive again, no gap) is not yet observed |
 | C6 | A goods receipt is readable back in-product | **UNBLOCKED** — the list and detail routes exist and the screen renders live receipts with all three quantity fields; the field-by-field comparison against the edge row is unobserved |
 | C7 | A client-data failure is reported as 4xx with a reason the edge records | **CLOSED — observed 2026-09-07** on the shipping binaries, both halves of the falsifier watched |
 | C8 | An aggregator order flows through both adapters | **CODE COMPLETE, AWAITING THE SITTING** — both adapters and the boundary check exist; will be recorded `SHAPE ONLY — no integration evidence` |
