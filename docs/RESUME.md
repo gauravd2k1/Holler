@@ -1,15 +1,79 @@
-# Resume state — 2026-09-07
+# Resume state — 2026-09-10
 
-> ## READ THIS BLOCK FIRST. THE REST OF THIS FILE IS M5 HISTORY.
+> ## READ THIS BLOCK FIRST. THE REST OF THIS FILE IS M5 AND EARLY-M6 HISTORY.
 >
-> **Current position: M6 Phase A is CLOSED. M6 C7 is CLOSED. Phase B
-> (`apps/admin`) is the next work.** Nothing is mid-flight, no branch is open,
-> no test is red, everything is committed and pushed.
+> **Current position: the M6 observation sitting is HALF RUN and PAUSED at
+> step 7.** Phases A and B are closed, Phase C is code complete, and what
+> remains of M6 is the sitting that observes C1, C5, C6 and C8 on the shipping
+> binaries. Everything is committed and pushed; no branch is open and no test is
+> red.
 >
-> **Start at `docs/M6 kickoff.md`** — it carries the current position, the
-> operational runbook, and the judgment call outstanding for Phase B. Then
-> `docs/m6-acceptance.md` for criteria and evidence, and `docs/backlog.md` for
-> every deferred item.
+> **Start at `docs/m6-acceptance.md`, section "SITTING RUN OF 2026-09-10".** It
+> carries the preconditions as established, C5's falsifier as observed, and a
+> step-by-step table of what is done and what is next. This block is a pointer
+> to it, not a second copy of it.
+>
+> ### Where the sitting stopped, 2026-09-10 (session ended for the night)
+>
+> **Done and recorded:** step 0 (stack verified by identity), steps 5 and 6
+> (C5's falsifier — `NO_SUPPLIER_ITEM` watched on `GRN/20260910/0001` for
+> Paneer, before any supplier item exists).
+>
+> **Stopped mid-step-7**, on the admin console's "Add a supplier" form, with the
+> form filled in and NOT submitted. Two of its fields had been typed wrong and
+> were corrected on screen but never saved, so **nothing about the supplier
+> exists yet in any store** — a fresh session starts step 7 from the empty form.
+>
+> **The values step 7 needs**, which cost a round trip to work out and should
+> not be re-derived:
+>
+> - Code `DECCAN-DAIRY`, Name `Deccan Dairy`.
+> - **Inventory item id `0191e800-0000-7000-8000-000000000001`** — Paneer. The
+>   field takes the raw UUID, not a sequence number.
+> - Purchase unit **`kg`**, and it must match what was typed at the till in step
+>   5 exactly, or the receipt will not find the pack size.
+> - **Pack size `1000`.** The field means base units per purchase unit, and
+>   Paneer's base unit is the gram, so one kg is 1000 g. A value of `0.5` says a
+>   kilo weighs half a gram and the next receipt converts 2 kg into 1 g.
+> - Dimension **MASS**, chosen deliberately: the selector is empty by design
+>   (contracts 0.5.2) and auto-filling it from the item would make the guard
+>   `x == x`.
+>
+> **The stack is DOWN after this session ends and must be rebuilt before step 7**
+> — the whole sitting is void otherwise, because the observations already
+> recorded were made against a specific backend process:
+>
+> 1. `docker compose up -d postgres redis nats` — **not** `make dev` and not a
+>    bare `docker compose up`: the compose file's `backend` service fails to
+>    build (`go build -o /out/api ./cmd/api` exits 1) and is not used here.
+>    Docker Desktop does not autostart on this box; start it and wait for
+>    `docker info` to answer before the compose command.
+> 2. Backend in its own window:
+>    `.\scripts\dev-up.ps1 -SkipInfra -SkipSeed -NoKds -NoPos`. **Record the new
+>    PID** from `Get-NetTCPConnection -LocalPort 8080 -State Listen`. The
+>    2026-09-10 observations were made against PID 12404; a different PID is
+>    expected tomorrow and must be written into the acceptance file, because a
+>    port answering proves nothing about which process is answering.
+> 3. **Do NOT re-run the bootstrap.** It reseeds the edge database and would
+>    destroy `GRN/20260910/0001`, which is C5's falsifier. The edge database is
+>    already seeded, sealed and enrolled.
+> 4. POS, from a terminal the operator owns — a Tauri window launched from a
+>    tool with redirected stdio never appears:
+>    `$env:HOLLER_SYNC_PUMP_INTERVAL_SECS = "10"; .pps\pos
+un-dev.ps1`,
+>    sign in `cashier@holler.test` / `holler123` (it carries
+>    `procurement.manage`).
+> 5. Admin console: `cd appsdmin; pnpm dev`, `http://localhost:5175`, sign in
+>    `owner@holler.test` / `holler123`.
+>
+> `apps\pos\.env.dev` is deny-ruled to the agent because it carries the edge
+> encryption key, so **the operator runs anything that needs the key**, including
+> the bootstrap. That is why step 0.3 was run by hand.
+>
+> `docs/M6 kickoff.md` carries the operational runbook, but **it is stale on
+> position** — it was written on 2026-09-07 and still names Phase B as the next
+> work. Phase B closed on 2026-09-08. `docs/m6-acceptance.md` holds criteria and
+> evidence and is the authority; `docs/backlog.md` holds every deferred item.
 >
 > **Phase A closed with FIVE of seven gaps landed — A1, A1b, A2, A3, A5 — and
 > THREE carried: A4, A6, A7.** Never report it as "Phase A complete". A7 is the

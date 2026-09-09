@@ -267,12 +267,27 @@ The receipt screen reported **two gaps**:
 |---|---|
 | 0 (stack, by identity) | Done — PIDs and file state above |
 | 5–6 (C5 falsifier) | **Observed**, above |
-| 7 (create supplier + pack size in admin) | **NEXT** |
+| 7 (create supplier + pack size in admin) | **NEXT — form was open and filled but NEVER SUBMITTED on 2026-09-10; nothing exists in any store** |
 | 8–9 (receive again, no gap, arithmetic by hand) | not started |
 | 10–11 (C6 screen half) | not started |
 | 13–15 (C8, both adapters + boundary check RED) | not started |
 | 16–20 (C1, both halves) | not started |
 | 21–23 (close the till, sealed-copy read, C6 field-by-field) | not started |
+
+### Step 7's field values, worked out on 2026-09-10 and not to be re-derived
+
+The admin "Add a supplier" form takes a raw inventory item id and a pack size in
+base units, and both were typed wrong on the first attempt. Correct values:
+
+- Code `DECCAN-DAIRY`, Name `Deccan Dairy`.
+- **Inventory item id `0191e800-0000-7000-8000-000000000001`** (Paneer).
+- **Purchase unit `kg`** — must match the till entry in step 5 exactly, or the
+  next receipt will not find the pack size and step 9 proves nothing.
+- **Pack size `1000`** — base units per purchase unit, and Paneer's base unit is
+  the gram. `0.5` says a kilo weighs half a gram and would convert 2 kg into 1 g.
+- Dimension **MASS**, chosen from the supplier's own statement. The selector is
+  empty by design (contracts 0.5.2); auto-filling it from the item makes the
+  comparison `x == x` and the guard can never fire.
 
 **To resume after a restart:** verify the stack by identity again — the backend
 PID above is the one to expect, and a different PID means the observations below
