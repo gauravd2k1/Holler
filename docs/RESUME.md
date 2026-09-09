@@ -13,31 +13,40 @@
 > step-by-step table of what is done and what is next. This block is a pointer
 > to it, not a second copy of it.
 >
-> ### Where the sitting stopped, 2026-09-10 (session ended for the night)
+> ### Where the sitting stands, 2026-09-10
 >
-> **Done and recorded:** step 0 (stack verified by identity), steps 5 and 6
-> (C5's falsifier — `NO_SUPPLIER_ITEM` watched on `GRN/20260910/0001` for
-> Paneer, before any supplier item exists).
+> **C5 IS MET.** Steps 0, 5, 6, 7, 8 and 9 are all observed and recorded in the
+> acceptance file. The falsifier was watched first (`NO_SUPPLIER_ITEM` on
+> `GRN/20260910/0001`) and is absent on `GRN/20260910/0003` after the supplier
+> and pack size were created in the admin console.
 >
-> **Stopped mid-step-7**, on the admin console's "Add a supplier" form, with the
-> form filled in and NOT submitted. Two of its fields had been typed wrong and
-> were corrected on screen but never saved, so **nothing about the supplier
-> exists yet in any store** — a fresh session starts step 7 from the empty form.
+> **NEXT IS STEP 10 — C6, the screen half.** Admin console → Goods receipts,
+> find **`GRN/20260910/0003`**, and record every field it shows rather than a
+> summary of it: `entered_quantity_micro`, `pack_size_micro_applied`,
+> `base_quantity_micro`, `quantity_dimension`, `line_total_paise`, and the
+> nullable `purchase_order_id` / `supplier_id` / `purchase_order_line_id` **as
+> nulls where they are null**. The edge-row comparison is step 21, at the very
+> end, after the till is closed.
 >
-> **The values step 7 needs**, which cost a round trip to work out and should
-> not be re-derived:
+> **Three receipts exist and only one is the subject.** `0001` is the falsifier
+> (no supplier item yet). `0002` proves nothing — the supplier reference was
+> left blank, and `resolve_pack_rate` only consults `supplier_item` when a
+> supplier is given, so its gap was guaranteed. `0003` is the receipt C5 and C6
+> are about.
 >
-> - Code `DECCAN-DAIRY`, Name `Deccan Dairy`.
-> - **Inventory item id `0191e800-0000-7000-8000-000000000001`** — Paneer. The
->   field takes the raw UUID, not a sequence number.
-> - Purchase unit **`kg`**, and it must match what was typed at the till in step
->   5 exactly, or the receipt will not find the pack size.
-> - **Pack size `1000`.** The field means base units per purchase unit, and
->   Paneer's base unit is the gram, so one kg is 1000 g. A value of `0.5` says a
->   kilo weighs half a gram and the next receipt converts 2 kg into 1 g.
-> - Dimension **MASS**, chosen deliberately: the selector is empty by design
->   (contracts 0.5.2) and auto-filling it from the item would make the guard
->   `x == x`.
+> **Reference values from today, so they are not re-derived:** supplier
+> `Deccan Dairy` / `DECCAN-DAIRY`, id
+> `4eed005a-8889-479f-b3a5-20fcb5d5fb2c`; Paneer
+> `0191e800-0000-7000-8000-000000000001`, base unit gram; pack size `1000` g per
+> `kg`. The till's **Supplier reference** field takes the supplier's UUID, not
+> its code. Each receipt was 2 kg at ₹400/kg = 2000 g at ₹0.40 per base unit,
+> ₹800.00.
+>
+> **Three defects found during the run, filed and NOT fixed** (details in the
+> acceptance file's C5 section): `apps/admin` mints ids with
+> `crypto.randomUUID()` — UUIDv4, against §74 — at `SuppliersScreen.tsx:114` and
+> `:139`; the supplier form collects no GSTIN; the pack-size table shows a raw
+> UUID instead of the item name.
 >
 > **The stack is DOWN after this session ends and must be rebuilt before step 7**
 > — the whole sitting is void otherwise, because the observations already
