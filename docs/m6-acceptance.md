@@ -261,15 +261,63 @@ The receipt screen reported **two gaps**:
 **This is C5's falsifier and it is now watched.** The absence of a
 `NO_SUPPLIER_ITEM` gap at step 9 will therefore mean something.
 
+### C5 — MET 2026-09-10 (steps 7, 8 and 9)
+
+**Step 7.** Supplier `Deccan Dairy` / `DECCAN-DAIRY` created in the admin
+console with its first pack size: Paneer, purchase unit `kg`, pack size `1000`,
+dimension MASS chosen by the operator. The cloud row reads
+`pack_size_micro = 1000000000` — 1000 g per kg, exact.
+
+**A wrong turn worth recording, because it was mine and it looked like a
+failure.** The first retry of step 8 left **Supplier reference blank**, as steps
+5–6 had. `resolve_pack_rate` only consults `supplier_item` when a supplier is
+given (`edge/database/src/procurement/convert.rs:194`), so with no supplier the
+`NO_SUPPLIER_ITEM` gap is guaranteed **whatever the admin holds** — the receipt
+recorded as `GRN/20260910/0002` and proves nothing either way. The field also
+takes the supplier's **UUID**, not its code.
+
+**Step 8, with `supplier_id = 4eed005a-8889-479f-b3a5-20fcb5d5fb2c`:** recorded
+as `GRN/20260910/0003`. Echo before saving:
+
+> 2 kg → 2000g of Paneer
+> 1 kg = 1000g
+> Cost ₹0.40 per base unit · line total ₹800.00
+
+**Step 9 — the gap is GONE.** One gap remains, `NO_PURCHASE_ORDER`, which is
+correct and permanent for a walk-in delivery. The `NO_SUPPLIER_ITEM` line, and
+its "the rate was resolved from the unit label instead" prose, are absent. That
+absence is the criterion, and it means something because the same receipt
+produced the gap three receipts earlier.
+
+**What this run does NOT discriminate, stated plainly.** Both the falsified and
+the met receipts converted 2 kg to 2000 g, because the seeded unit-label
+conversion for kg and the agreed pack size are numerically identical (1 kg =
+1000 g). **The arithmetic is therefore not the evidence — the gap's presence and
+absence is.** A future run wanting the arithmetic to discriminate too should use
+a pack size the unit label cannot reproduce, e.g. a `SACK` of 50 kg.
+
+**It also evidences `0b500d6` on the live path.** The supplier and its pack size
+reached the till only by config pull. Before that fix every incremental bundle
+that changed no user was refused forever, so this step could not have passed at
+all — the config pull now has a production caller and it works.
+
+**Defect found on the way, filed but not fixed here:** `apps/admin` mints ids
+with `crypto.randomUUID()` (`SuppliersScreen.tsx:114` and `:139`), which is
+**UUIDv4**, against §74's app-generated UUIDv7/ULID rule — the created supplier's
+id is `4eed005a-8889-479f-…`, version nibble 4. Every supplier and supplier_item
+created from the console carries one. Two smaller ones from the same screen: the
+form collects **no GSTIN** (the row renders "no GSTIN"), and the pack-size table
+shows the raw inventory item UUID rather than the item's name.
+
 ### Where the run stands
 
 | Step | State |
 |---|---|
 | 0 (stack, by identity) | Done — PIDs and file state above |
 | 5–6 (C5 falsifier) | **Observed**, above |
-| 7 (create supplier + pack size in admin) | **NEXT — form was open and filled but NEVER SUBMITTED on 2026-09-10; nothing exists in any store** |
-| 8–9 (receive again, no gap, arithmetic by hand) | not started |
-| 10–11 (C6 screen half) | not started |
+| 7 (create supplier + pack size in admin) | **Done** — `Deccan Dairy`, id `4eed005a-8889-479f-b3a5-20fcb5d5fb2c` |
+| 8–9 (receive again, no gap) | **Observed — C5 MET** on `GRN/20260910/0003`, above |
+| 10–11 (C6 screen half) | **NEXT** — the receipt to read back is `GRN/20260910/0003` |
 | 13–15 (C8, both adapters + boundary check RED) | not started |
 | 16–20 (C1, both halves) | not started |
 | 21–23 (close the till, sealed-copy read, C6 field-by-field) | not started |
@@ -411,7 +459,7 @@ beyond `order` is expected to replay.**
 | C2 | Stock-out snoozes on ONDC staging | **PARKED** behind platform sandbox access |
 | C3 | A permanently-rejected row blocks itself and not its neighbours | **CODE COMPLETE, AWAITING OBSERVATION** — see below |
 | C4 | An offline order reaches the cloud without the operator closing the app | **A5 LANDED, AWAITING OBSERVATION** — the periodic pump exists; the `taskkill` falsifier has not been run |
-| C5 | Supplier and pack size created in admin convert on the next receipt | **FALSIFIER OBSERVED 2026-09-10** — `NO_SUPPLIER_ITEM` watched on `GRN/20260910/0001` before the supplier item exists; the criterion's own half (receive again, no gap) is not yet observed |
+| C5 | Supplier and pack size created in admin convert on the next receipt | **MET — observed 2026-09-10.** Falsifier watched first (`NO_SUPPLIER_ITEM` on `GRN/20260910/0001`), then absent on `GRN/20260910/0003` after the supplier item was created in the console |
 | C6 | A goods receipt is readable back in-product | **UNBLOCKED** — the list and detail routes exist and the screen renders live receipts with all three quantity fields; the field-by-field comparison against the edge row is unobserved |
 | C7 | A client-data failure is reported as 4xx with a reason the edge records | **CLOSED — observed 2026-09-07** on the shipping binaries, both halves of the falsifier watched |
 | C8 | An aggregator order flows through both adapters | **CODE COMPLETE, AWAITING THE SITTING** — both adapters and the boundary check exist; will be recorded `SHAPE ONLY — no integration evidence` |
