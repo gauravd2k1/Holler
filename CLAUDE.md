@@ -330,6 +330,24 @@ ingress security gate reviewed against traffic it did not generate, and
 `aggregator_order` documents arriving from the real registry. **Certification is
 not M6.1's close condition.**
 
+### FUTURE SCOPE, RECORDED SO IT IS NOT READ AS M6 WORK
+
+**Table-side ordering (customer tab) — ADR-025, PROPOSED 2026-09-10.** Some
+outlets will put a tab on each table so customers order directly; others stay
+staff-ordered, and **both modes must coexist within one outlet**. The shape is
+decided and written down — the tab is a **LAN client of the till like the KDS,
+never a cloud client** (orders are edge-authoritative and table ordering must
+work with the uplink down); a new **`table_device` principal kind** enforced at
+the **LAN boundary, not in the tab's UI**; `ordering_mode`/`tab_enabled` as
+cloud config; binding rides the existing `table_session` with **no new
+aggregate**; and the tab is **append-only**, which is what makes per-aggregate
+ordering sufficient against tab-versus-waiter edits. **No code exists and none
+is M6 scope.** Landing proposed for **M8**, trigger *after the first pilot runs
+on `STAFF_ONLY`*; prerequisites are A7, the `order.source` widening, the LAN
+security gate review for a public-facing device, and that pilot. The eight
+follow-ups are in `docs/backlog.md`; the architecture section is in
+`docs/architecture/SYSTEM_ARCHITECTURE.md`.
+
 ### EXCLUDES
 
 Reporting depth (M7); multi-outlet and central kitchen, `TRANSFER_IN` and

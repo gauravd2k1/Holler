@@ -1759,6 +1759,20 @@ impl Db {
         repo::list_payments_for_order(self.connection(), order_id)
     }
 
+    /// The `payment_allocation` rows behind one order's payments -- which
+    /// payment settled which invoice, and for how much.
+    ///
+    /// A caller showing payments to a human needs BOTH reads: a payment without
+    /// its allocations cannot be attributed to an invoice, and a screen that
+    /// attributes by allocation will show a paid bill as unpaid. See
+    /// `repo::list_payment_allocations_for_order`.
+    pub fn list_payment_allocations_for_order(
+        &self,
+        order_id: &str,
+    ) -> DbResult<Vec<model::PaymentAllocation>> {
+        repo::list_payment_allocations_for_order(self.connection(), order_id)
+    }
+
     // ----------------------------------------- Milestone 3: cash shift (T7c) --
 
     /// Opens a new cash shift (§39) plus its `OPENING_FLOAT` `cash_movement`

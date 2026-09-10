@@ -658,6 +658,13 @@ shape, and the edge writer that currently hardcodes `DIRECT`
 applies unchanged: a column nothing reads is a column that does not exist, and an
 enum member nothing writes is worse — it reads as supported.
 
+**One more value travels with it: `TABLE_TAB`.** ADR-025 (PROPOSED, 2026-09-10)
+records table-side customer ordering, whose orders need a source of their own for
+the same reason — a tab-entered order recorded as `POS` is wrong in every report
+that groups by channel. **One CHECK widening, two values, one ADR note, one
+consumer list**, because doing it twice costs more than doing it once. Everything
+else in ADR-025 is M8 work and none of it is M6 scope.
+
 **It does NOT block the sitting**, and that was decided explicitly: **C1 does not
 test `order.source`**. The criterion is that an already-received aggregator order
 bills, prints and closes with the cloud unreachable, and it does that identically
@@ -666,6 +673,17 @@ whatever the source column says. So the sitting runs on the current binaries wit
 deliberately, rather than holding an observation for a schema change.
 
 ---
+
+### Not M6: table-side ordering (ADR-025)
+
+**Recorded here so the architecture section is not mistaken for work in flight.**
+`docs/architecture/SYSTEM_ARCHITECTURE.md` gained a "Table-side ordering
+(customer tab)" section on 2026-09-10 and `docs/adr/ADR-025-table-ordering-device.md`
+was written PROPOSED. **No code was written, and no M6 criterion touches any of
+it.** Proposed landing is **M8**, trigger *after the first pilot runs on
+`STAFF_ONLY`*; the eight follow-ups are in `docs/backlog.md`. The single
+exception is the `order.source` widening above, which is pulled forward only
+because a CHECK widening was already pending for 0.8.1.
 
 ## Status summary
 

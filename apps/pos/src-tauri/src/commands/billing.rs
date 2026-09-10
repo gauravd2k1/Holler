@@ -604,7 +604,25 @@ pub fn record_payment_impl(
 pub fn list_payments_for_order_impl(state: &AppState, order_id: &str) -> AppResult<Vec<Payment>> {
     let db = lock_db(state)?;
     let payments = db.list_payments_for_order(order_id)?;
-    Ok(payments.into_iter().map(Payment::from).collect())
+    // BOTH READS, ALWAYS. The billing screen attributes a payment to an invoice
+    // through its allocations, so payments returned without them show a settled
+    // bill as fully due -- which is what this screen did until 2026-09-10, on
+    // the till where cash is actually taken. Two queries per order rather than
+    // an N+1 per payment.
+    let allocations = db.list_payment_allocations_for_order(order_id)?;
+    Ok(payments
+        .into_iter()
+        .map(|p| {
+            let mut dto = Payment::from(p);
+            dto.allocations = allocations
+                .iter()
+                .filter(|a| a.payment_id == dto.id)
+                .cloned()
+                .map(crate::dto::PaymentAllocation::from)
+                .collect();
+            dto
+        })
+        .collect())
 }
 
 // -------------------------------------------------------------- cash shift --

@@ -841,6 +841,29 @@ impl Invoice {
     }
 }
 
+/// One `payment_allocation` row: how much of a tender settled which invoice.
+/// Mirrors `PaymentAllocationSchema` in `packages/contracts`.
+#[derive(Debug, Clone, Serialize)]
+pub struct PaymentAllocation {
+    pub id: String,
+    pub payment_id: String,
+    pub invoice_id: String,
+    pub amount_paise: i64,
+    pub schema_version: u8,
+}
+
+impl From<db::PaymentAllocation> for PaymentAllocation {
+    fn from(a: db::PaymentAllocation) -> Self {
+        Self {
+            id: a.id,
+            payment_id: a.payment_id,
+            invoice_id: a.invoice_id,
+            amount_paise: a.amount_paise,
+            schema_version: 1,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Payment {
     pub id: String,
@@ -856,12 +879,21 @@ pub struct Payment {
     pub external_id: Option<String>,
     pub reverses_payment_id: Option<String>,
     pub captured_at: Option<String>,
-    /// Always empty: `payment_allocation` (payment<->invoice settlement) is
-    /// unimplemented in `holler_edge_database` (T7c disclosure) — `payment`
-    /// ties directly to `order_id` today. Present on the DTO so it matches
-    /// `PaymentSchema`'s wire shape (which defaults it to `[]`) rather than
-    /// omitting the field.
-    pub allocations: Vec<serde_json::Value>,
+    /// Which invoice this tender settled, and for how much.
+    ///
+    /// **This was hardcoded empty until 2026-09-10, and the comment here said
+    /// `payment_allocation` was unimplemented in `holler_edge_database`. It was
+    /// not** — the edge has written allocations since M3 and derives an
+    /// invoice's remaining due from them. The consequence was a money defect on
+    /// the one screen where money is handled: the billing screen attributes a
+    /// payment to an invoice THROUGH this list, so with it always empty every
+    /// recorded payment was invisible and every invoice read as fully due no
+    /// matter how much cash had been taken. Only the edge refusing the second
+    /// tender stood between a settled bill and a customer paying twice.
+    ///
+    /// A stale comment asserting an absence is worse than no comment: it is the
+    /// reason nobody looked.
+    pub allocations: Vec<PaymentAllocation>,
     pub created_by_user_id: String,
     pub created_at: String,
     pub updated_at: String,
@@ -885,6 +917,10 @@ impl From<db::Payment> for Payment {
             external_id: p.external_id,
             reverses_payment_id: p.reverses_payment_id,
             captured_at: p.captured_at,
+            // Filled in by the caller that has the allocation rows to hand
+            // (`commands::billing::list_payments_for_order_impl`). Empty here
+            // rather than wrong: this conversion sees one payment row and no
+            // allocations, and inventing them is what the old code did.
             allocations: Vec::new(),
             created_by_user_id: p.created_by_user_id,
             created_at: p.created_at,

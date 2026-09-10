@@ -4838,6 +4838,44 @@ pub(crate) fn list_reversals_for_payment_in_tx(
 /// Writes one `payment_allocation` row — how one tender settles against one
 /// invoice (T9 retry: the double-settlement guard needs this table actually
 /// written, not merely present in the schema). Only writer of this table.
+/// Every `payment_allocation` row for one order's payments, oldest payment
+/// first.
+///
+/// WITHOUT THIS READ THE TILL CANNOT SHOW THAT A BILL WAS PAID. The billing
+/// screen decides which payments belong to an invoice by looking at each
+/// payment's allocations, and the Tauri DTO used to hardcode that list empty on
+/// the (by then false) grounds that allocation was unimplemented here. The
+/// effect was that every recorded payment was invisible and every invoice read
+/// as fully due, however much cash had been taken -- the edge refusing a second
+/// tender was the only thing standing between a settled bill and a customer
+/// paying twice. Found during the M6 C1 run, 2026-09-10.
+///
+/// Joined through `payment` rather than taking payment ids, so one query serves
+/// a whole order and a payment with no allocation simply contributes no rows.
+pub fn list_payment_allocations_for_order(
+    conn: &Connection,
+    order_id: &str,
+) -> DbResult<Vec<PaymentAllocation>> {
+    let mut stmt = conn.prepare(
+        "SELECT a.id, a.payment_id, a.invoice_id, a.amount_paise
+           FROM payment_allocation a
+           JOIN payment p ON p.id = a.payment_id
+          WHERE p.order_id = ?1
+          ORDER BY p.created_at, p.id, a.id",
+    )?;
+    let rows = stmt
+        .query_map(params![order_id], |row| {
+            Ok(PaymentAllocation {
+                id: row.get(0)?,
+                payment_id: row.get(1)?,
+                invoice_id: row.get(2)?,
+                amount_paise: row.get(3)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
 pub(crate) fn insert_payment_allocation(
     tx: &Transaction,
     a: &NewPaymentAllocation,
