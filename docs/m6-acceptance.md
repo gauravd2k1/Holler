@@ -364,6 +364,64 @@ this half evidences the cloud replica only — and the screen must be read as a
 replica, whose figures may legitimately differ from the outlet's own view
 (ADR-024).
 
+### C8 — SHAPE ONLY, no integration evidence. Observed 2026-09-10 (steps 13, 14, 15)
+
+**Recorded in those words, as the plan requires: `SHAPE ONLY — no integration
+evidence`.** Both fakes are ours, no message has been exchanged with any ONDC
+system, and the integration row travels to M6.1 as an explicitly unmet criterion
+(M6.1 C1). The artefact-generated fake is the strongest available check on shape
+and the weakest possible check on integration.
+
+**Step 13 — one order through each adapter, on the shipping backend** (PID 12404),
+driven over HTTP with the till's own device bearer token, not through a test
+harness.
+
+The **Beckn/ONDC** adapter, against the unmodified artefact-generated fixture
+`backend/internal/aggregators/adapters/beckn/fixtures/confirm.json` — a buyer-app
+`confirm`, which is what a BPP receives:
+
+```
+POST /aggregators/ondc/callback  ->  HTTP 200
+{"external_order_id":"O1","applied":true,"duplicate":false,"unmapped_lines":2}
+```
+
+The **syncrest** adapter, against the local synchronous REST fake — a flat
+envelope with paise on the wire, structurally unlike Beckn's `context`/`message`
+shape:
+
+```
+POST /aggregators/syncrest/callback  ->  HTTP 200
+{"external_order_id":"SR-20260910-001","applied":true,"duplicate":false,"unmapped_lines":2}
+```
+
+**Two protocol shapes, one core, same receipt shape back.** `unmapped_lines: 2`
+on both is correct and not a failure: no `external_item_id` mapping exists for
+either fake's items, and an unmappable line is recorded rather than refused
+(ADR-022 rule 4).
+
+**Step 14 — the boundary check watched FAILING, then passing.** A
+platform-specific branch was planted in the core, in `ToAggregatorOrder`:
+
+```go
+if in.Platform == "ondc" {
+```
+
+`node scripts/check-aggregator-boundary.mjs` then printed, exit 1:
+
+```
+check-aggregator-boundary: platform vocabulary outside its adapter
+
+  backend\internalggregators\port.go:148  "ondc"
+      if in.Platform == "ondc" {
+
+1 violation(s) across 295 scanned file(s).
+```
+
+The branch was removed and the check printed `OK — 295 file(s) outside the adapter
+directory carry no platform vocabulary`, exit 0, with `git status` clean on
+`port.go`. **A boundary nobody has watched fail is not a boundary**; this one has
+now been watched failing and recovering, in that order.
+
 ### Where the run stands
 
 | Step | State |
@@ -373,8 +431,8 @@ replica, whose figures may legitimately differ from the outlet's own view
 | 7 (create supplier + pack size in admin) | **Done** — `Deccan Dairy`, id `4eed005a-8889-479f-b3a5-20fcb5d5fb2c` |
 | 8–9 (receive again, no gap) | **Observed — C5 MET** on `GRN/20260910/0003`, above |
 | 10–11 (C6 screen half) | **Observed** on `GRN/20260910/0003`, above; step 23 still owed |
-| 13–15 (C8, both adapters + boundary check RED) | **NEXT** |
-| 16–20 (C1, both halves) | not started |
+| 13–15 (C8, both adapters + boundary check RED) | **Observed — C8 met, SHAPE ONLY**, above |
+| 16–20 (C1, both halves) | **NEXT** |
 | 21–23 (close the till, sealed-copy read, C6 field-by-field) | not started |
 
 ### Step 7's field values, worked out on 2026-09-10 and not to be re-derived
@@ -517,7 +575,7 @@ beyond `order` is expected to replay.**
 | C5 | Supplier and pack size created in admin convert on the next receipt | **MET — observed 2026-09-10.** Falsifier watched first (`NO_SUPPLIER_ITEM` on `GRN/20260910/0001`), then absent on `GRN/20260910/0003` after the supplier item was created in the console |
 | C6 | A goods receipt is readable back in-product | **SCREEN HALF OBSERVED 2026-09-10** on `GRN/20260910/0003`, all three quantity fields and the nulls served as nulls; the field-by-field comparison against the edge row (step 23) is still owed |
 | C7 | A client-data failure is reported as 4xx with a reason the edge records | **CLOSED — observed 2026-09-07** on the shipping binaries, both halves of the falsifier watched |
-| C8 | An aggregator order flows through both adapters | **CODE COMPLETE, AWAITING THE SITTING** — both adapters and the boundary check exist; will be recorded `SHAPE ONLY — no integration evidence` |
+| C8 | An aggregator order flows through both adapters | **MET 2026-09-10 — `SHAPE ONLY — no integration evidence`.** Both adapters applied an order over HTTP on the shipping backend; the boundary check was watched RED on a planted `if in.Platform == "ondc"` and green after removal. Integration travels to M6.1 C1, unmet |
 
 ---
 
