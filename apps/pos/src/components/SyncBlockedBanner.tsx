@@ -1,3 +1,4 @@
+import { useState } from "react";
 import {
   useBlockedOutboxRowsQuery,
   usePersistentlyFailingOutboxRowsQuery,
@@ -24,7 +25,22 @@ import {
 //
 // Halting sync is survivable. Halting it silently is not, and M5 ended with
 // 120 rows pending on a till that reported itself healthy.
+//
+// COLLAPSIBLE, AND THE SUMMARY NEVER COLLAPSES. Pinned at top:0 with a height
+// that grows per row, this banner covered the entire till header at seven rows
+// -- the search box, the order-type buttons, the table picker and every
+// navigation button -- which is the third instance of a fixed overlay eating
+// another region (`.print-failure-banner` and `.stock-banners` had already been
+// fixed once for colliding with each other). Observed blocking the M6 C1 run on
+// 2026-09-10.
+//
+// The row list folds away; the count and the "these need someone" line do not,
+// because the whole reason this banner exists is that a till must not look
+// healthy while records are stranded. Collapsing hides the detail, never the
+// fact. The state is per-session and defaults to EXPANDED: a cashier who has
+// never seen it should see everything.
 export function SyncBlockedBanner() {
+  const [expanded, setExpanded] = useState(true);
   const blockedQuery = useBlockedOutboxRowsQuery();
   const failingQuery = usePersistentlyFailingOutboxRowsQuery();
 
@@ -39,7 +55,15 @@ export function SyncBlockedBanner() {
           <span className="sync-blocked-summary">
             {blocked.length} record{blocked.length === 1 ? "" : "s"} will not reach the cloud
           </span>
-          <ul className="sync-blocked-list">
+          <button
+            type="button"
+            className="sync-blocked-toggle"
+            aria-expanded={expanded}
+            onClick={() => setExpanded((v) => !v)}
+          >
+            {expanded ? "Hide details" : "Show details"}
+          </button>
+          <ul className="sync-blocked-list" hidden={!expanded}>
             {blocked.map((row) => (
               <li key={row.outbox_id}>
                 <span className="sync-blocked-aggregate">

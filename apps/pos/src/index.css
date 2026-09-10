@@ -486,10 +486,16 @@ button {
    were already fixed once for overlapping each other exactly. A third
    bottom-anchored overlay whose height varies with its content would be the
    same bug a third time, so this one takes a region nothing else occupies. */
+/* STICKY, NOT FIXED, and that is the fix rather than a preference. `fixed`
+   takes the element out of flow, so the banner sat ON TOP of the till header
+   whatever its height -- collapsing the row list shrank the banner and the
+   header stayed underneath it, because nothing had reserved the space. Sticky
+   keeps it in flow (it is the first child of `.pos-screen`, before the header),
+   so the header is pushed down by exactly the height the banner currently has,
+   and it still pins to the top while the menu scrolls. Observed blocking the
+   M6 C1 run, 2026-09-10. */
 .sync-blocked-banner {
-  position: fixed;
-  left: 0;
-  right: 0;
+  position: sticky;
   top: 0;
   z-index: 1002;
   display: flex;
@@ -515,6 +521,21 @@ button {
 }
 .sync-blocked-aggregate {
   font-weight: bold;
+}
+/* The row list is capped and scrolls INSIDE the banner rather than growing it.
+   Height that varies with row count is what let this overlay swallow the till
+   header, and the count only ever grows. */
+.sync-blocked-list {
+  max-height: 4.5rem;
+  overflow-y: auto;
+}
+.sync-blocked-toggle {
+  background: transparent;
+  border: 1px solid #b06fd0;
+  color: #fff;
+  border-radius: 4px;
+  padding: 0.125rem 0.5rem;
+  cursor: pointer;
 }
 /* Deliberately not styled as an alarm: the local record is intact and the
    till is working. What is wrong is upstream, and the wording says so. */
