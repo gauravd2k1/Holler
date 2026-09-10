@@ -7,6 +7,10 @@
 - **Contracts:** one additive item is pulled forward — `order.source` must name
   `TABLE_TAB` — and it travels with the platform widening already pending for
   **0.8.1**, before M6 closes. Everything else waits for M8 planning.
+- **Landed in commit `fc38006`**, whose message describes only the payments-
+  allocation fix. The two are unrelated: these documents were staged before that
+  fix and were committed with it by mistake. Recorded here rather than rewritten,
+  because history rewriting is not a builder's call.
 - **Extends** ADR-009/§50.1 (authority), ADR-015 (edge credential sync and the
   LAN transport), ADR-017 (device enrolment), and ADR-011's `restaurant_table`
   (config) versus `table_session` (edge-authoritative) split.
