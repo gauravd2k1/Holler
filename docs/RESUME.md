@@ -2,132 +2,136 @@
 
 > ## READ THIS BLOCK FIRST. THE REST OF THIS FILE IS M5 AND EARLY-M6 HISTORY.
 >
-> **Current position: the M6 observation sitting is THREE CRITERIA IN and PAUSED
-> before C1.** Phases A and B are closed. C5, C6's screen half and C8 are
-> observed and recorded; C1's accept path was found MISSING and built today.
-> Everything is committed and pushed through `3589f63`; no branch is open and no
-> test is red. **"Phase C is code complete" is what the last version of this
-> block said, and C1 disproved it** — read that section before trusting any
-> "complete" claim about Phase C.
+> **Current position: FIVE of eight M6 criteria are MET, and the sitting is
+> paused mid-C4 with its precondition already established.** Phases A and B are
+> closed. C1, C5, C6, C7 and C8 are observed and recorded; C2 is parked; C3 and
+> C4 remain. Everything is committed and pushed through `ac344aa`; no branch is
+> open and no test is red. **"Phase C is code complete" is what an earlier
+> version of this block said, and C1 disproved it** — the accept path C1 needs
+> did not exist and was built on 2026-09-10, so treat any "complete" claim about
+> Phase C as unverified until its sinks are counted.
 >
 > **Start at `docs/m6-acceptance.md`, section "SITTING RUN OF 2026-09-10".** It
 > carries the preconditions as established, C5's falsifier as observed, and a
 > step-by-step table of what is done and what is next. This block is a pointer
-> to it, not a second copy of it.
+> **Start at `docs/m6-acceptance.md`** — it holds every criterion, what was
+> observed and what is still owed. This block points at it rather than copying
+> it.
 >
-> ### Where the sitting stands, 2026-09-10 (late evening)
+> ### Where the sitting stands, 2026-09-10 (end of session)
 >
-> **THREE CRITERIA DONE: C5 MET, C6's SCREEN HALF OBSERVED, C8 MET (SHAPE
-> ONLY).** All three are written up in `docs/m6-acceptance.md` with what was
-> observed, by whom and when. C5's falsifier was watched first
-> (`NO_SUPPLIER_ITEM` on `GRN/20260910/0001`, absent on `GRN/20260910/0003`), and
-> C8's boundary check was watched RED on a planted `if in.Platform == "ondc"`
-> before going green again.
+> **FIVE OF EIGHT M6 CRITERIA ARE MET AND RECORDED: C1, C5, C6, C7, C8.** Each is
+> written up in `docs/m6-acceptance.md` with what was observed, by whom and when.
+> C2 stays PARKED behind platform sandbox access. **C3 and C4 are what remain**,
+> and C4 is mid-run with its precondition already established (below).
 >
-> **C1 WAS NEVER CODE COMPLETE, and the accept path it needs was built today at
-> `3589f63`.** The down-path mirrored documents into the till and nothing could
-> accept one: `repo::list_unaccepted_aggregator_orders` had zero non-test
-> callers, the cloud's `ResolveMenuItem` had none because `main.go` passed
-> `ResolveItem: nil`, and the POS had no aggregator command and no aggregator
-> route. The sinks were counted and the screens were not. **What exists now is
-> build-verified and UNOBSERVED** — `cargo build`, `go build`, `tsc --noEmit`,
-> 230 POS vitest tests, 5 `aggregator_mirror` tests, three `check-seams` targets
-> and the boundary check, none of which is C1.
+> - **C1 MET** — an aggregator order accepted, billed, printed and settled with
+>   the cloud provably stopped by pid, then replayed on a new pid. The print is
+>   evidenced by the FILE SINK, not paper; that gate stays parked.
+> - **C5 MET** — falsifier watched first (`NO_SUPPLIER_ITEM` on
+>   `GRN/20260910/0001`), absent on `GRN/20260910/0003`.
+> - **C6 MET** — screen half at step 11, edge row at step 23, every field agreeing
+>   including the nulls.
+> - **C8 MET, `SHAPE ONLY — no integration evidence`** — both adapters over HTTP,
+>   boundary check watched RED on a planted platform branch, then green.
+> - **C7 was already closed** on 2026-09-07. Do not re-run it.
 >
-> ### NEXT: the sitting restarts at step 0, on the NEW binaries
+> ### C4 IS MID-RUN. THE PRECONDITION IS ESTABLISHED AND MUST NOT BE REBUILT
 >
-> **The backend that was running all evening (PID 12404) PREDATES the resolver
-> wiring, so it must be replaced or the accept path under test is not the one in
-> the repository.** In order:
+> Everything C4 needs has already happened, in the right order, and the only step
+> left is the observation itself:
 >
-> 1. Stop the POS with **Ctrl+C in its own terminal**, never the window X —
->    closing the window leaves `holler-pos.exe` alive with the database open and
->    unsealed (observed 2026-09-05, and again on 2026-09-07 under `tauri dev`).
->    Confirm with `Get-Process holler-pos` that nothing survives.
-> 2. Kill the backend **by PID**, confirm 8080 is free, restart it, and record
->    the **NEW** pid. The port answering proves nothing.
-> 3. Restart the POS (`$env:HOLLER_SYNC_PUMP_INTERVAL_SECS = "10"` then
->    `.pps\pos
-un-dev.ps1`) and the admin dev server as needed.
-> 4. **Do NOT re-run the bootstrap** — it reseeds the edge database and would
->    destroy `GRN/20260910/0001` and `/0003`, which are C5's and C6's evidence.
+> - Order **`01a08b39-d92b-7dd1-8df9-77bacce251bc`** (DINE_IN, 1 item, ₹380.00,
+>   created 2026-09-10T12:10:19.307Z) was created **with the cloud stopped** —
+>   `check-cloud-unreachable.ps1` agreed on all three probes first.
+> - The POS was then killed with `taskkill /F` (pid 61504), so **no exit event of
+>   any kind fired** and the shutdown drain never ran.
+> - The cloud was restarted on a **NEW pid 52528** (previous 49600).
+> - **The order is ABSENT from Postgres**: `"order"` count is 249, unchanged from
+>   before it was created.
 >
-> Then C1, steps 16–20 of the plan in the acceptance file, with the accept path
-> now in place: post a document with the cloud REACHABLE, let the pull bring it
-> down, open **Platform Orders** on the till header, accept it, then make the
-> cloud unreachable by the three-probe method (stopping it by PID) and bill,
-> print and close. The negative half — no NEW document arrives while the cloud is
-> down — is ADR-022's published guarantee and is observed, not fixed.
+> **The remaining step, and it is the whole criterion:** start the POS and LEAVE
+> THE WINDOW OPEN, touching nothing. When the periodic pump lands
+> `01a08b39-…251bc` in Postgres while the app is still running, C4 is met — an
+> order placed offline reached the cloud without the operator closing the
+> application. Verify with the app still up, not after closing it.
 >
-> **C3, C4 and steps 21–23 (C6's edge-row comparison) are still owed after that.**
+> **Record C4 honestly on one point.** Its falsifier was written as "`taskkill` so
+> `RunEvent::Exit` never fires", assuming a normal exit does fire it. This session
+> established that **neither `Ctrl+C` nor a window close fires it either**, so the
+> abnormal-exit distinction does not exist on this build. The criterion still
+> stands — the pump landing a row with no exit event involved is the point — but
+> the record must not imply the falsifier isolated an abnormal path.
 >
-> ### Two documents already posted through the adapters tonight
+> ### C3 is observable from the same run
 >
-> `ondc` / `O1` (the artefact-generated Beckn `confirm` fixture) and `syncrest` /
-> `SR-20260910-001`, both applied with `unmapped_lines: 2`. **Both were received
-> BEFORE the resolver was wired, so their lines carry no `menu_item_id` and
-> accepting either will be refused by name with
-> `AGGREGATOR_ORDER_NO_MAPPED_LINES`** — which is correct behaviour, not a bug.
-> C1 needs a document posted AFTER the new backend is up, with
-> `aggregator_item_map` rows for the item ids it carries, or it has nothing
-> billable. The driver script is in the scratchpad
-> (`c8-drive-adapters.ps1`); the map rows do not exist yet and are the first
-> thing step 16 needs.
+> A permanently-rejected row blocks itself and not its neighbours: the till holds
+> seven blocked rows (`missing_reference`, HTTP 422) and has published new orders
+> past them all session. The positive half can be recorded from the C4 run;
+> **the pre-fix comparison exists only as a harness result** (`left: [] right:
+> ["outbox-2"]`) and cannot be observed without the pre-fix binary, which must be
+> said plainly rather than glossed.
 >
-> **Three receipts exist and only one is the subject.** `0001` is the falsifier
-> (no supplier item yet). `0002` proves nothing — the supplier reference was
-> left blank, and `resolve_pack_rate` only consults `supplier_item` when a
-> supplier is given, so its gap was guaranteed. `0003` is the receipt C5 and C6
-> are about.
+> ### Stack state as this session ended
 >
-> **Reference values from today, so they are not re-derived:** supplier
-> `Deccan Dairy` / `DECCAN-DAIRY`, id
-> `4eed005a-8889-479f-b3a5-20fcb5d5fb2c`; Paneer
-> `0191e800-0000-7000-8000-000000000001`, base unit gram; pack size `1000` g per
-> `kg`. The till's **Supplier reference** field takes the supplier's UUID, not
-> its code. Each receipt was 2 kg at ₹400/kg = 2000 g at ₹0.40 per base unit,
-> ₹800.00.
+> - Postgres, Redis, NATS: **up and healthy** (`docker compose up -d postgres
+>   redis nats`).
+> - Backend: **pid 52528**, started 17:42:41. Verify by identity before trusting
+>   any observation; a port answering proves nothing.
+> - **POS: NOT running.** It was killed by `taskkill` for C4 and has not been
+>   restarted. Starting it also runs crash recovery, which reseals the plaintext
+>   database the failed shutdown left behind.
+> - Admin dev server: was running on :5175. KDS: not started this session.
 >
-> **Five defects and two deferrals filed during the run, NOT fixed** (details in the
-> acceptance file's C5 section): `apps/admin` mints ids with
-> `crypto.randomUUID()` — UUIDv4, against §74 — at `SuppliersScreen.tsx:114` and
-> `:139`; the supplier form collects no GSTIN; the pack-size table shows a raw
-> UUID instead of the item name; `order.source`'s frozen CHECK cannot name ONDC,
-> so the accept path writes `DIRECT` with the platform in `source_payload_json`
-> and the widening is escalated; and aggregator **reject** and **platform-cancel
-> visibility** are deferred with the trigger *before any platform sandbox
-> access*. All are in `docs/backlog.md`.
+> ### Two open findings from the last hour, NOT yet investigated
 >
-> **The stack is DOWN after this session ends and must be rebuilt before step 7**
-> — the whole sitting is void otherwise, because the observations already
-> recorded were made against a specific backend process:
+> **The cloud's copy of an order does not track the till's.** Order #A1 reads
+> `DRAFT` at ₹300.00 in Postgres while the till has it billed, printed and settled
+> at ₹315.00 — that part is A7 (invoice and payment have no edge route). But a
+> second order shows the same shape where A7 does not explain it: the till shows
+> ₹385.00 across two items and Postgres holds `5500` paise, so the create event
+> replayed and the later item events did not. `order` HAS a route, so this is a
+> different question from A7 and is unexamined.
 >
-> 1. `docker compose up -d postgres redis nats` — **not** `make dev` and not a
->    bare `docker compose up`: the compose file's `backend` service fails to
->    build (`go build -o /out/api ./cmd/api` exits 1) and is not used here.
->    Docker Desktop does not autostart on this box; start it and wait for
->    `docker info` to answer before the compose command.
+> **The 10-second pump makes the till sluggish while the cloud is down.** Every
+> tick takes the database lock and walks 103 pending rows against a dead uplink,
+> and the UI waits behind it. ADR-013's promise is that an outlet is unaffected by
+> a dead uplink, so this is worth a look before a pilot.
+>
+> ### Rebuilding the stack from cold, if it is down
+>
+> 1. `docker compose up -d postgres redis nats` — **not** `make dev`, and not a
+>    bare `docker compose up`: the compose file's `backend` service fails to build
+>    (`go build -o /out/api ./cmd/api` exits 1) and is not used here. Docker
+>    Desktop does not autostart on this box; start it and wait for `docker info`
+>    to answer.
 > 2. Backend in its own window:
->    `.\scripts\dev-up.ps1 -SkipInfra -SkipSeed -NoKds -NoPos`. **Record the new
->    PID** from `Get-NetTCPConnection -LocalPort 8080 -State Listen`. The
->    2026-09-10 observations were made against PID 12404; a different PID is
->    expected tomorrow and must be written into the acceptance file, because a
->    port answering proves nothing about which process is answering.
+>    `.\scripts\dev-up.ps1 -SkipInfra -SkipSeed -NoKds -NoPos`, then record the
+>    **NEW** pid.
 > 3. **Do NOT re-run the bootstrap.** It reseeds the edge database and would
->    destroy `GRN/20260910/0001`, which is C5's falsifier. The edge database is
->    already seeded, sealed and enrolled.
-> 4. POS, from a terminal the operator owns — a Tauri window launched from a
->    tool with redirected stdio never appears:
->    `$env:HOLLER_SYNC_PUMP_INTERVAL_SECS = "10"; .pps\pos
-un-dev.ps1`,
->    sign in `cashier@holler.test` / `holler123` (it carries
->    `procurement.manage`).
-> 5. Admin console: `cd appsdmin; pnpm dev`, `http://localhost:5175`, sign in
->    `owner@holler.test` / `holler123`.
+>    destroy `GRN/20260910/0001` and `/0003` — C5's and C6's evidence — and the
+>    C4 order above.
+> 4. POS, from a terminal the operator owns; a Tauri window launched from a tool
+>    with redirected stdio never appears: `.\apps\pos\run-dev.ps1`, sign in
+>    `cashier@holler.test` / `holler123`.
+> 5. Admin console: `cd apps\admin` then `pnpm dev`, `http://localhost:5175`,
+>    sign in `owner@holler.test` / `holler123`.
 >
 > `apps\pos\.env.dev` is deny-ruled to the agent because it carries the edge
-> encryption key, so **the operator runs anything that needs the key**, including
-> the bootstrap. That is why step 0.3 was run by hand.
+> encryption key, so **the operator runs anything that needs it**, including the
+> bootstrap and the device token.
+>
+> ### After C3 and C4, in this order
+>
+> 1. **Contracts 0.8.1 — the `order.source` widening**, on the M6 BOUNDARY LIST in
+>    `docs/m6-acceptance.md`: one CHECK widening carrying **two** values, the
+>    aggregator platform and `TABLE_TAB` (ADR-025). Additive, but not landed until
+>    its consumer list is: both stores, the Go struct, the Zod schema, the OpenAPI
+>    shape, and the edge writer that hardcodes `DIRECT` today
+>    (`commands::aggregator::ACCEPTED_ORDER_SOURCE`).
+> 2. **The Phase C boundary report.** The operator has a further architecture
+>    addition to hand over at that boundary.
+>
 >
 > `docs/M6 kickoff.md` carries the operational runbook, but **it is stale on
 > position** — it was written on 2026-09-07 and still names Phase B as the next
