@@ -309,6 +309,61 @@ created from the console carries one. Two smaller ones from the same screen: the
 form collects **no GSTIN** (the row renders "no GSTIN"), and the pack-size table
 shows the raw inventory item UUID rather than the item's name.
 
+### C6 — the screen half, OBSERVED 2026-09-10 (steps 10 and 11)
+
+**Subject: `GRN/20260910/0003`.** Read off the admin console's goods-receipt
+screen by the operator. The header:
+
+> Received 2026-09-09T20:19:02Z · business date 2026-09-10 · no purchase order ·
+> supplier `4eed005a-8889-479f-b3a5-20fcb5d5fb2c`
+
+The line, exactly as the screen renders it (quantities divided out of micro-units
+for display):
+
+| Item | Entered | Pack size | Base quantity | Dimension | Line total |
+|---|---|---|---|---|---|
+| `0191e800-0000-7000-8000-000000000001` | 2 | 1000 | 2000 | MASS | 800.00 |
+
+**All three quantity fields travel, which is the point of the row** (ADR-024):
+entered, pack size applied and base quantity are each shown, so "what did they
+actually type?" is answerable from the screen alone.
+
+**The nulls are served as nulls, not hidden or defaulted.** The header says "no
+purchase order" while naming a supplier, and the underlying row confirms it:
+
+```
+line_number             1
+inventory_item_id       0191e800-0000-7000-8000-000000000001
+entered_purchase_unit   kg
+entered_quantity_micro  2000000          (2 kg)
+pack_size_micro_applied 1000000000       (1000 g per kg)
+base_quantity_micro     2000000000       (2000 g)
+quantity_dimension      MASS
+unit_cost_paise         40               (per gram)
+line_total_paise        80000            (₹800.00)
+purchase_order_line_id  NULL
+batch_code              NULL
+expiry_date             NULL
+goods_receipt_note.purchase_order_id  NULL
+goods_receipt_note.supplier_id        4eed005a-8889-479f-b3a5-20fcb5d5fb2c
+```
+
+`line_total_paise = 80000` with `unit_cost_paise = 40` satisfies contracts
+0.6.3's directional CHECK — a total never without its rate — and the rate
+recomputes from the total exactly: 80000 × 10⁶ ÷ 2000000000 = 40.
+
+**Note the business date, which is correct and looks wrong.** Received
+2026-09-09T20:19:02**Z**, business date **2026-09-10**: that is IST past midnight,
+bucketed by `outlet.day_start_time` rather than by the UTC calendar day. This is
+the M3-era defect that `compute_business_date` fixed for the stock ledger; the GRN
+path uses the corrected function.
+
+**What remains for C6 is step 23**, the field-by-field comparison against the
+edge's own row, which needs the till closed and the sealed-copy read. Until then
+this half evidences the cloud replica only — and the screen must be read as a
+replica, whose figures may legitimately differ from the outlet's own view
+(ADR-024).
+
 ### Where the run stands
 
 | Step | State |
@@ -317,8 +372,8 @@ shows the raw inventory item UUID rather than the item's name.
 | 5–6 (C5 falsifier) | **Observed**, above |
 | 7 (create supplier + pack size in admin) | **Done** — `Deccan Dairy`, id `4eed005a-8889-479f-b3a5-20fcb5d5fb2c` |
 | 8–9 (receive again, no gap) | **Observed — C5 MET** on `GRN/20260910/0003`, above |
-| 10–11 (C6 screen half) | **NEXT** — the receipt to read back is `GRN/20260910/0003` |
-| 13–15 (C8, both adapters + boundary check RED) | not started |
+| 10–11 (C6 screen half) | **Observed** on `GRN/20260910/0003`, above; step 23 still owed |
+| 13–15 (C8, both adapters + boundary check RED) | **NEXT** |
 | 16–20 (C1, both halves) | not started |
 | 21–23 (close the till, sealed-copy read, C6 field-by-field) | not started |
 
@@ -460,7 +515,7 @@ beyond `order` is expected to replay.**
 | C3 | A permanently-rejected row blocks itself and not its neighbours | **CODE COMPLETE, AWAITING OBSERVATION** — see below |
 | C4 | An offline order reaches the cloud without the operator closing the app | **A5 LANDED, AWAITING OBSERVATION** — the periodic pump exists; the `taskkill` falsifier has not been run |
 | C5 | Supplier and pack size created in admin convert on the next receipt | **MET — observed 2026-09-10.** Falsifier watched first (`NO_SUPPLIER_ITEM` on `GRN/20260910/0001`), then absent on `GRN/20260910/0003` after the supplier item was created in the console |
-| C6 | A goods receipt is readable back in-product | **UNBLOCKED** — the list and detail routes exist and the screen renders live receipts with all three quantity fields; the field-by-field comparison against the edge row is unobserved |
+| C6 | A goods receipt is readable back in-product | **SCREEN HALF OBSERVED 2026-09-10** on `GRN/20260910/0003`, all three quantity fields and the nulls served as nulls; the field-by-field comparison against the edge row (step 23) is still owed |
 | C7 | A client-data failure is reported as 4xx with a reason the edge records | **CLOSED — observed 2026-09-07** on the shipping binaries, both halves of the falsifier watched |
 | C8 | An aggregator order flows through both adapters | **CODE COMPLETE, AWAITING THE SITTING** — both adapters and the boundary check exist; will be recorded `SHAPE ONLY — no integration evidence` |
 
