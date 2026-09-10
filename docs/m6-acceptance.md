@@ -495,7 +495,8 @@ all three `check-seams` targets, and `check-aggregator-boundary` still OK across
 | 8–9 (receive again, no gap) | **Observed — C5 MET** on `GRN/20260910/0003`, above |
 | 10–11 (C6 screen half) | **Observed** on `GRN/20260910/0003`, above; step 23 still owed |
 | 13–15 (C8, both adapters + boundary check RED) | **Observed — C8 met, SHAPE ONLY**, above |
-| 16–20 (C1, both halves) | **NEXT — and the accept path it needs was missing entirely; built 2026-09-10, unobserved.** The sitting restarts at step 0 on the new binaries |
+| 16–20 (C1, both halves) | **NEXT — and the accept path it needs was missing entirely; built 2026-09-10 at `3589f63`, unobserved.** The sitting restarts at step 0 on the new binaries: the backend that ran all evening (PID 12404) predates the resolver wiring |
+| Step 16's precondition, NOT YET DONE | The two documents already posted tonight (`ondc`/`O1`, `syncrest`/`SR-20260910-001`) arrived BEFORE the resolver was wired, so every line is unmapped and accepting either is correctly refused with `AGGREGATOR_ORDER_NO_MAPPED_LINES`. C1 needs `aggregator_item_map` rows for the item ids a fixture carries, and a document posted AFTER the new backend is up |
 | 21–23 (close the till, sealed-copy read, C6 field-by-field) | not started |
 
 ### Step 7's field values, worked out on 2026-09-10 and not to be re-derived

@@ -2,31 +2,77 @@
 
 > ## READ THIS BLOCK FIRST. THE REST OF THIS FILE IS M5 AND EARLY-M6 HISTORY.
 >
-> **Current position: the M6 observation sitting is HALF RUN and PAUSED at
-> step 7.** Phases A and B are closed, Phase C is code complete, and what
-> remains of M6 is the sitting that observes C1, C5, C6 and C8 on the shipping
-> binaries. Everything is committed and pushed; no branch is open and no test is
-> red.
+> **Current position: the M6 observation sitting is THREE CRITERIA IN and PAUSED
+> before C1.** Phases A and B are closed. C5, C6's screen half and C8 are
+> observed and recorded; C1's accept path was found MISSING and built today.
+> Everything is committed and pushed through `3589f63`; no branch is open and no
+> test is red. **"Phase C is code complete" is what the last version of this
+> block said, and C1 disproved it** — read that section before trusting any
+> "complete" claim about Phase C.
 >
 > **Start at `docs/m6-acceptance.md`, section "SITTING RUN OF 2026-09-10".** It
 > carries the preconditions as established, C5's falsifier as observed, and a
 > step-by-step table of what is done and what is next. This block is a pointer
 > to it, not a second copy of it.
 >
-> ### Where the sitting stands, 2026-09-10
+> ### Where the sitting stands, 2026-09-10 (late evening)
 >
-> **C5 IS MET.** Steps 0, 5, 6, 7, 8 and 9 are all observed and recorded in the
-> acceptance file. The falsifier was watched first (`NO_SUPPLIER_ITEM` on
-> `GRN/20260910/0001`) and is absent on `GRN/20260910/0003` after the supplier
-> and pack size were created in the admin console.
+> **THREE CRITERIA DONE: C5 MET, C6's SCREEN HALF OBSERVED, C8 MET (SHAPE
+> ONLY).** All three are written up in `docs/m6-acceptance.md` with what was
+> observed, by whom and when. C5's falsifier was watched first
+> (`NO_SUPPLIER_ITEM` on `GRN/20260910/0001`, absent on `GRN/20260910/0003`), and
+> C8's boundary check was watched RED on a planted `if in.Platform == "ondc"`
+> before going green again.
 >
-> **NEXT IS STEP 10 — C6, the screen half.** Admin console → Goods receipts,
-> find **`GRN/20260910/0003`**, and record every field it shows rather than a
-> summary of it: `entered_quantity_micro`, `pack_size_micro_applied`,
-> `base_quantity_micro`, `quantity_dimension`, `line_total_paise`, and the
-> nullable `purchase_order_id` / `supplier_id` / `purchase_order_line_id` **as
-> nulls where they are null**. The edge-row comparison is step 21, at the very
-> end, after the till is closed.
+> **C1 WAS NEVER CODE COMPLETE, and the accept path it needs was built today at
+> `3589f63`.** The down-path mirrored documents into the till and nothing could
+> accept one: `repo::list_unaccepted_aggregator_orders` had zero non-test
+> callers, the cloud's `ResolveMenuItem` had none because `main.go` passed
+> `ResolveItem: nil`, and the POS had no aggregator command and no aggregator
+> route. The sinks were counted and the screens were not. **What exists now is
+> build-verified and UNOBSERVED** — `cargo build`, `go build`, `tsc --noEmit`,
+> 230 POS vitest tests, 5 `aggregator_mirror` tests, three `check-seams` targets
+> and the boundary check, none of which is C1.
+>
+> ### NEXT: the sitting restarts at step 0, on the NEW binaries
+>
+> **The backend that was running all evening (PID 12404) PREDATES the resolver
+> wiring, so it must be replaced or the accept path under test is not the one in
+> the repository.** In order:
+>
+> 1. Stop the POS with **Ctrl+C in its own terminal**, never the window X —
+>    closing the window leaves `holler-pos.exe` alive with the database open and
+>    unsealed (observed 2026-09-05, and again on 2026-09-07 under `tauri dev`).
+>    Confirm with `Get-Process holler-pos` that nothing survives.
+> 2. Kill the backend **by PID**, confirm 8080 is free, restart it, and record
+>    the **NEW** pid. The port answering proves nothing.
+> 3. Restart the POS (`$env:HOLLER_SYNC_PUMP_INTERVAL_SECS = "10"` then
+>    `.pps\pos
+un-dev.ps1`) and the admin dev server as needed.
+> 4. **Do NOT re-run the bootstrap** — it reseeds the edge database and would
+>    destroy `GRN/20260910/0001` and `/0003`, which are C5's and C6's evidence.
+>
+> Then C1, steps 16–20 of the plan in the acceptance file, with the accept path
+> now in place: post a document with the cloud REACHABLE, let the pull bring it
+> down, open **Platform Orders** on the till header, accept it, then make the
+> cloud unreachable by the three-probe method (stopping it by PID) and bill,
+> print and close. The negative half — no NEW document arrives while the cloud is
+> down — is ADR-022's published guarantee and is observed, not fixed.
+>
+> **C3, C4 and steps 21–23 (C6's edge-row comparison) are still owed after that.**
+>
+> ### Two documents already posted through the adapters tonight
+>
+> `ondc` / `O1` (the artefact-generated Beckn `confirm` fixture) and `syncrest` /
+> `SR-20260910-001`, both applied with `unmapped_lines: 2`. **Both were received
+> BEFORE the resolver was wired, so their lines carry no `menu_item_id` and
+> accepting either will be refused by name with
+> `AGGREGATOR_ORDER_NO_MAPPED_LINES`** — which is correct behaviour, not a bug.
+> C1 needs a document posted AFTER the new backend is up, with
+> `aggregator_item_map` rows for the item ids it carries, or it has nothing
+> billable. The driver script is in the scratchpad
+> (`c8-drive-adapters.ps1`); the map rows do not exist yet and are the first
+> thing step 16 needs.
 >
 > **Three receipts exist and only one is the subject.** `0001` is the falsifier
 > (no supplier item yet). `0002` proves nothing — the supplier reference was
@@ -42,11 +88,15 @@
 > its code. Each receipt was 2 kg at ₹400/kg = 2000 g at ₹0.40 per base unit,
 > ₹800.00.
 >
-> **Three defects found during the run, filed and NOT fixed** (details in the
+> **Five defects and two deferrals filed during the run, NOT fixed** (details in the
 > acceptance file's C5 section): `apps/admin` mints ids with
 > `crypto.randomUUID()` — UUIDv4, against §74 — at `SuppliersScreen.tsx:114` and
 > `:139`; the supplier form collects no GSTIN; the pack-size table shows a raw
-> UUID instead of the item name.
+> UUID instead of the item name; `order.source`'s frozen CHECK cannot name ONDC,
+> so the accept path writes `DIRECT` with the platform in `source_payload_json`
+> and the widening is escalated; and aggregator **reject** and **platform-cancel
+> visibility** are deferred with the trigger *before any platform sandbox
+> access*. All are in `docs/backlog.md`.
 >
 > **The stack is DOWN after this session ends and must be rebuilt before step 7**
 > — the whole sitting is void otherwise, because the observations already
