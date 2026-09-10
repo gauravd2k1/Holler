@@ -628,6 +628,45 @@ beyond `order` is expected to replay.**
 
 ---
 
+## M6 BOUNDARY LIST — WORK THAT MUST LAND BEFORE M6 CLOSES
+
+Not the backlog. The backlog holds what M6 ships without; this list holds what M6
+cannot close without. An item arrives here only by decision, with the reason
+recorded.
+
+### 1. Contracts 0.8.1 — `order.source` must be able to name the platform
+
+**Decided 2026-09-10 by Gaurav, pulled FORWARD out of `docs/backlog.md`**, where
+it had been filed with the trigger *before the first pilot*. The accept path built
+today writes `source = 'DIRECT'` for an order that came from ONDC, because
+contracts 0004's CHECK is the closed set
+`POS`/`QR`/`AGGREGATOR_ZOMATO`/`AGGREGATOR_SWIGGY`/`DIRECT` and none of its
+members is true of an ONDC order.
+
+**Why it cannot wait, in the words of the decision:** an aggregator order
+recorded as a walk-in is wrong in every report that groups revenue by channel,
+and carrying the platform in `source_payload_json` instead is exactly the
+JSON-blob-for-typed-data the contract rubric forbids. A stored value that lies is
+not a display defect.
+
+**The shape is additive** — a widened CHECK, a version bump to 0.8.1 and an ADR
+note — so it proceeds without escalation under the 2026-09-07 standing rule, but
+**it has a consumer list and is not landed until the list is done**: every reader
+of `order.source` in both stores, the Go struct, the Zod schema, the OpenAPI
+shape, and the edge writer that currently hardcodes `DIRECT`
+(`commands::aggregator::ACCEPTED_ORDER_SOURCE`). The 0.5.2 and 0.5.9 lessson
+applies unchanged: a column nothing reads is a column that does not exist, and an
+enum member nothing writes is worse — it reads as supported.
+
+**It does NOT block the sitting**, and that was decided explicitly: **C1 does not
+test `order.source`**. The criterion is that an already-received aggregator order
+bills, prints and closes with the cloud unreachable, and it does that identically
+whatever the source column says. So the sitting runs on the current binaries with
+`DIRECT`, and the widening lands before the milestone closes — in that order,
+deliberately, rather than holding an observation for a schema change.
+
+---
+
 ## Status summary
 
 | # | Criterion | State |
