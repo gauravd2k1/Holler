@@ -485,6 +485,88 @@ executed through `scripts/assert-tests-ran.mjs`, 5 `aggregator_mirror` tests,
 all three `check-seams` targets, and `check-aggregator-boundary` still OK across
 295 files. **None of that is C1**, which needs the sitting.
 
+### C1 — MET 2026-09-10, both halves, on the shipping binaries
+
+**The accept path this criterion needs did not exist when the sitting began** —
+see the section above. It was built the same day (`3589f63`), and this run is the
+first time an aggregator order has been billed at a Holler till.
+
+**Preconditions, established in the order ADR-022 requires.** Item mappings were
+inserted for the two fixture SKUs (`aggregator_item_map` has no product surface;
+the direct insert is recorded here rather than implied to be a screen), and
+HSN/SAC was set on both cloud menu items through `PATCH /menu/items/{itemId}` —
+**without it the invoice could not have issued at all** (0.4.5), and both cloud
+rows carried NULL, which is a filed defect of the cloud seeder.
+
+**Step 16, WITH THE CLOUD REACHABLE.** `POST /aggregators/syncrest/callback`
+returned `{"external_order_id":"SR-C1-20260910-090521","applied":true,
+"duplicate":false,"unmapped_lines":0}`. **`unmapped_lines: 0` is the first time
+`Repository.ResolveMenuItem` has ever resolved anything** — it had no caller at
+all until this run. The till's periodic pull brought the document down
+(`periodic pulled 1 aggregator order document(s)`) and it appeared on **Platform
+Orders** with both lines matched to real menu item ids.
+
+**Step 17, the cloud made provably unreachable, falsifier watched FIRST.**
+`scripts\check-cloud-unreachable.ps1` printed **STOP - cloud is REACHABLE** with
+the backend up, naming pid 47548 on all three probes. The backend was then
+stopped **by that pid**, and the same script printed all three probes agreeing:
+nothing listening, TCP refused, HTTP no answer.
+
+**Step 18, with the cloud down — bills, prints and closes.**
+
+- Accepted `SR-C1-20260910-090521`, creating local order **#A1** (`order_type`
+  AGGREGATOR, `source` DIRECT, `external_order_id` set).
+- Invoice **DEV/000002** ISSUED: Masala Chai 2 × ₹40.00 = ₹80.00 taxable, Veg
+  Thali 1 × ₹220.00, CGST ₹7.50, SGST ₹7.50, **Grand Total ₹315.00**. Tax
+  computed at the edge and matching the printed bill exactly.
+- **Printed to the file sink**: `20260910T035143.331453400-Dev-Bill-Printer.escpos`
+  (721 bytes) plus its readable `.txt`, carrying `HSN/SAC 9963` on both lines.
+  **THIS IS EVIDENCED BY THE FILE-SINK TRANSPORT, NOT BY PAPER.** It proves the
+  byte stream was produced and handed to a transport; it proves nothing about a
+  device accepting it. The ESC/POS-on-paper gate stays PARKED with its trigger
+  *when a printer is sourced*.
+- Cash shift `01a08974` opened; **CASH ₹315.00 CAPTURED**; Amount Due **₹0.00 —
+  settled**.
+
+**Step 19, the negative half.** With the cloud still stopped, Platform Orders
+listed only the two pre-existing documents and **no new one**, while the log
+repeated `periodic aggregator pull failed (http transport error contacting
+cloud); keeping the documents this till already holds`. The accepted document had
+left the list, which is acceptance derived from the local order's existence, not
+a stored flag. **That absence is ADR-022's published guarantee, observed rather
+than assumed**, and it is what makes the positive half meaningful rather than
+lucky.
+
+**Step 20, the cloud returns.** Backend restarted on a **NEW pid 49600**
+(previous 47548), verified by identity rather than by the port answering. The
+till's next drain published the order, and Postgres holds it linked by the only
+link there is:
+
+```
+AGGREGATOR | DIRECT | SR-C1-20260910-090521 | 30000 | DRAFT
+```
+
+**Two things that row shows, which this record does not paper over:**
+
+- **`display_number` is empty in the cloud, for this order and every other one.**
+  The outbox event is built from the pre-insert DTO while `#A1` is minted
+  transactionally by the insert, so the number never travels. Pre-existing, not
+  introduced by the accept path, and filed.
+- **The cloud says DRAFT at ₹300.00 while the till has it billed, printed and
+  settled at ₹315.00.** That is **A7** exactly as carried: `invoice` and
+  `payment` have no edge route, so the cloud cannot know. Consistent with the
+  known gap rather than a new defect — and a reminder that A7 must close before
+  any aggregate beyond `order` is expected to replay.
+
+**A defect found and fixed mid-run, on money.** The billing screen showed a
+settled bill as fully due, because the Tauri DTO hardcoded `allocations: []` on
+every payment behind a stale comment claiming allocation was unimplemented at the
+edge. The screen attributes payments to invoices through that list, so every
+payment was invisible and only the edge refusing a second tender stood between a
+settled bill and a customer paying twice. Fixed in `fc38006` and **verified on the
+same running app**: the same order went from "₹315.00 due, no payments" to "₹0.00
+— settled, CASH ₹315.00 CAPTURED" against a payment already in the database.
+
 ### Where the run stands
 
 | Step | State |
@@ -495,9 +577,9 @@ all three `check-seams` targets, and `check-aggregator-boundary` still OK across
 | 8–9 (receive again, no gap) | **Observed — C5 MET** on `GRN/20260910/0003`, above |
 | 10–11 (C6 screen half) | **Observed** on `GRN/20260910/0003`, above; step 23 still owed |
 | 13–15 (C8, both adapters + boundary check RED) | **Observed — C8 met, SHAPE ONLY**, above |
-| 16–20 (C1, both halves) | **NEXT — and the accept path it needs was missing entirely; built 2026-09-10 at `3589f63`, unobserved.** The sitting restarts at step 0 on the new binaries: the backend that ran all evening (PID 12404) predates the resolver wiring |
-| Step 16's precondition, NOT YET DONE | The two documents already posted tonight (`ondc`/`O1`, `syncrest`/`SR-20260910-001`) arrived BEFORE the resolver was wired, so every line is unmapped and accepting either is correctly refused with `AGGREGATOR_ORDER_NO_MAPPED_LINES`. C1 needs `aggregator_item_map` rows for the item ids a fixture carries, and a document posted AFTER the new backend is up |
-| 21–23 (close the till, sealed-copy read, C6 field-by-field) | not started |
+| 16–20 (C1, both halves) | **Observed — C1 MET**, above: falsifier watched first, cloud stopped by pid, order billed/printed/settled offline, replayed on a new pid |
+| Step 16's precondition, DONE | The two documents already posted tonight (`ondc`/`O1`, `syncrest`/`SR-20260910-001`) arrived BEFORE the resolver was wired, so every line is unmapped and accepting either is correctly refused with `AGGREGATOR_ORDER_NO_MAPPED_LINES`. C1 needs `aggregator_item_map` rows for the item ids a fixture carries, and a document posted AFTER the new backend is up |
+| 21–23 (close the till, sealed-copy read, C6 field-by-field) | **NEXT** |
 
 ### Step 7's field values, worked out on 2026-09-10 and not to be re-derived
 
@@ -689,7 +771,7 @@ because a CHECK widening was already pending for 0.8.1.
 
 | # | Criterion | State |
 |---|---|---|
-| C1 | Aggregator order bills and closes with the cloud unreachable | **WAS NEVER CODE COMPLETE, and the earlier row saying so was wrong** — the down-path mirrored documents into the till and nothing could accept one, because the sinks were counted and the screens were not. The accept path was built 2026-09-10 (`commands::aggregator`, `/aggregator-orders`); the criterion itself is unobserved and the sitting resumes at step 0 on the new binaries |
+| C1 | Aggregator order bills and closes with the cloud unreachable | **MET — observed 2026-09-10**, both halves, after the accept path it needs was found MISSING and built the same day. Print evidenced by the file sink, not paper (that gate stays parked) |
 | C2 | Stock-out snoozes on ONDC staging | **PARKED** behind platform sandbox access |
 | C3 | A permanently-rejected row blocks itself and not its neighbours | **CODE COMPLETE, AWAITING OBSERVATION** — see below |
 | C4 | An offline order reaches the cloud without the operator closing the app | **A5 LANDED, AWAITING OBSERVATION** — the periodic pump exists; the `taskkill` falsifier has not been run |
