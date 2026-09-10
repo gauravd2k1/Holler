@@ -12,6 +12,7 @@ import { StockCountListScreen, StockCountScreen } from "../components/StockCount
 import { StockDeductionGapsScreen } from "../components/StockDeductionGapsScreen";
 import { ReceivingScreen } from "../components/ReceivingScreen";
 import { PurchaseReturnScreen } from "../components/PurchaseReturnScreen";
+import { AggregatorOrdersScreen } from "../components/AggregatorOrdersScreen";
 import { GrnGapsScreen } from "../components/GrnGapsScreen";
 
 /** Wraps a screen so OUR boundary sees the throw before the router's
@@ -133,6 +134,17 @@ const purchaseReturnRoute = createRoute({
   component: withBoundary(PurchaseReturnScreen),
 });
 
+// --------------------------------------------- aggregator orders (M6 C1) --
+// ADR-022. Its OWN route rather than a tab on `/orders`: until a document is
+// accepted there is no local order to list, so it cannot live on a screen whose
+// subject is orders this till created.
+const aggregatorOrdersRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/aggregator-orders",
+  beforeLoad: requireAuth,
+  component: withBoundary(AggregatorOrdersScreen),
+});
+
 const grnGapsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/procurement/gaps",
@@ -142,6 +154,7 @@ const grnGapsRoute = createRoute({
 
 const routeTree = rootRoute.addChildren([
   loginRoute,
+  aggregatorOrdersRoute,
   posRoute,
   ordersRoute,
   billingRoute,

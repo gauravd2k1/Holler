@@ -31,6 +31,42 @@ func NewService(repo Repository, adapters ...Adapter) *Service {
 	return &Service{repo: repo, adapters: byName}
 }
 
+// Scope is the tenant, outlet and platform a callback is being processed for.
+//
+// IT TRAVELS ON THE CONTEXT BECAUSE AN ADAPTER MUST NOT LEARN THESE AS
+// PARAMETERS. `Adapter.ParseInbound` takes raw bytes and nothing else, which is
+// what keeps a platform adapter from reaching into tenancy; but the item
+// resolver an adapter is handed DOES need the scope, because
+// `aggregator_item_map` is keyed by tenant, outlet and platform and a lookup
+// that ignored any of them would cross a tenancy boundary -- the uniqueness rule
+// in the contract rubric, reached from the other side.
+//
+// So the scope is put here by the service, which legitimately knows it, and read
+// by the composition root's resolver closure. Nothing in between can see it.
+type Scope struct {
+	TenantID string
+	OutletID string
+	Platform string
+}
+
+type scopeKey struct{}
+
+// WithScope attaches the scope a callback is being processed under.
+func WithScope(ctx context.Context, scope Scope) context.Context {
+	return context.WithValue(ctx, scopeKey{}, scope)
+}
+
+// ScopeFromContext returns the scope, if a service put one there.
+//
+// A MISSING SCOPE MUST NOT BE READ AS "NO TENANT". A resolver that got no scope
+// has to refuse to resolve rather than query without one: resolving across every
+// tenant's mappings is worse than resolving nothing, and an unmapped line is
+// already a normal, recorded outcome.
+func ScopeFromContext(ctx context.Context) (Scope, bool) {
+	scope, ok := ctx.Value(scopeKey{}).(Scope)
+	return scope, ok
+}
+
 // ReceiveCallback is the inbound path, and in M6 it is REACHABLE LOCALLY ONLY.
 //
 // No public endpoint, no registry, no signature verification. Ed25519 signing,
@@ -51,6 +87,9 @@ func (s *Service) ReceiveCallback(ctx context.Context, tenantID, outletID, platf
 		// nobody will ever mark ready.
 		return Receipt{}, fmt.Errorf("%w: no adapter registered for %q", httpx.ErrInvalidInput, platform)
 	}
+
+	// The scope the adapter's item resolver needs, and the ONLY way it gets it.
+	ctx = WithScope(ctx, Scope{TenantID: tenantID, OutletID: outletID, Platform: platform})
 
 	inbound, err := adapter.ParseInbound(ctx, raw)
 	if err != nil {

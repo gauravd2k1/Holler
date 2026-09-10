@@ -1263,6 +1263,72 @@ export async function recordPurchaseReturn(args: {
   }
 }
 
+// ------------------------------------------------- aggregator orders (M6 C1) --
+// The accept path for a document the till ALREADY HOLDS. ADR-022's published
+// guarantee is that a new aggregator order cannot ARRIVE while the uplink is
+// down, and that one already received is fully operable offline -- so every call
+// below reads the edge's own database and none of them touches the network.
+
+const AggregatorOrderLineViewSchema = z.object({
+  id: z.string(),
+  line_number: z.number(),
+  external_item_id: z.string(),
+  external_item_name: z.string(),
+  // NULL is NORMAL (ADR-022 rule 4) and the screen shows the line as unmatched
+  // rather than hiding it. A hidden line is an order that looks smaller than
+  // what the platform sent.
+  menu_item_id: z.string().nullable(),
+  quantity: z.number(),
+  stated_unit_price_paise: z.number().nullable(),
+});
+
+const UnacceptedAggregatorOrderSchema = z.object({
+  id: z.string(),
+  platform: z.string(),
+  external_order_id: z.string(),
+  platform_status: z.string(),
+  document_version: z.number(),
+  stated_total_paise: z.number().nullable(),
+  received_at: z.string(),
+  business_date: z.string(),
+  lines: z.array(AggregatorOrderLineViewSchema),
+});
+export type UnacceptedAggregatorOrder = z.infer<typeof UnacceptedAggregatorOrderSchema>;
+
+const AcceptedAggregatorOrderSchema = z.object({
+  order: CanonicalOrderSchema,
+  external_order_id: z.string(),
+  lines_created: z.number(),
+  lines_unmapped: z.number(),
+});
+export type AcceptedAggregatorOrder = z.infer<typeof AcceptedAggregatorOrderSchema>;
+
+/** Documents this till holds that no local order exists for yet. Acceptance is
+ * DERIVED from the order's existence, never stored on the document -- the
+ * document is a read-only mirror of a cloud-authoritative aggregate. */
+export async function listUnacceptedAggregatorOrders(): Promise<UnacceptedAggregatorOrder[]> {
+  try {
+    const raw = await invoke<unknown[]>("list_unaccepted_aggregator_orders");
+    return raw.map((d) => UnacceptedAggregatorOrderSchema.parse(d));
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
+
+/** Accepting a document IS creating its local order. Returns the order plus the
+ * line counts, including how many lines could not be matched to a local menu
+ * item -- reported, never silently dropped. */
+export async function acceptAggregatorOrder(
+  aggregatorOrderId: string,
+): Promise<AcceptedAggregatorOrder> {
+  try {
+    const raw = await invoke<unknown>("accept_aggregator_order", { aggregatorOrderId });
+    return AcceptedAggregatorOrderSchema.parse(raw);
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
+
 /** The GRN gap report behind M5 acceptance criterion 3 — the gap must be
  * VISIBLE TO A HUMAN ON THE POS. Bounded and newest-first at the edge. */
 export async function listGrnGaps(): Promise<GrnGap[]> {

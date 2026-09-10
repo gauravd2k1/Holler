@@ -73,6 +73,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::auth::login,
+            commands::aggregator::list_unaccepted_aggregator_orders,
+            commands::aggregator::accept_aggregator_order,
             commands::menu::list_menu_items,
             commands::menu::list_menu_categories,
             commands::menu::list_menu_item_modifiers,

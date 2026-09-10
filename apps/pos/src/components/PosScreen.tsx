@@ -266,6 +266,12 @@ export function PosScreen() {
         <button type="button" onClick={() => void navigate({ to: "/orders" })}>
           Orders
         </button>
+        {/* M6 C1. A platform order that has arrived is invisible without an
+            entry point, and a screen nothing navigates to is the same defect as
+            a query nothing calls. */}
+        <button type="button" onClick={() => void navigate({ to: "/aggregator-orders" })}>
+          Platform Orders
+        </button>
         <button type="button" onClick={() => void navigate({ to: "/inventory/stock" })}>
           Stock
         </button>

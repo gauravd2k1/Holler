@@ -422,6 +422,69 @@ directory carry no platform vocabulary`, exit 0, with `git status` clean on
 `port.go`. **A boundary nobody has watched fail is not a boundary**; this one has
 now been watched failing and recovering, in that order.
 
+### C1 — what "CODE COMPLETE" hid, and the accept path built 2026-09-10
+
+**This criterion was recorded CODE COMPLETE and could not be observed at all.**
+Found while trying to run step 16: the cloud→edge down-path did everything it
+claimed — `pull_and_apply_aggregator_orders` → `apply_aggregator_order` writes
+`aggregator_order` and `aggregator_order_line` into edge SQLite on the A5 loop —
+and then stopped. Enumerated rather than eyeballed:
+
+- `repo::list_unaccepted_aggregator_orders` and `repo::aggregator_order_acceptance`:
+  **zero non-test callers**, only `edge/database/tests/aggregator_mirror.rs`.
+- `Repository.ResolveMenuItem` in the cloud: **zero callers**, because
+  `main.go` passed `ResolveItem: nil`, so every inbound line was unmapped no
+  matter what `aggregator_item_map` held.
+- `apps/pos/src-tauri/src/commands/`: no aggregator command. POS routes were
+  `/`, `/orders`, `/orders/$orderId/billing`, four inventory, three procurement,
+  `/login`. **No aggregator surface existed.**
+
+So a document landed on the till and nothing could turn it into an order, bill
+it, print it or close it. **"Code complete" was read off the down-path, which is
+the half that was written.** Same family as contracts 0.5.2 and 0.5.9 — a column
+nothing reads, now a query nothing calls — and the lesson is the repository's
+own: count the SINKS, not the surfaces. A screen can be missed; a write path
+cannot.
+
+**What was built, deliberately minimal** (one commit, 2026-09-10):
+
+- `Db::list_unaccepted_aggregator_orders` / `Db::list_aggregator_order_lines`
+  and `repo::list_aggregator_order_lines` — the read surface the POS crate needs,
+  since it has no `rusqlite` and cannot SELECT for itself.
+- `commands::aggregator` — list, and accept. **Accepting a document IS creating
+  its local order**: no acceptance flag exists anywhere, because
+  `aggregator_order` is a read-only mirror of a cloud-authoritative aggregate and
+  an edge-written column on it is the split authority ADR-022 exists to avoid.
+  The order carries `external_order_id` and replays up the ordinary outbox.
+- `DraftOrderInput` gained `source`, `external_order_id` and
+  `source_payload_json`; the till path passes `POS`/null/null exactly as before.
+- `/aggregator-orders` screen and a **Platform Orders** button on the till
+  header — because a screen nothing navigates to is the same defect one layer out.
+- `main.go` now supplies the item resolver, scoped by a `Scope` the service puts
+  on the context. **A missing scope resolves nothing rather than querying
+  unscoped**: an unmapped line is a normal recorded outcome, a line mapped from
+  another tenant's menu is a data leak.
+
+**What it deliberately does NOT do:** no reject, no platform-side cancel
+visibility — both filed in `docs/backlog.md` with the trigger *before any
+platform sandbox access*, because their shape is argued from what a real platform
+does with a refusal and no fake we authored can answer that. An **unmapped line
+is skipped and COUNTED**, never silently dropped (`order_item.menu_item_id` is a
+real NOT NULL FK), and a document whose every line is unmapped is refused by name
+— `AGGREGATOR_ORDER_NO_MAPPED_LINES` — rather than producing a ₹0 bill.
+
+**One contract limit recorded rather than worked around:** `order.source`'s CHECK
+(contracts 0004) is `POS`/`QR`/`AGGREGATOR_ZOMATO`/`AGGREGATOR_SWIGGY`/`DIRECT`
+and cannot name ONDC. The accept path writes `DIRECT` and keeps the platform's
+identity in `source_payload_json`; widening the CHECK is a frozen-contract change
+and is filed, not done here.
+
+**Verified: builds and checks only, no observation.** `cargo build` on
+`apps/pos/src-tauri`, `go build ./...`, `tsc --noEmit` clean, 230 POS vitest tests
+executed through `scripts/assert-tests-ran.mjs`, 5 `aggregator_mirror` tests,
+all three `check-seams` targets, and `check-aggregator-boundary` still OK across
+295 files. **None of that is C1**, which needs the sitting.
+
 ### Where the run stands
 
 | Step | State |
@@ -432,7 +495,7 @@ now been watched failing and recovering, in that order.
 | 8–9 (receive again, no gap) | **Observed — C5 MET** on `GRN/20260910/0003`, above |
 | 10–11 (C6 screen half) | **Observed** on `GRN/20260910/0003`, above; step 23 still owed |
 | 13–15 (C8, both adapters + boundary check RED) | **Observed — C8 met, SHAPE ONLY**, above |
-| 16–20 (C1, both halves) | **NEXT** |
+| 16–20 (C1, both halves) | **NEXT — and the accept path it needs was missing entirely; built 2026-09-10, unobserved.** The sitting restarts at step 0 on the new binaries |
 | 21–23 (close the till, sealed-copy read, C6 field-by-field) | not started |
 
 ### Step 7's field values, worked out on 2026-09-10 and not to be re-derived
@@ -568,7 +631,7 @@ beyond `order` is expected to replay.**
 
 | # | Criterion | State |
 |---|---|---|
-| C1 | Aggregator order bills and closes with the cloud unreachable | **CODE COMPLETE, AWAITING THE SITTING** — the cloud→edge down-path landed (ADR-022 addendum 2); steps written out below |
+| C1 | Aggregator order bills and closes with the cloud unreachable | **WAS NEVER CODE COMPLETE, and the earlier row saying so was wrong** — the down-path mirrored documents into the till and nothing could accept one, because the sinks were counted and the screens were not. The accept path was built 2026-09-10 (`commands::aggregator`, `/aggregator-orders`); the criterion itself is unobserved and the sitting resumes at step 0 on the new binaries |
 | C2 | Stock-out snoozes on ONDC staging | **PARKED** behind platform sandbox access |
 | C3 | A permanently-rejected row blocks itself and not its neighbours | **CODE COMPLETE, AWAITING OBSERVATION** — see below |
 | C4 | An offline order reaches the cloud without the operator closing the app | **A5 LANDED, AWAITING OBSERVATION** — the periodic pump exists; the `taskkill` falsifier has not been run |

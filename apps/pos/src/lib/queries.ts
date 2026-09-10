@@ -20,6 +20,7 @@ import {
   listStations,
   listStockCountLines,
   listGrnGaps,
+  listUnacceptedAggregatorOrders,
   listStockDeductionGaps,
   listTables,
   purchaseOrderReceiptProgress,
@@ -51,6 +52,7 @@ export const queryKeys = {
   stockCountVarianceReport: (stockCountId: string) =>
     ["stock-count-variance-report", stockCountId] as const,
   grnGaps: ["grn-gaps"] as const,
+  unacceptedAggregatorOrders: ["unaccepted-aggregator-orders"] as const,
   purchaseOrderReceiptProgress: (purchaseOrderId: string) =>
     ["purchase-order-receipt-progress", purchaseOrderId] as const,
 };
@@ -218,6 +220,21 @@ export function useStockCountVarianceReportQuery(stockCountId: string | null) {
 }
 
 // --------------------------------------------------------- procurement (M5) --
+
+// ------------------------------------------------- aggregator orders (M6 C1) --
+
+/** Documents waiting to be accepted at this till.
+ *
+ * Polled, because the A5 periodic loop brings documents down in the background
+ * and a till nobody reloads would never show one. Reads the edge's own file, so
+ * it keeps answering with the uplink down -- which is the offline half of
+ * ADR-022's guarantee and the thing M6 C1 observes. */
+export function useUnacceptedAggregatorOrdersQuery() {
+  return useQuery({
+    queryKey: queryKeys.unacceptedAggregatorOrders,
+    queryFn: listUnacceptedAggregatorOrders,
+  });
+}
 
 /** The GRN gap report (M5 acceptance criterion 3). Polled on the same cadence
  * as the other back-of-house signals: a gap is a discrete event a buyer acts

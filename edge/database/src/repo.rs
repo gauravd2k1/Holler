@@ -3587,6 +3587,40 @@ pub fn list_unaccepted_aggregator_orders(
     Ok(rows)
 }
 
+/// One document's lines, in line order.
+///
+/// `menu_item_id` comes back as it was stored, NULL included: an unmappable
+/// line is recorded rather than refused (ADR-022 rule 4), and a read that
+/// dropped those rows would make an order look smaller than the platform sent.
+/// The caller decides what to do with one -- it is not this read's business.
+pub fn list_aggregator_order_lines(
+    conn: &Connection,
+    aggregator_order_id: &str,
+) -> DbResult<Vec<AggregatorOrderLine>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, aggregator_order_id, line_number, external_item_id, external_item_name,
+                menu_item_id, quantity, stated_unit_price_paise
+           FROM aggregator_order_line
+          WHERE aggregator_order_id = ?1
+          ORDER BY line_number",
+    )?;
+    let rows = stmt
+        .query_map(params![aggregator_order_id], |row| {
+            Ok(AggregatorOrderLine {
+                id: row.get(0)?,
+                aggregator_order_id: row.get(1)?,
+                line_number: row.get(2)?,
+                external_item_id: row.get(3)?,
+                external_item_name: row.get(4)?,
+                menu_item_id: row.get(5)?,
+                quantity: row.get(6)?,
+                stated_unit_price_paise: row.get(7)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
 /// Whether a document has been accepted, and by which local order.
 ///
 /// THE DERIVATION, IN ONE PLACE. Acceptance is not stored anywhere: accepting a

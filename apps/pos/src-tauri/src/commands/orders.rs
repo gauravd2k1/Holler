@@ -150,6 +150,11 @@ pub fn create_order_impl(
                     .collect(),
             })
             .collect(),
+        // A till-authored order. The aggregator accept path is the only other
+        // caller and sets these three itself.
+        source: "POS".to_string(),
+        external_order_id: None,
+        source_payload_json: None,
     };
 
     let order_id = new_id();

@@ -52,6 +52,20 @@ pub struct DraftOrderInput {
     pub order_type: String,
     pub table_id: Option<String>,
     pub items: Vec<DraftOrderItemInput>,
+    /// `order.source`, whose CHECK is a CLOSED SET from contracts 0004
+    /// (`POS`/`QR`/`AGGREGATOR_ZOMATO`/`AGGREGATOR_SWIGGY`/`DIRECT`). A
+    /// till-authored order passes `POS`; an order accepted from an aggregator
+    /// document passes what `commands::aggregator` chose and documents there.
+    pub source: String,
+    /// The platform's own order id, when this order was created from an
+    /// aggregator document. `NULL` for a till-authored order, and it is the
+    /// ONLY link between the two aggregates (ADR-022) -- `aggregator_order`
+    /// holds no local order id, because acceptance is derived from this column.
+    pub external_order_id: Option<String>,
+    /// Provenance for an accepted document: which platform it came from and
+    /// which document, kept because `order.source`'s closed set cannot name a
+    /// platform that was not enumerated in 2026 (see `commands::aggregator`).
+    pub source_payload_json: Option<String>,
 }
 
 /// `(unit_price_paise + SUM(modifier price_delta_paise)) * quantity` — the
@@ -128,15 +142,15 @@ pub fn build_new_draft_order(
         total_paise,
         // Milestone 1 writes only these values explicitly (ADR-011 0.2.4
         // addendum) rather than relying on the migration's SQLite DEFAULTs.
-        source: "POS".to_string(),
-        external_order_id: None,
+        source: input.source.clone(),
+        external_order_id: input.external_order_id.clone(),
         payment_status: "UNPAID".to_string(),
         payment_source: None,
         // DRAFT -> CONFIRMED transition time; unset for a brand-new DRAFT
         // order. No confirm-order path exists at the edge yet (see task
         // report).
         confirmed_at: None,
-        source_payload_json: None,
+        source_payload_json: input.source_payload_json.clone(),
         schema_version: 1,
         created_at: now_iso.to_string(),
         updated_at: now_iso.to_string(),
@@ -232,6 +246,9 @@ mod tests {
                     modifiers: vec![],
                 },
             ],
+            source: "POS".to_string(),
+            external_order_id: None,
+            source_payload_json: None,
         };
         let (order, items) = build_new_draft_order(
             "order-1".into(),
@@ -274,6 +291,9 @@ mod tests {
                     price_delta_paise: 1000,
                 }],
             }],
+            source: "POS".to_string(),
+            external_order_id: None,
+            source_payload_json: None,
         };
         let (order, items) = build_new_draft_order(
             "order-1".into(),

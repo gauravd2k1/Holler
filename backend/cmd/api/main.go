@@ -255,7 +255,25 @@ func buildRouter(pool postgres.Pool, cfg config.Config) *chi.Mux {
 	aggregatorSvc := aggregators.NewService(
 		aggregatorRepo,
 		adapters.All(adapters.Deps{
-			ResolveItem: nil,
+			// The item resolver, which until now was nil -- so every inbound
+			// line was unmapped no matter what aggregator_item_map held, and
+			// Repository.ResolveMenuItem had no caller at all. The scope comes
+			// off the context the service puts it on: this closure cannot be
+			// given tenant and outlet as parameters without an adapter seeing
+			// them, and a lookup that ignored them would cross a tenancy
+			// boundary.
+			//
+			// NO SCOPE MEANS NO RESOLUTION, never an unscoped query. An
+			// unmapped line is a normal recorded outcome (ADR-022 rule 4); a
+			// line mapped from another tenant's menu is a data leak.
+			ResolveItem: func(ctx context.Context, externalItemID string) (*string, error) {
+				scope, ok := aggregators.ScopeFromContext(ctx)
+				if !ok {
+					return nil, nil
+				}
+				return aggregatorRepo.ResolveMenuItem(
+					ctx, scope.TenantID, scope.OutletID, scope.Platform, externalItemID)
+			},
 		})...,
 	)
 	aggregatorHandler := aggregators.NewHandler(aggregatorSvc, aggregatorRepo)

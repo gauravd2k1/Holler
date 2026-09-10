@@ -867,6 +867,34 @@ impl Db {
     /// The bounded, newest-first `grn_gap` read behind M5 acceptance
     /// criterion 3 -- **the gap must be visible to a human on the POS**, not
     /// merely present in a table. `detail` is prose for that reason.
+    /// Aggregator documents this outlet holds that no local `order` exists for
+    /// yet (M6 Phase C, C1).
+    ///
+    /// **Acceptance is derived, never stored** -- a document is accepted exactly
+    /// when an `order` with its `external_order_id` exists, so this is a LEFT
+    /// JOIN and not a flag. Storing one would put an edge-written column on a
+    /// cloud-authoritative mirror, which is the split authority ADR-022 exists
+    /// to avoid.
+    ///
+    /// Both reads are offline reads against the edge's own file: a document that
+    /// has already arrived is fully operable with the uplink down, which is the
+    /// published half of ADR-022's guarantee.
+    pub fn list_unaccepted_aggregator_orders(
+        &self,
+        outlet_id: &str,
+    ) -> DbResult<Vec<model::AggregatorOrder>> {
+        repo::list_unaccepted_aggregator_orders(self.connection(), outlet_id)
+    }
+
+    /// One document's lines, NULL `menu_item_id` included -- see
+    /// `repo::list_aggregator_order_lines`.
+    pub fn list_aggregator_order_lines(
+        &self,
+        aggregator_order_id: &str,
+    ) -> DbResult<Vec<model::AggregatorOrderLine>> {
+        repo::list_aggregator_order_lines(self.connection(), aggregator_order_id)
+    }
+
     pub fn list_grn_gaps(&self, outlet_id: &str) -> DbResult<Vec<model::GrnGap>> {
         procurement::list_grn_gaps_for_outlet(self.connection(), outlet_id)
     }
