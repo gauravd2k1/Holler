@@ -567,6 +567,72 @@ settled bill and a customer paying twice. Fixed in `fc38006` and **verified on t
 same running app**: the same order went from "₹315.00 due, no payments" to "₹0.00
 — settled, CASH ₹315.00 CAPTURED" against a payment already in the database.
 
+### C6 — MET 2026-09-10. Step 23, the edge row, field by field
+
+**Read after the till was closed**, from `GRN/20260910/0003`, and compared
+against what the admin console showed at step 11 and against the Postgres
+replica. Every field agrees, including the nulls:
+
+| field | edge row | admin screen / cloud replica |
+|---|---|---|
+| `entered_quantity_micro` | 2000000 | 2 kg / 2000000 |
+| `pack_size_micro_applied` | 1000000000 | 1000 / 1000000000 |
+| `base_quantity_micro` | 2000000000 | 2000 / 2000000000 |
+| `quantity_dimension` | MASS | MASS |
+| `unit_cost_paise` | 40 | ₹0.40 / 40 |
+| `line_total_paise` | 80000 | ₹800.00 / 80000 |
+| `entered_purchase_unit` | kg | kg |
+| `purchase_order_id` | NULL | "no purchase order" / NULL |
+| `purchase_order_line_id` | NULL | NULL |
+| `batch_code` / `expiry_date` | NULL / NULL | NULL / NULL |
+| `supplier_id` | 4eed005a-8889-479f-b3a5-20fcb5d5fb2c | same |
+| `received_at` / `business_date` | 2026-09-09T20:19:02.387Z / 2026-09-10 | same |
+
+**The nulls agree AS NULLS**, which is the half a summary comparison would have
+skipped (contracts 0.5.9's lesson: a fidelity test proves fidelity only for the
+fields its fixture populates). The row's only `grn_gap` is `NO_PURCHASE_ORDER` —
+**no `NO_SUPPLIER_ITEM`** — which corroborates C5 in storage rather than only on
+a screen.
+
+**How it was read, and what was NOT protected this time.** The M5 method is:
+copy the sealed file, decrypt the copy, query it, destroy both, original never
+opened. **That method could not be followed, because the till never sealed.**
+See the A6(b) observation below: `Ctrl+C` in the terminal did not fire
+`RunEvent::Exit`, so `edge.db`, `edge.db-wal` and `edge.db.open-marker` were all
+still on disk in plaintext and `edge.db.enc` was stamped with the time the app
+OPENED. The read was therefore done in place, `mode=ro`, against the plaintext
+the failed shutdown had already left — which creates **no new** unencrypted
+artefact and never touches the sealed file, but it is a weaker posture than M5's
+and is recorded as such rather than described as a sealed-copy read.
+
+### A6(b) — observed again 2026-09-10, this time with a clean Ctrl+C
+
+The shutdown seal did not run. After `Ctrl+C` in the launching terminal and
+`Get-Process holler-pos` returning nothing, the data directory still held:
+
+```
+edge.db              1404928  10-09-2026 10:27:27
+edge.db-shm            32768  10-09-2026 10:27:27
+edge.db-wal           469712  10-09-2026 11:56:05
+edge.db.enc          1404956  10-09-2026 10:27:27
+edge.db.open-marker        0  10-09-2026 10:27:27
+```
+
+`edge.db.enc` carries the timestamp of the moment the app **opened** (10:27:27,
+when crash recovery resealed the previous session), while the WAL is from
+11:56:05 — so **the sealed file does not contain tonight's billing at all** and
+the plaintext beside it does.
+
+**This matters beyond tidiness for two reasons.** The plaintext carries the
+cached Argon2id `password_hash` and `pin_hash` rows that exist so a cashier can
+log in offline, and it will sit there until that database is next opened. And a
+reader who does the careful thing — decrypt the sealed copy — gets an OLDER state
+than the plaintext beside it, with nothing announcing the difference.
+
+The backlog entry for A6 says the window-close case does this; **this run shows a
+deliberate `Ctrl+C` from the launching terminal does it too**, which is the
+documented correct way to stop the app. The entry is updated accordingly.
+
 ### Where the run stands
 
 | Step | State |
@@ -579,7 +645,7 @@ same running app**: the same order went from "₹315.00 due, no payments" to "�
 | 13–15 (C8, both adapters + boundary check RED) | **Observed — C8 met, SHAPE ONLY**, above |
 | 16–20 (C1, both halves) | **Observed — C1 MET**, above: falsifier watched first, cloud stopped by pid, order billed/printed/settled offline, replayed on a new pid |
 | Step 16's precondition, DONE | The two documents already posted tonight (`ondc`/`O1`, `syncrest`/`SR-20260910-001`) arrived BEFORE the resolver was wired, so every line is unmapped and accepting either is correctly refused with `AGGREGATOR_ORDER_NO_MAPPED_LINES`. C1 needs `aggregator_item_map` rows for the item ids a fixture carries, and a document posted AFTER the new backend is up |
-| 21–23 (close the till, sealed-copy read, C6 field-by-field) | **NEXT** |
+| 21–23 (close the till, edge-row read, C6 field-by-field) | **Observed — C6 MET**, above. The till did NOT seal on Ctrl+C (A6(b) again), so the read was in-place read-only rather than a sealed copy |
 
 ### Step 7's field values, worked out on 2026-09-10 and not to be re-derived
 
@@ -776,7 +842,7 @@ because a CHECK widening was already pending for 0.8.1.
 | C3 | A permanently-rejected row blocks itself and not its neighbours | **CODE COMPLETE, AWAITING OBSERVATION** — see below |
 | C4 | An offline order reaches the cloud without the operator closing the app | **A5 LANDED, AWAITING OBSERVATION** — the periodic pump exists; the `taskkill` falsifier has not been run |
 | C5 | Supplier and pack size created in admin convert on the next receipt | **MET — observed 2026-09-10.** Falsifier watched first (`NO_SUPPLIER_ITEM` on `GRN/20260910/0001`), then absent on `GRN/20260910/0003` after the supplier item was created in the console |
-| C6 | A goods receipt is readable back in-product | **SCREEN HALF OBSERVED 2026-09-10** on `GRN/20260910/0003`, all three quantity fields and the nulls served as nulls; the field-by-field comparison against the edge row (step 23) is still owed |
+| C6 | A goods receipt is readable back in-product | **MET — observed 2026-09-10.** Screen half at step 11, edge row at step 23; every field agrees including the nulls, and the row carries `NO_PURCHASE_ORDER` only |
 | C7 | A client-data failure is reported as 4xx with a reason the edge records | **CLOSED — observed 2026-09-07** on the shipping binaries, both halves of the falsifier watched |
 | C8 | An aggregator order flows through both adapters | **MET 2026-09-10 — `SHAPE ONLY — no integration evidence`.** Both adapters applied an order over HTTP on the shipping backend; the boundary check was watched RED on a planted `if in.Platform == "ondc"` and green after removal. Integration travels to M6.1 C1, unmet |
 
