@@ -2,101 +2,83 @@
 
 > ## READ THIS BLOCK FIRST. THE REST OF THIS FILE IS M5 AND EARLY-M6 HISTORY.
 >
-> **Current position: FIVE of eight M6 criteria are MET, and the sitting is
-> paused mid-C4 with its precondition already established.** Phases A and B are
-> closed. C1, C5, C6, C7 and C8 are observed and recorded; C2 is parked; C3 and
-> C4 remain. Everything is committed and pushed through `ac344aa`; no branch is
-> open and no test is red. **"Phase C is code complete" is what an earlier
+> **Current position: SIX of eight M6 criteria are MET. C3 is the only one still
+> open, and C2 is parked.** Phases A and B are closed. C1, C4, C5, C6, C7 and C8
+> are observed and recorded. **"Phase C is code complete" is what an earlier
 > version of this block said, and C1 disproved it** — the accept path C1 needs
 > did not exist and was built on 2026-09-10, so treat any "complete" claim about
 > Phase C as unverified until its sinks are counted.
 >
-> **Start at `docs/m6-acceptance.md`, section "SITTING RUN OF 2026-09-10".** It
-> carries the preconditions as established, C5's falsifier as observed, and a
-> step-by-step table of what is done and what is next. This block is a pointer
 > **Start at `docs/m6-acceptance.md`** — it holds every criterion, what was
-> observed and what is still owed. This block points at it rather than copying
-> it.
+> observed and what is still owed, with the evening run of 2026-09-10 in its own
+> section. This block points at it rather than copying it.
 >
-> ### Where the sitting stands, 2026-09-10 (end of session)
+> ### Where the sitting stands, 2026-09-10 (late evening)
 >
-> **FIVE OF EIGHT M6 CRITERIA ARE MET AND RECORDED: C1, C5, C6, C7, C8.** Each is
-> written up in `docs/m6-acceptance.md` with what was observed, by whom and when.
-> C2 stays PARKED behind platform sandbox access. **C3 and C4 are what remain**,
-> and C4 is mid-run with its precondition already established (below).
+> **SIX OF EIGHT M6 CRITERIA ARE MET AND RECORDED: C1, C4, C5, C6, C7, C8.** Each
+> is written up in `docs/m6-acceptance.md` with what was observed, by whom and
+> when. **C2 stays PARKED** behind platform sandbox access. **C3 is the only
+> criterion still open**, and its positive half is now observed — what it lacks
+> is the pre-fix comparison.
 >
-> - **C1 MET** — an aggregator order accepted, billed, printed and settled with
->   the cloud provably stopped by pid, then replayed on a new pid. The print is
->   evidenced by the FILE SINK, not paper; that gate stays parked.
-> - **C5 MET** — falsifier watched first (`NO_SUPPLIER_ITEM` on
->   `GRN/20260910/0001`), absent on `GRN/20260910/0003`.
-> - **C6 MET** — screen half at step 11, edge row at step 23, every field agreeing
->   including the nulls.
-> - **C8 MET, `SHAPE ONLY — no integration evidence`** — both adapters over HTTP,
->   boundary check watched RED on a planted platform branch, then green.
-> - **C7 was already closed** on 2026-09-07. Do not re-run it.
+> - **C4 MET** — by the STRICT run, not the first attempt. See the warning below.
+> - **C3 POSITIVE HALF OBSERVED** — eight rows blocked at 5 attempts with
+>   `missing_reference (HTTP 422)` on the till's own banner while a new order
+>   published past all of them. **C3 is NOT closed:** its falsifier needs the same
+>   fixture on the PRE-FIX binary with neighbour counts recorded both times, and
+>   that exists only as a harness result (`left: [] right: ["outbox-2"]`). Nothing
+>   in the working tree builds the pre-fix binary today.
+> - C1, C5, C6, C8 met earlier the same day; C7 closed 2026-09-07. Do not re-run.
 >
-> ### C4 IS MID-RUN. THE PRECONDITION IS ESTABLISHED AND MUST NOT BE REBUILT
+> ### THE FIRST C4 RUN WAS REJECTED. DO NOT RESURRECT IT FROM THE TIMESTAMPS
 >
-> Everything C4 needs has already happened, in the right order, and the only step
-> left is the observation itself:
+> At 18:51:11 the previous session's pending order landed in Postgres seventeen
+> seconds after the POS started, window open, operator closing nothing. That
+> satisfies the WORDS of C4's falsifier and was still thrown away, because the
+> startup drain predates A5 and would have landed it too — **a criterion a
+> pre-fix binary also passes is not evidence for the fix.**
 >
-> - Order **`01a08b39-d92b-7dd1-8df9-77bacce251bc`** (DINE_IN, 1 item, ₹380.00,
->   created 2026-09-10T12:10:19.307Z) was created **with the cloud stopped** —
->   `check-cloud-unreachable.ps1` agreed on all three probes first.
-> - The POS was then killed with `taskkill /F` (pid 61504), so **no exit event of
->   any kind fired** and the shutdown drain never ran.
-> - The cloud was restarted on a **NEW pid 52528** (previous 49600).
-> - **The order is ABSENT from Postgres**: `"order"` count is 249, unchanged from
->   before it was created.
+> The accepted run left the POS process up across the whole sequence: cloud
+> stopped by pid 3104 with all three probes agreeing, order
+> `01a08b85-dbdd-7670-ae18-42b674510ad5` (₹300.00) rung with the cloud down and
+> verified ABSENT from Postgres at count 250, cloud restarted 19:08:10 and bound
+> 19:08:12 on new pid 64312, row present by 19:08:29 at count 251, **POS pid
+> 28796 identical before and after**. No process started between cloud-up and
+> row-landed, so no startup drain could have run.
 >
-> **The remaining step, and it is the whole criterion:** start the POS and LEAVE
-> THE WINDOW OPEN, touching nothing. When the periodic pump lands
-> `01a08b39-…251bc` in Postgres while the app is still running, C4 is met — an
-> order placed offline reached the cloud without the operator closing the
-> application. Verify with the app still up, not after closing it.
+> Two things the record must keep saying: the run used
+> `HOLLER_SYNC_PUMP_INTERVAL_SECS=10`, not the shipped 60-second default; and
+> C4's falsifier assumed a normal exit fires `RunEvent::Exit`, which **neither
+> Ctrl+C nor a window close does on this build**, so it never isolated an
+> abnormal path.
 >
-> **Record C4 honestly on one point.** Its falsifier was written as "`taskkill` so
-> `RunEvent::Exit` never fires", assuming a normal exit does fire it. This session
-> established that **neither `Ctrl+C` nor a window close fires it either**, so the
-> abnormal-exit distinction does not exist on this build. The criterion still
-> stands — the pump landing a row with no exit event involved is the point — but
-> the record must not imply the falsifier isolated an abnormal path.
+> ### Three findings carried out of this run, all filed with the pilot trigger
 >
-> ### C3 is observable from the same run
+> **The cloud's copy of an order stops tracking the till after create —
+> reproduced twice, cause unknown, A7 RULED OUT for the second instance.** Order
+> `01a08b38-91a6-78d0-b805-123e9ff75a10` is two items and ₹385.00 on the till,
+> and `DRAFT` at `5500` paise in Postgres with one line worth `22000` — a total
+> agreeing with neither. `order` HAS a route, so A7 does not explain it. The
+> create event itself is sound: C4's order landed at exactly `30000` paise.
+> Untested lead: both banner-blocked ids are present in Postgres AS ORDERS, so
+> what is blocked are later events on orders whose creates landed. **Do not use
+> any cloud order copy as evidence against the till until this is understood.**
 >
-> A permanently-rejected row blocks itself and not its neighbours: the till holds
-> seven blocked rows (`missing_reference`, HTTP 422) and has published new orders
-> past them all session. The positive half can be recorded from the C4 run;
-> **the pre-fix comparison exists only as a harness result** (`left: [] right:
-> ["outbox-2"]`) and cannot be observed without the pre-fix binary, which must be
-> said plainly rather than glossed.
+> **The pump makes the till sluggish while the cloud is down**, observed with the
+> cloud confirmed down by three probes — against ADR-013's own promise. Severity
+> at the shipped 60-second interval is unmeasured.
+>
+> **The Orders screen renders raw UTC**, which the operator reported as a clock
+> fault mid-run.
 >
 > ### Stack state as this session ended
 >
-> - Postgres, Redis, NATS: **up and healthy** (`docker compose up -d postgres
->   redis nats`).
-> - Backend: **pid 52528**, started 17:42:41. Verify by identity before trusting
->   any observation; a port answering proves nothing.
-> - **POS: NOT running.** It was killed by `taskkill` for C4 and has not been
->   restarted. Starting it also runs crash recovery, which reseals the plaintext
->   database the failed shutdown left behind.
-> - Admin dev server: was running on :5175. KDS: not started this session.
->
-> ### Two open findings from the last hour, NOT yet investigated
->
-> **The cloud's copy of an order does not track the till's.** Order #A1 reads
-> `DRAFT` at ₹300.00 in Postgres while the till has it billed, printed and settled
-> at ₹315.00 — that part is A7 (invoice and payment have no edge route). But a
-> second order shows the same shape where A7 does not explain it: the till shows
-> ₹385.00 across two items and Postgres holds `5500` paise, so the create event
-> replayed and the later item events did not. `order` HAS a route, so this is a
-> different question from A7 and is unexamined.
->
-> **The 10-second pump makes the till sluggish while the cloud is down.** Every
-> tick takes the database lock and walks 103 pending rows against a dead uplink,
-> and the UI waits behind it. ADR-013's promise is that an outlet is unaffected by
-> a dead uplink, so this is worth a look before a pilot.
+> - Postgres, Redis, NATS: **up and healthy**.
+> - Backend: **pid 64312**, bound 8080 at 19:08:12. Verify by identity, never by
+>   the port answering.
+> - POS: **pid 28796**, started 18:50:54, **still running with the window open**,
+>   pump interval 10s. It has not been closed since C4 began.
+> - Admin dev server and KDS: not started this session.
 >
 > ### Rebuilding the stack from cold, if it is down
 >
@@ -121,7 +103,7 @@
 > encryption key, so **the operator runs anything that needs it**, including the
 > bootstrap and the device token.
 >
-> ### After C3 and C4, in this order
+> ### After C3, in this order
 >
 > 1. **Contracts 0.8.1 — the `order.source` widening**, on the M6 BOUNDARY LIST in
 >    `docs/m6-acceptance.md`: one CHECK widening carrying **two** values, the

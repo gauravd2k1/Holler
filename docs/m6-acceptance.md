@@ -839,8 +839,8 @@ because a CHECK widening was already pending for 0.8.1.
 |---|---|---|
 | C1 | Aggregator order bills and closes with the cloud unreachable | **MET — observed 2026-09-10**, both halves, after the accept path it needs was found MISSING and built the same day. Print evidenced by the file sink, not paper (that gate stays parked) |
 | C2 | Stock-out snoozes on ONDC staging | **PARKED** behind platform sandbox access |
-| C3 | A permanently-rejected row blocks itself and not its neighbours | **CODE COMPLETE, AWAITING OBSERVATION** — see below |
-| C4 | An offline order reaches the cloud without the operator closing the app | **A5 LANDED, AWAITING OBSERVATION** — the periodic pump exists; the `taskkill` falsifier has not been run |
+| C3 | A permanently-rejected row blocks itself and not its neighbours | **POSITIVE HALF OBSERVED 2026-09-10 (evening)**, on the shipping binaries: eight rows blocked at 5 attempts with `missing_reference (HTTP 422)` while a new order published past all of them. **The pre-fix comparison remains a harness result only** and cannot be observed without the pre-fix binary, so C3 is NOT closed |
+| C4 | An offline order reaches the cloud without the operator closing the app | **MET — observed 2026-09-10 (evening)** on the shipping binaries by the strict run: order created with the cloud stopped by pid, cloud restarted, row landed inside one pump interval with the POS pid unchanged and the window never touched. An earlier run the same evening was REJECTED because a startup drain could equally explain it |
 | C5 | Supplier and pack size created in admin convert on the next receipt | **MET — observed 2026-09-10.** Falsifier watched first (`NO_SUPPLIER_ITEM` on `GRN/20260910/0001`), then absent on `GRN/20260910/0003` after the supplier item was created in the console |
 | C6 | A goods receipt is readable back in-product | **MET — observed 2026-09-10.** Screen half at step 11, edge row at step 23; every field agrees including the nulls, and the row carries `NO_PURCHASE_ORDER` only |
 | C7 | A client-data failure is reported as 4xx with a reason the edge records | **CLOSED — observed 2026-09-07** on the shipping binaries, both halves of the falsifier watched |
@@ -1074,15 +1074,145 @@ inconsistency.
 
 ## M6 C3 — a permanently-rejected row blocks itself and not its neighbours
 
-**State: CODE COMPLETE, NOT CLOSED**, for the same reason and by the same route
-as C7. The mechanism, its falsifications and its commits are in the C7 table
-above; the observation is step 3 of the same run.
+**State: POSITIVE HALF OBSERVED 2026-09-10, NOT CLOSED.** The mechanism, its
+falsifications and its commits are in the C7 table above. The positive half is
+now an outlet observation rather than a harness result — see the evening run
+below.
 
 The falsifier this criterion names — *the same fixture on the pre-fix binary
-strands the neighbours, neighbour counts recorded both times* — is Executed as a
-harness result (`left: [] right: ["outbox-2"]`) and **not** as an observed
-outlet run.
+strands the neighbours, neighbour counts recorded both times* — is still
+Executed only as a harness result (`left: [] right: ["outbox-2"]`) and **not**
+as an observed outlet run. Observing it needs the pre-fix binary, which nothing
+in the working tree builds today. That is why C3 stays open despite the positive
+half being real.
 
 ---
 
-*Last updated 2026-09-03, during M6 Phase A.*
+## SITTING RUN OF 2026-09-10 (EVENING) — C4 MET BY THE STRICT RUN, C3's POSITIVE HALF OBSERVED
+
+Driven by Claude, with Gaurav operating the till. This run exists because an
+earlier attempt the same evening was rejected as insufficient, and that rejection
+is the most important thing in this section.
+
+### The run that was NOT accepted, and why
+
+At 18:50:54 the POS was started with the C4 order from the previous session
+(`01a08b39-d92b-7dd1-8df9-77bacce251bc`) still pending, and the row appeared in
+Postgres at 18:51:11 — seventeen seconds later, with the window open and the
+operator closing nothing. That satisfies the words of C4's falsifier and was
+still **not** recorded as met.
+
+The reason: the startup drain has existed since long before A5, so a row landing
+seventeen seconds after process start does not distinguish the periodic pump from
+the drain that runs at open. The pre-fix binary would have landed it too. C4's
+falsifier as written (`taskkill` so `RunEvent::Exit` never fires) isolates the
+*shutdown* drain and says nothing about the startup one. **A criterion that a
+pre-fix binary also passes is not evidence for the fix.** The observation was
+discarded and the strict run below was constructed to exclude the startup drain
+structurally, by leaving the POS process running across the whole sequence.
+
+### C4 — MET 2026-09-10, by the strict run
+
+Executed:
+
+| Time (local) | Action |
+|---|---|
+| 19:0x | Backend stopped **by pid 3104**; port 8080 confirmed free; process confirmed gone from the process table |
+| 19:0x | `scripts/check-cloud-unreachable.ps1` agreed on all three probes: nothing listening, TCP refused, HTTP no answer |
+| 19:03 (13:33:20.733Z) | Operator rang one order on the till with the cloud down — `01a08b85-dbdd-7670-ae18-42b674510ad5`, DINE_IN, 1 item, ₹300.00 |
+| 19:08:10 | Backend restarted; bound 8080 at **19:08:12** on **new pid 64312** |
+
+Read-verified against Postgres, not inferred from any screen or log:
+
+| Check | Before restart | After restart |
+|---|---|---|
+| `"order"` count | 250 | 251 |
+| Target row | **ABSENT** | present by **19:08:29**, as `DRAFT` / `30000` paise |
+| POS process | pid 28796, started 18:50:54 | pid 28796, started 18:50:54 — **unchanged** |
+
+The cloud came back at 19:08:12 and the row was in Postgres by 19:08:29, inside
+one or two ticks of the 10-second pump interval this run used
+(`HOLLER_SYNC_PUMP_INTERVAL_SECS=10`; the production default is 60). No process
+started between those two timestamps, so no startup drain could have run: the
+POS had been up for eighteen minutes and stayed up afterwards, same pid, window
+never touched. **An order placed offline reached the cloud with the application
+still running and the operator doing nothing.** C4 is met.
+
+Two honesty notes that travel with this record:
+
+- C4's falsifier was written assuming a normal exit fires `RunEvent::Exit`. An
+  earlier session established that **neither `Ctrl+C` nor a window close fires
+  it on this build**, so the abnormal-exit distinction the falsifier reaches for
+  does not exist here. The criterion still stands on its own terms — the pump
+  landing a row with no exit event involved is the point — but the record must
+  not imply the falsifier isolated an abnormal path.
+- The 10-second interval is not the shipped cadence. It was set so a tick could
+  be watched inside one sitting; at the 60-second default the same observation
+  takes up to a minute longer and is otherwise identical.
+
+The order's total in the cloud is `30000` paise, matching ₹300.00 on the till
+exactly, so the create event carries the right money. That matters for the
+separate finding below: the divergence is not at create.
+
+### C3 — the positive half, OBSERVED 2026-09-10 (evening)
+
+From the same run, off the till's own sync banner rather than a harness. The
+banner read **"8 records will not reach the cloud"**, with the details pane
+naming, among them:
+
+- `order 01a04210-8e03-7540-a480-d0fde09d14b3` · 5 attempts · `missing_reference (HTTP 422)`
+- `order 01a04219-1241-71c2-b689-1ea22414f8d1` · 5 attempts · `missing_reference (HTTP 422)`
+
+While all eight stayed blocked at their attempt ceiling, the till accepted a new
+order and published it: `01a08b85-dbdd-7670-ae18-42b674510ad5` landed in
+Postgres at 19:08:29, taking the count from 250 to 251. **A permanently-rejected
+row blocked itself and did not block its neighbours**, observed on the shipping
+binaries with the operator watching the same banner.
+
+An observation made while reading this, and NOT part of C3's claim: both blocked
+ids are present in Postgres as orders. The blocked outbox rows are therefore
+later events on those orders, not their create events — which is a lead on the
+divergence finding below, not evidence for C3.
+
+**C3 is still NOT closed.** Its falsifier requires the same fixture on the
+pre-fix binary with neighbour counts recorded both times, and that comparison
+exists only as a harness result. The positive half being observed does not
+substitute for it, and this section must not be read as closing the criterion.
+
+### Three findings carried out of this run
+
+**The cloud's copy of an order stops tracking the till after create —
+reproduced twice, cause unknown, A7 ruled out for the second instance.** Order
+`01a08b38-91a6-78d0-b805-123e9ff75a10` reads two items and ₹385.00 on the till;
+in Postgres it is `DRAFT` at `5500` paise with a single `order_item` line whose
+`line_total_paise` is `22000` — a total that agrees with neither the till nor its
+own line. The earlier instance was attributed to A7 (invoice and payment have no
+edge route), but `order` **does** have a route, so A7 does not explain this one.
+The one-query read taken here: the cloud has 990 `menu_item` rows and the line's
+`menu_item_id` (`0191a000-0000-7000-8000-000000000012`, Veg Thali) exists, so a
+missing menu item is not the reason. Combined with the C3 note above — both
+blocked rows are later events on orders whose creates landed — the shape is
+consistent with item and status events failing `missing_reference` while creates
+succeed, but that is a hypothesis and nothing here tested it. **Trigger: before
+the first pilot.**
+
+**Do not use this order's cloud copy as C6 evidence or any other comparison
+against the till.** C4 is the row landing, not its contents, and C4 is unaffected.
+
+**The 10-second pump makes the till sluggish while the cloud is down.** Observed
+again this run, and this time with the cloud confirmed down by all three probes:
+the operator reported the application slow while ringing the C4 order. Every tick
+takes the database lock and walks the pending backlog against a dead uplink, and
+the UI waits behind it. ADR-013's promise is that an outlet is unaffected by a
+dead uplink. The 10-second interval used here is more aggressive than the shipped
+60-second default and makes it worse, so the shipped severity is unmeasured.
+**Trigger: before the first pilot.**
+
+**The Orders screen renders raw UTC.** The Created column shows
+`2026-09-10T13:33:20.733Z` for an order rung at 19:03 local, which reads as a
+clock fault to an operator. CLAUDE.md's rule is UTC storage with local rendering.
+Cosmetic, no data implication, filed with the other two.
+
+---
+
+*Last updated 2026-09-10, during M6 Phase C.*
