@@ -2218,7 +2218,7 @@ fn seed(
         &Outlet {
             id: OUTLET_ID.to_string(),
             brand_id: BRAND_ID.to_string(),
-            name: "Pune Test Outlet".to_string(),
+            name: OUTLET_NAME.to_string(),
             timezone: "Asia/Kolkata".to_string(),
             config_version: CONFIG_VERSION,
             created_at: SEEDED_AT.to_string(),
@@ -2924,7 +2924,7 @@ fn seed_billing(conn: &rusqlite::Connection) -> Result<(), holler_edge_database:
             id: FISCAL_PROFILE_ID.to_string(),
             outlet_id: OUTLET_ID.to_string(),
             legal_name: "Holler Dev Kitchens Pvt Ltd".to_string(),
-            trade_name: "Pune Test Outlet".to_string(),
+            trade_name: OUTLET_NAME.to_string(),
             address_line1: "123 MG Road".to_string(),
             address_line2: Some("Camp".to_string()),
             city: "Pune".to_string(),
