@@ -251,14 +251,29 @@ Phase B closed with **three surfaces built and two carried** — not all five.
 
 ---
 
+## C2. The menu the client actually sells
+
+Added by the demo menu swap (2026-09-12), when the invented dev menu was
+replaced by the client's own card. All three are contract shapes, not bugs.
+
+| Item | Blocks pilot | Size | Note |
+|---|---|---|---|
+| **`tax_rule.component` cannot express VAT — alcohol is billed at a ZERO RATE** | **YES** | M | Contracts change, both stores plus engine. Every bar line the outlet sells: the VAT it owes is not computed, not printed and not collected. Added by the demo menu swap, 2026-09-12 |
+| **`menu_item` has no `is_veg`** | **YES** | S | FSSAI requires the veg/non-veg marker on a menu. Additive contracts bump plus the four surfaces that render an item |
+| **`menu_item` has no `description`** | NO | S | Ships with `is_veg`; a card of bare names is sellable, just poorer |
+
+---
+
 ## D. Summary
 
-**Blocks a pilot — 11 items:** A6, A7, the rebuild/backup pair, the four
+**Blocks a pilot — 13 items:** A6, A7, the rebuild/backup pair, the four
 cloud-copy and config-push rows (`variant_id` check, order copy, inventory push,
 menu seed), the cloud `hsn_sac` seed, the plaintext database on shutdown, device
-enrollment, the `outlet.manage` split, and the admin staff surface.
+enrollment, the `outlet.manage` split, the admin staff surface, and the two menu
+shapes added on 2026-09-12 (**VAT is inexpressible, so alcohol bills at a zero
+rate**, and **`menu_item` has no `is_veg`** where FSSAI requires the marker).
 
-They are not eleven independent pieces of work. **Three roots account for eight
+They are not thirteen independent pieces of work. **Three roots account for eight
 of them:**
 
 1. **No exit path drains or seals** — A6, the plaintext database, and the

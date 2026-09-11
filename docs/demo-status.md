@@ -67,6 +67,113 @@ Everything here is blocked on something no agent in this project can do.
 
 ## Item 1 and 2 — seed parity
 
+### The menu is the client's own card now (2026-09-12)
+
+`menu_imgs_gong/gong_menu.xlsx` replaced the invented Indian dev menu.
+**277 items across 46 categories, 343 variants, 21 modifier options** --
+every one of the workbook's 346 `include = Y` rows landed, and the generator
+reports rejections by reason rather than dropping rows quietly (it reported
+none).
+
+**A generator, not a transcription.** `scripts/gong-menu-to-seed.py` reads the
+workbook and writes `edge/database/src/bin/devseed/gong_menu.rs`, which
+`devseed` consumes as its `SEED_CATEGORIES`. Hand-transcribing 346 priced rows
+into Rust is exactly the step where two descriptions of one menu drift, which
+is the defect the seed directory exists to prevent, one layer out.
+
+Decisions the generator makes, each recorded in `seed/README.md` as well:
+
+- **Absolute printed prices become base + delta.** The card prints Laksa Veg
+  425 / Chicken 485 / Prawn 495; the contract stores one base price and a delta
+  per variant. Base is the cheapest printed variant, so nothing rings up at a
+  price the card does not print and no delta is negative.
+- **Single-price items get one `Regular` variant** -- the rule the previous
+  section landed, now applied by the generator rather than by hand.
+- **The three Staple add-on rows become modifiers**, per the workbook's own
+  Read me. Two of the seven Staple dishes carry costed deltas
+  (`Add Chicken` 80 g, `Add Prawns` 70 g, `Add Mixed Meat` as TWO rows -- 45 g
+  chicken plus 35 g prawn, because a delta is per (modifier, inventory item)
+  and a blended SKU would be fabricated). The other five carry the same
+  modifiers uncosted, which is legitimate and is the path that also needs seed
+  coverage.
+
+**The larder and recipes moved with the menu.** 38 inventory items (no paneer,
+no atta, no kasuri methi -- prawns, tofu, pak choi, kimchi, jasmine rice, udon,
+fish sauce, coconut milk), **16 root recipes plus 2 sub-recipe batches**, 85
+ingredient rows, 7 supplier items and the seeded GRN all re-pointed. The two
+sub-recipe carriers kept their ids and became **Thai Green Curry Paste** (300 ml
+batch) and **Stone Bowl Sauce Base** (480 ml batch).
+
+**Demo step 3's dish is pinned by a test.** `Kimchi / Chicken` (a Stone Bowl)
+pulls 60 ml of a 480 ml sauce batch -- a 1/8 multiplier, never 1x -- and the
+test asserts the leaf arithmetic: 150 g chicken direct; soy sauce reachable
+ONLY through the sub-recipe at exactly 22.5 ml; and spring onion appearing BOTH
+directly (15 g) and inside the batch (5 g) and therefore SUMMING to 20 g rather
+than overwriting. `Iced Tea` is the second demo line, so the stock screen shows
+two unrelated items moving.
+
+**`ALCOHOL_VAT_UNCONFIGURED`: 141 bar items, CGST 0 / SGST 0.** The card taxes
+alcohol as VAT and `tax_rule.component` is CHECKed to CGST/SGST/IGST/CESS under
+0.8.1, so VAT is not expressible. The operator's ruling was a dedicated
+zero-rate profile so **no wrong tax amount is ever charged or printed**, falling
+back to GST-5 only if a zero rate were inexpressible -- it is expressible
+(`rate_bps INTEGER NOT NULL CHECK (rate_bps >= 0)`), so the fallback was not
+taken. **This is a hole, stated as one:** the bar's real VAT is not collected,
+the demo script must not bill a bar item, and the VAT component is filed in
+`docs/pilot-readiness.md`.
+
+**`veg_flag` and `description` are dropped, deliberately.** `menu_item` has no
+column for either. Filed for the next additive contracts bump;
+**FSSAI requires the veg marker on a menu**, so it is a pilot blocker, not a
+nicety. The data stays in the workbook.
+
+**The legacy chai/thali pair survives, hidden.** `tests/e2e-scenario/harness`
+pins those two ids, that exact 4000-paise price, that single-station routing and
+that `tax_profile_id = None` fallback, so removing them would break the harness
+silently. Both are now `is_available: false` in a category named
+`Test fixtures (internal -- not sold)` sorting last. A greyed-out Masala Chai on
+a modern Asian till is a blemish; an orderable one is a wrong menu.
+
+**The spec/seed guard was re-pointed, not deleted.**
+`spec_and_seed_agree_on_item_and_variant_counts` parsed `HOLLER_DEV_MENU_SPEC.md`
+because that document and `SEED_CATEGORIES` were two hand-maintained copies of
+one menu. The Gong catalogue is generated, so the drift worth catching changed
+shape: a hand-edit of the generated file, or a workbook edit with no
+regeneration. `gong_menu_matches_the_generated_manifest` rebuilds the counts AND
+a canonical projection of every item, price, station, tax class, variant delta
+and modifier delta, and compares both against `seed/gong-menu-manifest.json`.
+**Falsified** by changing one price in the generated file by a single paisa and
+watching it fail by name. The checksum is FNV-1a rather than a real digest
+because this crate carries no hashing dependency and the threat is an accidental
+hand-edit, not an adversary -- twelve lines of arithmetic on both sides beat a
+new dependency in the edge binary for a dev-only guard.
+
+### Seed parity after the swap, per store
+
+- **Cloud, row for row:** clean scratch database (`holler_seedcheck`), the real
+  Go seeder, the real committed file, `EXIT=0`; then **ten tables compared by
+  id, field for field** -- `menu_category` 48, `menu_item` 281,
+  `menu_item_variant` 347, `menu_item_modifier` 23, `recipe` 18,
+  `recipe_ingredient` 85, `inventory_item` 38, `supplier_item` 7,
+  `tax_profile` 4, `tax_rule` 8. **Zero rows on one side only, zero content
+  differences.**
+- **Edge, row for row, and now permanent:**
+  `edge_rows_match_the_shared_catalogue_row_for_row` compares every field of
+  every catalogue row against what `seed()` actually stored in SQLite. It runs
+  in CI on every commit rather than once during a reset. **Falsified** by adding
+  1 paisa in the edge write path and watching it name the row and column.
+- **Edge, end to end:** a scratch data directory bootstrapped from the committed
+  file -- 281 items, 48 categories, 18 recipes, 38 inventory items,
+  `GRN/20260809/0001` with 7 lines and the expected single `NO_PURCHASE_ORDER`
+  gap -- then `scripts/demo-assert` on the sealed result:
+  **0 blocked ranged-stream rows, 0 stock deduction gaps, 0 blocked outbox rows,
+  0 persistently-failing rows (the banner proxy). All checks OK.** That is work
+  item 1's post-seed assertion, met on a clean bootstrap. It ran against a
+  scratch directory and a scratch key, never the operator's data directory.
+- 329 edge tests executed through `scripts/assert-tests-ran.mjs`, clippy and fmt
+  clean, `check-seed-drift` green, `go test -count=1 ./cmd/devseed/...` green
+  against live Postgres, and all three `check-seams` crates check clean.
+
 ### Every menu item now carries a variant (2026-09-12)
 
 Twelve of forty-three seeded items had no `menu_item_variant` row at all:

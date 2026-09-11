@@ -28,6 +28,13 @@ makes a hand-edit of the derived half fail the build.
 ## The shape: ONE emitter, ONE committed artefact, TWO readers
 
 ```
+menu_imgs_gong/gong_menu.xlsx          (the CLIENT'S card -- hand-corrected)
+                 |
+                 |  scripts/gong-menu-to-seed.py
+                 v
+edge/database/src/bin/devseed/gong_menu.rs   (COMMITTED, generated)
+       + seed/gong-menu-manifest.json        (counts + checksum)
+                 |
 edge/database/src/bin/devseed.rs --emit-json
                  |
                  v
@@ -40,6 +47,49 @@ edge/database/src/bin/devseed.rs --emit-json
    (SQLite)             (Postgres)
 ```
 
+## The menu comes from the client's workbook, not from this repository
+
+`menu_imgs_gong/gong_menu.xlsx`, sheet `Menu`, is the authoring source for the
+catalogue: 346 rows with `include = Y`, transcribed from the printed card.
+`scripts/gong-menu-to-seed.py` turns it into `devseed/gong_menu.rs`. **Neither
+the generated module nor `demo-outlet.json` is ever hand-edited** -- correct the
+workbook and re-run:
+
+```
+python scripts/gong-menu-to-seed.py
+cd edge/database && cargo run --bin devseed -- --emit-json ../../seed/demo-outlet.json
+```
+
+Three things the generator decides, each recorded because a reader will
+otherwise have to reverse-engineer it from the output:
+
+- **The card prints an ABSOLUTE price per variant** (Laksa Veg 425, Chicken 485,
+  Prawn 495) while the contract stores one `base_price_paise` plus a
+  `price_delta_paise` per variant. The base is the CHEAPEST printed variant and
+  every delta is that variant's printed price minus the base, so nothing rings
+  up at a price the card does not print and no delta is negative.
+- **A single-price item gets one `Regular` variant at delta 0.** A recipe binds
+  to a `menu_item_variant_id` (ADR-018 §2.1) and `apps/captain` refuses to order
+  an item with no variant at all.
+- **The three `Add Chicken` / `Add Prawns` / `Add Mixed Meat` rows under Staple
+  become MODIFIERS on the other Staple dishes, not items** -- the workbook's own
+  Read me says so, and a priced supplement sold as a standalone line would ring
+  up as a dish.
+
+**`ALCOHOL_VAT_UNCONFIGURED` is a zero-rate profile, and that is a hole, not a
+tax position.** The card taxes every bar line as VAT; `tax_rule.component` is
+CHECKed to CGST/SGST/IGST/CESS under contracts 0.8.1, so VAT cannot be
+expressed. Rather than print a real rate under a wrong label, the 141 bar items
+carry CGST 0 / SGST 0: they are orderable and billable and **no wrong tax amount
+is ever charged or printed**. The demo script does not bill a bar item. The VAT
+component is filed in `docs/pilot-readiness.md` as a contracts item -- any bar
+in India needs it.
+
+**`veg_flag` and `description` are in the workbook and NOT in the seed.**
+`menu_item` has no column for either under 0.8.1. Both are filed for the next
+additive bump; FSSAI requires the veg marker on a menu, so this is a pilot
+blocker rather than a nicety.
+
 **The Rust seed structs are the authoring source; `demo-outlet.json` is
 generated from them and committed; both seeders consume the JSON.** The Rust
 seeder consumes its own emitted file rather than its in-memory structs, so the
@@ -51,9 +101,11 @@ alternative and was rejected: the transcription step is exactly where the two
 descriptions drift, which is the defect being fixed, one layer out.
 
 **`seed/demo-outlet.json` is GENERATED. Never hand-edit it.** Edit the seed data
-in `edge/database/src/bin/devseed.rs`, re-emit, and commit both.
-`scripts/check-seed-drift.mjs` regenerates and fails the build if the committed
-file differs.
+in `edge/database/src/bin/devseed.rs` (or, for the menu, the workbook), re-emit,
+and commit both. `scripts/check-seed-drift.mjs` regenerates and fails the build
+if the committed file differs, and `gong_menu_matches_the_generated_manifest`
+fails if the generated menu module was hand-edited or the workbook changed
+without a regeneration.
 
 ## Scope: what is shared and what is not
 

@@ -1,0 +1,10 @@
+{
+  "generated_by": "scripts/gong-menu-to-seed.py",
+  "source": "menu_imgs_gong/gong_menu.xlsx",
+  "source_sha256": "04f1d6e2a8e81f33c4ebb2c034fa8e3b8ac918a7bf6be3653c147740daee8d55",
+  "categories": 46,
+  "items": 277,
+  "variants": 343,
+  "modifier_options": 21,
+  "projection_fnv1a64": "d11cfd5bb2a16487"
+}
