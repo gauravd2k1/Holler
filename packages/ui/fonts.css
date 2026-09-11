@@ -1,0 +1,63 @@
+/* Holler self-hosted Inter — imported by tokens.css.
+ *
+ * WHY THIS FILE EXISTS. An outlet with no uplink is the normal case
+ * (ADR-013), the demo runs on our own hotspot with no internet, and a web
+ * font fetched from a CDN that fails to load silently re-renders the whole
+ * product in the fallback stack. So the face ships as a file in this
+ * package, resolved by the bundler like any other asset, never fetched at
+ * runtime from fonts.googleapis.com or similar.
+ *
+ * VARIABLE, NOT FOUR STATICS. tokens.css uses four weights (400/500/600/700).
+ * Four static woff2 files at those weights total ~97KB (latin) / ~144KB
+ * (latin + latin-ext, see below); the single variable-weight woff2 covering
+ * the whole 100-900 axis is ~48KB (latin) / ~85KB (latin + latin-ext) and is
+ * ONE file per subset instead of four. Measured from the same source
+ * (@fontsource-variable/inter 5.3.0) before choosing — see the T23 report.
+ *
+ * TWO FILES, NOT ONE — AND THIS IS NOT AN INDIC SUBSET. Google's/Fontsource's
+ * "latin" subset is U+0000-00FF plus general punctuation and does NOT
+ * contain the Rupee sign; ₹ (U+20B9) lives in the "latin-ext" subset's
+ * currency-symbols block (U+20A0-20AB). Holler renders ₹ throughout, so
+ * "latin" alone is not sufficient — confirmed with a cmap dump
+ * (fontTools.ttLib), not assumed. Both files are Latin script; "latin-ext"
+ * here is Google/Fontsource's subset name, not a CJK/Indic font. The
+ * unicode-range split below means a browser only fetches latin-ext when a
+ * character in its range (₹ included) actually appears on the page.
+ *
+ * SOURCE: downloaded once via `npm pack @fontsource-variable/inter@5.3.0`
+ * (https://www.npmjs.com/package/@fontsource-variable/inter), itself built
+ * from the upstream Inter release (https://github.com/rsms/inter). Vendored
+ * here, not fetched at runtime — see fonts/OFL.txt for the licence, copied
+ * unmodified from that package.
+ *
+ * WEIGHT ONLY, NO ITALIC. Nothing in the token set or the four apps sets
+ * font-style: italic, so the italic axis files are not shipped.
+ */
+
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("./fonts/inter-latin-wght-normal.woff2") format("woff2-variations");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/* Carries the Rupee sign (U+20B9) and the rest of the currency-symbols
+ * block, plus Latin Extended-A. Loaded by the browser only when a character
+ * in this range is actually used — which, on every screen with a price, is
+ * immediately. */
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("./fonts/inter-latin-ext-wght-normal.woff2")
+    format("woff2-variations");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7,
+    U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F,
+    U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F,
+    U+A720-A7FF;
+}

@@ -6,10 +6,14 @@
   "type": "module",
   "exports": {
     "./tokens.css": "./tokens.css",
-    "./base.css": "./base.css"
+    "./base.css": "./base.css",
+    "./fonts.css": "./fonts.css",
+    "./fonts/*": "./fonts/*"
   },
   "files": [
     "tokens.css",
-    "base.css"
+    "base.css",
+    "fonts.css",
+    "fonts"
   ]
 }
