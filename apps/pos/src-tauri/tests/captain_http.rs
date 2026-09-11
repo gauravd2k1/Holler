@@ -14,6 +14,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use holler_edge_database::{model, repo, Db};
+use holler_edge_device::contract::KdsLanMessage;
+use holler_edge_device::Hub;
 use holler_pos_lib::captain::start_captain_server;
 use holler_pos_lib::state::AppState;
 
@@ -220,6 +222,29 @@ fn start_test_server() -> (SocketAddr, Arc<std::sync::Mutex<Db>>) {
     (bound, db_handle)
 }
 
+/// Same as [`start_test_server`], but with a real [`Hub`] wired into the
+/// `AppState` the captain server runs on — `AppState::new` (used above)
+/// hard-codes `hub: None` (state.rs), under which `notify_kot` is a no-op
+/// and nothing about the hub broadcast is exercised at all. Production
+/// wires the *same* hub the KDS LAN server accepted connections on
+/// (`AppState::shared_handle`); this constructs an equivalent single-hub
+/// setup directly, since this suite never binds the WebSocket side.
+fn start_test_server_with_hub() -> (SocketAddr, Arc<Hub>) {
+    let db = Db::open_in_memory_for_tests().expect("open in-memory db");
+    seed(&db);
+    let hub = Arc::new(Hub::new());
+    let state = AppState::new_with_hub(
+        db,
+        OUTLET_ID.to_string(),
+        TILL_DEVICE_ID.to_string(),
+        hub.clone(),
+    );
+    let addr: SocketAddr = "127.0.0.1:0".parse().expect("valid addr");
+    let bound = start_captain_server(addr, Arc::new(state))
+        .expect("captain server must bind an ephemeral port in a test environment");
+    (bound, hub)
+}
+
 struct HttpResponse {
     status: u16,
     body: serde_json::Value,
@@ -398,6 +423,82 @@ fn create_order_send_reaches_the_kitchen_and_is_attributed_to_the_waiter_not_the
         .expect("order must exist");
     assert_eq!(stored.device_id, WAITER_DEVICE_ID);
     assert_ne!(stored.device_id, TILL_DEVICE_ID);
+}
+
+/// THE hub half of the pass condition, exercised directly rather than
+/// inferred from the HTTP response: `send_order_to_kitchen_impl` calls
+/// `notify_kot`, which is a documented no-op when `state.hub` is `None`
+/// (`state.rs`). Every other test in this file uses `start_test_server`,
+/// whose `AppState::new` hard-codes `hub: None` — so a captain-originated
+/// send has never, until this test, been proven to reach a KDS subscriber
+/// at all, only to reach SQLite. Production wires the real hub via
+/// `AppState::shared_handle`; this proves the same call path broadcasts
+/// when a hub is actually attached.
+#[test]
+fn sending_an_order_broadcasts_kot_upserted_to_a_subscribed_kds_hub() {
+    let (addr, hub) = start_test_server_with_hub();
+    let token = format!("cred-waiter-1.{WAITER_SECRET}");
+
+    // Subscribe BEFORE the send — the hub's `publish` only reaches
+    // subscribers registered at the moment it fires (hub.rs: no replay
+    // buffer beyond the subscriber's own channel), so a late subscribe
+    // would prove nothing.
+    let subscription = hub.subscribe(OUTLET_ID, None);
+
+    let create_body = serde_json::json!({
+        "order_type": "DINE_IN",
+        "table_id": "table-1",
+        "items": [{
+            "menu_item_id": "item-1",
+            "variant_id": "variant-1",
+            "quantity": 1,
+            "unit_price_paise": 25000,
+            "notes": null,
+            "modifiers": []
+        }]
+    });
+    let created = http_request(
+        addr,
+        "POST",
+        "/api/orders",
+        Some(&token),
+        Some(&create_body.to_string()),
+    );
+    assert_eq!(created.status, 201, "create response: {:?}", created.body);
+    let order_id = created.body["holler_order_id"]
+        .as_str()
+        .expect("order id")
+        .to_string();
+
+    let send = http_request(
+        addr,
+        "POST",
+        &format!("/api/orders/{order_id}/send"),
+        Some(&token),
+        None,
+    );
+    assert_eq!(send.status, 200, "send response: {:?}", send.body);
+    let sent_kot_id = send.body["kots"][0]["id"]
+        .as_str()
+        .expect("kot id in send response")
+        .to_string();
+
+    let message = subscription
+        .receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect(
+            "the hub must broadcast a kot_upserted frame for this send — nothing arrived on \
+             the subscribed channel within the timeout",
+        );
+    match message {
+        KdsLanMessage::KotUpserted { outlet_id, kot, .. } => {
+            assert_eq!(outlet_id, OUTLET_ID);
+            assert_eq!(kot.id, sent_kot_id);
+            assert_eq!(kot.order_id, order_id);
+            assert_eq!(kot.station, "MAIN_KITCHEN");
+        }
+        other => panic!("expected a kot_upserted frame, got {other:?}"),
+    }
 }
 
 #[test]
