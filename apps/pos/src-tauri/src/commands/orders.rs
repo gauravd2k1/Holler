@@ -136,9 +136,8 @@ pub fn create_order_impl(
 /// the known trap"): calling `create_order_impl` as it stands records every
 /// waiter-placed order as authored by the till, and it reads correctly on
 /// every screen because nothing downstream checks it. The caller must
-/// resolve `device_id` from a verified credential
-/// (`CachedCredentialVerifier::resolve`) — never from anything the request
-/// itself supplies.
+/// resolve `device_id` from a verified credential (see `captain.rs::authenticate`)
+/// — never from anything the request itself supplies.
 pub fn create_order_impl_as(
     state: &AppState,
     device_id: &str,
