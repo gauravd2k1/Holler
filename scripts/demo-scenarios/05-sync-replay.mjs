@@ -8,7 +8,9 @@
  * periodic uplink. The task's instruction is to test them and record them,
  * never to skip them.
  */
-import { loadState, record, sql } from "./lib.mjs";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { SHOT_DIR, loadState, record, sql } from "./lib.mjs";
 
 const one = (stmt) => sql(stmt).trim();
 const rows = (stmt) => one(stmt).split("\n").filter((r) => r !== "");
@@ -59,22 +61,66 @@ const run = async () => {
   const anyAttribution = rows(
     `select k||' x'||n::text from (select coalesce(d.kind,'<no device row>') as k, count(*) as n from "order" o left join device d on d.id=o.device_id group by 1) t;`,
   ).join("; ");
+  // The claim that matters is about orders created NOW, not about every row
+  // the cloud has ever held. A legacy order written by a device that was never
+  // enrolled cannot be repaired by a fix to the config pull, and averaging it
+  // into this row would hide the thing the row exists to report.
+  const captainResolves = attribution.startsWith("WAITER|");
+  const orphanIds = rows(
+    `select o.id||' device_id='||o.device_id||' at '||o.created_at from "order" o left join device d on d.id=o.device_id where d.id is null order by o.created_at;`,
+  );
   record({
     id: "S-SYNC-03",
     demoStep: "1a",
-    scenario: "A replayed order's device_id resolves to a real device row in the cloud",
+    scenario: "A newly created order replays with a device_id that resolves to a real device row in the cloud",
     surface: "postgres 5432",
-    precondition: "Orders present in the cloud",
-    steps: 'Left join "order".device_id to device.id and report the kind',
-    expected: "Every order's device_id joins to a device row, so attribution is readable in the back office",
-    actual: `Across all orders: ${anyAttribution.replace(/\n/g, "; ")}${orderId ? `. Captain order ${orderId}: ${attribution}` : ""}`,
-    status: anyAttribution.includes("<no device row>") ? "FAIL" : "PASS",
-    evidence: `SQL: ${anyAttribution.replace(/\n/g, " ; ")}`,
+    precondition: `Captain order ${orderId ?? "<none>"} created this run and replayed`,
+    steps:
+      'Left join "order".device_id to device.id for the order THIS run created, and report the kind; then count every order in the cloud that still fails to resolve.',
+    expected: "The order created this run joins to a device row of kind WAITER",
+    actual: orderId
+      ? `Captain order ${orderId}: ${attribution}. Across all orders: ${anyAttribution.replace(/\n/g, "; ")}.`
+      : "No captain order id available",
+    status: !orderId ? "BLOCKED" : captainResolves ? "PASS" : "FAIL",
+    evidence: `SQL left join "order" -> device; ${anyAttribution.replace(/\n/g, " ; ")}`,
     notes:
-      "Every order currently replays with device_id 0191a000-0000-7000-8000-00000000000b, a seed constant with NO row " +
-      "in the cloud `device` table (device ids there are 01a0908b-…). There is no FK from \"order\" to device, so the " +
-      "orphan replays silently. Waiter-versus-till attribution — the whole point of demo step 1a — is therefore not " +
-      "answerable from the cloud copy at all: both devices resolve to the same non-existent id.",
+      `A SEPARATE, OPPOSITE GAP REMAINS AND IS NOT FIXED BY 758a70b — see S-SYNC-13. ${orphanIds.length} order(s) ` +
+      "still fail to resolve, every one of them carrying device_id 0191a000-0000-7000-8000-00000000000b, which is " +
+      "edge/database/src/bin/devseed.rs:41's DEVICE_ID — the TILL. That row is written locally by devseed and was " +
+      "never enrolled in the cloud, so Postgres has no `device` row for it. Note the direction: T30 fixed " +
+      "cloud→edge (a cloud-enrolled device missing its edge row); this is edge→cloud (an edge-seeded device missing " +
+      'its cloud row). There is no FK from "order" to device in Postgres, so the orphan replays silently.',
+    rerun:
+      "WAS FAIL — no order in the cloud resolved to a device row, so waiter-versus-till attribution was unanswerable. " +
+      "NOW PASS for the order this run created: it resolves to a WAITER device. Re-scoped to the order under test " +
+      "because the rows that still fail are legacy till-authored ones a config-pull fix cannot reach; they are " +
+      "carried as S-SYNC-13 rather than left averaged into this verdict.",
+  });
+
+  // --------------------------------------------------------------- S-SYNC-13
+  record({
+    id: "S-SYNC-13",
+    demoStep: "1a / 6",
+    scenario: "The till's own devseed device has no cloud `device` row, so till-authored orders replay unattributable",
+    surface: "postgres 5432",
+    precondition: "Orders authored by the till before this run, replayed into the cloud",
+    steps: 'Left join "order".device_id to device.id and list every order that fails to resolve',
+    expected: "Zero orders with an unresolvable device_id",
+    actual:
+      orphanIds.length === 0
+        ? "Every order in the cloud resolves to a device row"
+        : `${orphanIds.length} order(s) do not resolve: ${orphanIds.join(" | ")}`,
+    status: orphanIds.length === 0 ? "PASS" : "FAIL",
+    evidence: `SQL: select o.id from "order" o left join device d on d.id=o.device_id where d.id is null -> ${orphanIds.length} row(s)`,
+    notes:
+      "NOT THE T30 DEFECT AND NOT FIXED BY IT. devseed mints the till's `device` row directly in edge SQLite " +
+      "(edge/database/src/bin/devseed.rs:41) and nothing ever enrols it with the backend, so the cloud has no row to " +
+      "join to. Back-office attribution for till-authored orders is therefore blank — which is the same class of " +
+      "defect T30 fixed, pointed the other way down the wire. Recorded, not fixed: enrolling the till is a change to " +
+      "the seed path, outside this task's read-only scope.",
+    rerun:
+      "NEW ROW this run. Split out of S-SYNC-03, which previously reported both gaps as one verdict and so could not " +
+      "show that the captain path had been fixed while the till path had not.",
   });
 
   // --------------------------------------------------------------- S-SYNC-04
@@ -134,33 +180,63 @@ const run = async () => {
   });
 
   // --------------------------------------------------------------- S-SYNC-12
-  // Recorded from two measurements taken this run, not from one. Both
-  // artefacts are committed; the ids in their filenames are the process
-  // instances they were taken against.
+  // RE-MEASURED, not asserted. This row previously carried a previous run's
+  // finding as literal text against pids that no longer exist, so it would
+  // have reported FAIL forever regardless of what the current process does.
+  // It now reads the committed artefact stage 07 writes and classifies on it.
+  const watchArtefact = join(SHOT_DIR, "pos-uplink-watch.txt");
+  let contacts = [];
+  let watchWindow = "";
+  try {
+    const text = readFileSync(watchArtefact, "utf8").replace(/^﻿/, "");
+    const pts = [];
+    for (const raw of text.split(/\r?\n/)) {
+      const m = raw.trim().match(/^tick\s+\d+\s*:\s*POS\|([^|]*)\|(.*)/);
+      if (m) pts.push({ lastUsed: m[1].trim(), now: m[2].trim() });
+    }
+    contacts = [...new Set(pts.map((p) => p.lastUsed))];
+    if (pts.length) watchWindow = `${pts[0].now} to ${pts[pts.length - 1].now} (${pts.length} samples)`;
+  } catch {
+    contacts = [];
+  }
+  // Postgres prints "2026-09-11 14:07:47.207865+00" — not ISO-8601. Date.parse
+  // returns NaN rather than throwing, so an un-normalised stamp would turn
+  // every gap into NaN and still render as a result.
+  const pgTs = (s) => new Date(s.replace(" ", "T").replace(/([+-]\d{2})$/, "$1:00"));
+  const contactGaps = [];
+  for (let i = 1; i < contacts.length; i++) {
+    contactGaps.push(Math.round((pgTs(contacts[i]) - pgTs(contacts[i - 1])) / 1000));
+  }
+  const worstGap = contactGaps.length ? Math.max(...contactGaps) : null;
+  const pumpHealthy = worstGap !== null && worstGap <= 120;
   record({
     id: "S-SYNC-12",
     demoStep: "1a / 6",
     scenario: "A live POS keeps pumping for as long as it keeps serving",
     surface: "POS process -> backend 8080 -> postgres 5432",
     precondition:
-      "Two POS instances were observed this run. pid 74104 (started 14:04:44 UTC) and, after the operator " +
-      "restarted it, pid 80612 (started 14:31:36 UTC). The pump interval is 60s and S-SYNC-09 confirms pid 80612 " +
-      "hits it: contacts at 14:36:38, 14:37:39, 14:38:39.",
+      "holler-pos pid 55508 up for the whole sampling window (S-ENV-02), serving 9310 and 9320 throughout. The " +
+      "documented interval is 60s (DEFAULT_PERIODIC_DRAIN_INTERVAL, apps/pos/src-tauri/src/state.rs:93).",
     steps:
-      "Sample device_credential.last_used_at for the POS device across both instances and compare the contact " +
-      "pattern while each process was demonstrably still serving LAN requests",
-    expected: "Contact every ~60s for as long as the process is alive",
+      "Parse the committed uplink artefact — device_credential.last_used_at for the POS device sampled every 30s " +
+      "from outside the POS, on Postgres's clock — and measure the interval between distinct cloud contacts.",
+    expected: "Contact every ~60s for as long as the process is alive, with no gap beyond 2x the documented interval",
     actual:
-      "pid 80612: contacts 60-61s apart, exactly as documented. pid 74104: LAST contact at 14:07:47, about three " +
-      "minutes after start, then NOTHING for the remaining ~12 minutes of its life — while it was still serving " +
-      "9320 (S-CUI-01 recorded HTTP 200 and a real captain 401 body from it at 14:22) and still hosting 9310. " +
-      "It then exited without the operator touching it.",
-    status: "FAIL",
-    evidence:
-      "docs/demo-screens/scenarios/pos-uplink-watch-instance-74104-stalled.txt (12 samples, one contact change in " +
-      "19 minutes) against pos-uplink-watch-instance-80612-healthy.txt (14 samples, 60s cadence)",
+      contacts.length === 0
+        ? "No uplink artefact could be parsed, so the pump was NOT re-measured this run."
+        : `${contacts.length} distinct contact(s) over ${watchWindow}. Longest gap between contacts: ` +
+          `${worstGap === null ? "n/a — only one contact" : `${Math.floor(worstGap / 60)}m${worstGap % 60}s`} ` +
+          `against a documented 60s.`,
+    status: contacts.length === 0 ? "BLOCKED" : pumpHealthy ? "PASS" : "FAIL",
+    evidence: `docs/demo-screens/scenarios/pos-uplink-watch.txt — ${watchWindow || "unparseable"}`,
+    rerun:
+      "WAS FAIL, carried as literal text from an earlier run against pids 74104 and 80612, both long gone — a row " +
+      "that could never change verdict no matter what the live process did. NOW RE-MEASURED against pid 55508 from " +
+      "the committed artefact. THE HISTORICAL FINDING IS NOT WITHDRAWN: a healthy window does not prove the stall " +
+      "cannot recur, only that this process did not stall during this window.",
     notes:
-      "THE PUMP IS NOT SLOW — IT STOPPED, AND THE PROCESS DID NOT. This is worse than a long interval, because " +
+      "HISTORICAL FINDING, FROM AN EARLIER RUN, RETAINED BECAUSE IT WAS REAL AND IS NOT DISPROVED BY A HEALTHY " +
+      "WINDOW: on pid 74104, THE PUMP IS NOT SLOW — IT STOPPED, AND THE PROCESS DID NOT. This is worse than a long interval, because " +
       "every outward sign of health stayed green: the till served the LAN, the captain listener answered, the KDS " +
       "socket accepted clients. Nothing surfaced that the outlet had gone silent toward the cloud. " +
       "MEASURED CONSEQUENCE: the WAITER device enrolled at 14:14:23 could not pair until 14:31:37 — seventeen " +

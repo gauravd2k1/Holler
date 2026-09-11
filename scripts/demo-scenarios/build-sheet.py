@@ -104,13 +104,32 @@ RERUN_NOTES = {
         "process hosting it is up. The earlier failure was the dead process, not the KDS."
     ),
     "S-KDS-05": (
-        "WAS FAIL (read as a KDS defect). NOW BLOCKED, and the demotion is the point: the edge's "
-        "own snapshot carries 0 tickets, so there is nothing for the board to render and the KDS "
-        "is behaving correctly. The board cannot be judged until S-CHAIN-02 can put a ticket on it."
+        "T30: WAS BLOCKED (the edge's own snapshot carried 0 tickets, so there was nothing for the "
+        "board to render and the KDS was behaving correctly). NOW PASS — 5 ticket cards rendered "
+        "against an edge snapshot carrying 5. The rendering path is exercised for the first time, "
+        "because the order-create foreign key no longer stops a ticket existing."
     ),
-    "S-KDS-06": "STILL BLOCKED, new reason: not the dead POS but S-CHAIN-02 — no order can be created, so no ticket exists to bump.",
-    "S-KDS-07": "STILL BLOCKED, new reason: not the dead POS but S-CHAIN-02 — no ticket exists to bump, so no bump can be reloaded.",
-    "S-KDS-02": "STILL BLOCKED, new reason: pairing now works, so the block moved from S-CUI-03 to the order-create foreign key in S-CAP-19.",
+    "S-KDS-06": (
+        "T30: WAS BLOCKED (no ticket existed to bump). NOW PASS — a ticket advanced \"New\" → "
+        "\"Accepted\", asserted on the card after the edge echoed kot_upserted, never on the click."
+    ),
+    "S-KDS-07": (
+        "T30: WAS BLOCKED (no bump to reload). NOW PASS — after a full page reload the same card "
+        "still reads \"Accepted\", so the bump was persisted at the edge and not held in page state."
+    ),
+    "S-KDS-02": (
+        "T30: WAS BLOCKED, then FAIL on a socket this stage never actually opened. NOW PASS — "
+        "kot_upserted received for a KOT cut by the waiter's phone. TWO separate causes were fixed "
+        "to get here: 758a70b (the order could not be created at all) and this stage's own CRLF "
+        "parse of apps/kds/.env.dev, which silently yielded no KDS device token and made the stage "
+        "report a socket failure it had never attempted."
+    ),
+    "S-KDS-01": (
+        "T30: WAS NOT TESTABLE — 'apps/kds/.env.dev carries no VITE_KDS_DEVICE_TOKEN'. The file "
+        "carried one all along. This stage split the file on \"\\n\" and matched /^(VITE_[A-Z_]+)=(.*)$/, "
+        "and `\\r` is a LINE TERMINATOR in a JavaScript regex, so `.` never matched it, `$` never "
+        "reached end-of-string, and every key silently failed to parse. NOW PASS."
+    ),
     "S-ADM-02": (
         "WAS FAIL ('Sign-in failed…'). NOW PASS with unchanged credentials — the earlier failure "
         "was the shared login rate-limit budget, indistinguishable by design from a wrong "
@@ -136,45 +155,47 @@ RERUN_NOTES = {
         "edge/sync/src/config.rs:770, not observed."
     ),
     "S-SYNC-02": (
-        "STILL BLOCKED, new reason: not 'S-CAP-10 was blocked' by a dead process but the "
-        "order-create foreign key of S-CAP-19. No captain order exists to look for in Postgres."
+        "T30: WAS BLOCKED (no captain order existed to look for in Postgres). NOW PASS — the "
+        "order this run created from the captain page is in the cloud \"order\" table."
     ),
     "S-CAP-10": (
-        "STILL FAIL, but no longer for an unknown reason. The 400 is a sqlite FOREIGN KEY "
-        "violation and the column is isolated in S-CAP-19."
+        "T30: WAS FAIL (400 STORAGE_ERROR, sqlite FOREIGN KEY constraint failed). NOW PASS — "
+        "201 with a DRAFT order carrying its line. 758a70b mints the `device` row that "
+        "\"order\".device_id references."
+    ),
+    "S-CUI-08": (
+        "T30: WAS FAIL (the phone reached the cart and the send was refused with 'sqlite error: "
+        "FOREIGN KEY constraint failed'). NOW PASS on the real phone screen — the send reaches the "
+        "'Sent to the kitchen' screen with its KOT list."
     ),
     **{
         rid: (
-            "STILL BLOCKED, new reason. It was blocked by pairing (the phone could not "
-            "authenticate at all); the phone now authenticates, lists tables and lists the menu, "
-            "and this is blocked one step further on by the order-create foreign key in S-CAP-19."
+            "T30: WAS BLOCKED by the order-create foreign key of S-CAP-19 — the phone "
+            "authenticated, listed tables and listed the menu, and could not create an order. "
+            "NOW PASS: 758a70b mints the `device` row the credential points at, so the create "
+            "succeeds and every step after it could be exercised for the first time."
         )
-        for rid in ("S-CAP-11", "S-CAP-12", "S-CAP-13", "S-CAP-14", "S-CAP-15")
+        for rid in ("S-CAP-12", "S-CAP-13", "S-CAP-14", "S-CAP-15")
     },
 }
 
 # Failures ranked by what they cost the demo, most severe first. An id absent
 # from this list sorts after every id present in it.
 SEVERITY = [
-    "S-CHAIN-02", # the demo's central claim does not complete
-    "S-CAP-19",   # ...and this is the column that stops it: order.device_id
-    "S-CAP-10",   # the waiter phone cannot create an order at all
-    "S-CAP-18",   # the same failure, seen across five request shapes
-    "S-CUI-08",   # the same failure, seen on the real phone screen
+    "S-CAP-20",   # a device paired before the fix is permanently broken — no backfill
     "S-SYNC-10",  # orders reach the cloud with a total and no lines
-    "S-SYNC-11",  # the cloud holds no tables and no stations at all
-    "S-SYNC-12",  # a live POS stopped pumping while every health signal stayed green
-    "S-ENV-02",   # the POS process vanished mid-run
+    "S-SYNC-08",  # 12 cloud items have no variant, so their lines cannot replay
+    "S-SYNC-11",  # the cloud holds no tables, stations or printers at all
     "S-SYNC-04",  # gap A7: nothing but `order` reaches the cloud
+    "S-SYNC-13",  # till-authored orders replay with an unresolvable device_id
+    "S-SYNC-12",  # a live POS stopped pumping while every health signal stayed green
     "S-ADM-08",   # demo step 4 has no screen
     "S-ADM-09",   # demo step 5 has no screen
-    "S-SYNC-03",  # replayed orders carry an unresolvable device_id
-    "S-SYNC-08",  # 12 cloud items have no variant, so their lines cannot replay
-    "S-KDS-04",
-    "S-KDS-05",
-    "S-ADM-02",
-    "S-BE-09",
+    "S-CAP-06",   # 12 menu items carry no variant, so no line can name one
+    "S-API-02",   # PATCH /menu/items refuses an identity field with the wrong status
+    "S-BE-09",    # a rate-limited login is indistinguishable from a wrong password
     "S-ENV-01",
+    "S-ENV-02",
 ]
 
 
@@ -315,15 +336,23 @@ def write_xlsx(rows, counts, failures):
     s["A2"] = "Every row in Scenarios was executed against the live stack. Nothing is mocked."
     s["A3"] = "A scenario that could not be driven is NOT TESTABLE or BLOCKED, never PASS."
     s["A4"] = (
-        "RE-RUN 2026-09-11 against holler-pos pid 80612 (started 20:01:36 IST). The Re-run column "
-        "says why each moved row moved; an empty Re-run cell means the row was recorded once and "
-        "never revisited, not that it was re-confirmed."
+        "RE-RUN T30, 2026-09-11, against holler-pos pid 55508 (started 20:50:29 IST, binary built "
+        "20:50:27 — after fix 758a70b). The Re-run column says why each moved row moved; an empty "
+        "Re-run cell means the row was recorded once and never revisited, not that it was "
+        "re-confirmed."
+    )
+    s["A5"] = (
+        "WHAT T30 CHANGED: config apply now mints the `device` row a credential references, so a "
+        "waiter's phone can be the device_id on an order. The step-1a chain completes end to end — "
+        "order created, KOT delivered on a socket held open across the send, rendered on the KDS, "
+        "bumped, and the bump survived a reload. CARRY THE SCOPE LIMIT WITH THE RESULT: the fix "
+        "only fires for credentials that ARRIVE in a config bundle, and a credential already "
+        "cached is never re-sent, so every device paired BEFORE the fix stays broken (S-CAP-20)."
     )
 
-    s["A5"] = "Counts by status"
-    s["A5"].font = title
-    s.append([])
-    r = 6
+    s["A7"] = "Counts by status"
+    s["A7"].font = title
+    r = 8
     for st in ["PASS", "FAIL", "BLOCKED", "NOT TESTABLE"]:
         s.cell(row=r, column=1, value=st).font = Font(bold=True)
         s.cell(row=r, column=2, value=counts.get(st, 0))

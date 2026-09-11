@@ -11,7 +11,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   CAPTAIN, KDS_WS, REPO_ROOT, RESULT_DIR,
-  fingerprint, http, loadState, record, saveState, sleep,
+  fingerprint, http, loadState, record, saveState, sleep, sql,
 } from "./lib.mjs";
 
 const secrets = JSON.parse(readFileSync(join(RESULT_DIR, "secrets.json"), "utf8"));
@@ -24,7 +24,13 @@ function kdsEnv() {
   const p = join(REPO_ROOT, "apps", "kds", ".env.dev");
   if (!existsSync(p)) return null;
   const out = {};
-  for (const line of readFileSync(p, "utf8").split("\n")) {
+  // Split on /\r?\n/, NOT on "\n". apps/kds/.env.dev is CRLF, and `\r` is a
+  // LINE TERMINATOR in a JavaScript regex — so `.` never matches it, `(.*)$`
+  // cannot reach end-of-string, and every key silently fails to parse. The
+  // stage then reported "carries no VITE_KDS_DEVICE_TOKEN" and recorded
+  // S-KDS-01 NOT TESTABLE / S-KDS-02 FAIL against a socket it never opened,
+  // while stage 09 — which splits on /\r?\n/ — drove the same socket fine.
+  for (const line of readFileSync(p, "utf8").split(/\r?\n/)) {
     const m = line.match(/^(VITE_[A-Z_]+)=(.*)$/);
     if (m) out[m[1]] = m[2].trim();
   }
@@ -332,29 +338,38 @@ const run = async () => {
     await probe("TAKEAWAY, table_id null", { order_type: "TAKEAWAY", table_id: null, items: [line0] }),
   ];
   const allIdentical = new Set(probes.map((p) => p.split(": ")[1])).size === 1;
+  const st = (i) => Number(probes[i].match(/HTTP (\d+)/)?.[1] ?? 0);
+  // The row's job has changed with the fix. It was "isolate the failing key";
+  // it is now "the create works AND the keys that SHOULD reject still do".
+  // Real referents create; a bogus item or variant is refused; a bogus
+  // table_id is ACCEPTED, which is correct — `order.table_id` carries no
+  // foreign key in the schema (0001_init.sql:73, rebuilt at 0035:58).
+  const fkIntegrityOk = st(0) === 201 && st(2) === 400 && st(3) === 400 && st(4) === 201;
   record({
     id: "S-CAP-18",
     demoStep: "1a",
-    scenario: "Isolate WHICH foreign key the captain order create violates",
+    scenario: "The order-create foreign keys accept real referents and still reject bogus ones",
     surface: "captain 9320 -> edge SQLite",
-    precondition: "POST /api/orders fails with STORAGE_ERROR / FOREIGN KEY constraint failed (S-CAP-10)",
+    precondition: "A WAITER device whose `device` row exists at the edge (S-CAP-19)",
     steps:
       "Vary every referent the API accepts — table, menu item, variant — and then remove the table entirely by " +
-      "ordering TAKEAWAY with table_id null. Watch whether the failure survives each removal.",
+      "ordering TAKEAWAY with table_id null. Watch which variations are accepted and which are refused.",
     expected:
-      "One variation succeeds, or one changes the error, naming the culprit",
+      "Real referents -> 201; a bogus menu_item_id or variant_id -> 400; a bogus table_id -> 201, because table_id has no FK",
     actual: `${probes.join(" | ")}. All five identical = ${allIdentical}`,
-    status: "FAIL",
+    status: fkIntegrityOk ? "PASS" : "FAIL",
     evidence: probes.join(" ; "),
     notes:
-      "THE TAKEAWAY PROBE IS THE DECISIVE ONE. With table_id NULL the table foreign key cannot be the cause, and the " +
-      'item and variant were both read back from GET /api/menu moments earlier. What remains on the `order` row is ' +
-      "outlet_id and device_id, and outlet_id is the configured value the till writes successfully every day — four " +
-      "till-authored orders are in the cloud. So the violated key is " +
-      '`"order".device_id REFERENCES device(id)`. The captain resolves the WAITER device from its credential and ' +
-      "writes it, correctly and per docs/captain-api.md; the edge has a `device_credential_cache` row for that " +
-      "device (which is why GET /api/session returns 200) but NO `device` row, because the config bundle carries " +
-      "credentials and not the device records they point at. THE PHONE CAN AUTHENTICATE AND CANNOT BE REFERENCED.",
+      "HISTORY. This row existed to isolate a failure by elimination, because SQLite's 'FOREIGN KEY constraint " +
+      "failed' names no column. The answer it reached was `\"order\".device_id REFERENCES device(id)`: the config " +
+      "bundle carried device_credentialS but not the `device` ROWS they point at, so a paired phone could " +
+      "AUTHENTICATE and could never be REFERENCED. 758a70b mints that row during config apply and the same five " +
+      "probes now separate cleanly. NOTE THE BOGUS-TABLE PROBE: it returns 201, and that is correct rather than a " +
+      "hole — `order.table_id` is nullable with no REFERENCES clause, deliberately, so a table that has not synced " +
+      "never blocks an order. Read a 201 there as the schema behaving as written.",
+    rerun:
+      "WAS FAIL (all five probes identical: 400 STORAGE_ERROR). NOW PASS — real referents create, a bogus " +
+      "menu_item_id or variant_id is still refused, so the fix opened the path without weakening the keys.",
   });
 
   // ---------------------------------------------------------------- S-CAP-10
@@ -364,6 +379,12 @@ const run = async () => {
     body: JSON.stringify({ order_type: "DINE_IN", table_id: table.id, items: [line()] }),
   });
   const order = created.body;
+  // The captain returns a CanonicalOrder, whose identifier field is
+  // `holler_order_id` (crate::dto::CanonicalOrder), not `id`. Every downstream
+  // row in this stage reads `order.id`, so once the create started SUCCEEDING
+  // the whole stage blocked itself on a field-name mismatch and reported
+  // "HTTP 201 ... and no order is created". Normalised once, here.
+  if (order && !order.id && order.holler_order_id) order.id = order.holler_order_id;
   record({
     id: "S-CAP-10",
     demoStep: "1a",
@@ -428,22 +449,53 @@ const run = async () => {
   // THE KNOWN TRAP: create_order_impl takes device_id from state.device_id,
   // which is the TILL. If attribution were not overridden the order would read
   // as till-authored on every screen — and it would look correct in review.
-  const attributed = order.device_id ?? order.deviceId ?? null;
+  //
+  // CanonicalOrder does NOT carry device_id on the wire, so reading it off the
+  // create response can only ever report "<absent>" — a FAIL that says nothing
+  // about attribution. The attribution is only observable in a STORE. The edge
+  // SQLite file is encrypted at rest with no read surface, so this asserts
+  // against the CLOUD copy once the order replays, and says which side it
+  // checked. The join to `device` is the second half of the claim: an id that
+  // resolves to nothing would still equal the waiter's id.
+  const attributedWire = order.device_id ?? order.deviceId ?? null;
+  let cloudRow = null;
+  for (let i = 0; i < 12 && !cloudRow; i++) {
+    const out = sql(
+      `select o.device_id, coalesce(d.kind,'<no device row>'), coalesce(d.name,'') ` +
+        `from "order" o left join device d on d.id = o.device_id where o.id = '${order.id}';`,
+    );
+    if (out) cloudRow = out.split("|");
+    else await sleep(10000);
+  }
+  const [cloudDeviceId, cloudKind, cloudName] = cloudRow ?? [];
+  const attributedOk = cloudDeviceId === waiterDeviceId && cloudKind === "WAITER";
   record({
     id: "S-CAP-11",
     demoStep: "1a",
-    scenario: "order.device_id is the WAITER's device, not the till's",
-    surface: "captain 9320",
-    precondition: `Waiter device ${waiterDeviceId}; till device is a different row in the device table`,
-    steps: "Read device_id off the CanonicalOrder returned by POST /api/orders",
-    expected: `device_id == ${waiterDeviceId} (the resolved credential's device)`,
-    actual: `order.device_id=${attributed ?? "<absent from CanonicalOrder>"}`,
-    status: attributed === waiterDeviceId ? "PASS" : "FAIL",
-    evidence: `order ${order.id} device_id ${attributed ?? "absent"}`,
+    scenario: "order.device_id is the WAITER's device, not the till's, and it resolves to a real device row",
+    surface: "captain 9320 -> postgres 5432",
+    precondition: `Waiter device ${waiterDeviceId}; the till is a different row in the device table`,
+    steps:
+      "Create the order from the captain API, wait for it to replay, then read \"order\".device_id in Postgres and LEFT JOIN device on it.",
+    expected: `device_id == ${waiterDeviceId}, joining to a device row of kind WAITER`,
+    actual: cloudRow
+      ? `cloud "order".device_id=${cloudDeviceId} -> device kind=${cloudKind}, name="${cloudName}". Waiter device is ${waiterDeviceId}; match=${cloudDeviceId === waiterDeviceId}.`
+      : `Order ${order.id} had not reached Postgres within 120s, so cloud-side attribution could not be read. On the wire the create response carries device_id=${attributedWire ?? "<absent from CanonicalOrder>"}.`,
+    status: cloudRow ? (attributedOk ? "PASS" : "FAIL") : "BLOCKED",
+    evidence: cloudRow
+      ? `postgres: select o.device_id, d.kind from "order" o left join device d on d.id=o.device_id where o.id='${order.id}'`
+      : `order ${order.id} absent from cloud "order" after 120s`,
     notes:
-      attributed === null
-        ? "CanonicalOrder does not expose device_id, so this is asserted against Postgres in S-SYNC-03 instead."
-        : "Attribution comes from the resolved credential, never the request body (ADR-014 §6).",
+      "WHICH SIDE WAS CHECKED: the CLOUD. The edge SQLite file is encrypted at rest and exposes no read surface, so " +
+      "the edge's own row is not directly observable here — but the cloud copy is a replay of it, so a WAITER " +
+      "device_id in Postgres could only have been written by the edge. THE KNOWN TRAP this guards: " +
+      "create_order_impl takes device_id from state.device_id, which is the TILL; the captain path overrides it " +
+      "with the resolved credential's device. If that override regressed, every captain order would read as " +
+      "till-authored and would look entirely correct in review.",
+    rerun:
+      "WAS FAIL, on a check that could not have passed: it read device_id off the CanonicalOrder, which does not " +
+      "carry the field, so the row reported '<absent from CanonicalOrder>' regardless of attribution. Now asserted " +
+      "against Postgres, with the join that proves the id resolves.",
   });
 
   // ---------------------------------------------------------------- S-CAP-12
