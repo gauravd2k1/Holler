@@ -1,0 +1,231 @@
+/* Mobile-first, dense, touch-first, large targets, no decorative flourish
+   (CLAUDE.md). A phone held in one hand is the only form factor that
+   matters — there is no desktop breakpoint. */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: #111;
+  color: #f5f5f5;
+  font-size: 18px;
+  -webkit-tap-highlight-color: transparent;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+}
+
+main {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+header.app-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  background: #1c1c1c;
+  border-bottom: 1px solid #333;
+  flex: none;
+}
+
+header.app-header h1 {
+  font-size: 18px;
+  margin: 0;
+}
+
+.screen {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.error {
+  color: #ff8080;
+  font-weight: 600;
+}
+
+.big-input {
+  width: 100%;
+  padding: 16px;
+  font-size: 18px;
+  border-radius: 8px;
+  border: 1px solid #444;
+  background: #1c1c1c;
+  color: #f5f5f5;
+}
+
+.big-button {
+  width: 100%;
+  padding: 18px;
+  font-size: 20px;
+  font-weight: 700;
+  border-radius: 10px;
+  border: none;
+  background: #2f8f4e;
+  color: #fff;
+  min-height: 56px;
+}
+
+.big-button:disabled {
+  background: #3a3a3a;
+  color: #888;
+}
+
+.big-button.secondary {
+  background: #333;
+}
+
+/* Tables grid: touch targets sized for a thumb, occupied vs free distinguishable
+   at a glance across a room, not just up close. */
+.table-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 10px;
+}
+
+.table-tile {
+  aspect-ratio: 1;
+  border-radius: 12px;
+  border: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.table-tile.free {
+  background: #204a2c;
+  color: #a6e6b8;
+}
+
+.table-tile.occupied {
+  background: #5a2a1c;
+  color: #ffcfa8;
+}
+
+.table-tile .seats {
+  font-size: 13px;
+  font-weight: 400;
+  opacity: 0.8;
+}
+
+/* Menu + cart */
+.category-tabs {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  flex: none;
+  padding-bottom: 4px;
+}
+
+.category-tabs button {
+  flex: none;
+  padding: 10px 16px;
+  border-radius: 20px;
+  border: 1px solid #444;
+  background: #1c1c1c;
+}
+
+.category-tabs button.active {
+  background: #2f8f4e;
+  border-color: #2f8f4e;
+}
+
+.menu-list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.menu-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px;
+  border-radius: 10px;
+  background: #1c1c1c;
+  border: none;
+  text-align: left;
+  min-height: 60px;
+}
+
+.menu-row:disabled {
+  opacity: 0.4;
+}
+
+.menu-row .name {
+  font-weight: 600;
+}
+
+.menu-row .price {
+  font-variant-numeric: tabular-nums;
+}
+
+.menu-row .unavailable-tag {
+  font-size: 12px;
+  color: #ffb0b0;
+}
+
+/* Cart bar — stays visible without scrolling */
+.cart-bar {
+  flex: none;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px;
+  background: #1c1c1c;
+  border-top: 1px solid #333;
+  gap: 12px;
+}
+
+.cart-bar .count {
+  font-weight: 700;
+}
+
+.cart-bar .total {
+  font-variant-numeric: tabular-nums;
+  font-size: 20px;
+}
+
+.cart-line {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 0;
+  border-bottom: 1px solid #2a2a2a;
+}
+
+.kot-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.kot-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 12px;
+  background: #1c1c1c;
+  border-radius: 8px;
+}
