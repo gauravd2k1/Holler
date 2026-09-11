@@ -452,7 +452,10 @@ mod tests {
         let escpos_lines = escpos_content_lines(&bytes);
         let html_lines = html_content_lines(&html);
 
-        assert!(!escpos_lines.is_empty(), "escpos extraction produced nothing");
+        assert!(
+            !escpos_lines.is_empty(),
+            "escpos extraction produced nothing"
+        );
         assert_eq!(
             escpos_lines, html_lines,
             "rendered receipt must agree line-for-line with the ESC/POS bytes for the same invoice"

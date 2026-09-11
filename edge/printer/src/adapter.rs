@@ -240,7 +240,8 @@ fn attempt_print(
             None,
         ),
         PrintJobTarget::Invoice(invoice_id) => {
-            let (bytes, html) = render_invoice_job(conn, invoice_id, &printer, order_ctx_for_invoice)?;
+            let (bytes, html) =
+                render_invoice_job(conn, invoice_id, &printer, order_ctx_for_invoice)?;
             (bytes, Some(html))
         }
     };
