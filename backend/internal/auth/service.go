@@ -42,19 +42,51 @@ type Service struct {
 	accessTTL  time.Duration
 	refreshTTL time.Duration
 	now        func() time.Time
+
+	// The login budget in force for THIS service. Defaults to the ADR-012
+	// policy values; a deployment widens it through WithLoginRateLimit.
+	loginAttempts int
+	loginWindow   time.Duration
 }
 
-func NewService(repo UserRepository, tokens *TokenSigner, refresh RefreshStore, limiter RateLimiter, auditor AuditRecorder, accessTTL, refreshTTL time.Duration) *Service {
-	return &Service{
-		repo:       repo,
-		tokens:     tokens,
-		refresh:    refresh,
-		limiter:    limiter,
-		auditor:    auditor,
-		accessTTL:  accessTTL,
-		refreshTTL: refreshTTL,
-		now:        time.Now,
+// ServiceOption adjusts a Service after construction. Variadic rather than
+// positional on purpose: every existing caller -- ten of them, mostly tests --
+// keeps the policy it already had, and only a caller that deliberately passes
+// an option gets a different one.
+type ServiceOption func(*Service)
+
+// WithLoginRateLimit overrides the ADR-012 login budget. Values that are not
+// positive are IGNORED rather than applied: an empty or malformed
+// configuration must never silently disable the limiter, which is the whole
+// point of the fail-closed posture in CheckLoginRateLimit.
+func WithLoginRateLimit(attempts int, window time.Duration) ServiceOption {
+	return func(s *Service) {
+		if attempts > 0 {
+			s.loginAttempts = attempts
+		}
+		if window > 0 {
+			s.loginWindow = window
+		}
 	}
+}
+
+func NewService(repo UserRepository, tokens *TokenSigner, refresh RefreshStore, limiter RateLimiter, auditor AuditRecorder, accessTTL, refreshTTL time.Duration, opts ...ServiceOption) *Service {
+	s := &Service{
+		repo:          repo,
+		tokens:        tokens,
+		refresh:       refresh,
+		limiter:       limiter,
+		auditor:       auditor,
+		accessTTL:     accessTTL,
+		refreshTTL:    refreshTTL,
+		now:           time.Now,
+		loginAttempts: LoginRateLimitAttempts,
+		loginWindow:   LoginRateLimitWindow,
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // LoginResult is what a successful login returns.
@@ -124,7 +156,7 @@ func (s *Service) checkLoginRateLimit(ctx context.Context, clientIP, tenantID st
 		return nil
 	}
 
-	ipAllowed, err := s.limiter.Allow(ctx, "login:ip:"+clientIP, LoginRateLimitAttempts, LoginRateLimitWindow)
+	ipAllowed, err := s.limiter.Allow(ctx, "login:ip:"+clientIP, s.loginAttempts, s.loginWindow)
 	if err != nil {
 		return ErrRateLimited
 	}
@@ -132,7 +164,7 @@ func (s *Service) checkLoginRateLimit(ctx context.Context, clientIP, tenantID st
 		return ErrRateLimited
 	}
 
-	compositeAllowed, err := s.limiter.Allow(ctx, "login:ip:"+clientIP+"|tenant:"+tenantID, LoginRateLimitAttempts, LoginRateLimitWindow)
+	compositeAllowed, err := s.limiter.Allow(ctx, "login:ip:"+clientIP+"|tenant:"+tenantID, s.loginAttempts, s.loginWindow)
 	if err != nil {
 		return ErrRateLimited
 	}

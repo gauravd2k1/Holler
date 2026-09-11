@@ -186,7 +186,21 @@ if ($NoBackend) {
     #
     # Exact origin, no wildcard, and the API has no default: an unset allowlist
     # serves no browser rather than serving every browser.
-    $cmd = "`$env:DATABASE_URL='$DatabaseUrl'; `$env:TOKEN_SIGNING_KEY='$TokenSigningKey'; `$env:HOLLER_CORS_ALLOWED_ORIGINS='$AdminOrigin'; go run ./cmd/api"
+    #
+    # HOLLER_LOGIN_RATE_LIMIT_ATTEMPTS: THE DEMO BUILD WIDENS THE LOGIN BUDGET
+    # FROM 5 TO 50 PER 15 MINUTES, AND THIS IS A DEV SCRIPT ONLY -- the
+    # production default in backend/internal/auth/ratelimit.go is untouched,
+    # and nothing here narrows anything. The reason is S-BE-09 on the scenario
+    # board: a rate-limited login is INDISTINGUISHABLE from a wrong password by
+    # design (ADR-012 -- the endpoint must leak nothing about whether an
+    # account exists), so five fumbled attempts from one machine lock every
+    # client on that IP for fifteen minutes with no signal a human can act on.
+    # During a demo the same laptop signs into the till, the admin console and
+    # the captain page in one sitting, and a mistyped password at the wrong
+    # moment ends the demo at its first screen. Only the COUNT changes: the
+    # identical 401 body, the IP+tenant key pair and the fail-closed limiter
+    # error path all stay exactly as ADR-012 specifies.
+    $cmd = "`$env:DATABASE_URL='$DatabaseUrl'; `$env:TOKEN_SIGNING_KEY='$TokenSigningKey'; `$env:HOLLER_CORS_ALLOWED_ORIGINS='$AdminOrigin'; `$env:HOLLER_LOGIN_RATE_LIMIT_ATTEMPTS='50'; go run ./cmd/api"
     Start-ServiceWindow "holler-backend" (Join-Path $repo "backend") $cmd | Out-Null
 }
 

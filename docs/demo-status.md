@@ -67,6 +67,44 @@ Everything here is blocked on something no agent in this project can do.
 
 ## Item 1 and 2 — seed parity
 
+### S-BE-09 -- the login budget is widened for the demo build (2026-09-12)
+
+`LoginRateLimitAttempts` was a hard 5 per 15 minutes, and **a rate-limited
+login is indistinguishable from a wrong password by design** (ADR-012: the
+endpoint must leak nothing about whether an account exists). Five fumbled
+attempts from one machine therefore lock every client on that IP for fifteen
+minutes with no signal a human can act on -- and during a demo the same laptop
+signs into the till, the admin console and the captain page in one sitting. The
+board recorded a correct owner password refused four times in a row after the
+budget was spent.
+
+**What changed: the COUNT, and only for a deployment that asks.**
+`config.Load` reads `HOLLER_LOGIN_RATE_LIMIT_ATTEMPTS` and
+`HOLLER_LOGIN_RATE_LIMIT_WINDOW`, defaulting to the ADR-012 policy values, and
+`auth.WithLoginRateLimit` applies them. `scripts/dev-up.ps1` -- **a dev script,
+never a deployment** -- sets 50 attempts for the demo backend. The production
+default in `ratelimit.go` is untouched.
+
+**What deliberately did NOT change:** the identical 401 body, the IP-alone and
+IP+tenant key pair that stops header rotation resetting the budget, and the
+fail-closed path where a limiter error denies rather than allows. The board
+called this a UX gap and not a security defect, and the fix keeps it that way.
+
+Three properties are asserted, because a configurable limiter that silently
+stops limiting is worse than a fixed one: the widened budget is genuinely in
+force (the attempt refused under the default is allowed under the override);
+**it still ends** (a limiter that never refuses is not a limiter); and a
+non-positive override is IGNORED at the service and REFUSED at startup by
+`config.Load`, so a typo or a `0` meaning "off" cannot quietly become either
+"refuse everything" or "no limit". **Falsified** by making
+`WithLoginRateLimit` ignore its `attempts` argument and watching the widening
+test fail at `attempt 6 must NOT be rate limited`.
+
+Verified: `go test -count=1` over `internal/auth`, `internal/platform/config`
+and `cmd/api` through `scripts/assert-tests-ran.mjs`, 3 packages executed,
+against live Postgres. `internal/platform/config` had NO test file at all
+before this; it has one now.
+
 ### The menu is the client's own card now (2026-09-12)
 
 `menu_imgs_gong/gong_menu.xlsx` replaced the invented Indian dev menu.

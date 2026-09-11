@@ -34,6 +34,21 @@ type Config struct {
 	// default is consent by omission, and the one that ships is whichever
 	// nobody had to choose.
 	AllowedCORSOrigins []string
+
+	// The login budget (ADR-012), from HOLLER_LOGIN_RATE_LIMIT_ATTEMPTS and
+	// HOLLER_LOGIN_RATE_LIMIT_WINDOW. Defaults are the policy values in
+	// auth.LoginRateLimitAttempts / auth.LoginRateLimitWindow, repeated here
+	// rather than imported because platform packages do not depend on
+	// bounded contexts; auth's own constants stay the source of truth and a
+	// test pins the two together.
+	//
+	// EXISTS FOR THE DEMO BUILD. A rate-limited login is indistinguishable
+	// from a wrong password by design, so five fumbled attempts lock every
+	// client on one IP for fifteen minutes with nothing a human can act on.
+	// A deployment may widen that; nothing here narrows it, and an unset or
+	// unparseable value leaves the defaults in force.
+	LoginRateLimitAttempts int
+	LoginRateLimitWindow   time.Duration
 }
 
 // Load reads configuration from the environment, applying defaults only for
@@ -64,6 +79,12 @@ func Load() (Config, error) {
 	if cfg.RefreshTokenTTL, err = durationEnvOr("REFRESH_TOKEN_TTL", 720*time.Hour); err != nil {
 		return Config{}, err
 	}
+	if cfg.LoginRateLimitWindow, err = durationEnvOr("HOLLER_LOGIN_RATE_LIMIT_WINDOW", 15*time.Minute); err != nil {
+		return Config{}, err
+	}
+	if cfg.LoginRateLimitAttempts, err = intEnvOr("HOLLER_LOGIN_RATE_LIMIT_ATTEMPTS", 5); err != nil {
+		return Config{}, err
+	}
 
 	return cfg, nil
 }
@@ -73,6 +94,26 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// intEnvOr parses a positive integer from the environment. A value that is
+// absent leaves the default in place; one that is present and unparseable, or
+// not positive, is a STARTUP ERROR rather than a silent fallback -- a limiter
+// budget of zero or a typo would otherwise read as "no limit" or as the
+// default, and neither is what the operator wrote down.
+func intEnvOr(key string, fallback int) (int, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("config: %s is not an integer: %w", key, err)
+	}
+	if value <= 0 {
+		return 0, fmt.Errorf("config: %s must be positive, got %d", key, value)
+	}
+	return value, nil
 }
 
 func durationEnvOr(key string, fallback time.Duration) (time.Duration, error) {

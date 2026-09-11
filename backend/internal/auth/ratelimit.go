@@ -12,6 +12,19 @@ import (
 // generous enough that a cashier fumbling a PIN once or twice is unaffected,
 // tight enough to make online credential-stuffing against a single account
 // impractical.
+// These are DEFAULTS, not the policy itself: a deployment may widen them
+// through HOLLER_LOGIN_RATE_LIMIT_ATTEMPTS / HOLLER_LOGIN_RATE_LIMIT_WINDOW
+// (config.Load), which reaches the Service as WithLoginRateLimit. Nothing
+// NARROWS silently -- an unset or unparseable value leaves these in force.
+//
+// Why widening is offered at all: a rate-limited login is INDISTINGUISHABLE
+// from a wrong password by design (ADR-012 -- the endpoint must leak nothing
+// about whether an account exists), so five fumbled attempts from one machine
+// lock every client on that IP for fifteen minutes with no signal a human can
+// act on. That is correct for production and hostile during a demo, where the
+// same laptop signs into the till, the admin console and the captain page in
+// one sitting. The identical response body is NOT what changes here; only how
+// many attempts a deployment allows before it starts.
 const (
 	LoginRateLimitAttempts = 5
 	LoginRateLimitWindow   = 15 * time.Minute

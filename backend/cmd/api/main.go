@@ -92,7 +92,8 @@ func buildRouter(pool postgres.Pool, cfg config.Config) *chi.Mux {
 	refreshStore := auth.NewPostgresRefreshStore(pool)
 	limiter := auth.NewInMemoryRateLimiter()
 	auditor := auth.NewAuditor(authRepo)
-	authSvc := auth.NewService(authRepo, tokens, refreshStore, limiter, auditor, cfg.AccessTokenTTL, cfg.RefreshTokenTTL)
+	authSvc := auth.NewService(authRepo, tokens, refreshStore, limiter, auditor, cfg.AccessTokenTTL, cfg.RefreshTokenTTL,
+		auth.WithLoginRateLimit(cfg.LoginRateLimitAttempts, cfg.LoginRateLimitWindow))
 	authHandlers := auth.NewHandlers(authSvc, tokens)
 
 	// --- tenant ---------------------------------------------------------

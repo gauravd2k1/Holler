@@ -144,3 +144,60 @@ func TestLogin_HeaderRotationDoesNotResetRateLimitCounter(t *testing.T) {
 		t.Fatalf("expected header rotation to still hit the shared IP budget, got %v", err)
 	}
 }
+
+// TestWithLoginRateLimit_WidensTheBudgetAndNeverDisablesIt covers the demo
+// build's S-BE-09 widening. Three things matter and each is asserted here,
+// because a configurable limiter that silently stops limiting is worse than a
+// fixed one:
+//
+//  1. An override with a larger budget is actually in force -- the attempt
+//     that WOULD have been refused under the default is allowed.
+//  2. The widened budget still ENDS. A limiter that never refuses is not a
+//     limiter, and "configurable" is the usual way one becomes that.
+//  3. Non-positive values are IGNORED, not applied. An unset or malformed
+//     configuration must leave the ADR-012 defaults in force rather than
+//     turning the budget into zero (refuse everything) or infinity.
+func TestWithLoginRateLimit_WidensTheBudgetAndNeverDisablesIt(t *testing.T) {
+	newSvc := func(opts ...ServiceOption) *Service {
+		return NewService(newFakeRepo(), NewTokenSigner([]byte("k")), NewInMemoryRefreshStore(),
+			NewInMemoryRateLimiter(), nil, time.Minute, time.Hour, opts...)
+	}
+	const widened = LoginRateLimitAttempts + 20
+
+	// 1. The attempt just past the default budget is refused without the
+	//    option and allowed with it -- observed on two services that differ in
+	//    nothing else.
+	spend := func(svc *Service, ip string, n int) error {
+		var err error
+		for i := 0; i < n; i++ {
+			_, err = svc.Login(context.Background(), ip, "tenant-1", "nobody@example.com", "irrelevant", "outlet-1")
+		}
+		return err
+	}
+
+	defaultSvc := newSvc()
+	if err := spend(defaultSvc, "198.51.100.10", LoginRateLimitAttempts+1); !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("default budget: attempt %d should have been rate limited, got %v", LoginRateLimitAttempts+1, err)
+	}
+
+	widenedSvc := newSvc(WithLoginRateLimit(widened, time.Hour))
+	if err := spend(widenedSvc, "198.51.100.11", LoginRateLimitAttempts+1); errors.Is(err, ErrRateLimited) {
+		t.Fatalf("widened budget: attempt %d must NOT be rate limited", LoginRateLimitAttempts+1)
+	}
+
+	// 2. It still ends. Spend the rest of the widened budget and one more.
+	if err := spend(widenedSvc, "198.51.100.11", widened); !errors.Is(err, ErrRateLimited) {
+		t.Fatal("a widened budget must still be a budget: the limiter never refused")
+	}
+
+	// 3. Zero and negative are ignored, so the defaults stay in force.
+	for _, opt := range []ServiceOption{
+		WithLoginRateLimit(0, 0),
+		WithLoginRateLimit(-1, -time.Hour),
+	} {
+		svc := newSvc(opt)
+		if err := spend(svc, "198.51.100.12", LoginRateLimitAttempts+1); !errors.Is(err, ErrRateLimited) {
+			t.Fatalf("a non-positive override must be ignored, leaving the default budget in force; got %v", err)
+		}
+	}
+}
