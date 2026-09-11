@@ -1,0 +1,190 @@
+/* Holler design tokens — the single source of colour, type, spacing and shape
+ * for apps/pos, apps/kds, apps/captain and apps/admin.
+ *
+ * WHY THIS FILE EXISTS. Before it, four apps carried 1,053 lines of unrelated
+ * CSS and the till alone used #333, #f66, #b06fd0, #3a6 and a dozen more
+ * one-off hex values chosen per screen. Nothing tied any of them to the brand
+ * the client has already seen in the website and the deck. "Presentability" is
+ * a requirement for this demo, and the operative half of it is that the four
+ * surfaces must read as ONE PRODUCT.
+ *
+ * WHERE THE VALUES COME FROM. Every primitive below is lifted from
+ * `website/holler-branded-website.html`, which is the existing brand system —
+ * not invented here. Two derived values are marked DERIVED and explained at
+ * the point of definition; nothing else is new.
+ *
+ * HOW TO USE IT. Screens consume the SEMANTIC tokens (--color-bg, --text-lg,
+ * --space-4). Screens must NOT reference the brand primitives directly, and
+ * must not introduce literal colour or size values: a raw hex in an app
+ * stylesheet is the thing this file replaces. The primitives exist so the
+ * semantic layer has somewhere to point, and so a brand change is one edit.
+ *
+ * TWO SURFACE MODES, ONE PALETTE. The default is light — the brand's own
+ * paper/ink, used by the till, the captain page and the admin console. The
+ * dark mode under [data-surface="dark"] is for the KDS ONLY, and it exists for
+ * an environment reason rather than a stylistic one: a kitchen display is
+ * glanced at from across a hot line, and dark-on-light glare is worse there.
+ * Every KDS on the market is dark for that reason.
+ *
+ * The dark mode REMAPS SEMANTIC TOKENS ONLY. It never redefines a primitive,
+ * so the status colours a cook reads — amber, green, orange — are byte-for-byte
+ * the same values the till shows. That is what keeps two surface modes from
+ * becoming two products.
+ */
+
+:root {
+  /* ---- Brand primitives. Do not reference these from an app stylesheet. ---- */
+  --holler-navy: #17205c;
+  --holler-navy-deep: #101744;
+  --holler-navy-soft: #25327a;
+  --holler-teal: #15a3a7;
+  --holler-teal-dark: #0e777b;
+  --holler-orange: #f36a21;
+  --holler-amber: #ffb51b;
+  --holler-green: #58b957;
+  --holler-ink: #121830;
+  --holler-muted: #657083;
+  --holler-paper: #f8f4e9;
+  --holler-cream: #fffdf7;
+  --holler-white: #ffffff;
+  --holler-line: #ded9cb;
+  --holler-line-dark: #cac3b3;
+
+  /* DERIVED (1 of 2): the brand carries no red, and a till needs one. A void,
+   * a failed print and a permanently-blocked sync row must not read as the
+   * same severity as a warning. This is the brand orange darkened and
+   * desaturated toward alarm, not an unrelated red pulled from nowhere. */
+  --holler-red: #c4341a;
+
+  /* DERIVED (2 of 2): a muted text colour that holds contrast on the dark
+   * surface. --holler-muted is tuned for paper and fails legibility on ink. */
+  --holler-slate: #9aa3b8;
+
+  /* ---- Semantic colour: light. The till, the captain page, the admin. ---- */
+  --color-bg: var(--holler-paper);
+  --color-surface: var(--holler-cream);
+  --color-surface-raised: var(--holler-white);
+  --color-text: var(--holler-ink);
+  --color-text-muted: var(--holler-muted);
+  --color-text-inverse: var(--holler-white);
+  --color-border: var(--holler-line);
+  --color-border-strong: var(--holler-line-dark);
+
+  --color-accent: var(--holler-navy);
+  --color-accent-hover: var(--holler-navy-soft);
+  --color-accent-text: var(--holler-white);
+
+  /* Status. These four carry meaning and must not be used decoratively. */
+  --color-ok: var(--holler-green);
+  --color-warn: var(--holler-amber);
+  --color-danger: var(--holler-red);
+  --color-info: var(--holler-teal);
+
+  /* Tinted grounds for status blocks, so a banner is not a block of pure
+   * saturation behind body text. */
+  --color-ok-bg: #eaf6ea;
+  --color-warn-bg: #fff5dd;
+  --color-danger-bg: #fceae6;
+  --color-info-bg: #e4f4f4;
+
+  /* ---- Type ----
+   * Inter, matching the brand site. Every app must ship the face locally
+   * rather than fetching it: an outlet with no uplink is the normal case
+   * (ADR-013), and a web font that fails to load silently re-renders the whole
+   * product in a fallback. The stack below is the fallback that must still
+   * look deliberate. */
+  --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "Cascadia Mono", Consolas,
+    "Liberation Mono", monospace;
+
+  /* A 7-step scale. Screens pick a step; they do not pick a pixel value.
+   * The KDS reaches for the larger steps because it is read from a distance,
+   * NOT because it has a scale of its own. */
+  --text-xs: 0.75rem;   /* 12px — dense table meta, timestamps */
+  --text-sm: 0.875rem;  /* 14px — secondary text */
+  --text-base: 1rem;    /* 16px — body, the default */
+  --text-lg: 1.25rem;   /* 20px — card titles, totals */
+  --text-xl: 1.5rem;    /* 24px — screen headings */
+  --text-2xl: 2rem;     /* 32px — KDS ticket headers, the bill total */
+  --text-3xl: 2.5rem;   /* 40px — KDS across a room */
+
+  --leading-tight: 1.2;
+  --leading-normal: 1.5;
+
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  /* ---- Spacing. A 4px base; nothing between steps. ---- */
+  --space-1: 0.25rem;   /* 4px */
+  --space-2: 0.5rem;    /* 8px */
+  --space-3: 0.75rem;   /* 12px */
+  --space-4: 1rem;      /* 16px */
+  --space-5: 1.5rem;    /* 24px */
+  --space-6: 2rem;      /* 32px */
+  --space-7: 3rem;      /* 48px */
+
+  /* ---- Shape and depth ---- */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-pill: 999px;
+
+  --shadow-sm: 0 1px 2px rgba(18, 24, 48, 0.08);
+  --shadow-md: 0 4px 12px rgba(18, 24, 48, 0.1);
+  --shadow-lg: 0 24px 70px rgba(18, 24, 48, 0.1);
+
+  /* ---- Controls ----
+   * Minimum touch target. The till is a touchscreen and the captain page is a
+   * phone held in one hand; 44px is the smallest target that is reliably hit
+   * without looking. Do not shrink it to fit more on a screen. */
+  --control-height: 44px;
+  --control-height-lg: 56px;
+  --control-padding-x: var(--space-4);
+
+  --focus-ring: 0 0 0 3px rgba(21, 163, 167, 0.45);
+
+  /* ---- The brand mark ----
+   * Header sizing, so the logo is the same size on every surface. The asset
+   * lives in `imgs/` and is raster only — there is no SVG in this repository. */
+  --logo-height: 28px;
+  --logo-height-lg: 36px;
+}
+
+/* ---- Semantic colour: dark. THE KDS ONLY. ----
+ * Applied as `<html data-surface="dark">` or on a wrapper element.
+ *
+ * Note what is NOT here: --color-ok, --color-warn, --color-danger and
+ * --color-info are deliberately absent, so they inherit the light values
+ * unchanged. A cook and a cashier must read the same green as the same green.
+ * If a status colour ever needs a dark variant for contrast, change the
+ * TINTED GROUND below it, never the status colour itself. */
+[data-surface="dark"] {
+  --color-bg: var(--holler-ink);
+  --color-surface: var(--holler-navy-deep);
+  --color-surface-raised: var(--holler-navy);
+  --color-text: var(--holler-cream);
+  --color-text-muted: var(--holler-slate);
+  --color-text-inverse: var(--holler-ink);
+  --color-border: var(--holler-navy-soft);
+  --color-border-strong: var(--holler-teal-dark);
+
+  /* Navy is the accent on paper and disappears on ink, so the dark surface
+   * promotes amber — the brand's own attention colour — instead. */
+  --color-accent: var(--holler-amber);
+  --color-accent-hover: #ffc64d;
+  --color-accent-text: var(--holler-ink);
+
+  /* Status grounds are re-tinted for ink rather than paper. The foreground
+   * status colours above are untouched. */
+  --color-ok-bg: #1b3a24;
+  --color-warn-bg: #3d2f0c;
+  --color-danger-bg: #3d1a12;
+  --color-info-bg: #0d2f31;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.45);
+  --shadow-lg: 0 24px 70px rgba(0, 0, 0, 0.5);
+}
