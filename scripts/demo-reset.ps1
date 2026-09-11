@@ -45,7 +45,10 @@ param(
     # $env:HOLLER_DB_KEY_HEX; refuses to run without one. Must be the SAME
     # key the till's apps\pos\.env.dev already carries -- a different key
     # fails to open the sealed database this script just seeded; it does not
-    # open or create a different, empty one.
+    # open or create a different, empty one. If a crash-recovery leftover is
+    # present, a wrong key used to be able to silently OVERWRITE the real
+    # sealed database with that leftover (T25); the edge crate now verifies
+    # the key against the sealed file first and refuses instead.
     [string]$DbKeyHex = "",
 
     # Must match Tauri's app_data_dir() for com.holler.pos -- same default
@@ -191,7 +194,7 @@ $weakReason = Get-KeyWeaknessReason -HexKey $DbKeyHex
 if ($weakReason) {
     Fail-WithAction `
         "HOLLER_DB_KEY_HEX looks like a placeholder, not a random key: $weakReason" `
-        "This is a HEURISTIC (see Get-KeyWeaknessReason above) -- it cannot prove randomness, only catch a hand-typed pattern. NO AGENT MAY SUPPLY A LITERAL KEY. Copy the exact value from apps\pos\.env.dev (it was validated by dev-bootstrap.ps1 when written) and re-run, or mint a fresh one with: `$env:HOLLER_DB_KEY_HEX = -join ((1..32) | ForEach-Object { '{0:x2}' -f (Get-Random -Max 256) })"
+        "This is a HEURISTIC (see Get-KeyWeaknessReason above) -- it cannot prove randomness, only catch a hand-typed pattern. NO AGENT MAY SUPPLY A LITERAL KEY. Copy the exact value from apps\pos\.env.dev (it was validated by dev-bootstrap.ps1 when written) and re-run, or mint a fresh one with: `$b = New-Object byte[] 32; [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes(`$b); `$env:HOLLER_DB_KEY_HEX = -join (`$b | ForEach-Object { '{0:x2}' -f `$_ })"
 }
 
 $edgeSealedPath    = Join-Path $EdgeDataDir "edge.db.enc"

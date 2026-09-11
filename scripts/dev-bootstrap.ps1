@@ -323,11 +323,17 @@ downstream would report it.
 
 Mint one for this machine and keep it out of the repository:
 
-    `$env:HOLLER_DB_KEY_HEX = -join ((1..32) | ForEach-Object { '{0:x2}' -f (Get-Random -Max 256) })
+    `$b = New-Object byte[] 32
+    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes(`$b)
+    `$env:HOLLER_DB_KEY_HEX = -join (`$b | ForEach-Object { '{0:x2}' -f `$_ })
 
 Then re-run this script. Use the SAME value every time on this machine -- a
-different key fails to open the existing sealed database rather than opening
-or creating a different, empty one.
+different key fails to open the existing sealed database; it never falls back
+to a different, empty one. If a crash-recovery leftover happens to be present
+at the same time, a wrong key used to be able to silently OVERWRITE the real
+sealed database with that leftover (T25) -- the edge crate now verifies the
+key against the sealed file first and refuses, touching nothing on disk, but
+the risk a wrong key represents is data loss, not merely "looks empty".
 "@
 }
 if ($DbKeyHex -notmatch '^[0-9a-fA-F]{64}$') {
@@ -348,7 +354,9 @@ to mint one.
 
 Mint a real one and keep it out of the repository:
 
-    `$env:HOLLER_DB_KEY_HEX = -join ((1..32) | ForEach-Object { '{0:x2}' -f (Get-Random -Max 256) })
+    `$b = New-Object byte[] 32
+    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes(`$b)
+    `$env:HOLLER_DB_KEY_HEX = -join (`$b | ForEach-Object { '{0:x2}' -f `$_ })
 
 Then re-run this script.
 "@
