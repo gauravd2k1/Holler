@@ -486,6 +486,37 @@ fn html_kv_line(out: &mut String, label: &str, value: &str) {
     html_line(out, &format!("{label}: {value}"));
 }
 
+/// The Holler mark, downscaled to 180px wide (from the 303x321 source in
+/// `imgs/holler_no_bg.png`) and re-encoded with `png`'s best compression —
+/// 38307 bytes versus the source's 81404 (T12 brief: "if embedding a large
+/// PNG bloats every rendered receipt noticeably, say so ... and propose a
+/// downscaled variant"). `include_bytes!` embeds it in the binary at
+/// compile time; no filesystem read happens at render time, so a receipt
+/// generated on a machine without `imgs/` present still renders correctly.
+const RECEIPT_LOGO_PNG: &[u8] = include_bytes!("../assets/receipt_logo.png");
+
+/// Renders the Holler mark as an inline `data:` URI `<img>`, structurally
+/// **outside** the `<div class="line">` shape the equivalence test
+/// (`transport::file_sink::tests::html_receipt_agrees_line_for_line_with_the_escpos_bytes_for_the_same_invoice`)
+/// extracts and compares against the ESC/POS byte stream — same placement
+/// rationale as [`render_upi_qr_block`]: an image has no text counterpart in
+/// the byte stream, so it sits in its own `class="brand-logo"` block rather
+/// than weakening what that test scans for. **Embedded as a data URI
+/// deliberately**: the HTML receipt is a standalone file opened from disk,
+/// and an external asset reference (a relative `src="..."` path) renders as
+/// a broken image once the file is moved or opened on another machine.
+/// The ESC/POS byte stream gets no logo at all — a raster command is real
+/// device-dialect variation the hardware gate (PARKED, ADR-013 addendum)
+/// cannot verify, so the bytes are untouched by this function's existence.
+fn render_logo_block() -> String {
+    use base64::Engine;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(RECEIPT_LOGO_PNG);
+    format!(
+        "<div class=\"brand-logo\">\n<img src=\"data:image/png;base64,{encoded}\" \
+         alt=\"Holler\" />\n</div>\n"
+    )
+}
+
 /// Renders the demo-build UPI QR block (T11, `docs/demo-kickoff.md` item
 /// 0b), or `Ok(None)` when no payee is configured.
 ///
@@ -599,6 +630,8 @@ pub fn render_invoice_html(
 
     let mut body = String::new();
 
+    body.push_str(&render_logo_block());
+
     body.push_str("<div class=\"header\">\n");
     html_line(&mut body, profile.legal_name.trim());
     if let Some(trade) = profile
@@ -706,7 +739,11 @@ pub fn render_invoice_html(
     body.push_str("</div>\n");
 
     body.push_str("<div class=\"section totals\">\n");
-    html_kv_line(&mut body, "Taxable Value", &money(invoice.taxable_value_paise));
+    html_kv_line(
+        &mut body,
+        "Taxable Value",
+        &money(invoice.taxable_value_paise),
+    );
     if invoice.discount_paise != 0 {
         html_kv_line(&mut body, "Discount", &money(invoice.discount_paise));
     }
@@ -752,6 +789,8 @@ pub fn render_invoice_html(
          <style>\n\
          body {{ font-family: 'Courier New', monospace; max-width: 420px; margin: 2rem auto; }}\n\
          .line {{ white-space: pre-wrap; }}\n\
+         .brand-logo {{ text-align: center; margin-bottom: 0.5rem; }}\n\
+         .brand-logo img {{ width: 120px; height: auto; }}\n\
          .header .line:first-child {{ font-weight: bold; font-size: 1.2rem; text-align: center; }}\n\
          .section {{ border-top: 1px dashed #000; padding-top: 0.5rem; margin-top: 0.5rem; }}\n\
          .totals .line:last-of-type {{ font-weight: bold; }}\n\
@@ -1127,8 +1166,9 @@ mod tests {
     #[test]
     fn html_receipt_has_no_qr_block_when_no_payee_configured() {
         std::env::remove_var("HOLLER_DEMO_UPI_VPA");
-        let html = render_invoice_html(&invoice_fixture(), &invoice_lines_fixture(), &invoice_ctx())
-            .expect("renders");
+        let html =
+            render_invoice_html(&invoice_fixture(), &invoice_lines_fixture(), &invoice_ctx())
+                .expect("renders");
         assert!(
             !html.contains("class=\"qr\""),
             "no VPA configured must render no QR block at all: {html}"
@@ -1243,13 +1283,16 @@ mod tests {
             }
         }
 
-        let mut prepared = rqrr::PreparedImage::prepare_from_greyscale(
-            width as usize,
-            height as usize,
-            |x, y| grey[y * width as usize + x],
-        );
+        let mut prepared =
+            rqrr::PreparedImage::prepare_from_greyscale(width as usize, height as usize, |x, y| {
+                grey[y * width as usize + x]
+            });
         let grids = prepared.detect_grids();
-        assert_eq!(grids.len(), 1, "expected exactly one QR grid in the receipt");
+        assert_eq!(
+            grids.len(),
+            1,
+            "expected exactly one QR grid in the receipt"
+        );
         let (_meta, content) = grids[0].decode().expect("the receipt's QR decodes");
 
         let expected = build_upi_payment_link(

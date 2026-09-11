@@ -427,6 +427,7 @@ dependencies = [
 name = "holler-edge-printer"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "chrono",
  "holler-edge-database",
  "qrcode",

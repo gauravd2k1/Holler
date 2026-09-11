@@ -47,6 +47,13 @@ serde_json = "1"
 # hand-rolling one against its bit-matrix internals.
 qrcode = { version = "=0.14.1", default-features = false, features = ["svg"] }
 
+# Embeds the Holler mark on the HTML receipt header (T12) as an inline data
+# URI — the receipt is a standalone file opened from disk, so an external
+# asset reference renders as a broken image. `assets/receipt_logo.png` is
+# `include_bytes!`-ed at compile time and base64-encoded once per render;
+# no network fetch or image-decoding dependency needed, just the encoding.
+base64 = "0.22"
+
 [dev-dependencies]
 rqrr = { version = "0.11.0", default-features = false }
 tempfile = "3"
