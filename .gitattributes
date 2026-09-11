@@ -1,0 +1,13 @@
+# The generated shared seed catalogue is compared BYTE FOR BYTE by
+# scripts/check-seed-drift.mjs: it re-runs the emitter and does a raw string
+# comparison (`regeneratedText !== committed`) against the committed file.
+#
+# This repository is developed on Windows with `core.autocrlf=true`, so without
+# this entry a fresh clone writes the file with CRLF line endings while the Rust
+# emitter always produces LF. The drift check would then fail on every clean
+# checkout, reporting the file as STALE when nothing had drifted at all — and a
+# guard that cries wolf gets disabled, which costs the guarantee it exists for.
+#
+# Pinned narrowly rather than repo-wide: a blanket `* text=auto` would
+# renormalise every tracked file at once and bury this change in the diff.
+seed/demo-outlet.json text eol=lf
