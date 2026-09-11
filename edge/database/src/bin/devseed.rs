@@ -128,6 +128,22 @@ fn supplier_item_id(seq: u32) -> String {
 fn grn_line_seed_id(seq: u32) -> String {
     format!("0191e870-0000-7000-8000-{seq:012x}")
 }
+fn stock_ledger_entry_seed_id(seq: u32) -> String {
+    format!("0191e880-0000-7000-8000-{seq:012x}")
+}
+
+/// Round half away from zero, exact `i128` rational — mirrors
+/// `crate::inventory::round_ratio_half_away_from_zero` (not reused directly:
+/// that function is `pub(crate)` to `holler_edge_database` and this binary
+/// only sees its `pub` surface). Only ever called here with non-negative
+/// inputs (money and quantity, never negative in this file's own fixture
+/// data), so the simpler unsigned-shaped implementation is exact for every
+/// input this file actually produces.
+fn round_half_away_from_zero(numerator: i128, denominator: i128) -> i128 {
+    assert!(denominator > 0, "devseed: round with a non-positive denominator");
+    assert!(numerator >= 0, "devseed: round with a negative numerator");
+    (numerator * 2 + denominator) / (denominator * 2)
+}
 
 /// The internal, non-sellable menu item/variant/category a sub-recipe binds
 /// to — `recipe.menu_item_variant_id` is NOT NULL (0015), so even a
@@ -1433,6 +1449,15 @@ const SEED_SUPPLIER_ITEMS: &[SeedSupplierItem] = &[
 const GRN_ID: &str = "0191a000-0000-7000-8000-000000000051";
 const GRN_RECEIVED_AT: &str = "2026-08-09T06:00:00Z";
 const GRN_DELIVERY_NOTE_REF: &str = "DN-FRESHMART-0001";
+/// The outlet-local business date `GRN_RECEIVED_AT` falls on (Asia/Kolkata,
+/// day_start_time 05:00 — 06:00Z is 11:30 IST, well past the day start).
+/// Matches `crate::procurement::numbering::next_grn_number`'s own
+/// `(outlet_id, business_date)` key, so the edge's independently-minted
+/// number and this JSON's number agree without either reading the other.
+const GRN_BUSINESS_DATE: &str = "2026-08-09";
+/// `procurement::numbering::format_grn_number(GRN_BUSINESS_DATE, 1)` — the
+/// first receipt at this outlet on this business date, on a clean bootstrap.
+const GRN_NUMBER: &str = "GRN/20260809/0001";
 
 /// Opening stock: one `COUNT_ADJUSTMENT` line per inventory item, through the
 /// same sanctioned public entry point a real physical count uses
@@ -1458,6 +1483,13 @@ fn opening_stock_quantity_micro(dimension: &str, reorder_level_micro: Option<i64
 const OPENING_STOCK_ID: &str = "0191a000-0000-7000-8000-000000000052";
 const OPENING_STOCK_STARTED_AT: &str = "2026-08-09T05:30:00Z";
 const OPENING_STOCK_COMPLETED_AT: &str = "2026-08-09T05:45:00Z";
+/// Business date `OPENING_STOCK_STARTED_AT` falls on — same computation as
+/// `GRN_BUSINESS_DATE` above.
+const OPENING_STOCK_BUSINESS_DATE: &str = "2026-08-09";
+/// A real restaurant name, GSTIN-shaped placeholder GSTIN (contracts-correct
+/// format, registered to nobody — the same posture `seed_billing`'s existing
+/// `FISCAL_PROFILE_ID` fixture already takes). Demo build work item 2.
+const OUTLET_NAME: &str = "Tandoori Junction — Camp, Pune";
 
 // ---- Billing / acceptance fixtures (opt-in, HOLLER_SEED_BILLING=1) ----
 //
@@ -1567,6 +1599,521 @@ fn main() -> ExitCode {
     }
 }
 
+/// Builds the shared catalogue — exactly the "Shared" list in
+/// `seed/README.md` — as a `serde_json::Value`, from the Rust seed structs
+/// above (the authoring source). This is the ONLY place that walks
+/// `SEED_CATEGORIES`/`SEED_INVENTORY_ITEMS`/`SEED_RECIPES`/
+/// `SEED_MODIFIER_DELTAS`/`SEED_SUPPLIER_ITEMS` — [`seed_menu`],
+/// [`seed_inventory`], [`seed_recipes`] and [`seed_modifier_deltas`] (called
+/// from [`seed`]) read the emitted/committed JSON right back, never these
+/// consts directly, so the edge and cloud stay fed by the same bytes
+/// (seed/README.md).
+///
+/// Every id is minted by the same pure `seq -> id` functions the emitted
+/// JSON's own ids come from, so re-emitting with unchanged inputs produces
+/// byte-identical output — the property `scripts/check-seed-drift.mjs`
+/// depends on.
+///
+/// NOTE on key order: `seed/README.md`'s "File format" section pins a key
+/// order for human readability. `serde_json::Value`'s map type sorts keys
+/// alphabetically on serialisation (this crate does not depend on
+/// `serde_json`'s `preserve_order` feature — `Cargo.toml` is out of this
+/// task's owned paths), so the emitted file's key order is alphabetical
+/// rather than the literal order in that document. The file is still valid
+/// JSON, still parses identically regardless of order, and re-emission is
+/// still byte-stable — the drift check's actual guarantee — but a reader
+/// diffing against that document's literal key order will see reordering.
+fn build_shared_catalogue() -> Result<Value, String> {
+    // ---- menu: categories, items, variants, modifiers ----
+    // Order matches seed_menu/seed(): the two legacy T0b fixtures (fixed ids,
+    // never renamed/repriced/rerouted -- tests/e2e-scenario/harness pins
+    // them) first, then the spec's 8 categories, then the two hidden
+    // sub-recipe carrier items.
+    let mut menu_categories: Vec<Value> = Vec::new();
+    let mut menu_items: Vec<Value> = Vec::new();
+    let mut menu_item_variants: Vec<Value> = Vec::new();
+    let mut menu_item_modifiers: Vec<Value> = Vec::new();
+
+    // Legacy T0b fixture: CATEGORY_ID "Beverages", ITEM_CHAI_ID/ITEM_THALI_ID,
+    // VARIANT_ID, MOD_LESS_SUGAR_ID/MOD_EXTRA_SUGAR_ID. Fixed ids, exact
+    // values, never derived from a seq counter.
+    menu_categories.push(json!({
+        "id": CATEGORY_ID, "outlet_id": OUTLET_ID, "name": "Beverages", "sort_order": 1
+    }));
+    menu_items.push(json!({
+        "id": ITEM_CHAI_ID, "outlet_id": OUTLET_ID, "category_id": CATEGORY_ID,
+        "name": "Masala Chai", "base_price_paise": 4000, "is_available": true,
+        "tax_profile_id": Value::Null, "hsn_sac": "9963", "station_code": STATION_CODE
+    }));
+    menu_items.push(json!({
+        "id": ITEM_THALI_ID, "outlet_id": OUTLET_ID, "category_id": CATEGORY_ID,
+        "name": "Veg Thali", "base_price_paise": 22000, "is_available": true,
+        "tax_profile_id": Value::Null, "hsn_sac": "9963", "station_code": STATION_CODE
+    }));
+    menu_item_variants.push(json!({
+        "id": VARIANT_ID, "menu_item_id": ITEM_CHAI_ID, "name": "Large",
+        "price_delta_paise": 1500, "is_default": true
+    }));
+    menu_item_modifiers.push(json!({
+        "id": MOD_LESS_SUGAR_ID, "menu_item_id": ITEM_CHAI_ID, "group_name": "Sugar",
+        "option_name": "Less Sugar", "price_delta_paise": 0, "min_selection": 0, "max_selection": 1
+    }));
+    menu_item_modifiers.push(json!({
+        "id": MOD_EXTRA_SUGAR_ID, "menu_item_id": ITEM_CHAI_ID, "group_name": "Sugar",
+        "option_name": "Extra Sugar", "price_delta_paise": 500, "min_selection": 0, "max_selection": 1
+    }));
+
+    let mut category_seq = 0u32;
+    let mut item_seq = 0u32;
+    let mut variant_seq = 0u32;
+    let mut modifier_seq = 0u32;
+    let mut variant_id_by_name: std::collections::HashMap<(&str, &str), String> =
+        std::collections::HashMap::new();
+    let mut modifier_id_by_name: std::collections::HashMap<(&str, &str, &str), String> =
+        std::collections::HashMap::new();
+
+    for (category_name, sort_order, items) in SEED_CATEGORIES {
+        category_seq += 1;
+        let category_id = menu_category_id(category_seq);
+        menu_categories.push(json!({
+            "id": category_id, "outlet_id": OUTLET_ID, "name": category_name,
+            "sort_order": sort_order
+        }));
+
+        for item in *items {
+            item_seq += 1;
+            let item_id = menu_item_id(item_seq);
+            menu_items.push(json!({
+                "id": item_id, "outlet_id": OUTLET_ID, "category_id": category_id,
+                "name": item.name, "base_price_paise": item.price_paise, "is_available": true,
+                "tax_profile_id": item.tax_profile_id, "hsn_sac": item.hsn_sac,
+                "station_code": item.station_code
+            }));
+
+            for (variant_index, variant_name) in item.variants.iter().enumerate() {
+                variant_seq += 1;
+                let variant_id = menu_variant_id(variant_seq);
+                menu_item_variants.push(json!({
+                    "id": variant_id, "menu_item_id": item_id, "name": variant_name,
+                    "price_delta_paise": 0, "is_default": variant_index == 0
+                }));
+                variant_id_by_name.insert((item.name, *variant_name), variant_id);
+            }
+
+            for (group_name, options) in item.modifier_groups {
+                for (option_name, delta) in *options {
+                    modifier_seq += 1;
+                    let modifier_id = menu_modifier_id(modifier_seq);
+                    menu_item_modifiers.push(json!({
+                        "id": modifier_id, "menu_item_id": item_id, "group_name": group_name,
+                        "option_name": option_name, "price_delta_paise": delta,
+                        "min_selection": 0, "max_selection": 1
+                    }));
+                    modifier_id_by_name.insert((item.name, *group_name, *option_name), modifier_id);
+                }
+            }
+        }
+    }
+
+    // The hidden category + two carrier items/variants a sub-recipe binds to
+    // (ITEM_MAKHANI_GRAVY_ID's doc comment above). `is_available: false` --
+    // never sold. `station_code`/`hsn_sac` still need real (non-blank)
+    // values: both readers' wire types make these fields non-nullable
+    // strings (`backend/cmd/devseed/seedfile.go`'s `seedMenuItem.HsnSac`/
+    // `StationCode` are plain `string`, and the Go reader rejects a blank
+    // hsn_sac outright), so these two never-orderable items borrow the
+    // ordinary values rather than encoding "not applicable" as an empty
+    // string the reader would treat as a real, wrong one.
+    menu_categories.push(json!({
+        "id": INTERNAL_CATEGORY_ID, "outlet_id": OUTLET_ID,
+        "name": "Kitchen Prep (internal -- not sold)", "sort_order": 99
+    }));
+    for (item_id, variant_id, name) in [
+        (
+            ITEM_MAKHANI_GRAVY_ID,
+            VARIANT_MAKHANI_GRAVY_ID,
+            "Makhani Gravy (internal batch)",
+        ),
+        (
+            ITEM_ONION_TOMATO_BASE_ID,
+            VARIANT_ONION_TOMATO_BASE_ID,
+            "Onion-Tomato Masala Base (internal batch)",
+        ),
+    ] {
+        menu_items.push(json!({
+            "id": item_id, "outlet_id": OUTLET_ID, "category_id": INTERNAL_CATEGORY_ID,
+            "name": name, "base_price_paise": 0, "is_available": false,
+            "tax_profile_id": Value::Null, "hsn_sac": "9963",
+            "station_code": STATION_MAIN_CODE
+        }));
+        menu_item_variants.push(json!({
+            "id": variant_id, "menu_item_id": item_id, "name": "Batch",
+            "price_delta_paise": 0, "is_default": true
+        }));
+    }
+
+    // ---- inventory items, unit conversions ----
+    let mut inventory_items: Vec<Value> = Vec::new();
+    let mut item_unit_conversions: Vec<Value> = Vec::new();
+    let mut inventory_id_by_sku: std::collections::HashMap<&str, String> =
+        std::collections::HashMap::new();
+
+    for (seq, item) in SEED_INVENTORY_ITEMS.iter().enumerate() {
+        let id = inventory_item_id(seq as u32 + 1);
+        inventory_items.push(json!({
+            "id": id, "outlet_id": OUTLET_ID, "sku": item.sku, "name": item.name,
+            "category": item.category, "dimension": item.dimension,
+            "reorder_level_micro": item.reorder_level_micro
+        }));
+        inventory_id_by_sku.insert(item.sku, id);
+    }
+
+    for (seq, conv) in SEED_ITEM_UNIT_CONVERSIONS.iter().enumerate() {
+        let inventory_item_id_for_sku = inventory_id_by_sku.get(conv.sku).ok_or_else(|| {
+            format!(
+                "build_shared_catalogue: item_unit_conversion for unknown sku {}",
+                conv.sku
+            )
+        })?;
+        item_unit_conversions.push(json!({
+            "id": item_unit_conversion_id(seq as u32 + 1),
+            "inventory_item_id": inventory_item_id_for_sku,
+            "pack_unit_label": conv.pack_unit_label, "source_dimension": conv.source_dimension,
+            "numerator": conv.numerator, "denominator": conv.denominator
+        }));
+    }
+
+    // ---- recipes, recipe_ingredients (two internal sub-recipes, then 22 dish recipes) ----
+    // Neither `recipe.recipe_version` nor `recipe_ingredient.component_kind`/
+    // `yield_factor_ppm`/`sort_order` are wire fields
+    // (`backend/cmd/devseed/seedfile.go`'s `seedRecipe`/`seedRecipeIngredient`
+    // carry none of them): recipe_version and yield_factor_ppm are always
+    // identity/1 in this seed and each writer sets them itself;
+    // component_kind is derived from which of inventory_item_id/sub_recipe_id
+    // is set; sort_order is the array's own position.
+    let mut recipes: Vec<Value> = Vec::new();
+    let mut recipe_ingredients: Vec<Value> = Vec::new();
+    let sub_recipe_ids: std::collections::HashMap<&'static str, &'static str> = [
+        ("MAKHANI_GRAVY", RECIPE_MAKHANI_GRAVY_ID),
+        ("ONION_TOMATO_BASE", RECIPE_ONION_TOMATO_BASE_ID),
+    ]
+    .into_iter()
+    .collect();
+    let mut ingredient_seq = 0u32;
+
+    let mut push_ingredients = |recipe_id_for_row: &str,
+                                 ingredients: &[Comp],
+                                 ingredient_seq: &mut u32,
+                                 recipe_ingredients: &mut Vec<Value>|
+     -> Result<(), String> {
+        for comp in ingredients.iter() {
+            *ingredient_seq += 1;
+            let (inventory_item_id_val, sub_recipe_id_val, quantity_micro, dim) = match comp {
+                Comp::Item(sku, qty, dim) => {
+                    let item_id = inventory_id_by_sku.get(sku).ok_or_else(|| {
+                        format!(
+                            "build_shared_catalogue: recipe_ingredient references unknown inventory sku {sku}"
+                        )
+                    })?;
+                    (Some(item_id.clone()), None, *qty, *dim)
+                }
+                Comp::Sub(key, qty, dim) => {
+                    let sub_id = sub_recipe_ids.get(key).ok_or_else(|| {
+                        format!(
+                            "build_shared_catalogue: recipe_ingredient references unknown sub-recipe key {key}"
+                        )
+                    })?;
+                    (None, Some(sub_id.to_string()), *qty, *dim)
+                }
+            };
+            recipe_ingredients.push(json!({
+                "id": recipe_ingredient_id(*ingredient_seq), "recipe_id": recipe_id_for_row,
+                "inventory_item_id": inventory_item_id_val,
+                "sub_recipe_id": sub_recipe_id_val, "quantity_micro": quantity_micro,
+                "quantity_dimension": dim
+            }));
+        }
+        Ok(())
+    };
+
+    recipes.push(json!({
+        "id": RECIPE_MAKHANI_GRAVY_ID, "menu_item_variant_id": VARIANT_MAKHANI_GRAVY_ID,
+        "name": "Makhani Gravy",
+        "output_dimension": MAKHANI_GRAVY_OUTPUT_DIMENSION,
+        "output_quantity_micro": MAKHANI_GRAVY_OUTPUT_MICRO
+    }));
+    push_ingredients(
+        RECIPE_MAKHANI_GRAVY_ID,
+        MAKHANI_GRAVY_INGREDIENTS,
+        &mut ingredient_seq,
+        &mut recipe_ingredients,
+    )?;
+
+    recipes.push(json!({
+        "id": RECIPE_ONION_TOMATO_BASE_ID, "menu_item_variant_id": VARIANT_ONION_TOMATO_BASE_ID,
+        "name": "Onion-Tomato Masala Base",
+        "output_dimension": ONION_TOMATO_BASE_OUTPUT_DIMENSION,
+        "output_quantity_micro": ONION_TOMATO_BASE_OUTPUT_MICRO
+    }));
+    push_ingredients(
+        RECIPE_ONION_TOMATO_BASE_ID,
+        ONION_TOMATO_BASE_INGREDIENTS,
+        &mut ingredient_seq,
+        &mut recipe_ingredients,
+    )?;
+
+    let mut recipe_seq = 0u32;
+    for r in SEED_RECIPES {
+        recipe_seq += 1;
+        let this_recipe_id = recipe_id(recipe_seq);
+        let variant_id = variant_id_by_name
+            .get(&(r.item_name, r.variant_name))
+            .ok_or_else(|| {
+                format!(
+                    "build_shared_catalogue: recipe for {} ({}) references a variant that was never seeded",
+                    r.item_name, r.variant_name
+                )
+            })?;
+        recipes.push(json!({
+            "id": this_recipe_id, "menu_item_variant_id": variant_id, "name": r.item_name,
+            "output_dimension": "COUNT", "output_quantity_micro": pieces(1)
+        }));
+        push_ingredients(
+            &this_recipe_id,
+            r.ingredients,
+            &mut ingredient_seq,
+            &mut recipe_ingredients,
+        )?;
+    }
+
+    // ---- modifier_ingredient_deltas ----
+    let mut modifier_ingredient_deltas: Vec<Value> = Vec::new();
+    for (seq, d) in SEED_MODIFIER_DELTAS.iter().enumerate() {
+        let modifier_id = match d.lookup {
+            ModifierLookup::LegacyExtraSugar => MOD_EXTRA_SUGAR_ID.to_string(),
+            ModifierLookup::LegacyLessSugar => MOD_LESS_SUGAR_ID.to_string(),
+            ModifierLookup::Named(item_name, group_name, option_name) => modifier_id_by_name
+                .get(&(item_name, group_name, option_name))
+                .cloned()
+                .ok_or_else(|| format!(
+                    "build_shared_catalogue: modifier_ingredient_delta references a modifier that was never seeded: {item_name}/{group_name}/{option_name}"
+                ))?,
+        };
+        let inventory_item_id_val = inventory_id_by_sku.get(d.sku).cloned().ok_or_else(|| {
+            format!(
+                "build_shared_catalogue: modifier_ingredient_delta references unknown inventory sku {}",
+                d.sku
+            )
+        })?;
+        modifier_ingredient_deltas.push(json!({
+            "id": modifier_ingredient_delta_id(seq as u32 + 1),
+            "menu_item_modifier_id": modifier_id, "inventory_item_id": inventory_item_id_val,
+            "quantity_micro": d.quantity_micro
+        }));
+    }
+
+    // ---- tax: the 3 GST 2.0 profiles menu items above reference, their
+    // rules, and the one compliance_version they hang off. Shared per
+    // seed/README.md; unconditional (not gated by HOLLER_SEED_BILLING) since
+    // every spec menu item's tax_profile_id points at one of these.
+    let compliance_versions = vec![json!({
+        "id": COMPLIANCE_VERSION_ID, "outlet_id": OUTLET_ID, "label": "GST dev",
+        "effective_from": "2020-01-01T00:00:00Z", "notes": Value::Null
+    })];
+    let mut tax_profiles: Vec<Value> = Vec::new();
+    let mut tax_rules: Vec<Value> = Vec::new();
+    for (id, code, name, cgst_bps, sgst_bps) in [
+        (TAX_PROFILE_FOOD5_ID, "GST_FOOD_5", "GST 5% (food)", 250i64, 250i64),
+        (
+            TAX_PROFILE_PACKAGED18_ID,
+            "GST_PACKAGED_18",
+            "GST 18% (packaged, non-aerated)",
+            900,
+            900,
+        ),
+        (
+            TAX_PROFILE_AERATED40_ID,
+            "GST_AERATED_40",
+            "GST 40% (aerated/sweetened)",
+            2000,
+            2000,
+        ),
+    ] {
+        tax_profiles.push(json!({
+            "id": id, "outlet_id": OUTLET_ID, "code": code, "name": name,
+            "pricing_mode": "INCLUSIVE", "is_default": false, "is_active": true
+        }));
+        for (component, rate_bps) in [("CGST", cgst_bps), ("SGST", sgst_bps)] {
+            tax_rules.push(json!({
+                "id": format!("{id}-{component}"), "tax_profile_id": id,
+                "compliance_version_id": COMPLIANCE_VERSION_ID, "component": component,
+                "rate_bps": rate_bps, "effective_from": "2020-01-01T00:00:00Z",
+                "effective_to": Value::Null
+            }));
+        }
+    }
+
+    // ---- suppliers, supplier_items (demo build work item 2) ----
+    let suppliers = vec![json!({
+        "id": SUPPLIER_ID, "outlet_id": OUTLET_ID, "code": SUPPLIER_CODE, "name": SUPPLIER_NAME,
+        "gstin": SUPPLIER_GSTIN, "phone": "+91-9800000000",
+        "email": "orders@freshmart.example", "address": "Plot 14, MIDC, Bhosari, Pune",
+        "payment_terms_days": 15, "is_active": true
+    })];
+    let mut supplier_items: Vec<Value> = Vec::new();
+    for (seq, si) in SEED_SUPPLIER_ITEMS.iter().enumerate() {
+        let inventory_item_id_val = inventory_id_by_sku.get(si.sku).ok_or_else(|| {
+            format!("build_shared_catalogue: supplier_item for unknown sku {}", si.sku)
+        })?;
+        supplier_items.push(json!({
+            "id": supplier_item_id(seq as u32 + 1), "supplier_id": SUPPLIER_ID,
+            "inventory_item_id": inventory_item_id_val, "purchase_unit": si.purchase_unit,
+            "pack_size_micro": si.pack_size_micro, "quantity_dimension": si.quantity_dimension,
+            "last_price_paise": si.last_price_paise, "is_preferred": true
+        }));
+    }
+
+    // ---- the one received GRN (seed/README.md's deliberate exception) ----
+    // Conversion computed HERE, once, by the same formulas
+    // `crate::procurement::convert::resolve_line_conversion` uses (identity
+    // yield, so `pack_size_micro_applied` is the supplier_item's own
+    // `pack_size_micro` exactly): both readers do a literal insert of the
+    // precomputed row, so this emitter is the one place that math runs for
+    // the JSON's own numbers. The edge's own SQLite writer does NOT read
+    // these fields back -- it re-derives the same values by calling
+    // `Db::record_goods_receipt` (the real, tested conversion engine) against
+    // the same supplier_item rows and the same entered quantities, which is
+    // why `GRN_NUMBER`/`GRN_BUSINESS_DATE` above are chosen to equal what
+    // that call independently mints, rather than being read out of this
+    // struct.
+    const MICRO: i128 = 1_000_000;
+    let mut grn_lines: Vec<Value> = Vec::new();
+    let mut grn_ledger_entries: Vec<Value> = Vec::new();
+    for (seq, si) in SEED_SUPPLIER_ITEMS.iter().enumerate() {
+        let line_number = seq as i64 + 1;
+        let inv = SEED_INVENTORY_ITEMS
+            .iter()
+            .find(|i| i.sku == si.sku)
+            .ok_or_else(|| format!("build_shared_catalogue: grn line for unknown sku {}", si.sku))?;
+        let inventory_item_id_val = inventory_id_by_sku.get(si.sku).cloned().ok_or_else(|| {
+            format!("build_shared_catalogue: grn line for unknown sku {}", si.sku)
+        })?;
+        let entered_quantity_micro = si.grn_entered_quantity_micro;
+        let purchase_price_paise = si.last_price_paise;
+
+        // Identity yield (every seeded inventory_item's yield_factor_ppm is
+        // 1_000_000), so pack_size_micro_applied is the pack rate verbatim --
+        // `procurement::convert::effective_rate`'s own exact-path case.
+        let pack_size_micro_applied = si.pack_size_micro;
+        let base_quantity_micro = i64::try_from(round_half_away_from_zero(
+            i128::from(entered_quantity_micro) * i128::from(pack_size_micro_applied),
+            MICRO,
+        ))
+        .map_err(|e| format!("build_shared_catalogue: base_quantity_micro overflow: {e}"))?;
+        let line_total_paise = i64::try_from(round_half_away_from_zero(
+            i128::from(entered_quantity_micro) * i128::from(purchase_price_paise),
+            MICRO,
+        ))
+        .map_err(|e| format!("build_shared_catalogue: line_total_paise overflow: {e}"))?;
+        let unit_cost_paise = i64::try_from(round_half_away_from_zero(
+            i128::from(line_total_paise) * MICRO,
+            i128::from(base_quantity_micro),
+        ))
+        .map_err(|e| format!("build_shared_catalogue: unit_cost_paise overflow: {e}"))?;
+
+        grn_lines.push(json!({
+            "id": grn_line_seed_id(seq as u32 + 1), "inventory_item_id": inventory_item_id_val,
+            "line_number": line_number, "purchase_order_line_id": Value::Null,
+            "entered_purchase_unit": si.purchase_unit,
+            "entered_quantity_micro": entered_quantity_micro,
+            "quantity_dimension": si.quantity_dimension,
+            "base_quantity_micro": base_quantity_micro,
+            "pack_size_micro_applied": pack_size_micro_applied,
+            "unit_cost_paise": unit_cost_paise, "line_total_paise": line_total_paise,
+            "batch_code": Value::Null, "expiry_date": Value::Null
+        }));
+
+        grn_ledger_entries.push(json!({
+            "id": stock_ledger_entry_seed_id(seq as u32 + 1), "outlet_id": OUTLET_ID,
+            "entry_seq": Value::Null, "inventory_item_id": inventory_item_id_val,
+            "inventory_item_name": inv.name, "dimension": inv.dimension,
+            "entry_type": "PURCHASE", "origin": "GOODS_RECEIPT",
+            "quantity_micro": base_quantity_micro,
+            "recipe_id": Value::Null, "recipe_version": Value::Null, "recipe_name": Value::Null,
+            "reason_code": Value::Null, "note": Value::Null,
+            "occurred_at": GRN_RECEIVED_AT, "business_date": GRN_BUSINESS_DATE,
+            "created_by_user_id": CASHIER_ID,
+            "modifier_delta_id": Value::Null, "modifier_name": Value::Null,
+            "modifier_delta_version": Value::Null,
+            "unit_cost_paise": unit_cost_paise, "line_total_paise": line_total_paise,
+            "source_grn_id": GRN_ID, "source_purchase_return_id": Value::Null,
+            "source_stock_transfer_out_id": Value::Null, "source_stock_count_id": Value::Null
+        }));
+    }
+    let goods_receipt = json!({
+        "id": GRN_ID, "outlet_id": OUTLET_ID, "purchase_order_id": Value::Null,
+        "supplier_id": SUPPLIER_ID, "grn_number": GRN_NUMBER,
+        "delivery_note_ref": GRN_DELIVERY_NOTE_REF,
+        "received_at": GRN_RECEIVED_AT, "received_by_user_id": CASHIER_ID,
+        "business_date": GRN_BUSINESS_DATE,
+        "notes": "Opening delivery for the demo build", "lines": grn_lines,
+        "ledger_entries": grn_ledger_entries
+    });
+
+    // ---- opening stock: one COUNT_ADJUSTMENT stock_ledger_entry per item ----
+    let mut opening_stock: Vec<Value> = Vec::new();
+    for (seq, item) in SEED_INVENTORY_ITEMS.iter().enumerate() {
+        let inventory_item_id_val = inventory_id_by_sku.get(item.sku).cloned().ok_or_else(|| {
+            format!("build_shared_catalogue: opening stock for unknown sku {}", item.sku)
+        })?;
+        let quantity_micro = opening_stock_quantity_micro(item.dimension, item.reorder_level_micro);
+        opening_stock.push(json!({
+            "id": stock_ledger_entry_seed_id(1000 + seq as u32 + 1), "outlet_id": OUTLET_ID,
+            "entry_seq": Value::Null, "inventory_item_id": inventory_item_id_val,
+            "inventory_item_name": item.name, "dimension": item.dimension,
+            "entry_type": "ADJUSTMENT", "origin": "COUNT_ADJUSTMENT",
+            "quantity_micro": quantity_micro,
+            "recipe_id": Value::Null, "recipe_version": Value::Null, "recipe_name": Value::Null,
+            "reason_code": Value::Null, "note": "Opening stock for the demo build",
+            "occurred_at": OPENING_STOCK_COMPLETED_AT, "business_date": OPENING_STOCK_BUSINESS_DATE,
+            "created_by_user_id": CASHIER_ID,
+            "modifier_delta_id": Value::Null, "modifier_name": Value::Null,
+            "modifier_delta_version": Value::Null,
+            "unit_cost_paise": Value::Null, "line_total_paise": Value::Null,
+            "source_grn_id": Value::Null, "source_purchase_return_id": Value::Null,
+            "source_stock_transfer_out_id": Value::Null,
+            "source_stock_count_id": OPENING_STOCK_ID
+        }));
+    }
+
+    Ok(json!({
+        "schema_version": 1,
+        "generated_by": "edge/database/src/bin/devseed.rs --emit-json",
+        "tenant": { "id": TENANT_ID, "name": "Holler Dev Kitchens" },
+        "brand": { "id": BRAND_ID, "tenant_id": TENANT_ID, "name": "Holler Dev Kitchens" },
+        "outlet": {
+            "id": OUTLET_ID, "brand_id": BRAND_ID, "name": OUTLET_NAME,
+            "timezone": "Asia/Kolkata", "day_start_time": "05:00"
+        },
+        "tax_profiles": tax_profiles,
+        "compliance_versions": compliance_versions,
+        "tax_rules": tax_rules,
+        "menu_categories": menu_categories,
+        "menu_items": menu_items,
+        "menu_item_variants": menu_item_variants,
+        "menu_item_modifiers": menu_item_modifiers,
+        "inventory_items": inventory_items,
+        "item_unit_conversions": item_unit_conversions,
+        "recipes": recipes,
+        "recipe_ingredients": recipe_ingredients,
+        "modifier_ingredient_deltas": modifier_ingredient_deltas,
+        "suppliers": suppliers,
+        "supplier_items": supplier_items,
+        "goods_receipt": goods_receipt,
+        "opening_stock": opening_stock,
+    }))
+}
+
 /// `--emit-json <path>`: serialises [`build_shared_catalogue`] — the Rust
 /// seed structs above, the authoring source — to `path`. Never touches
 /// SQLite; does not require `HOLLER_DB_KEY_HEX`/`HOLLER_SEED_PASSWORD_HASH`.
@@ -1656,7 +2203,11 @@ fn run() -> Result<PathBuf, String> {
     Ok(sealed_path)
 }
 
-fn seed(db: &Db, password_hash: &str) -> Result<(), holler_edge_database::DbError> {
+fn seed(
+    db: &mut Db,
+    password_hash: &str,
+    _catalogue: &Value,
+) -> Result<(), holler_edge_database::DbError> {
     let conn = db.connection();
 
     repo::upsert_outlet(
@@ -2643,8 +3194,9 @@ mod t1b_seed_resolves_tests {
     use holler_edge_database::inventory::{resolve_recipe_for_variant, GapReason, ResolveOutcome};
 
     fn seeded_db() -> Db {
-        let db = Db::open_in_memory_for_tests().expect("open in-memory db");
-        seed(&db, "unused-in-tests-hash").expect("seed");
+        let mut db = Db::open_in_memory_for_tests().expect("open in-memory db");
+        let catalogue = build_shared_catalogue().expect("build shared catalogue");
+        seed(&mut db, "unused-in-tests-hash", &catalogue).expect("seed");
         db
     }
 
