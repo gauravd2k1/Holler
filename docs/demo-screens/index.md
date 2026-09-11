@@ -47,6 +47,99 @@ unchanged and kept for its own MD5 below.
 (supersedes the T19-pass hash `f69af7491d769204905582bb38c62088` recorded
 below). Confirmed distinct from every other file in this directory.
 
+## T20 part 2 (2026-09-11) — `apps/captain` and `apps/admin` screenshots (first ever)
+
+Neither app had a screenshot in this directory before this pass, even though
+both were converted to the shared tokens by earlier tracks and observed in a
+browser at the time — that track simply did not commit the images. Both apps
+are **read-only** in this track; nothing in `apps/captain/` or `apps/admin/`
+changed.
+
+Both sets used the same discipline as the T14/T19/T20-part-1 POS captures:
+a throwaway Playwright script per app (scratch directory, not part of this
+repository), driving each app's real `pnpm dev` server, `/api/*` mocked with
+`page.route` against contract-shaped fixtures (never a stub of a hand-rolled
+shape), navigated end to end by clicking in-app — sign-in/pair once, then
+every further screen reached by a real click, never a `page.goto` reload —
+and each screen's own unique heading/content asserted on screen before
+capture.
+
+### `apps/captain` — demo step 1a, the waiter's phone, captured at **390px width**
+
+| File | Screen | Notes |
+|---|---|---|
+| `captain-pair.png` | Pair | Device token pasted, not yet submitted |
+| `captain-tables.png` | Tables | Free vs. occupied shown by colour **and** the text tag ("Free"/"Occupied"), never colour alone |
+| `captain-menu-cart.png` | Menu + cart | Cart bar pinned at the bottom with 1 item / ₹220.00, an unavailable item shown greyed with a "Not available" tag |
+| `captain-modifier-sheet.png` | Free-modifier sheet open | "Chicken Biryani"'s required "Spice Level" group, backdrop dimming the menu behind it |
+| `captain-sent.png` | Sent confirmation | Order A211 with its two KOTs (GRILL, MAIN), both QUEUED |
+
+Flow driven: pair → tables → select a free table → add a plain item (cart bar
+appears) → tap an item with a free modifier group (sheet opens) → resolve it
+→ Send → sent screen. `POST /api/orders` and `POST /api/orders/{id}/send`
+were both mocked; no real order was created anywhere.
+
+### `apps/admin` — demo step 5, captured at **1440×900** (desktop)
+
+| File | Screen | Notes |
+|---|---|---|
+| `admin-sign-in.png` | Sign in | Email/password filled, not yet submitted |
+| `admin-menu.png` | Menu and pricing | Three items, one with `hsn_sac: null` correctly shown as "not set — cannot be billed", the replica-note banner visible |
+| `admin-suppliers.png` | Suppliers | "Add a supplier" form plus one existing supplier (Fresh Valley Vegetables) with its one pack-size row |
+| `admin-goods-receipts.png` | Goods receipts | **The screen the demo story actually shows** — `GRN/20260902/0007`, all three quantity columns (entered/pack size/base), the replica-note banner |
+
+Flow driven: sign in → Menu and pricing → click "Suppliers" → click "Goods
+receipts". `POST /auth/login`, `GET /menu/items`, `GET /menu/categories`,
+`GET /procurement/suppliers` and `GET /procurement/goods-receipts` were all
+mocked.
+
+**Two things observed in `apps/admin` that look wrong — reported here, not
+fixed, per this track's read-only scope on that app:**
+
+1. **`admin-suppliers.png` shows a raw UUID** (`018e5a2e-ff01-7c3d-9f4e-1234567890ab`)
+   in the supplier's item table's "Item" column — `SuppliersScreen.tsx`
+   renders `it.inventory_item_id` directly. CLAUDE.md forbids a raw UUID
+   reaching a surface a human reads; `GoodsReceiptsScreen.tsx` on the same
+   app already handles the identical gap correctly (no `inventory_item_name`
+   on the wire shape, so it shows "ingredient on file" instead of the id) —
+   `SuppliersScreen.tsx` does not do the same.
+2. **Money on both `admin-menu.png` and `admin-suppliers.png` has no ₹
+   symbol** — `formatPaise` in `apps/admin/src/lib/money.ts` returns a bare
+   `"220.00"`, unlike the POS's `formatPaiseAsRupees`, which prepends `₹`.
+   Not a money-correctness defect (still integer paise under the hood,
+   correctly divided), but every other screen in this directory shows a
+   currency symbol and these two do not.
+
+### Full-set hash check, this pass
+
+All 20 files in this directory, MD5, confirmed pairwise distinct
+(`md5sum docs/demo-screens/*.png`):
+
+```
+0f4758073f2139056caa9eccb1907398  captain-tables.png
+1c85a41d8a44bc23c94f071c7561425f  pos-order-list-empty.png
+1cbd58a26aca8c5292ad7308cb417461  pos-receiving.png
+412a572f9d01d7ebb3080ce0c47299f0  captain-pair.png
+50ae7ecf0fdf025e7157d37efd768419  captain-modifier-sheet.png
+55e95f8bc0eff9f9f3c0a8d878437237  admin-sign-in.png
+65ef593004e37f919c9a7b62171d6764  admin-goods-receipts.png
+6e3528a35bd33115d797d72d165d94de  pos-crash-screen.png
+7acadd1008c32911ba0bb771846b827e  pos-billing-upi-qr.png
+887b0c7e3e1224f744da1bf38f3d4f03  pos-current-stock.png
+898c22bafbb4ebf8493362c8d8c2f332  kds-ticket.png
+92f4fd83078de61f1294d0205e92a560  pos-billing.png
+9e975e907ab7084a7248714e98594f8e  captain-menu-cart.png
+a0b782731c989abddf2905651cd371c2  pos-grn-gaps.png
+a0c246eff50ee9772cc18649cc7685e2  admin-menu.png
+a15138dc8bce8025d57f0d1f81ef6e8e  captain-sent.png
+ca2946ee5e1d61fa4322571e789dc47f  pos-order-list.png
+d2c0985bacbad90897a2d8803a9ce3db  pos-order-list-kots.png
+db1c969ea99617e31c16bd260d68b162  pos-purchase-return.png
+f76061c6163d9891e15cd46fd025afdf  admin-suppliers.png
+```
+
+20 files, 20 distinct hashes.
+
 ## T19 update (2026-09-11)
 
 T14 adopted the colour tokens (`.money`, status colours, the logo on
