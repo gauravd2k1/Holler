@@ -227,6 +227,32 @@ pub fn upsert_device(conn: &Connection, d: &Device) -> DbResult<()> {
     Ok(())
 }
 
+/// Creates a minimal `device` row **only if none exists for this id** —
+/// `ON CONFLICT(id) DO NOTHING`, deliberately distinct from
+/// [`upsert_device`]'s replace-on-conflict semantics. Exists for T29
+/// (config apply's `device_credential` bundle, `edge/sync/src/config.rs`):
+/// a credential travels ahead of any device the cloud has never enrolled
+/// through the seed/admin path, and a device row a credential apply creates
+/// must never clobber one that path already wrote (name, `last_seen_at`,
+/// `created_at` are all provenance the credential does not carry and must
+/// not overwrite with a placeholder).
+pub fn insert_device_if_absent(conn: &Connection, d: &Device) -> DbResult<()> {
+    conn.execute(
+        "INSERT INTO device (id, outlet_id, kind, name, last_seen_at, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(id) DO NOTHING",
+        params![
+            d.id,
+            d.outlet_id,
+            d.kind,
+            d.name,
+            d.last_seen_at,
+            d.created_at
+        ],
+    )?;
+    Ok(())
+}
+
 pub fn get_device(conn: &Connection, id: &str) -> DbResult<Option<Device>> {
     conn.query_row(
         "SELECT id, outlet_id, kind, name, last_seen_at, created_at FROM device WHERE id = ?1",

@@ -761,6 +761,50 @@ pub fn apply_bundle(
                 },
             )?;
         }
+        // T29: the two halves of one device enrolment travel separately in
+        // the cloud bundle (no `devices` array — `device` is edge-SQLite-only,
+        // no Postgres mirror, no AggregateType), and only the credential half
+        // was ever landed here. `"order".device_id` and `kot.created_by_
+        // device_id` both FK to `device(id)`, so a device that can
+        // authenticate but has no `device` row can never be referenced by an
+        // order or a KOT it creates — every insert attributed to it fails
+        // FOREIGN KEY constraint failed with no column named in the error.
+        // Fixed by minting the minimal row the credential can support,
+        // BEFORE caching the credential that points at it.
+        //
+        // `insert_device_if_absent` (not `upsert_device`) deliberately never
+        // updates an existing row: a device already present — devseed's
+        // fixed-id POS/KDS rows, or one an earlier config apply already
+        // created — keeps whatever `name`/`last_seen_at`/`created_at` it has.
+        // Only `id`, `outlet_id`, `kind`(=device_kind) and `config_version`'s
+        // moment are things the credential can attest to; `name` is not on
+        // this wire shape at all (`EdgeDeviceCredential`,
+        // packages/contracts/openapi/openapi.yaml), so a synthetic
+        // kind-derived label stands in for it — flagged as a contract gap,
+        // not invented schema, the same treatment as `updated_at` above.
+        //
+        // CONTRACT GAP (report, not fixed here — packages/contracts is
+        // read-only): `device.kind`'s CHECK
+        // (packages/contracts/sqlite/0001_init.sql) allows
+        // ('POS','KDS','WAITER','PRINTER_GATEWAY'); `device_credential_cache.
+        // device_kind`'s CHECK (0008_edge_device_credential_cache.sql) allows
+        // ('POS','KDS','WAITER','PRINTER_BRIDGE') — the fourth member
+        // disagrees. A PRINTER_BRIDGE credential would fail this INSERT's
+        // CHECK and roll back the whole bundle apply. POS/KDS/WAITER (this
+        // task's failing case) are unaffected.
+        for c in &bundle.device_credentials {
+            repo::insert_device_if_absent(
+                conn,
+                &model::Device {
+                    id: c.device_id.clone(),
+                    outlet_id: c.outlet_id.clone(),
+                    kind: c.device_kind.clone(),
+                    name: format!("{} (auto-enrolled)", c.device_kind),
+                    last_seen_at: None,
+                    created_at: Utc::now().to_rfc3339(),
+                },
+            )?;
+        }
         // ADR-017 amendment (0.4.3): persisted exactly as `users` is, into
         // the encrypted-at-rest device_credential_cache table, so a KDS LAN
         // handshake can be verified with the uplink down. A revoked/expired
@@ -1446,6 +1490,292 @@ mod tests {
         assert_eq!(cached.device_id, "device-1");
         assert_eq!(cached.device_kind, "KDS");
         assert_eq!(cached.credential_hash, "argon2id$device-verifier");
+    }
+
+    /// T29, assertion 1 — the point of the fix. Reproduced pre-fix
+    /// (temporarily disabling the `insert_device_if_absent` loop and running
+    /// this same shape) as exactly the operator's failure:
+    /// `FOREIGN KEY constraint failed` on the `"order"` insert, because no
+    /// `device` row existed for the credentialed WAITER device_id. With the
+    /// fix restored: applying the bundle creates the `device` row, and the
+    /// same order insert that failed pre-fix succeeds.
+    #[test]
+    fn config_apply_creates_device_row_and_order_insert_succeeds() {
+        let mut db = Db::open_in_memory_for_tests().expect("open db");
+        repo::upsert_outlet(
+            db.connection(),
+            &model::Outlet {
+                id: "outlet-1".to_string(),
+                brand_id: "brand-1".to_string(),
+                name: "Test Outlet".to_string(),
+                timezone: "Asia/Kolkata".to_string(),
+                config_version: 1,
+                created_at: "2026-09-11T00:00:00Z".to_string(),
+                updated_at: "2026-09-11T00:00:00Z".to_string(),
+            },
+        )
+        .expect("seed outlet");
+
+        let bundle = ConfigBundle {
+            config_version: 2,
+            users: vec![WireAppUser {
+                id: "u1".to_string(),
+                tenant_id: "t1".to_string(),
+                outlet_id: "outlet-1".to_string(),
+                email: "a@b.com".to_string(),
+                full_name: "A".to_string(),
+                password_hash: "argon2id$fake".to_string(),
+                pin_hash: None,
+                is_active: true,
+                permissions: vec![],
+                config_version: 2,
+            }],
+            roles: vec![],
+            tables: vec![],
+            categories: vec![],
+            items: vec![],
+            device_credentials: vec![WireDeviceCredential {
+                credential_id: "cred-waiter-1".to_string(),
+                device_id: "waiter-device-1".to_string(),
+                tenant_id: "t1".to_string(),
+                outlet_id: "outlet-1".to_string(),
+                credential_hash: "argon2id$waiter-verifier".to_string(),
+                device_kind: "WAITER".to_string(),
+                revoked_at: None,
+                expires_at: None,
+                config_version: 2,
+            }],
+            ..Default::default()
+        };
+
+        let applied = apply_bundle(&mut db, "outlet-1", 0, bundle).expect("apply must succeed");
+        assert!(applied);
+
+        let device = repo::get_device(db.connection(), "waiter-device-1")
+            .expect("lookup")
+            .expect("device row must exist after config apply");
+        assert_eq!(device.kind, "WAITER");
+        assert_eq!(device.outlet_id, "outlet-1");
+
+        db.connection()
+            .execute(
+                "INSERT INTO \"order\" (id, outlet_id, device_id, order_type, created_at, updated_at)
+                 VALUES ('order-1', 'outlet-1', 'waiter-device-1', 'DINE_IN', '2026-09-11T00:00:00Z', '2026-09-11T00:00:00Z')",
+                [],
+            )
+            .expect("order insert must now succeed: device row exists for waiter-device-1");
+    }
+
+    /// T29, assertion 2 — a credential for a device that already exists (the
+    /// devseed/admin-enrolled shape) must leave the existing row intact.
+    /// `last_seen_at` is set here to a devseed-only value the credential
+    /// cannot carry at all — if `insert_device_if_absent` regressed to
+    /// `upsert_device`'s replace-on-conflict semantics, this field would be
+    /// wiped back to `NULL` and the assertion below would fail.
+    #[test]
+    fn existing_device_row_survives_credential_apply_unclobbered() {
+        let mut db = Db::open_in_memory_for_tests().expect("open db");
+        repo::upsert_outlet(
+            db.connection(),
+            &model::Outlet {
+                id: "outlet-1".to_string(),
+                brand_id: "brand-1".to_string(),
+                name: "Test Outlet".to_string(),
+                timezone: "Asia/Kolkata".to_string(),
+                config_version: 1,
+                created_at: "2026-09-11T00:00:00Z".to_string(),
+                updated_at: "2026-09-11T00:00:00Z".to_string(),
+            },
+        )
+        .expect("seed outlet");
+        repo::upsert_device(
+            db.connection(),
+            &model::Device {
+                id: "kds-device-1".to_string(),
+                outlet_id: "outlet-1".to_string(),
+                kind: "KDS".to_string(),
+                name: "Dev Kitchen Screen 1".to_string(),
+                last_seen_at: Some("2026-09-10T12:00:00Z".to_string()),
+                created_at: "2026-08-01T00:00:00Z".to_string(),
+            },
+        )
+        .expect("seed devseed-style device");
+
+        let bundle = ConfigBundle {
+            config_version: 2,
+            users: vec![WireAppUser {
+                id: "u1".to_string(),
+                tenant_id: "t1".to_string(),
+                outlet_id: "outlet-1".to_string(),
+                email: "a@b.com".to_string(),
+                full_name: "A".to_string(),
+                password_hash: "argon2id$fake".to_string(),
+                pin_hash: None,
+                is_active: true,
+                permissions: vec![],
+                config_version: 2,
+            }],
+            roles: vec![],
+            tables: vec![],
+            categories: vec![],
+            items: vec![],
+            device_credentials: vec![WireDeviceCredential {
+                credential_id: "cred-kds-1".to_string(),
+                device_id: "kds-device-1".to_string(),
+                tenant_id: "t1".to_string(),
+                outlet_id: "outlet-1".to_string(),
+                credential_hash: "argon2id$kds-verifier".to_string(),
+                device_kind: "KDS".to_string(),
+                revoked_at: None,
+                expires_at: None,
+                config_version: 2,
+            }],
+            ..Default::default()
+        };
+
+        let applied = apply_bundle(&mut db, "outlet-1", 0, bundle).expect("apply must succeed");
+        assert!(applied);
+
+        let device = repo::get_device(db.connection(), "kds-device-1")
+            .expect("lookup")
+            .expect("device row must still exist");
+        assert_eq!(
+            device.name, "Dev Kitchen Screen 1",
+            "credential apply must never clobber the devseed-written name"
+        );
+        assert_eq!(
+            device.last_seen_at,
+            Some("2026-09-10T12:00:00Z".to_string()),
+            "credential apply must never clobber a field it cannot supply"
+        );
+        assert_eq!(device.created_at, "2026-08-01T00:00:00Z");
+
+        // KDS path: kot.created_by_device_id references the same device row
+        // the KDS LAN handshake authenticates against — still insertable
+        // after the credential apply, exactly as before it.
+        db.connection()
+            .execute(
+                "INSERT INTO \"order\" (id, outlet_id, device_id, order_type, created_at, updated_at)
+                 VALUES ('order-kds-1', 'outlet-1', 'kds-device-1', 'DINE_IN', '2026-09-11T00:00:00Z', '2026-09-11T00:00:00Z')",
+                [],
+            )
+            .expect("order insert for the pre-existing KDS device must succeed");
+        db.connection()
+            .execute(
+                "INSERT INTO kot (id, order_id, station, sequence, items_json, created_by_device_id, created_at, updated_at)
+                 VALUES ('kot-1', 'order-kds-1', 'MAIN_KITCHEN', 1, '[]', 'kds-device-1', '2026-09-11T00:00:00Z', '2026-09-11T00:00:00Z')",
+                [],
+            )
+            .expect("kot insert against the pre-existing KDS device must succeed");
+    }
+
+    /// T29, assertion 3 — a bundle with no `device_credentials` writes no
+    /// devices and errors on nothing (the ordinary incremental-pull case:
+    /// most config changes touch no credential at all).
+    #[test]
+    fn bundle_with_no_credentials_writes_no_devices() {
+        let mut db = Db::open_in_memory_for_tests().expect("open db");
+        repo::upsert_outlet(
+            db.connection(),
+            &model::Outlet {
+                id: "outlet-1".to_string(),
+                brand_id: "brand-1".to_string(),
+                name: "Test Outlet".to_string(),
+                timezone: "Asia/Kolkata".to_string(),
+                config_version: 1,
+                created_at: "2026-09-11T00:00:00Z".to_string(),
+                updated_at: "2026-09-11T00:00:00Z".to_string(),
+            },
+        )
+        .expect("seed outlet");
+
+        let bundle = ConfigBundle {
+            config_version: 2,
+            users: vec![],
+            roles: vec![],
+            tables: vec![],
+            categories: vec![],
+            items: vec![],
+            device_credentials: vec![],
+            ..Default::default()
+        };
+
+        let applied = apply_bundle(&mut db, "outlet-1", 1, bundle).expect("apply must succeed");
+        assert!(applied);
+
+        let count: i64 = db
+            .connection()
+            .query_row("SELECT count(*) FROM device", [], |r| r.get(0))
+            .expect("count");
+        assert_eq!(count, 0, "no credentials in the bundle must mean no device rows written");
+    }
+
+    /// T29, assertion 4 — re-applying the same bundle twice is idempotent:
+    /// the device row is created once and the second apply neither errors
+    /// nor duplicates it.
+    #[test]
+    fn reapplying_same_bundle_twice_is_idempotent() {
+        let mut db = Db::open_in_memory_for_tests().expect("open db");
+        repo::upsert_outlet(
+            db.connection(),
+            &model::Outlet {
+                id: "outlet-1".to_string(),
+                brand_id: "brand-1".to_string(),
+                name: "Test Outlet".to_string(),
+                timezone: "Asia/Kolkata".to_string(),
+                config_version: 1,
+                created_at: "2026-09-11T00:00:00Z".to_string(),
+                updated_at: "2026-09-11T00:00:00Z".to_string(),
+            },
+        )
+        .expect("seed outlet");
+
+        let make_bundle = |config_version: i64| ConfigBundle {
+            config_version,
+            users: vec![WireAppUser {
+                id: "u1".to_string(),
+                tenant_id: "t1".to_string(),
+                outlet_id: "outlet-1".to_string(),
+                email: "a@b.com".to_string(),
+                full_name: "A".to_string(),
+                password_hash: "argon2id$fake".to_string(),
+                pin_hash: None,
+                is_active: true,
+                permissions: vec![],
+                config_version,
+            }],
+            roles: vec![],
+            tables: vec![],
+            categories: vec![],
+            items: vec![],
+            device_credentials: vec![WireDeviceCredential {
+                credential_id: "cred-waiter-2".to_string(),
+                device_id: "waiter-device-2".to_string(),
+                tenant_id: "t1".to_string(),
+                outlet_id: "outlet-1".to_string(),
+                credential_hash: "argon2id$waiter-verifier-2".to_string(),
+                device_kind: "WAITER".to_string(),
+                revoked_at: None,
+                expires_at: None,
+                config_version,
+            }],
+            ..Default::default()
+        };
+
+        // Same config_version pulled twice, as a retried /sync/config call
+        // after a transport failure would deliver it.
+        apply_bundle(&mut db, "outlet-1", 0, make_bundle(2)).expect("first apply must succeed");
+        apply_bundle(&mut db, "outlet-1", 0, make_bundle(2)).expect("second apply must succeed");
+
+        let count: i64 = db
+            .connection()
+            .query_row(
+                "SELECT count(*) FROM device WHERE id = 'waiter-device-2'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count");
+        assert_eq!(count, 1, "re-applying the same bundle must not duplicate the device row");
     }
 
     /// The point of the whole fix: a menu item shipped on `/sync/config`
