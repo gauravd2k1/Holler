@@ -243,10 +243,22 @@ only supported way to get there. It must, in order:
    `edge.db` that every run leaves beside it, gap A6), then run the edge
    devseed. sqlite migration 0035 applies here, at this clean bootstrap.
 4. **Assert, and fail loudly on any of them:**
-   - zero rows in `sync_replay_block`
-   - zero rows in `stock_deduction_gap`
-   - zero blocked rows in `local_outbox`
-   - the POS sync banner is empty
+   - zero rows in `sync_replay_block` (ranged-stream give-ups)
+   - zero rows in `stock_deduction_gap` — **not `grn_gap`**. The demo seed
+     legitimately produces one `NO_PURCHASE_ORDER` row in `grn_gap`, because a
+     GRN never blocks on a PO (ADR-019). Asserting zero on that table makes a
+     correct seed look broken.
+   - zero rows in `sync_outbox_block` with `blocked_at` set. **This is what
+     "zero blocked rows in the outbox" actually means** — `local_outbox` carries
+     no blocked flag of its own (contracts 0.6.4), so an assertion written
+     against `local_outbox` has nothing to read.
+   - the POS sync banner is empty. **There is no way to assert this from a
+     database**, so the check queries the closest proxy — `sync_outbox_block`
+     with `blocked_at IS NULL AND attempts >= 3`, which is what the banner reads
+     — and both the tool and the script must say, in their output, that it is a
+     proxy and not an observation of `SyncBlockedBanner.tsx`. A check that
+     claims to have looked at a screen it never opened is worse than one that
+     admits its limit.
 
 `apps/pos/.env.dev` carries the edge encryption key and is deny-ruled to agents,
 so **the operator runs this script.** It must therefore be non-interactive,
