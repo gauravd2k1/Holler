@@ -178,6 +178,47 @@ function Get-KeyFingerprint {
     return (($hash | ForEach-Object { '{0:x2}' -f $_ }) -join '').Substring(0, 12)
 }
 
+# --- T26: caller-environment save/restore -----------------------------------
+# `$env:X = ...` inside this script mutates the CALLING SHELL's process
+# environment, not a scoped copy -- there is no child-process boundary
+# between this script and whatever invoked it with `.\demo-reset.ps1`. A
+# `Remove-Item Env:\X` in a `finally` therefore does not "clean up a local",
+# it deletes whatever the operator's shell had, including a value the
+# operator set before running this script. Every site that needs a variable
+# in the current process (to be inherited by a child like `go run` or `cargo
+# run`) must save the caller's prior value first and restore EXACTLY that in
+# `finally` -- including restoring absence when the caller had not set it,
+# which a bare `Remove-Item -ErrorAction SilentlyContinue` gets right only by
+# accident (it also fires when the caller DID have a value, discarding it).
+# Identical copy of scripts\dev-bootstrap.ps1's two functions -- no shared
+# module between the two owned scripts, kept in sync deliberately.
+function Save-CallerEnv {
+    param([string[]]$Names)
+    $saved = @{}
+    foreach ($n in $Names) {
+        $item = Get-Item -Path "Env:\$n" -ErrorAction SilentlyContinue
+        if ($item) { $saved[$n] = $item.Value } else { $saved[$n] = $null }
+    }
+    return $saved
+}
+
+function Restore-CallerEnv {
+    param([hashtable]$Saved)
+    foreach ($n in $Saved.Keys) {
+        if ($null -eq $Saved[$n]) {
+            # Caller did not have this set. Verified on PowerShell 5.1: both
+            # `$env:X = $null` and `$env:X = ''` remove the variable outright
+            # (Windows process environment has no concept of an empty-string
+            # value distinct from absent), so Remove-Item is not a weaker
+            # substitute here -- it is the same operation, chosen for the
+            # explicit -ErrorAction rather than relying on that equivalence.
+            Remove-Item -Path "Env:\$n" -ErrorAction SilentlyContinue
+        } else {
+            Set-Item -Path "Env:\$n" -Value $Saved[$n]
+        }
+    }
+}
+
 # --- key -----------------------------------------------------------------
 if ([string]::IsNullOrWhiteSpace($DbKeyHex)) { $DbKeyHex = $env:HOLLER_DB_KEY_HEX }
 if ([string]::IsNullOrWhiteSpace($DbKeyHex)) {
@@ -346,12 +387,14 @@ if ($WhatIf) {
 } else {
     Write-Note "running backend devseed (applies migrations, then seeds)..."
     Push-Location (Join-Path $repoRoot "backend")
+    $savedEnv2 = Save-CallerEnv -Names @("DATABASE_URL")
     try {
         $env:DATABASE_URL = $DatabaseUrl
         $seedOutput = go run ./cmd/devseed
         $devseedExit = $LASTEXITCODE
     } finally {
         Pop-Location
+        Restore-CallerEnv -Saved $savedEnv2
     }
     if ($devseedExit -ne 0) {
         Fail-WithAction `
@@ -398,6 +441,9 @@ if ($WhatIf) {
 
     Write-Note "running edge devseed (sqlite migration 0035 applies here, at this clean bootstrap)..."
     Push-Location (Join-Path $repoRoot "edge\database")
+    $savedEnv3 = Save-CallerEnv -Names @(
+        "HOLLER_DB_KEY_HEX", "HOLLER_EDGE_DATA_DIR",
+        "HOLLER_SEED_PASSWORD_HASH", "HOLLER_SEED_PASSWORD", "HOLLER_SEED_BILLING")
     try {
         $env:HOLLER_DB_KEY_HEX = $DbKeyHex
         $env:HOLLER_EDGE_DATA_DIR = $EdgeDataDir
@@ -408,9 +454,7 @@ if ($WhatIf) {
         $edgeSeedExit = $LASTEXITCODE
     } finally {
         Pop-Location
-        Remove-Item Env:\HOLLER_SEED_PASSWORD -ErrorAction SilentlyContinue
-        Remove-Item Env:\HOLLER_SEED_PASSWORD_HASH -ErrorAction SilentlyContinue
-        Remove-Item Env:\HOLLER_SEED_BILLING -ErrorAction SilentlyContinue
+        Restore-CallerEnv -Saved $savedEnv3
     }
     if ($edgeSeedExit -ne 0) {
         Fail-WithAction `
@@ -439,13 +483,14 @@ if ($WhatIf) {
 } else {
     $assertDir = Join-Path $repoRoot "scripts\demo-assert"
     Push-Location $assertDir
+    $savedEnv4 = Save-CallerEnv -Names @("HOLLER_DB_KEY_HEX")
     try {
         $env:HOLLER_DB_KEY_HEX = $DbKeyHex
         $assertOutput = cargo run --quiet --bin demo-assert -- "$EdgeDataDir" 2>&1
         $assertExit = $LASTEXITCODE
     } finally {
         Pop-Location
-        Remove-Item Env:\HOLLER_DB_KEY_HEX -ErrorAction SilentlyContinue
+        Restore-CallerEnv -Saved $savedEnv4
     }
 
     # Report each assertion BY NAME with its actual count, pass or fail --

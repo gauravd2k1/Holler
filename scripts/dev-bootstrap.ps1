@@ -305,6 +305,47 @@ function Get-KeyFingerprint {
     return (($hash | ForEach-Object { '{0:x2}' -f $_ }) -join '').Substring(0, 12)
 }
 
+# --- T26: caller-environment save/restore -----------------------------------
+# `$env:X = ...` inside this script mutates the CALLING SHELL's process
+# environment, not a scoped copy -- there is no child-process boundary
+# between this script and whatever invoked it with `.\dev-bootstrap.ps1`. A
+# `Remove-Item Env:\X` in a `finally` therefore does not "clean up a local",
+# it deletes whatever the operator's shell had, including a value the
+# operator set before running this script. Every site that needs a variable
+# in the current process (to be inherited by a child like `cargo run`) must
+# save the caller's prior value first and restore EXACTLY that in `finally`
+# -- including restoring absence when the caller had not set it, which a
+# bare `Remove-Item -ErrorAction SilentlyContinue` gets right only by
+# accident (it also fires when the caller DID have a value, discarding it).
+# Identical copy of scripts\demo-reset.ps1's two functions -- no shared
+# module between the two owned scripts, kept in sync deliberately.
+function Save-CallerEnv {
+    param([string[]]$Names)
+    $saved = @{}
+    foreach ($n in $Names) {
+        $item = Get-Item -Path "Env:\$n" -ErrorAction SilentlyContinue
+        if ($item) { $saved[$n] = $item.Value } else { $saved[$n] = $null }
+    }
+    return $saved
+}
+
+function Restore-CallerEnv {
+    param([hashtable]$Saved)
+    foreach ($n in $Saved.Keys) {
+        if ($null -eq $Saved[$n]) {
+            # Caller did not have this set. Verified on PowerShell 5.1: both
+            # `$env:X = $null` and `$env:X = ''` remove the variable outright
+            # (Windows process environment has no concept of an empty-string
+            # value distinct from absent), so Remove-Item is not a weaker
+            # substitute here -- it is the same operation, chosen for the
+            # explicit -ErrorAction rather than relying on that equivalence.
+            Remove-Item -Path "Env:\$n" -ErrorAction SilentlyContinue
+        } else {
+            Set-Item -Path "Env:\$n" -Value $Saved[$n]
+        }
+    }
+}
+
 # --- 0. the edge database key ------------------------------------------------
 # Fail here, before any container starts, rather than letting a seeder deeper in
 # the run produce a database under a key the operator never chose. A default was
@@ -468,6 +509,9 @@ foreach ($required in @("HOLLER_OUTLET_ID", "HOLLER_DEVICE_ID", "HOLLER_SEED_EMA
 # into the POS. This step stands in for it.
 Write-Host "`n[3/4] seeding the encrypted edge database..." -ForegroundColor Cyan
 Push-Location (Join-Path $repoRoot "edge\database")
+$savedEdgeEnv = Save-CallerEnv -Names @(
+    "HOLLER_DB_KEY_HEX", "HOLLER_EDGE_DATA_DIR",
+    "HOLLER_SEED_PASSWORD_HASH", "HOLLER_SEED_PASSWORD", "HOLLER_SEED_BILLING")
 try {
     $env:HOLLER_DB_KEY_HEX = $DbKeyHex
     $env:HOLLER_EDGE_DATA_DIR = $EdgeDataDir
@@ -481,9 +525,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "edge devseed failed" }
 } finally {
     Pop-Location
-    Remove-Item Env:\HOLLER_SEED_PASSWORD -ErrorAction SilentlyContinue
-    Remove-Item Env:\HOLLER_SEED_PASSWORD_HASH -ErrorAction SilentlyContinue
-    Remove-Item Env:\HOLLER_SEED_BILLING -ErrorAction SilentlyContinue
+    Restore-CallerEnv -Saved $savedEdgeEnv
 }
 
 # --- 3b/3c. sync + KDS device credentials (ADR-020, T15) ---------------------
