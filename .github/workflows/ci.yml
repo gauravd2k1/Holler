@@ -269,6 +269,13 @@ jobs:
           node scripts/assert-tests-ran.mjs cargo -- cargo test --manifest-path edge/sync/Cargo.toml
           node scripts/assert-tests-ran.mjs cargo -- cargo test --manifest-path edge/printer/Cargo.toml
           node scripts/assert-tests-ran.mjs cargo -- cargo test --manifest-path edge/device/Cargo.toml
+      # seed/demo-outlet.json is GENERATED, never hand-edited (seed/README.md).
+      # This regenerates it from edge/database/src/bin/devseed.rs --emit-json
+      # and fails the build if the committed file differs -- a hand-edit of
+      # the derived half is exactly the drift the two-seeder split repeated
+      # for a factor of twenty before this file existed.
+      - name: seed/demo-outlet.json matches the emitted catalogue
+        run: node scripts/check-seed-drift.mjs
 
   # M4 acceptance criterion 2: "kill the POS between confirm and deduction ->
   # order and ledger agree on reopen", judged against the crash rather than
