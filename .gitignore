@@ -58,3 +58,5 @@ Thumbs.db
 # regenerated on demand. Editor tooling, not repo content.
 /.github/copilot-instructions.md
 /.github/instructions/
+
+.scenario-results/
