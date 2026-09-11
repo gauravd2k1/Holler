@@ -175,263 +175,286 @@ trigger named `..._on_update` is not read as a Beckn callback.
 
 Two cross-cutting rules the 0.4.x line established the hard way: contract-shaped changes cascade across crates that do not share a cargo workspace (see `docs/retro.md` 2026-08-15), so run `make check-seams` after changing any `pub` signature in `edge/` or `apps/pos/src-tauri`; and a migration that exists on disk but is absent from `edge/database/src/migrations.rs`'s `MIGRATIONS` list **never applies** — 0009–0011 sat dead for exactly that reason, and 0005 before them.
 
-## Current milestone: MILESTONE 6 — Sync gaps, back office, aggregator framework
+## Current milestone: MILESTONE 6 — Sync gaps, back office, aggregator framework (CLOSED); current work: DEMO BUILD
 <!-- MILESTONE-MARKER: 6 -->
 
 <!-- Checked by scripts/check-milestone-marker.mjs against .claude/current-milestone.
      This block said "MILESTONE 2 — Kitchen" for the whole of M3: every M3 builder
      loaded M2's scope and M2's EXCLUDES as primary context and nothing noticed for
-     an entire milestone. The marker exists so that cannot recur silently. -->
+     an entire milestone. The marker exists so that cannot recur silently.
 
-Planning reasoning and the approved cut: `docs/m6-planning.md` — read it first, it
-is the only file a fresh session is guaranteed to read. Authority decision:
-`docs/adr/ADR-022-aggregator-order-authority.md`, **PROPOSED — escalate before a
-single aggregator table is drawn.** The closed milestone and its carry-forward
-list: `docs/m5-acceptance.md`. **Every deferred item lives in `docs/backlog.md`,
-the single register.** **The repo is the authority** — where a plan document and
-the repository disagree, the repository wins, and say so out loud before acting.
+     The marker stays at 6 deliberately. The demo build is not a numbered milestone
+     and the check demands a bare integer; retitling this block rather than widening
+     the guard was the ruling (2026-09-11). M6 itself is CLOSED and tagged
+     `m6-complete` — its record is in "Completed milestones" below and in
+     `docs/m6-acceptance.md`. Everything under "Scope" from here down is the DEMO
+     BUILD, and it is what binds a builder today. -->
 
-**Contracts stay FROZEN at v0.6.3 through Phase A. 0.7.0 lands only after Phase A
-is green**, because A1–A3 change the outbox the aggregator tables will ride on and
-bumping contracts across a wedged outbox buries the same defect twice.
+**The brief is `docs/demo-kickoff.md` and it is the first thing to read.**
+Purpose is a **client demo**: presentability and reliability of **what already
+exists**. **No new features beyond the one named exception below, no M6.1, no
+pilot-only work.** `docs/pilot-readiness.md` stays untouched, and an item being
+on it is not a reason to do it now. **Report demo blockers only.**
 
-### Scope — three deliverables, in this order, ~5–6.5 weeks
+**The repo is the authority** — where a plan document and the repository
+disagree, the repository wins, and say so out loud before acting.
 
-**⚠ STATUS 2026-09-07 — PHASE A IS CLOSED AND M6 C7 IS CLOSED. READ
-`docs/M6 kickoff.md` FIRST, THEN `docs/m6-acceptance.md`. DO NOT RE-RUN C7 AND DO
-NOT RECONSTRUCT ITS VERDICT FROM GIT HISTORY.** Phase A closed with **five of
-seven landed — A1, A1b, A2, A3, A5 — and three carried: A4, A6, A7**, each in
-`docs/backlog.md` with the trigger *before the first pilot*. **Never report it as
-"Phase A complete".** A7 is not cosmetic: **78 rows on the live edge database
-have no route and can never be sent** (55 `kot`, 22 `stock_count`, 1 `invoice`,
-measured 2026-09-07), so the `order` stream replays end to end and nothing else
-replays at all — **A7 must close before any aggregate beyond `order` is expected
-to replay in Phase C.** M6 C7 was observed on the shipping binaries on
-2026-09-07; M6 C3 is still open (its falsifier needs the pre-fix binary).
-**Next work is Phase B, `apps/admin`.** The table below is the ORIGINAL PLAN,
-kept for its reasoning; the state of each row is above.
+**One standing prohibition is REVERSED for this work: seeding the cloud's
+catalogue is now ALLOWED.** The M5/M6 prohibition existed to stop the P2/P3/P5
+defects being hidden by a seeded cloud; those are fixed, so the ruling is lifted
+and seed parity across cloud and edge is the first item of work. Read that
+deliberately rather than from memory.
 
-**Phase A — the seven sync gaps carried out of M5 (~1 week, NO contract change).**
-Sync before aggregators: aggregator orders ride the same outbox that is wedged
-today. Addressed in this order.
+**Contracts stay FROZEN at v0.8.1. The demo build requires NO contract change**
+— and a builder proposing one has found either a real blocker to escalate or a
+scope leak. `WAITER` already exists in `device.kind`; `order.source` stays
+`POS`.
 
-| ID | Gap | Work |
+### Three facts about the live stack that will otherwise waste an hour
+
+- **sqlite 0035 has NOT been applied to the live edge database.** Postgres has
+  it. The edge takes it at the next clean bootstrap, which the demo seed work
+  does anyway. Nothing writes the two new `order.source` members, so the lag
+  changes no behaviour.
+- **Thirteen rows are permanently blocked in the live edge outbox, and they are
+  M6 C3's FIXTURE, not a fault.** Each is `missing_reference (HTTP 422)` on the
+  variant foreign key. The demo's clean reseed clears them. **Do not clear them
+  by seeding only the cloud's catalogue against the current edge database** —
+  that makes the symptom vanish while leaving the underlying gap unfixed
+  (`docs/m6-phase-c-boundary.md` §3.1).
+- **No exit path on this build seals the edge database.** Neither a window close
+  nor `Ctrl+C` fires `RunEvent::Exit`, so a plaintext `edge.db` is left beside
+  the `.enc` every time, and the `.enc` is only as current as the last
+  successful seal. That is gap A6, it blocks a pilot, and it is why no
+  trustworthy backup can be taken before a risky migration.
+
+### Carried out of M6, still live, still binding
+
+- **Phase A closed with FIVE of seven gaps landed — A1, A1b, A2, A3, A5 — and
+  THREE carried: A4, A6, A7. Never report it as "Phase A complete".**
+- **A7 is the one that matters: 78 rows on the live edge database have no route
+  and can never be sent** (55 `kot`, 22 `stock_count`, 1 `invoice`, measured
+  2026-09-07). `edge/sync/src/route.rs` maps only `order` and `table_session`.
+  **The `order` stream replays end to end; nothing else replays at all.** The
+  demo story does not depend on any other stream replaying — do not read a KOT
+  or an invoice failing to reach the cloud as a new defect.
+- **M6 C2 is PARKED**, trigger *any platform sandbox access granted*. M6 closed
+  with it parked, deliberately. Do not re-run any M6 criterion and do not
+  reconstruct a verdict from git history.
+
+### Scope — the demo story, in order
+
+The six steps the client is shown, plus the one approved addition:
+
+1. Dine-in order at the till with a modifier, KOT on the KDS, kitchen bumps it.
+   **1a (APPROVED ADDITION, see below): an order placed from the waiter's phone
+   appears on the KDS and the hub.**
+2. Bill: GST invoice, split cash + UPI, receipt printed to PDF and opened on
+   screen.
+3. Stock screen: ingredients deducted per recipe from that sale; low-stock
+   warning visible.
+4. Stop the cloud. Take and bill another order. Restart the cloud. Banner
+   clears, order appears in admin.
+5. Admin: orders, the received GRN, stock variance.
+6. Optional, only if clean three times: fake ONDC order arrives, accepted on the
+   till, billed.
+
+### Work items, in order
+
+The authoritative list is `docs/demo-kickoff.md`. Summarised, with the rulings
+made on 2026-09-11:
+
+| # | Work | State |
 |---|---|---|
-| **A1 / P2** | Cloud returns **500 for a client-data failure** — an FK violation on a replayed order falls through to `httpx: unhandled error` | Map `23503` to **4xx with a reason the edge can record**, at the `httpx` boundary. Then audit every ingest path — **enumerate the SINKS, not the handlers**: every `httpx.Error`-returning path per bounded context. `23503` is mapped nowhere; `23505` in five contexts. This defect was found by accident |
-| **A1b / P2 follow-on** | Two more ingest paths report a client-data failure as **500**, each with a named consequence | `kitchen.InsertKot` carries `order_id` — an order the cloud rejects also produces a **KOT that can never land**. `payments.InsertPayment` carries four foreign keys and `payment` is **append-only in both stores**, so a wedge strands money movements with nothing correcting them. **Own red-then-green each.** The other ten unclassified sinks are filed in `docs/backlog.md`; the enumeration is `docs/m6-a1-sink-audit.md` |
-| **A2 / P3** | **Head-of-line blocking** — one unreplayable row strands the whole outbox | `worker.rs:66-70` states the ordering requirement is **per-aggregate, not global**. The drain skips past a blocked aggregate and continues |
-| **A3 / P4** | Retry budget **never spends on 5xx-classified rows** | **Counting and blocking are different decisions**: every attempt increments; classification decides only whether the row *blocks*. Add an age-or-attempt ceiling above which even a transient-classified row is **surfaced to a human**. The general outbox has no per-entry budget at all today; procurement and ranged both do |
-| **A4 / P6** | `Offline` conflates four states: no listener, listening-but-refused, stale pooled socket, answered-with-error | Transport half landed at `262e03a`. **Reporting half only** — reuse the three-probe fail-closed logic in `scripts/check-cloud-unreachable.ps1`, never a second weaker version |
-| **A5 / P5** | **No periodic sync pump** — the drain runs at startup and shutdown only, so an abnormal exit means the day never leaves the till | A timer calling the already-bounded `AppState::drain_outbox` |
-| **A6 / P7** | The shutdown drain is **silent on success and failure in at least some builds** | The drain does `eprintln` (`state.rs:298`) and its lines have been observed. **Establish which build/attach state loses them** — a different fix from adding a log line |
-| **A7 / P1** | ~120 rows pending since M1 with **no edge route** | Routes and envelope fields for `kot`, `invoice`, `payment`, `cash_shift`, `stock_count` and item availability. `edge/sync/src/route.rs` maps only `order` and `table_session`; the cloud ingest routes already exist, so this is an edge resolver and envelope job, not a backend build |
+| **0** | `apps/captain` — go/no-go | **GO, REDUCED, WITH A CUT-OFF.** See below |
+| **0b** | UPI QR for the bill amount on the invoice screen and the PDF receipt | In scope |
+| **1** | **Seed parity** — ONE seed source loads identical menu, variants, recipes, inventory, supplier into BOTH cloud and edge. Bootstrap the edge from that clean seed (0035 applies here). **Assert after seeding: zero blocked rows, zero deduction gaps, banner empty** | First work, everything depends on it |
+| **2** | Demo seed content — outlet with a real name and GSTIN-shaped placeholder, ~40 items with real prices, ≥10 recipes, opening stock for every ingredient, one supplier, one GRN received. **One command resets cloud + edge to this state** | With item 1 |
+| **3** | Receipt — report what the file-sink emits today. If raw ESC/POS, add a rendered receipt (HTML→PDF or plain text) written beside it and opened on print, **same content as the bytes** | |
+| **4** | Sync banner readable — full width, order id + item + reason legible from a metre | |
+| **5** | Offline tick — if the till is visibly sluggish with the cloud down, widen the pump interval via config for the demo build **and record it** | |
+| **6** | Presentability — window title and icon; **no dev labels, raw UUIDs or internal notes** on till, KDS or admin screens; IST timestamps; consistent naming. List every screen the story touches; screenshot each | |
+| **7** | `docs/demo-script.md` — the six steps with exact clicks, expected screen and fallback. Include the cloud stop/start commands for step 4 | Tuesday |
+| **8** | **Three full rehearsals from a clean reset, each timed.** Each failure fixed or the step cut. Record one clean run | Tuesday |
 
-**HARD SEQUENCING RULE: do not touch the cloud/edge menu seed drift (cloud has 2
-`menu_item` rows, edge seeds 43) until A1 and A2 are closed and their tests are
-RED-THEN-GREEN.** That drift is **the stimulus, not the defect**. Seeding the
-cloud makes the 500 disappear, makes the drain look healthy, and **ships both
-defects looking like a fix.**
+### Item 0 — `apps/captain`, APPROVED REDUCED SCOPE
 
-**THE A1→A3 SEQUENCING INVARIANT: at no commit boundary may an order become
-droppable with no operator trace.** A1 maps `23503` to **422 `missing_reference`**;
-A3 gives the general outbox the per-entry budget and the surfacing it has never
-had. Until A3 lands, nothing shows a human a permanently-rejected general-outbox
-row, so a row that dies in between dies silently. **A1 lands alone and HOLDS the
-row**, with a test asserting the row is **held,
-not rejected**. **A3 adds the budget and the surfacing to the general outbox**,
-asserting **permanent-and-surfaced** instead. **The two tests are mutually
-exclusive, so A3 cannot go green while A1's behaviour survives** — forced
-removal, not remembered removal. **Correction made while implementing A1
-(2026-09-03): the planned `422` carve-out in `is_permanent_rejection` was NOT
-written.** That function has two callers, `ranged.rs:209` and
-`procurement.rs:248`, and the general outbox is neither — `pump_outbox` holds a
-rejected row whatever the status — while adding the carve-out would have
-regressed the two RANGED streams, which already block-and-surface a `422`
-correctly (`sync_replay_block`; procurement blocks on the same classifier but
-records it in `local_outbox.attempt_count` plus an in-memory report, not that
-table). A1's edge half is therefore a test, not a behaviour change. Interim states, none dropping an order: today loud wedge → after A1 held
-and still wedging → after A2 skipped and retained → after A3 rejected, budget
-charged, surfaced. **After A2 the row is retained but NOT visible — A2's commit
-message must not claim visibility.** **M6 C7 closes at the end of A3, not A1**: its
-falsifier requires "reason stored, row surfaced", and no throwaway persistence is
-written in A1 to close it early.
+**Why it overrides "it is not in the six steps":** the client's mental model is
+**device-at-table → hub → kitchen**. Without it the demo shows him what he
+already has. That is the purpose; a build that satisfies the words below while
+missing it has missed the item.
 
-**Phase B — `apps/admin` (~1.5–2 weeks).** A new Vite + React + TypeScript +
-TanStack application; the directory is empty and has never existed. Menu and
-pricing, suppliers and pack sizes, purchase orders, staff and permissions,
-goods-receipt list. Admin precedes aggregators because C5 needs it and because
-aggregator menu push needs a menu surface that is not `devseed`.
+**Scope, nothing more:**
+- `apps/captain`: **pair** (paste token once, `localStorage`), **tables**,
+  **menu + cart**, **send**. **No bill screen. No payment. No modifiers unless
+  free.**
+- POS HTTP listener on `HOLLER_CAPTAIN_BIND_ADDR` serving `dist` + a JSON API;
+  **WAITER verifier**; **`device_id` override on create/add**;
+  **`make check-seams` mandatory** — the override changes `pub` signatures
+  across crates that do not share a cargo workspace.
+- **`order.source` stays `POS`.** Not `TABLE_TAB` — that is ADR-025's customer
+  tab, M8, and `scripts/check-order-source-drift.mjs` fails the build if
+  anything emits it.
 
-**Phase C — the aggregator layer, STAGE 1 ONLY (2.5–3.5 weeks).** Framework, two
-working adapters, drift check, Beckn message surface. **NOT a live channel on any
-platform.** "Aggregators done" must never be read as "orders arriving from
-Swiggy". The framework is the durable asset; ONDC is the forcing function that
-proves it carries an async protocol; the channels arrive when access does.
+**The JSON API is written as a document BEFORE any code**, so the frontend and
+the Rust listener can be built in parallel from one agreed shape.
 
-**Phase D — Network Participant paperwork. Runs from week one, in parallel.**
-Legal entity, whitelisted domain, SSL certificate, public HTTPS callback host.
-Calendar-bound, consumes no engineering time, owned by Gaurav. It sets **M6.1's
-start, not M6's close** — nothing in M6 waits on it, everything in M6.1 does.
+**CUT-OFF: Monday 18:00 IST.**
+- **Pass** = a WAITER device enrolled, a real phone on our hotspot places an
+  order that reaches the KDS **and** the hub, **three times from a clean
+  reset**.
+- **Fail** = captain is **cut**, step 1a is removed from the demo script, and
+  **no further work on it**.
+- Either way, **Tuesday is items 7–8 only**: script, three timed rehearsals,
+  then the recording.
 
-### The two-stage cut — DECIDED, applied at 949f658
+Security gate review for a LAN-facing device stays **filed for pilot**; the demo
+runs on our own hotspot.
 
-One principle applied twice: **build what a published schema can verify; defer
-what only a live registry can verify.**
+### Facts a builder needs for item 0, already established (2026-09-11)
 
-- **Stage 1 (M6):** framework, both adapters, drift check, Beckn message surface
-  — all driven by published schemas, so a schema-generated fake genuinely checks
-  them.
-- **Stage 2 (M6.1, 1.5–2.5 wk):** Ed25519 signing, registry subscribe and the
-  `on_subscribe` X25519 challenge, and the public HTTPS callback ingress.
-  Recorded reason: *a self-authored counterparty cannot falsify a signature
-  scheme; it can only agree with it.*
-- The **ingress security gate** moved under M6.1 in full rather than being
-  deleted, so it is not rediscovered. **In M6 nothing is exposed publicly at
-  all.** But **the callback RECEIVE PATH IS BUILT IN M6 and is reachable locally
-  only** — what defers is the public HTTPS ingress and its security gate. Read
-  the other way, a builder removes the async shape and having two adapters stops
-  proving anything.
-- **Certification (2–8 wk) is outside both milestones**, a named gate in
-  `docs/backlog.md` with the trigger *"ONDC NP certification granted"*. A
-  milestone whose close depends on someone else's review queue stops closing.
+Established by inspection, not recall — cite the file, not this summary:
+- The LAN server is **embedded in the POS process**
+  (`apps/pos/src-tauri/src/state.rs:231,722`), not a sidecar.
+  `edge/device/src/bin/kds_lan_server.rs` is a second, standalone launcher of
+  the same library.
+- It is **WebSocket only over a raw `TcpListener` + `tungstenite`** — **no HTTP,
+  no static file serving** (`edge/device/src/server.rs`). Default bind
+  `0.0.0.0:9310`, plaintext, `HOLLER_LAN_BIND_ADDR`.
+- Its only inbound command is **`set_kot_status`**
+  (`edge/device/src/contract.rs:165`). **There is no order create or append on
+  the LAN surface today.**
+- **`WAITER` is already a valid `device.kind`** in the frozen contract
+  (`packages/contracts/src/types/identity.ts:203`,
+  `backend/internal/outlet/device.go:18`). **No contract change is needed.**
+  ADR-025's unbuilt `table_device` kind is the *customer* tab and is NOT this.
+- `CachedCredentialVerifier::new(db, expected_device_kind, fallback)` is already
+  parameterised; the POS passes `"KDS"` (`state.rs:735`). A second verifier
+  passes `"WAITER"`.
+- Every operation the captain needs already exists as a plain
+  `fn ..._impl(&AppState, …)` with no Tauri coupling: `list_tables_impl`,
+  `get_open_table_session_impl` (`commands/tables.rs`); `list_menu_items_impl`
+  and friends, `is_available` on the row (`commands/menu.rs`);
+  `create_order_impl`, `add_order_item_impl`, `get_order_impl`
+  (`commands/orders.rs`); `send_order_to_kitchen_impl`
+  (`commands/kitchen.rs:232`).
+- **`add_order_item_impl` is already legal through DRAFT / CONFIRMED /
+  SENT_TO_KITCHEN / PREPARING** (`#132-A`). Append-after-send is solved, not new
+  work.
+- `tiny_http` is present in `apps/pos/src-tauri/Cargo.toml` as a
+  **dev**-dependency only. Serving `dist` means promoting it to a real
+  dependency.
+- **The known trap:** `create_order_impl` / `add_order_item_impl` attribute to
+  `state.device_id` — the **till**. Without the override every captain order is
+  recorded as authored by the till, and that reads correctly on every screen.
 
-### §50.1 authority for aggregator orders — two aggregates, not one (ADR-022)
+### EXCLUDES — demo build
 
-`aggregator_order` is **cloud-authoritative, syncs down** — an inbound document
-from a system the till cannot receive directly. `order` stays
-**edge-authoritative, syncs up**, created from it and linked by
-`external_order_id`. One aggregate switching authority by channel is split
-authority, and it would mean a delivery-heavy outlet could not bill an aggregator
-order offline. Published guarantee: **a new aggregator order cannot arrive while
-the uplink is down; one that has already arrived is fully operable offline.**
+**No new features** beyond item 0's reduced scope and item 0b. In particular:
 
-### Four conditions on the adapters — binding
+- **No M6.1 work of any kind** — no Ed25519 signing, no registry subscribe, no
+  public HTTPS ingress, no ONDC staging integration.
+- **No pilot-only work.** `docs/pilot-readiness.md` is untouched. An item
+  appearing on it is not a reason to do it now. That includes **A4, A6 and
+  A7** — do not fix them for the demo.
+- **No contract change.** Contracts are FROZEN at v0.8.1 and the demo needs
+  none.
+- **Captain: no bill screen, no payment, no modifiers unless free**, no customer
+  tab, no `table_device` principal, no `TABLE_TAB` source.
+- **No re-running of any M6 acceptance criterion** and no reconstructing a
+  verdict from git history.
+- Still out, as they were in M6: reporting depth (M7); multi-outlet and central
+  kitchen, `TRANSFER_IN`, goods-in-transit (M8); captain/CRM/loyalty and the
+  waiter Flutter app (M9) — **`apps/captain` is a LAN web page, NOT the M9
+  Flutter waiter app**; batch and expiry alerting; menu-engineering analytics;
+  supplier accounts posting, credit application and payment settlement (M7); **a
+  live channel on any aggregator platform**.
 
-1. Placeholders **fail loudly** — `PlatformNotImplemented` at the first line,
-   never a success, never a no-op, never selectable by default.
-2. **Two working adapters, not one.** A one-adapter abstraction is
-   indistinguishable from no abstraction. ONDC (async callback) plus a local
-   sync-REST fake proves the contract carries both shapes.
-3. **Evidence separation:** the fake proves **shape**, ONDC staging proves
-   **integration**. Two rows in the acceptance file, never one. With staging cut
-   to M6.1, the integration row travels with it as an explicitly unmet row.
-4. **Structural boundary:** a drift check fails the build if `swiggy`, `zomato`,
-   `ondc`, `beckn`, `on_*` or the signing header names appear outside their
-   adapter module.
-
-**The Beckn fake must be GENERATED FROM ONDC's PUBLISHED ARTEFACTS** — official
-schemas, example payloads, reference flows, layer-2 config — each cited with
-source and version in the fake's header. A hand-written fake proves only that we
-agree with ourselves: a test that constructs its own subject, arriving in the one
-place with no external check for six weeks. If the artefacts cannot be obtained,
-the adapter and C8's evidence are labelled **"unverified against the
-specification"**.
-
-### Acceptance criteria — APPROVED
-
-**THESE ARE M6 CRITERIA. "C1".."C8" IN ANY M6 CONTEXT MEAN THE ROWS BELOW, NEVER
-M5's.** M5's seven are closed in `docs/m5-acceptance.md`; **its criterion 6 must
-not be re-run**, and its criterion 7 (weighted average cost) is a different thing
-entirely from **M6 C7** (a client-data failure reported as 4xx). Write **"M6 C7"**
-in full whenever the number appears in a prompt or a report.
-
-Every criterion names **the observation and the falsifying condition**, and **the
-falsifying condition is watched failing BEFORE the fix** (§66) — precondition
-scripts included. None may be evidenced by a test harness: an acceptance run
-exercises the binaries that ship.
-
-| # | Observation | Falsifier — watched FIRST |
-|---|---|---|
-| **C1** | An aggregator order already received **bills, prints and closes with the cloud provably unreachable** | `scripts/check-cloud-unreachable.ps1` watched printing STOP with the cloud up, then all three probes agreeing with the backend stopped **by PID** |
-| **C2** | **ONDC-ONLY and PARKED** behind the trigger *"when any platform sandbox access is granted"*. A till stock-out snoozes the item **on ONDC staging**, observed on ONDC's own surface | Would be: snooze with the push path disabled → the platform still shows the item available. **Never evidence a snooze from our own log — that is a criterion that cannot fail.** M6 closes without it rather than with a fake pass |
-| **C3** | A permanently-rejected outbox row **blocks itself and not its neighbours** | The same fixture on the **pre-fix** binary strands the neighbours; neighbour counts recorded both times |
-| **C4** | An order placed offline **reaches the cloud without the operator closing the application** | `taskkill` the app so `RunEvent::Exit` never fires → the row is still pending; then the pump lands it with the window open. This falsifier **retires the abnormal-exit question (A6's sibling) at the same time** |
-| **C5** | A supplier and pack size created in the admin console makes the next receipt **convert exactly and raise no `NO_SUPPLIER_ITEM`** | Receive **before** creating them → gap recorded, so its absence afterwards means something |
-| **C6** | A goods receipt is **readable back in-product** with its line quantities and totals | Field-by-field against the edge row, with a fixture that **populates every provenance field** (contracts 0.5.9's lesson) |
-| **C7** | A client-data failure is reported as **4xx with a reason the edge records** | Replay an FK-violating row on the **pre-fix** binary → 500, budget uncharged; after → 4xx, reason stored, row surfaced. Added during planning because **A1/P2 is the milestone's first defect and nothing else observes it** |
-| **C8** | An aggregator order flows end to end through **BOTH adapters** — the ONDC/Beckn adapter against the **artefact-generated Beckn fake**, the second against the local sync-REST fake — **with no branch on platform identity in the core** | **Introduce a platform-specific branch in the core and watch the drift check go RED**, then remove it. A boundary check nobody has watched fail is not a boundary |
-
-**M6 C8 IS SHAPE-ONLY, AND THE ACCEPTANCE FILE MUST SAY SO IN THOSE WORDS.** Both
-adapters run against fakes we authored, so C8 proves the **contract shape twice
-and the integration zero times**. It is recorded as `SHAPE ONLY — no integration
-evidence`, and **the integration row travels to M6.1 as an explicitly UNMET row
-(M6.1 C1)** — carried, never merged into C8. The artefact-generated fake is the
-strongest available check on shape and the weakest possible check on integration;
-both halves of that sentence go in the acceptance file.
-
-**M6.1 carries three criteria** — C1 integration against ONDC staging, C2 every
-enumerated signature-verification failure mode rejected by the public ingress
-(each watched failing first), C3 duplicate and out-of-order `on_*` callbacks
-handled per the recorded decision. Its close condition: all three observed, the
-ingress security gate reviewed against traffic it did not generate, and
-`aggregator_order` documents arriving from the real registry. **Certification is
-not M6.1's close condition.**
-
-### FUTURE SCOPE, RECORDED SO IT IS NOT READ AS M6 WORK
-
-**Table-side ordering (customer tab) — ADR-025, PROPOSED 2026-09-10.** Some
-outlets will put a tab on each table so customers order directly; others stay
-staff-ordered, and **both modes must coexist within one outlet**. The shape is
-decided and written down — the tab is a **LAN client of the till like the KDS,
-never a cloud client** (orders are edge-authoritative and table ordering must
-work with the uplink down); a new **`table_device` principal kind** enforced at
-the **LAN boundary, not in the tab's UI**; `ordering_mode`/`tab_enabled` as
-cloud config; binding rides the existing `table_session` with **no new
-aggregate**; and the tab is **append-only**, which is what makes per-aggregate
-ordering sufficient against tab-versus-waiter edits. **No code exists and none
-is M6 scope.** Landing proposed for **M8**, trigger *after the first pilot runs
-on `STAFF_ONLY`*; prerequisites are A7, the `order.source` widening, the LAN
-security gate review for a public-facing device, and that pilot. The eight
-follow-ups are in `docs/backlog.md`; the architecture section is in
-`docs/architecture/SYSTEM_ARCHITECTURE.md`.
-
-### EXCLUDES
-
-Reporting depth (M7); multi-outlet and central kitchen, `TRANSFER_IN` and
-goods-in-transit (M8); captain app, CRM and loyalty (M9); the waiter app (M9);
-batch and expiry **alerting**; menu-engineering analytics and food-cost
-dashboards; supplier accounts posting, credit application and payment settlement
-(M7); **a live channel on any aggregator platform** — that is what certification
-buys and neither M6 nor M6.1 delivers one.
-
-### Standing rules added or re-stated this milestone
+### Standing rules that still bind
 
 - **A milestone does not close until its acceptance evidence is committed to the
   repository. The chat is not the record.**
 - **A test invocation reporting zero tests executed is a FAILURE, not a pass.**
-  Run test commands through `node scripts/assert-tests-ran.mjs <cargo|go|vitest>
-  -- <command>`; never pipe a test command through `tail`, which reports `tail`'s
-  status. The audit itself is **DONE at `1b51df0`**, not outstanding — three
-  runners probed empirically, the guard wired into 13 CI steps, every suite count
-  re-measured. **Its one residue is Playwright** (`pnpm test:e2e`, KDS), whose
-  summary format the guard does not parse, already filed in `docs/backlog.md`
-  with an M6 trigger.
+  Run test commands through
+  `node scripts/assert-tests-ran.mjs <cargo|go|vitest> -- <command>`; never pipe
+  a test command through `tail`, which reports `tail`'s status.
 - **The backend runs in its OWN WINDOW** via `scripts/dev-up.ps1`, never as a
-  session-owned background process — that interfered with acceptance evidence in
-  M5. **Step 0 of any acceptance run verifies it by PID, not by the port
-  answering.**
-- **Criteria depending on external grants are identified at planning time with
-  triggers up front**, never discovered mid-milestone. Three so far: the ESC/POS
-  hardware gate, the bare-4GB VM run, and platform sandbox access (C2).
+  session-owned background process. **Step 0 of any run verifies it by PID, not
+  by the port answering.**
 - **Escalate immediately:** anything that changes a frozen contract, changes what
-  a stored number means, crosses the §50.1 authority split, or trades a criterion
-  for scope.
+  a stored number means, crosses the §50.1 authority split, or trades a demo
+  step for scope.
 
-### Unresolved, recorded, blocking nothing
+### Rebuilding the stack from cold
 
-The ~120 pending-row count and the `GRN/20260902` ordinal reconciliation — Docker
-and Postgres are down and the edge DB is encrypted. The SQL for both stores is
-recorded in `docs/m6-planning.md`; both stay **UNRESOLVED** until Docker is up.
-Platform access: no partner relationship with Swiggy, Zomato or ONDC yet; all
-three tracks start in parallel and ONDC is the only one without a gatekeeper.
+1. `docker compose up -d postgres redis nats` — **not** `make dev`, and not a
+   bare `docker compose up`: the compose file's `backend` service fails to build
+   (`go build -o /out/api ./cmd/api` exits 1) and is not used here. Docker
+   Desktop does not autostart on this box.
+2. Backend in its own window:
+   `.\scripts\dev-up.ps1 -SkipInfra -SkipSeed -NoKds -NoPos`, then record the
+   **NEW** pid.
+3. POS, from a terminal the operator owns; a Tauri window launched from a tool
+   with redirected stdio never appears: `.\apps\pos\run-dev.ps1`, sign in
+   `cashier@holler.test` / `holler123`.
+4. Admin console: `cd apps\admin` then `pnpm dev`, `http://localhost:5175`, sign
+   in `owner@holler.test` / `holler123`.
+
+`apps\pos\.env.dev` is deny-ruled to the agent because it carries the edge
+encryption key, so **the operator runs anything that needs it**, including the
+bootstrap and the device token.
+
+### FUTURE SCOPE, RECORDED SO IT IS NOT READ AS DEMO WORK
+
+**Table-side ordering (customer tab) — ADR-025, PROPOSED 2026-09-10.** Some
+outlets will put a tab on each table so customers order directly; others stay
+staff-ordered, and **both modes must coexist within one outlet**. The tab is a
+**LAN client of the till like the KDS, never a cloud client**; a new
+**`table_device` principal kind** enforced at the **LAN boundary, not in the
+tab's UI**; `ordering_mode`/`tab_enabled` as cloud config; binding rides the
+existing `table_session` with **no new aggregate**; the tab is **append-only**.
+**No code exists and none is demo scope.** Landing proposed for **M8**, trigger
+*after the first pilot runs on `STAFF_ONLY`*. `apps/captain` is a **staff**
+device and does not implement any part of it.
 
 ### PARKED — decided, do not re-raise
 
-Both are hardware gates. **Parked 2026-08-20, revisit ~2 September 2026.** A fresh session should read these as settled, not as open questions, and must not re-litigate them:
-- **ESC/POS on paper** — an M3 exit gate. No printer exists in this environment; one is being sourced. The file-sink transport proves the byte stream, not that a device accepts it.
-- **Bare 4GB Windows 10 VM run** — ADR-013. The installer half is done (`bundle.windows`, offline WebView2 embed, static CRT, NSIS-only); the VM run itself needs a machine nobody has provisioned yet. `docs/adr/ADR-013-outlet-deployment-target.md` carries the addendum and the named fallback.
+Both are hardware gates. **Parked 2026-08-20.** A fresh session should read these
+as settled, not as open questions, and must not re-litigate them:
+- **ESC/POS on paper** — an M3 exit gate. No printer exists in this environment;
+  one is being sourced. The file-sink transport proves the byte stream, not that
+  a device accepts it. **Demo work item 3 renders a receipt beside those bytes;
+  that does not close this gate.**
+- **Bare 4GB Windows 10 VM run** — ADR-013. The installer half is done
+  (`bundle.windows`, offline WebView2 embed, static CRT, NSIS-only); the VM run
+  itself needs a machine nobody has provisioned yet.
+  `docs/adr/ADR-013-outlet-deployment-target.md` carries the addendum and the
+  named fallback.
 
 ### Completed milestones
+
+**M6 Sync gaps, back office, aggregator framework** is **CLOSED and tagged
+`m6-complete`** (2026-09-11) at contracts v0.8.1. **Seven of eight criteria
+observed on the shipping binaries: C1, C3, C4, C5, C6, C7, C8** — evidence in
+`docs/m6-acceptance.md`, handover in `docs/m6-phase-c-boundary.md`. Record it
+honestly, in these three parts:
+- **M6 C8 is `SHAPE ONLY — no integration evidence`.** Both adapters run against
+  fakes we authored, so it proves the contract shape twice and the integration
+  zero times. Its integration half travels to M6.1 as an explicitly UNMET row
+  (M6.1 C1), carried and never merged into C8.
+- **M6 C2 is PARKED and M6 closed WITH it parked, deliberately.** Trigger: *any
+  platform sandbox access granted*. It cannot be evidenced from our own logs —
+  "never evidence a snooze from our own log" is the criterion's own wording — so
+  M6 closed without it rather than with a fake pass.
+- **Phase A closed FIVE of seven: A1, A1b, A2, A3, A5 landed; A4, A6, A7
+  carried**, each in `docs/backlog.md` and `docs/pilot-readiness.md` with the
+  trigger *before the first pilot*. **Never report it as "Phase A complete".**
+  A7 is not cosmetic: `edge/sync/src/route.rs` maps only `order` and
+  `table_session`, so 78 rows on the live edge database have no route and can
+  never be sent (55 `kot`, 22 `stock_count`, 1 `invoice`, measured 2026-09-07).
+
+**Do not re-run any M6 criterion and do not reconstruct a verdict from git
+history.**
 
 **M1 Core POS** and **M2 Kitchen** are complete. M2's acceptance item 5 — one real KDS↔edge socket session — **is met**, re-evidenced 4/4 against a real socket after ADR-017. Record it honestly: it stood recorded as met while its test bridge silently failed to **compile** for a period, so the `lan-integration` CI job was failing at `cargo build` and proving no socket session at all (`docs/RESUME.md` §5). The `rust-seams` job and `make check-seams` exist so a tenth such break fails fast.
 
