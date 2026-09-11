@@ -337,7 +337,17 @@
 .invoice-detail-panel {
   display: flex;
   flex-direction: column;
+  /* `flex-direction: column` defaults `align-items` to `stretch`, which
+     pulls every `.btn` (an `inline-flex`) to the full width of its card.
+     `flex-start` restores each control's own intrinsic width; a control
+     that genuinely wants full width opts in with `.btn--block` instead
+     (see "Record Payment(s)" below), rather than every control in a
+     column-flex card inheriting it by accident. */
+  align-items: flex-start;
   gap: var(--space-2);
+}
+.bill-empty-state {
+  color: var(--color-text-muted);
 }
 .cash-shift-panel input,
 .split-bill-builder input,

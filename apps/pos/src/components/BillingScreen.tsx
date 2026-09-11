@@ -565,10 +565,21 @@ export function BillingScreen() {
         </section>
       )}
 
+      {/* Only rendered before a bill exists. Once `hasInvoices` is true this
+          entire card would otherwise reduce to a bare "Bill" heading with no
+          body — everything it would show (lines, totals, payments) is
+          already rendered per-invoice below in `.invoice-detail-panel` — so
+          the card is dropped rather than left standing empty. */}
+      {!hasInvoices && (
       <section className="invoice-panel card">
         <h2>Bill</h2>
         {invoicesQuery.isLoading && <p>Loading bill…</p>}
-        {!hasInvoices && !invoicesQuery.isLoading && (
+        {!invoicesQuery.isLoading && orderItems.length === 0 && (
+          <p className="bill-empty-state">
+            No unbilled order — send an order to the kitchen first.
+          </p>
+        )}
+        {!invoicesQuery.isLoading && orderItems.length > 0 && (
           <div>
             {!splitMode && (
               <div>
@@ -680,6 +691,7 @@ export function BillingScreen() {
           </p>
         )}
       </section>
+      )}
 
       {hasInvoices &&
         invoices.map((inv) => {
@@ -859,7 +871,7 @@ export function BillingScreen() {
               )}
               <button
                 type="button"
-                className="btn btn--primary"
+                className="btn btn--primary btn--block"
                 disabled={!canBill || billFullySettled || pendingTenders.length === 0 || submittingTender}
                 onClick={() => void handleSubmitTenders(inv.id)}
               >
