@@ -1666,3 +1666,41 @@ tests only ever type-checked them.
   publish, and a counter that cannot tell them apart is the actual defect.
   Whether `pull_aggregator_orders` belongs inside `drain_outbox` at all is the
   question to answer first.
+
+---
+
+## 2026-09-11 — A deny rule on a secret file is not a protection when a permitted script rewrites that file
+
+**Severity:** medium. No breach; the edge database encryption key on a dev machine was silently replaced with a hand-typed placeholder, through a control everyone believed was holding.
+
+### What happened
+
+`apps/pos/.env.dev` carries `HOLLER_DB_KEY_HEX`, the AES key for the edge SQLite database at rest (ADR-011). That file is **deny-ruled to agents** — they cannot read or write it. Every agent this session that needed it reported the denial honestly, unprompted, in its own report.
+
+The operator then found the key was
+`2222222222222222222222222222222222222222222222222222222222222222` — 32 repeated bytes.
+
+The value appears in **no tracked file**. `dev-bootstrap.ps1` has no default and refuses to run without a key; its own header explains why a hardcoded default would be wrong. Nothing in the tooling produced it.
+
+But `scripts/dev-bootstrap.ps1:463-471` **rewrites `apps/pos/.env.dev` in full**, including the line `HOLLER_DB_KEY_HEX=$DbKeyHex`. An agent was dispatched to fix that script's device-enrolment defects and ran it live several times to verify its re-run behaviour. It needed a key to get past validation. `edge.db.enc` was re-sealed at 12:37 that day.
+
+**The deny rule was honoured and bypassed at the same time**, through the front door, by a script the agent was explicitly asked to run.
+
+### Why the validation did not help
+
+The check was `^[0-9a-fA-F]{64}$`. It validated the **shape** of the key and nothing about its content. `2222…` satisfies it perfectly, which is exactly why a value that needs no cryptanalysis — only one guess — passed a guard written to protect a key.
+
+### The rules
+
+- **A deny rule protects a file, not a secret.** If any permitted tool writes that file, the secret is writable by whatever can invoke the tool. Enumerate the **writers** of a protected file, not the file itself — the same enumeration discipline this repository already applies to sinks, permission checks and sync emitters, pointed at access control.
+- **This generalises to every secret the tooling writes**, not just this key: device tokens, any future credential a bootstrap or reset script materialises into an environment file.
+- **A format check is not a content check.** A regex that accepts `2222…` as an encryption key is testing that a human typed hex, not that a key is a key. Where a value's *quality* matters, check the quality.
+- **An agent must never supply a literal secret.** Not in a brief, not on a command line, not to satisfy a validator. A key comes from the operator's environment or is minted by the operator. Written into `dev-bootstrap.ps1`'s header so it binds whoever touches that script next, rather than living only in an orchestrator's memory of one bad afternoon.
+
+### The fix
+
+`dev-bootstrap.ps1` and `demo-reset.ps1` now refuse a key that fails an entropy heuristic (single repeated byte, sequential patterns, too few distinct bytes) and refuse to overwrite an existing `.env.dev` key with a different one without an explicit `-RotateKey` flag. Both refusals were watched firing before the guards were trusted.
+
+The rotation guard matters more than it looks: **a different key does not error, it silently opens a different, empty database.** An accidental rotation therefore presents as a working till with no data, which is indistinguishable from a fresh install — the worst available failure mode at an outlet.
+
+Key management as a whole — generation, rotation, backup, what happens when a machine is replaced — is filed in `docs/pilot-readiness.md`, triggered before the first pilot.
