@@ -134,6 +134,18 @@ Five questions, none of which has an answer yet:
   it proved random? The interim guards added on 2026-09-11 reject a key that
   fails an entropy heuristic, which catches a hand-typed placeholder and nothing
   subtler.
+  **The mint command both scripts print uses `Get-Random`, which is
+  `System.Random` — a deterministic PRNG seeded from the clock, not a CSPRNG.**
+  For a key protecting cached credential hashes and an outlet's trading history
+  that is the wrong generator: its output is predictable to anyone who can
+  bracket the time the key was minted. Accepted for the demo; a pilot must use
+  `[System.Security.Cryptography.RandomNumberGenerator]::Create()` (available on
+  .NET Framework 4.x, so it works in Windows PowerShell 5.1) — preferred over
+  `RNGCryptoServiceProvider`, which is obsolete on newer runtimes. The change is
+  three one-line edits, at `dev-bootstrap.ps1:326`, `:351` and
+  `demo-reset.ps1:194`. Note what the entropy heuristic cannot do here: a
+  `Get-Random` key looks perfectly random to it, because the weakness is in how
+  the value was produced and not in how it is distributed.
 - **Storage.** A plaintext `.env` beside the binary is the key sitting next to
   the lock. Windows DPAPI, the Credential Manager, or a TPM-sealed blob are the
   obvious candidates on ADR-013's hardware; each needs a decision and a fallback
