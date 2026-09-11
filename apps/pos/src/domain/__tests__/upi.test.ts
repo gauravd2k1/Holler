@@ -38,6 +38,23 @@ describe("buildUpiPaymentLink", () => {
     expect(link).toBe("upi://pay?pa=demo%40upi&pn=Holler%20Demo&am=1255.00&cu=INR&tn=A184");
   });
 
+  // Pinned in the T11 brief and asserted identically on the Rust side
+  // (`edge/printer/src/upi.rs::tests::shared_vector_matches_the_pinned_typescript_output`)
+  // — two independent implementations of one link format in two languages
+  // is exactly how a format drifts; this vector is the cheapest thing that
+  // catches it.
+  it("matches the shared cross-language vector (edge/printer/src/upi.rs)", () => {
+    const link = buildUpiPaymentLink({
+      vpa: "demo@upi",
+      payeeName: "Holler Demo Kitchen",
+      amountPaise: 125550,
+      note: "A184",
+    });
+    expect(link).toBe(
+      "upi://pay?pa=demo%40upi&pn=Holler%20Demo%20Kitchen&am=1255.50&cu=INR&tn=A184",
+    );
+  });
+
   it("builds a deep link for a sub-rupee remainder", () => {
     const link = buildUpiPaymentLink({
       vpa: "demo@upi",

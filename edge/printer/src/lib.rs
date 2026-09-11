@@ -19,5 +19,6 @@ pub mod routing;
 pub mod spool;
 pub mod template;
 pub mod transport;
+pub mod upi;
 
 pub use error::{PrinterError, PrinterResult};

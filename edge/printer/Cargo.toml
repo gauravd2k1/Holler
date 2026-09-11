@@ -35,5 +35,18 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# Renders the demo-build UPI QR on the HTML receipt (T11). `default-features
+# = false` drops the "image" feature — the only feature with an actual
+# dependency (the `image` crate, PNG/JPEG codecs: unwanted weight on 4GB
+# spinning-disk hardware, ADR-013). "svg" is re-enabled explicitly: per the
+# crate's own Cargo.toml, "svg" and "pic" are pure `#[cfg]` gates with an
+# empty feature dependency list, so enabling "svg" alone adds zero
+# transitive crates — confirmed with `cargo tree -p qrcode`, which prints
+# only `qrcode v0.14.1` and nothing beneath it. This gets a self-contained
+# inline `<svg>` string straight from the crate's own renderer rather than
+# hand-rolling one against its bit-matrix internals.
+qrcode = { version = "=0.14.1", default-features = false, features = ["svg"] }
+
 [dev-dependencies]
+rqrr = { version = "0.11.0", default-features = false }
 tempfile = "3"

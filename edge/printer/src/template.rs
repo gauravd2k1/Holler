@@ -23,6 +23,7 @@ use holler_edge_database::model::{Invoice, InvoiceLine};
 
 use crate::error::{PrinterError, PrinterResult};
 use crate::escpos::EscPosBuilder;
+use crate::upi::{build_upi_payment_link, read_upi_demo_payee};
 
 /// Mirrors `KotTicketItemSchema` (`packages/contracts/src/types/kot.ts`)
 /// exactly, for parsing `kot.items_json`.
@@ -485,6 +486,67 @@ fn html_kv_line(out: &mut String, label: &str, value: &str) {
     html_line(out, &format!("{label}: {value}"));
 }
 
+/// Renders the demo-build UPI QR block (T11, `docs/demo-kickoff.md` item
+/// 0b), or `Ok(None)` when no payee is configured.
+///
+/// **Deliberately outside [`html_line`]/the `<div class="line">` shape**:
+/// the equivalence test in `transport::file_sink::tests`
+/// (`html_receipt_agrees_line_for_line_with_the_escpos_bytes_for_the_same_invoice`)
+/// extracts only `<div class="line">...</div>` content and compares it
+/// against the ESC/POS byte stream, which has no image counterpart and no
+/// UPI QR rendering at all — ESC/POS receipts print the same way they
+/// always did; the QR is an HTML-receipt-only addition. Using a distinct
+/// `qr`/`qr-text` class keeps this block outside that comparison
+/// structurally (the extractor's `OPEN`/`CLOSE` markers never match it) —
+/// this is NOT the extractor being weakened, it is new content the
+/// extractor was never asked to see. The payee/amount **text** is still
+/// present as real text content in the document (`div class="qr-text"`),
+/// satisfying "a customer scans; a human reads" without inventing a
+/// byte-stream counterpart that does not exist.
+///
+/// The amount comes from `invoice.grand_total_paise` — the invoice's own
+/// stored total, never recomputed — and `tn` carries
+/// `ctx.order_display_number`, never a UUID (same binding rule as every
+/// other line on this receipt).
+fn render_upi_qr_block(invoice: &Invoice, ctx: &InvoicePrintContext) -> PrinterResult<Option<String>> {
+    let Some((vpa, payee_name)) = read_upi_demo_payee() else {
+        return Ok(None);
+    };
+    let link = build_upi_payment_link(
+        &vpa,
+        &payee_name,
+        invoice.grand_total_paise,
+        ctx.order_display_number,
+    )?;
+    let qr = qrcode::QrCode::new(link.as_bytes())
+        .map_err(|e| PrinterError::InvalidInput(format!("UPI QR encode failed: {e}")))?;
+    let svg = qr
+        .render::<qrcode::render::svg::Color>()
+        .module_dimensions(4, 4)
+        .build();
+    // Strip the crate's `<?xml ...?>` prolog: this SVG is embedded inline
+    // inside an HTML document, not saved as a standalone `.svg` file, and
+    // an XML prolog inside HTML markup is parsed as a bogus comment by the
+    // HTML spec rather than an error — harmless, but embedding only the
+    // `<svg>...</svg>` element itself is the correct inline-SVG shape.
+    let svg_element = svg
+        .split_once("?>")
+        .map(|(_, rest)| rest)
+        .unwrap_or(svg.as_str());
+
+    let mut out = String::new();
+    out.push_str("<div class=\"qr\">\n");
+    out.push_str(svg_element);
+    out.push('\n');
+    out.push_str(&format!(
+        "<div class=\"qr-text\">Scan to pay {} via UPI ({})</div>\n",
+        html_escape(&money(invoice.grand_total_paise)),
+        html_escape(&payee_name),
+    ));
+    out.push_str("</div>\n");
+    Ok(Some(out))
+}
+
 /// Renders one issued (or cancelled) GST invoice to a self-contained HTML
 /// document — the human-readable bill T9 opens on screen at demo time.
 ///
@@ -509,7 +571,13 @@ fn html_kv_line(out: &mut String, label: &str, value: &str) {
 ///
 /// Pure function of its inputs — no clock, no live config lookup, no
 /// randomness — so two calls on the same invoice produce byte-identical
-/// HTML, same as the ESC/POS path.
+/// HTML, same as the ESC/POS path. The one exception is
+/// [`render_upi_qr_block`], which reads process environment
+/// (`HOLLER_DEMO_UPI_VPA`/`HOLLER_DEMO_UPI_PAYEE_NAME`) — a demo-build-only
+/// affordance (T11, `docs/demo-kickoff.md` item 0b), not a payment
+/// integration: nothing reconciles a scan against a received payment, and
+/// the cashier still records the tender. Renders no QR block at all when
+/// no VPA is configured.
 pub fn render_invoice_html(
     invoice: &Invoice,
     lines: &[InvoiceLine],
@@ -652,6 +720,10 @@ pub fn render_invoice_html(
     }
     body.push_str("</div>\n");
 
+    if let Some(qr_block) = render_upi_qr_block(invoice, ctx)? {
+        body.push_str(&qr_block);
+    }
+
     if let Some(footer) = profile
         .invoice_footer_text
         .as_deref()
@@ -672,6 +744,9 @@ pub fn render_invoice_html(
          .header .line:first-child {{ font-weight: bold; font-size: 1.2rem; text-align: center; }}\n\
          .section {{ border-top: 1px dashed #000; padding-top: 0.5rem; margin-top: 0.5rem; }}\n\
          .totals .line:last-of-type {{ font-weight: bold; }}\n\
+         .qr {{ text-align: center; border-top: 1px dashed #000; padding-top: 0.5rem; margin-top: 0.5rem; }}\n\
+         .qr svg {{ width: 160px; height: 160px; }}\n\
+         .qr-text {{ font-size: 0.85rem; margin-top: 0.25rem; }}\n\
          .footer {{ text-align: center; margin-top: 1rem; }}\n\
          </style></head><body>\n{body}</body></html>\n",
         title = html_escape(&format!("Invoice {}", invoice.invoice_number)),
@@ -1034,5 +1109,141 @@ mod tests {
         let bytes = render_invoice(&invoice, &invoice_lines_fixture(), &invoice_ctx(), 80).unwrap();
         let text = String::from_utf8_lossy(&bytes);
         assert!(text.contains("2 of 3"));
+    }
+
+    // -------------------------------------------------------- T11: UPI QR --
+
+    #[test]
+    fn html_receipt_has_no_qr_block_when_no_payee_configured() {
+        std::env::remove_var("HOLLER_DEMO_UPI_VPA");
+        let html = render_invoice_html(&invoice_fixture(), &invoice_lines_fixture(), &invoice_ctx())
+            .expect("renders");
+        assert!(
+            !html.contains("class=\"qr\""),
+            "no VPA configured must render no QR block at all: {html}"
+        );
+    }
+
+    /// Extracts the value of `name="..."` at its first occurrence in
+    /// `haystack` — used against the `<svg ...>` opening tag only (the
+    /// inner `<rect>`'s own `width`/`height` attributes appear later in
+    /// the string, per [`crate::render::svg`]'s fixed emission order).
+    fn extract_attr(haystack: &str, name: &str) -> u32 {
+        let needle = format!("{name}=\"");
+        let start = haystack.find(&needle).expect("attribute present") + needle.len();
+        let rest = &haystack[start..];
+        let end = rest.find('"').expect("attribute closed");
+        rest[..end].parse().expect("attribute is numeric")
+    }
+
+    /// Reconstructs the dark-pixel rectangles the `svg` render feature
+    /// wrote into the path `d` attribute (`crate::render::svg::Canvas`):
+    /// each dark module is emitted as exactly one
+    /// `M{left} {top}h{width}v{height}H{left}V{top}` subpath, concatenated
+    /// with no separator. This is a manual scanner tied to that exact,
+    /// stable emission grammar — not a general SVG path parser — which is
+    /// an acceptable coupling only because both sides (`crate::template`'s
+    /// caller and this test) pin the same crate version.
+    fn extract_dark_rects(d: &str) -> Vec<(u32, u32, u32, u32)> {
+        fn read_num(bytes: &[u8], i: &mut usize) -> u32 {
+            let start = *i;
+            while *i < bytes.len() && bytes[*i].is_ascii_digit() {
+                *i += 1;
+            }
+            std::str::from_utf8(&bytes[start..*i])
+                .expect("ascii digits")
+                .parse()
+                .expect("numeric")
+        }
+        let bytes = d.as_bytes();
+        let mut i = 0;
+        let mut rects = Vec::new();
+        while i < bytes.len() {
+            assert_eq!(bytes[i], b'M', "expected 'M' at start of subpath");
+            i += 1;
+            let left = read_num(bytes, &mut i);
+            while i < bytes.len() && bytes[i] == b' ' {
+                i += 1;
+            }
+            let top = read_num(bytes, &mut i);
+            assert_eq!(bytes[i], b'h');
+            i += 1;
+            let width = read_num(bytes, &mut i);
+            assert_eq!(bytes[i], b'v');
+            i += 1;
+            let height = read_num(bytes, &mut i);
+            assert_eq!(bytes[i], b'H');
+            i += 1;
+            let _ = read_num(bytes, &mut i); // redundant left, unused
+            assert_eq!(bytes[i], b'V');
+            i += 1;
+            let _ = read_num(bytes, &mut i); // redundant top, unused
+            rects.push((left, top, width, height));
+        }
+        rects
+    }
+
+    /// Generates a real receipt, extracts the real inline `<svg>` QR from
+    /// its HTML, rasterises the exact rectangles the renderer drew (no
+    /// external SVG rasteriser), and decodes it with a real QR decoder
+    /// (`rqrr`, dev-dependency only — never shipped). Equivalent to the
+    /// TypeScript track's browser + `jsqr` round-trip check: a QR nobody
+    /// has decoded is not a QR, it is a picture of one.
+    #[test]
+    fn upi_qr_on_html_receipt_decodes_back_to_the_expected_link() {
+        std::env::set_var("HOLLER_DEMO_UPI_VPA", "demo@upi");
+        std::env::set_var("HOLLER_DEMO_UPI_PAYEE_NAME", "Holler Demo Kitchen");
+
+        let invoice = invoice_fixture();
+        let lines = invoice_lines_fixture();
+        let ctx = invoice_ctx();
+        let html = render_invoice_html(&invoice, &lines, &ctx).expect("renders html with qr");
+
+        std::env::remove_var("HOLLER_DEMO_UPI_VPA");
+        std::env::remove_var("HOLLER_DEMO_UPI_PAYEE_NAME");
+
+        let svg_start = html.find("<svg").expect("qr svg present in receipt");
+        let svg_end = html[svg_start..]
+            .find("</svg>")
+            .expect("svg element closed")
+            + svg_start
+            + "</svg>".len();
+        let svg = &html[svg_start..svg_end];
+
+        let width = extract_attr(svg, "width");
+        let height = extract_attr(svg, "height");
+        let d_start = svg.find("d=\"").expect("path d attribute present") + 3;
+        let d_end = svg[d_start..].find('"').expect("path d attribute closed") + d_start;
+        let rects = extract_dark_rects(&svg[d_start..d_end]);
+
+        let mut grey = vec![255u8; (width * height) as usize];
+        for (left, top, w, h) in rects {
+            for y in top..top + h {
+                for x in left..left + w {
+                    grey[(y * width + x) as usize] = 0;
+                }
+            }
+        }
+
+        let mut prepared = rqrr::PreparedImage::prepare_from_greyscale(
+            width as usize,
+            height as usize,
+            |x, y| grey[y * width as usize + x],
+        );
+        let grids = prepared.detect_grids();
+        assert_eq!(grids.len(), 1, "expected exactly one QR grid in the receipt");
+        let (_meta, content) = grids[0].decode().expect("the receipt's QR decodes");
+
+        let expected = build_upi_payment_link(
+            "demo@upi",
+            "Holler Demo Kitchen",
+            invoice.grand_total_paise,
+            ctx.order_display_number,
+        )
+        .expect("builds link");
+        assert_eq!(
+            content, expected,
+            "decoded QR content must match the UPI link the invoice total and order number produce"
+        );
     }
 }
