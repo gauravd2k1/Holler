@@ -3,6 +3,7 @@
 //! everything the cashier needs to create a restaurant order works fully
 //! offline (ADR-002, ADR-011, sync.md §50.1).
 
+pub mod captain;
 pub mod commands;
 pub mod domain;
 pub mod dto;

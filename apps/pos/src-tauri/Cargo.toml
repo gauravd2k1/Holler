@@ -51,11 +51,15 @@ holler-edge-device = { path = "../../../edge/device" }
 # the config pull and every replay stream could only be driven by a test.
 holler-edge-sync = { path = "../../../edge/sync" }
 
+# The captain HTTP listener (demo build item 0, docs/captain-api.md): a
+# second, plaintext-HTTP server beside the KDS WebSocket LAN server, serving
+# apps/captain/dist and a small JSON API. Promoted from dev-dependencies
+# (where it was used only as an ADR-020 test fake cloud) rather than adding a
+# second HTTP stack.
+tiny_http = "0.12"
+
 [dev-dependencies]
 tempfile = "3"
-# ADR-020 falsification: a fake cloud that acks, so the drain can be shown to
-# publish BEFORE the seal and publish nothing AFTER it.
-tiny_http = "0.12"
 argon2 = { version = "0.5", default-features = false, features = ["alloc"] }
 base64 = "0.22"
 rand = "0.8"

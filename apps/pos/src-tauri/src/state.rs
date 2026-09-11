@@ -250,6 +250,27 @@ impl AppState {
             pump_stop: Arc::new(AtomicBool::new(false)),
         };
 
+        // Demo build item 0 (docs/captain-api.md): a second, plaintext-HTTP
+        // listener beside the KDS WebSocket LAN server started above. Never
+        // fatal to POS startup -- same posture as the LAN server itself, and
+        // for the same reason (ADR-013 / Milestone 1's offline acceptance).
+        // Runs on `state.shared_handle()` -- a second `AppState` sharing
+        // this one's `db`/`hub` -- so the captain listener's own accept loop
+        // is not entangled with the Tauri-managed value's lifetime.
+        let captain_bind_addr_str = env::var("HOLLER_CAPTAIN_BIND_ADDR")
+            .unwrap_or_else(|_| crate::captain::DEFAULT_CAPTAIN_BIND_ADDR.to_string());
+        match captain_bind_addr_str.parse::<SocketAddr>() {
+            Ok(addr) => {
+                crate::captain::start_captain_server(addr, Arc::new(state.shared_handle()));
+            }
+            Err(e) => {
+                eprintln!(
+                    "holler-pos: invalid HOLLER_CAPTAIN_BIND_ADDR {captain_bind_addr_str:?} \
+                     ({e}); captain HTTP listener disabled for this session"
+                );
+            }
+        }
+
         // ADR-020: DRAIN ON LAUNCH, BEFORE ANYTHING ELSE -- ahead of the first
         // sale of the day, not lazily whenever a timer first fires. Together
         // with the shutdown drain this turns "syncs while the till is open"
@@ -289,6 +310,32 @@ impl AppState {
             outlet_id,
             device_id,
             hub: Some(hub),
+            lan_handle: Mutex::new(None),
+            sync: Mutex::new(None),
+            pump_stop: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// A second, independent `AppState` handle sharing this one's `db` and
+    /// `hub` — same underlying SQLite connection and the same KDS `Hub`, so
+    /// a write through it and a notify through it reach exactly what the
+    /// primary handle's do.
+    ///
+    /// Exists for the captain HTTP listener (docs/captain-api.md): it needs
+    /// `&AppState` to call the same `*_impl` command functions the Tauri
+    /// commands call, but it runs on its own OS thread outside Tauri's
+    /// managed-state lifetime, so it cannot borrow the primary handle
+    /// directly. `outlet_id`/`device_id` are copied (both are plain owned
+    /// `String`s here, not shared state); the returned handle's own
+    /// `lan_handle`/`sync`/`pump_stop` are never driven by anything — only
+    /// the LAN server and the sync pump do that, and both already have the
+    /// primary handle for it.
+    pub fn shared_handle(&self) -> AppState {
+        AppState {
+            db: self.db.clone(),
+            outlet_id: self.outlet_id.clone(),
+            device_id: self.device_id.clone(),
+            hub: self.hub.clone(),
             lan_handle: Mutex::new(None),
             sync: Mutex::new(None),
             pump_stop: Arc::new(AtomicBool::new(false)),

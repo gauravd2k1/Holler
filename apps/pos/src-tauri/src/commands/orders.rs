@@ -125,9 +125,30 @@ pub fn create_order_impl(
     table_id: Option<String>,
     items: Vec<NewOrderItemRequest>,
 ) -> AppResult<CanonicalOrder> {
+    let device_id = state.device_id.clone();
+    create_order_impl_as(state, &device_id, order_type, table_id, items)
+}
+
+/// Same as [`create_order_impl`], but attributes the order to
+/// `device_id` rather than `state.device_id` (the till).
+///
+/// Exists for the captain HTTP API (docs/captain-api.md "Order attribution —
+/// the known trap"): calling `create_order_impl` as it stands records every
+/// waiter-placed order as authored by the till, and it reads correctly on
+/// every screen because nothing downstream checks it. The caller must
+/// resolve `device_id` from a verified credential
+/// (`CachedCredentialVerifier::resolve`) — never from anything the request
+/// itself supplies.
+pub fn create_order_impl_as(
+    state: &AppState,
+    device_id: &str,
+    order_type: String,
+    table_id: Option<String>,
+    items: Vec<NewOrderItemRequest>,
+) -> AppResult<CanonicalOrder> {
     let input = DraftOrderInput {
         outlet_id: state.outlet_id.clone(),
-        device_id: state.device_id.clone(),
+        device_id: device_id.to_string(),
         order_type,
         table_id,
         items: items
