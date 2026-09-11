@@ -104,6 +104,76 @@ function Fail-WithAction($problem, $nextAction) {
     exit 1
 }
 
+# --- T24: key-quality helpers -----------------------------------------------
+# Identical copy of scripts\dev-bootstrap.ps1's two functions -- no shared
+# module between the two owned scripts, kept in sync deliberately.
+
+# HEURISTIC, stated as such wherever it is used. It cannot prove a key is
+# cryptographically random -- it exists to catch the ONE failure that
+# actually happened: a human or an agent typing a pattern to satisfy the
+# hex/length regex. Returns $null when the key looks fine, or a short reason
+# string when it looks like a placeholder.
+function Get-KeyWeaknessReason {
+    param([string]$HexKey)
+
+    $bytes = @(for ($i = 0; $i -lt $HexKey.Length; $i += 2) {
+        [Convert]::ToByte($HexKey.Substring($i, 2), 16)
+    })
+
+    # A real random 32-byte key has ~26-30 distinct byte values with
+    # overwhelming probability (expected distinct count for 32 draws from
+    # 256 values is ~27.5, by the birthday-paradox calculation). 16 is a
+    # generous floor: it catches a single repeated byte (1 distinct), a
+    # short repeated sequence, and every other hand-typed placeholder this
+    # check has been tried against, while leaving wide margin before it
+    # could ever flag a genuinely random key.
+    $distinct = ($bytes | Select-Object -Unique).Count
+    if ($distinct -lt 16) {
+        return "only $distinct distinct byte value(s) across 32 bytes (need at least 16)"
+    }
+
+    # Constant-step run: 00 01 02 03 ... or ff fe fd fc ... -- every distinct
+    # byte value can still be 32/32 while the key is trivially guessable.
+    $diffs = @(for ($i = 1; $i -lt $bytes.Count; $i++) {
+        (($bytes[$i] - $bytes[$i - 1]) + 256) % 256
+    })
+    if (($diffs | Select-Object -Unique).Count -eq 1) {
+        return "bytes form a constant-step sequence (step $($diffs[0]))"
+    }
+
+    # Short repeating period: a short pattern typed or pasted repeatedly to
+    # fill 32 bytes (e.g. a 4- or 8-byte phrase repeated 8x/4x).
+    foreach ($period in @(1, 2, 4, 8)) {
+        if ($bytes.Count % $period -ne 0) { continue }
+        $isPeriodic = $true
+        for ($i = $period; $i -lt $bytes.Count; $i++) {
+            if ($bytes[$i] -ne $bytes[$i % $period]) { $isPeriodic = $false; break }
+        }
+        if ($isPeriodic) {
+            return "bytes repeat with a $period-byte period"
+        }
+    }
+
+    return $null
+}
+
+# A short, non-reversible fingerprint for comparing two keys in terminal
+# output without ever printing either one. First 12 hex characters (6 bytes)
+# of SHA-256 over the raw key bytes.
+function Get-KeyFingerprint {
+    param([string]$HexKey)
+    $bytes = @(for ($i = 0; $i -lt $HexKey.Length; $i += 2) {
+        [Convert]::ToByte($HexKey.Substring($i, 2), 16)
+    })
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $hash = $sha.ComputeHash([byte[]]$bytes)
+    } finally {
+        $sha.Dispose()
+    }
+    return (($hash | ForEach-Object { '{0:x2}' -f $_ }) -join '').Substring(0, 12)
+}
+
 # --- key -----------------------------------------------------------------
 if ([string]::IsNullOrWhiteSpace($DbKeyHex)) { $DbKeyHex = $env:HOLLER_DB_KEY_HEX }
 if ([string]::IsNullOrWhiteSpace($DbKeyHex)) {
@@ -115,6 +185,12 @@ if ($DbKeyHex -notmatch '^[0-9a-fA-F]{64}$') {
     Fail-WithAction `
         "HOLLER_DB_KEY_HEX must be exactly 64 hex characters (32 bytes); got $($DbKeyHex.Length)." `
         "Copy the exact value from apps\pos\.env.dev and re-run."
+}
+$weakReason = Get-KeyWeaknessReason -HexKey $DbKeyHex
+if ($weakReason) {
+    Fail-WithAction `
+        "HOLLER_DB_KEY_HEX looks like a placeholder, not a random key: $weakReason" `
+        "This is a HEURISTIC (see Get-KeyWeaknessReason above) -- it cannot prove randomness, only catch a hand-typed pattern. NO AGENT MAY SUPPLY A LITERAL KEY. Copy the exact value from apps\pos\.env.dev (it was validated by dev-bootstrap.ps1 when written) and re-run, or mint a fresh one with: `$env:HOLLER_DB_KEY_HEX = -join ((1..32) | ForEach-Object { '{0:x2}' -f (Get-Random -Max 256) })"
 }
 
 $edgeSealedPath    = Join-Path $EdgeDataDir "edge.db.enc"

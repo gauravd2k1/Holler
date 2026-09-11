@@ -74,8 +74,26 @@ param(
     # hold: outlet.manage also gates the compliance config writes, so granting
     # it to a till operator would hand them the GSTIN printed on every invoice.
     [string]$SyncEnrollEmail = "owner@holler.test",
-    [string]$SyncEnrollPassword = "holler123"
+    [string]$SyncEnrollPassword = "holler123",
+
+    # Required to proceed when apps\pos\.env.dev already carries a
+    # HOLLER_DB_KEY_HEX that DIFFERS from the incoming key (T24). Without
+    # this flag the script refuses rather than silently rewriting the file:
+    # a different key does not error anywhere downstream, it opens a
+    # different, EMPTY database, which looks exactly like a fresh install.
+    [switch]$RotateKey
 )
+
+# --- T24: NO AGENT SUPPLIES A LITERAL KEY TO THIS SCRIPT --------------------
+# apps\pos\.env.dev is deny-ruled to agents specifically because it carries
+# the edge database's encryption key. That rule was honoured by every agent
+# in the session that motivated this change, and was bypassed anyway --
+# through the front door -- because this script rewrote the file wholesale
+# from whatever -DbKeyHex/HOLLER_DB_KEY_HEX it was given, and a hand-typed
+# placeholder ("2222...2222") satisfied the hex/length check perfectly. A
+# key comes from the operator's own environment, or is minted by the
+# operator with the command this script prints below -- never typed into a
+# brief, a command line or a script by an agent on the operator's behalf.
 
 # Best-effort LAN IPv4 address for this machine, used to build
 # apps/kds/.env.dev's VITE_KDS_LAN_URL -- a second machine must reach this
@@ -213,6 +231,77 @@ function Resolve-DeviceEnrollment {
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
+# --- T24: key-quality helpers -------------------------------------------------
+# Shared shape with scripts\demo-reset.ps1's copy of the same two functions
+# (no shared module between the two owned scripts; kept identical on purpose).
+
+# HEURISTIC, stated as such wherever it is used. It cannot prove a key is
+# cryptographically random -- it exists to catch the ONE failure that actually
+# happened: a human or an agent typing a pattern to satisfy the hex/length
+# regex. Returns $null when the key looks fine, or a short reason string when
+# it looks like a placeholder.
+function Get-KeyWeaknessReason {
+    param([string]$HexKey)
+
+    $bytes = @(for ($i = 0; $i -lt $HexKey.Length; $i += 2) {
+        [Convert]::ToByte($HexKey.Substring($i, 2), 16)
+    })
+
+    # A real random 32-byte key has ~26-30 distinct byte values with
+    # overwhelming probability (expected distinct count for 32 draws from
+    # 256 values is ~27.5, by the birthday-paradox calculation). 16 is a
+    # generous floor: it catches a single repeated byte (1 distinct), a
+    # short repeated sequence, and every other hand-typed placeholder this
+    # check has been tried against, while leaving wide margin before it
+    # could ever flag a genuinely random key.
+    $distinct = ($bytes | Select-Object -Unique).Count
+    if ($distinct -lt 16) {
+        return "only $distinct distinct byte value(s) across 32 bytes (need at least 16)"
+    }
+
+    # Constant-step run: 00 01 02 03 ... or ff fe fd fc ... -- every distinct
+    # byte value can still be 32/32 while the key is trivially guessable.
+    $diffs = @(for ($i = 1; $i -lt $bytes.Count; $i++) {
+        (($bytes[$i] - $bytes[$i - 1]) + 256) % 256
+    })
+    if (($diffs | Select-Object -Unique).Count -eq 1) {
+        return "bytes form a constant-step sequence (step $($diffs[0]))"
+    }
+
+    # Short repeating period: a short pattern typed or pasted repeatedly to
+    # fill 32 bytes (e.g. a 4- or 8-byte phrase repeated 8x/4x).
+    foreach ($period in @(1, 2, 4, 8)) {
+        if ($bytes.Count % $period -ne 0) { continue }
+        $isPeriodic = $true
+        for ($i = $period; $i -lt $bytes.Count; $i++) {
+            if ($bytes[$i] -ne $bytes[$i % $period]) { $isPeriodic = $false; break }
+        }
+        if ($isPeriodic) {
+            return "bytes repeat with a $period-byte period"
+        }
+    }
+
+    return $null
+}
+
+# A short, non-reversible fingerprint for comparing two keys in terminal
+# output without ever printing either one. First 12 hex characters (6 bytes)
+# of SHA-256 over the raw key bytes -- enough to tell two keys apart in
+# conversation, nowhere near enough to reconstruct either.
+function Get-KeyFingerprint {
+    param([string]$HexKey)
+    $bytes = @(for ($i = 0; $i -lt $HexKey.Length; $i += 2) {
+        [Convert]::ToByte($HexKey.Substring($i, 2), 16)
+    })
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $hash = $sha.ComputeHash([byte[]]$bytes)
+    } finally {
+        $sha.Dispose()
+    }
+    return (($hash | ForEach-Object { '{0:x2}' -f $_ }) -join '').Substring(0, 12)
+}
+
 # --- 0. the edge database key ------------------------------------------------
 # Fail here, before any container starts, rather than letting a seeder deeper in
 # the run produce a database under a key the operator never chose. A default was
@@ -239,6 +328,67 @@ different key opens a different (empty) database, not an error.
 }
 if ($DbKeyHex -notmatch '^[0-9a-fA-F]{64}$') {
     throw "HOLLER_DB_KEY_HEX must be exactly 64 hex characters (32 bytes); got $($DbKeyHex.Length) character(s)."
+}
+
+$weakReason = Get-KeyWeaknessReason -HexKey $DbKeyHex
+if ($weakReason) {
+    throw @"
+HOLLER_DB_KEY_HEX looks like a placeholder, not a random key: $weakReason
+
+This is a HEURISTIC (see the comment above Get-KeyWeaknessReason): it cannot
+prove a key is cryptographically random, it only catches the specific failure
+that has actually happened here -- a hand-typed or pasted pattern that still
+satisfies the hex/length check. NO AGENT MAY SUPPLY A LITERAL KEY to satisfy
+this check either; if you are an agent reading this, stop and ask the operator
+to mint one.
+
+Mint a real one and keep it out of the repository:
+
+    `$env:HOLLER_DB_KEY_HEX = -join ((1..32) | ForEach-Object { '{0:x2}' -f (Get-Random -Max 256) })
+
+Then re-run this script.
+"@
+}
+
+# --- 0b. refuse to silently rotate the key apps\pos\.env.dev already carries -
+# A different key does not error anywhere downstream -- it opens a different,
+# EMPTY database, which is indistinguishable from a fresh install. Read the
+# existing file (this script may; an agent's deny-rule on it is unaffected)
+# and compare by FINGERPRINT ONLY -- neither key is ever printed.
+$posEnvFile = Join-Path $repoRoot "apps\pos\.env.dev"
+if (Test-Path $posEnvFile) {
+    $existingKeyLine = Get-Content $posEnvFile -ErrorAction SilentlyContinue |
+        Where-Object { $_ -match '^HOLLER_DB_KEY_HEX=' } |
+        Select-Object -First 1
+    if ($existingKeyLine) {
+        $existingKeyHex = ($existingKeyLine -replace '^HOLLER_DB_KEY_HEX=', '').Trim()
+        if ($existingKeyHex -and $existingKeyHex -ne $DbKeyHex) {
+            $existingFp = Get-KeyFingerprint -HexKey $existingKeyHex
+            $incomingFp = Get-KeyFingerprint -HexKey $DbKeyHex
+            if (-not $RotateKey) {
+                throw @"
+apps\pos\.env.dev already carries a HOLLER_DB_KEY_HEX that DIFFERS from the
+key this run would use.
+
+  existing key fingerprint: $existingFp
+  incoming key fingerprint: $incomingFp
+
+Proceeding would silently rewrite the file with the new key. The existing
+sealed database at this machine's edge data directory was encrypted under the
+OLD key and would become UNOPENABLE -- not an error, an empty-looking till.
+
+If this rotation is intentional, re-run with -RotateKey. Otherwise, set
+-DbKeyHex / `$env:HOLLER_DB_KEY_HEX to the SAME key already in
+apps\pos\.env.dev (fingerprint $existingFp above) and re-run.
+"@
+            } else {
+                Write-Host "WARNING: rotating HOLLER_DB_KEY_HEX (-RotateKey given)." -ForegroundColor Yellow
+                Write-Host "  existing key fingerprint: $existingFp" -ForegroundColor Yellow
+                Write-Host "  incoming key fingerprint: $incomingFp" -ForegroundColor Yellow
+                Write-Host "  the existing sealed edge database is now UNOPENABLE under the new key." -ForegroundColor Yellow
+            }
+        }
+    }
 }
 
 Write-Host "Holler dev bootstrap" -ForegroundColor Cyan
