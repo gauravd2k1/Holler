@@ -114,13 +114,12 @@ pub fn seal_file(plaintext_path: &Path, sealed_path: &Path, key: &EncryptionKey)
     Ok(())
 }
 
-/// Decrypts `sealed_path` into `plaintext_path`. Returns `Ok(false)` (no-op)
-/// if `sealed_path` does not exist yet — the caller then creates a fresh
-/// database at `plaintext_path`.
-pub fn open_file(sealed_path: &Path, plaintext_path: &Path, key: &EncryptionKey) -> DbResult<bool> {
-    if !sealed_path.exists() {
-        return Ok(false);
-    }
+/// Decrypts `sealed_path` in memory and returns the plaintext bytes, without
+/// writing anything to disk. Shared by [`open_file`] (which does write the
+/// result out to `plaintext_path`) and [`verify_key_opens_sealed`] (which
+/// discards the bytes immediately — it exists only to prove `key` is correct
+/// before a caller is allowed to overwrite `sealed_path`).
+fn decrypt_sealed(sealed_path: &Path, key: &EncryptionKey) -> DbResult<Vec<u8>> {
     let sealed = fs::read(sealed_path).map_err(DbError::Io)?;
     if sealed.len() < NONCE_LEN {
         return Err(DbError::Encryption("sealed database file is truncated"));
@@ -128,7 +127,7 @@ pub fn open_file(sealed_path: &Path, plaintext_path: &Path, key: &EncryptionKey)
     let (nonce_bytes, ciphertext) = sealed.split_at(NONCE_LEN);
     let nonce = Nonce::from_slice(nonce_bytes);
 
-    let plaintext = cipher(key)
+    cipher(key)
         .decrypt(
             nonce,
             Payload {
@@ -138,10 +137,40 @@ pub fn open_file(sealed_path: &Path, plaintext_path: &Path, key: &EncryptionKey)
         )
         .map_err(|_| {
             DbError::Encryption("failed to open database file: wrong key or corrupted file")
-        })?;
+        })
+}
 
+/// Decrypts `sealed_path` into `plaintext_path`. Returns `Ok(false)` (no-op)
+/// if `sealed_path` does not exist yet — the caller then creates a fresh
+/// database at `plaintext_path`.
+pub fn open_file(sealed_path: &Path, plaintext_path: &Path, key: &EncryptionKey) -> DbResult<bool> {
+    if !sealed_path.exists() {
+        return Ok(false);
+    }
+    let plaintext = decrypt_sealed(sealed_path, key)?;
     fs::write(plaintext_path, &plaintext).map_err(DbError::Io)?;
     Ok(true)
+}
+
+/// Proves `key` decrypts the *existing* `sealed_path` without writing
+/// anything to disk (ADR-011: no unencrypted copy, not even a scratch one).
+/// Callers must run this before any operation that would overwrite
+/// `sealed_path` on a path that does not otherwise require the key — a
+/// plaintext crash leftover is readable with no key at all, so nothing else
+/// stops a wrong key from silently resealing over, and destroying, the real
+/// database. No-op success if `sealed_path` does not exist: there is nothing
+/// yet to destroy.
+pub fn verify_key_opens_sealed(sealed_path: &Path, key: &EncryptionKey) -> DbResult<()> {
+    if !sealed_path.exists() {
+        return Ok(());
+    }
+    decrypt_sealed(sealed_path, key).map_err(|_| {
+        DbError::Encryption(
+            "the supplied key does not match the existing sealed database at this path; \
+             no data was modified; supply the correct key for this outlet's database",
+        )
+    })?;
+    Ok(())
 }
 
 /// Overwrites `path` with zeroes before removing it, so an unlinked
@@ -237,6 +266,15 @@ pub fn recover_crash_leftovers(
     }
 
     if leftover_exists {
+        // A plaintext leftover needs no key to open — SQLite will happily
+        // read it with any key in hand. Nothing else stops `seal_file` below
+        // from resealing it over an *existing* `sealed_path` under a wrong
+        // key, silently destroying whatever was really sealed there. Prove
+        // the key is correct first, and touch nothing on disk if it is not.
+        // A leftover with no sealed file yet is a genuine first-run crash
+        // recovery and must still proceed (verify is a no-op in that case).
+        verify_key_opens_sealed(sealed_path, key)?;
+
         // Fold any WAL pages into the main file, then reseal that merged,
         // up-to-date state. SQLite performs WAL crash recovery itself on
         // open, so this reflects the last transaction that was actually
@@ -333,6 +371,179 @@ mod tests {
         recover_crash_leftovers(&sealed, &plain, &key).expect("noop");
         assert!(!plain.exists());
         assert!(!sealed.exists());
+    }
+
+    /// Helper: a simple FNV-1a hash of a file's bytes, used to prove a
+    /// refusal wrote nothing — "it errored" is not the same claim as "it did
+    /// not write". No crypto properties needed here, only a cheap fixed-size
+    /// fingerprint so the assertion doesn't just re-diff the whole file.
+    fn hash_file(path: &Path) -> u64 {
+        let bytes = fs::read(path).expect("read for hash");
+        let mut hash: u64 = 0xcbf29ce484222325;
+        for b in &bytes {
+            hash ^= *b as u64;
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        hash
+    }
+
+    #[test]
+    fn wrong_key_with_leftover_and_existing_sealed_file_errors_and_writes_nothing() {
+        let dir = tempdir().expect("tempdir");
+        let sealed = dir.path().join("edge.db.enc");
+        let plain = dir.path().join("edge.db");
+        let key_a = EncryptionKey::new([9u8; 32]);
+        let key_b = EncryptionKey::new([10u8; 32]);
+
+        // Seal a real database under key A with a recognisable row.
+        {
+            let conn = Connection::open(&plain).expect("open");
+            pragma::configure_connection(&conn).expect("pragmas");
+            conn.execute_batch(
+                "CREATE TABLE t (id INTEGER PRIMARY KEY); INSERT INTO t VALUES (42);",
+            )
+            .expect("seed");
+        }
+        seal_file(&plain, &sealed, &key_a).expect("seal under key A");
+        wipe_plaintext_and_wal_shm(&plain).expect("wipe plaintext after sealing");
+        assert!(sealed.exists());
+        let hash_before = hash_file(&sealed);
+
+        // A plaintext leftover appears (simulating a crash) and the operator
+        // opens with the WRONG key, B.
+        {
+            let conn = Connection::open(&plain).expect("open leftover");
+            pragma::configure_connection(&conn).expect("pragmas");
+            conn.execute_batch(
+                "CREATE TABLE t (id INTEGER PRIMARY KEY); INSERT INTO t VALUES (999);",
+            )
+            .expect("seed leftover");
+        }
+
+        let err = recover_crash_leftovers(&sealed, &plain, &key_b)
+            .expect_err("wrong key against an existing sealed file must be refused");
+        assert!(matches!(err, DbError::Encryption(_)));
+
+        // The real sealed database must be byte-for-byte unchanged.
+        let hash_after = hash_file(&sealed);
+        assert_eq!(
+            hash_before, hash_after,
+            "sealed_path must not be written to on refusal"
+        );
+
+        // And the original key must still open it.
+        let recovered = dir.path().join("recovered-check.sqlite");
+        open_file(&sealed, &recovered, &key_a).expect("key A must still open the untouched file");
+        let conn = Connection::open(&recovered).expect("open recovered copy");
+        let value: i64 = conn
+            .query_row("SELECT id FROM t", [], |row| row.get(0))
+            .expect("query recovered row");
+        assert_eq!(value, 42, "original data must be intact");
+    }
+
+    #[test]
+    fn correct_key_with_leftover_and_existing_sealed_file_still_folds_and_wipes() {
+        let dir = tempdir().expect("tempdir");
+        let sealed = dir.path().join("edge.db.enc");
+        let plain = dir.path().join("edge.db");
+        let marker = marker_path(&plain);
+        let key = EncryptionKey::new([11u8; 32]);
+
+        // Seal an initial database under the correct key.
+        {
+            let conn = Connection::open(&plain).expect("open");
+            pragma::configure_connection(&conn).expect("pragmas");
+            conn.execute_batch(
+                "CREATE TABLE t (id INTEGER PRIMARY KEY); INSERT INTO t VALUES (1);",
+            )
+            .expect("seed");
+        }
+        seal_file(&plain, &sealed, &key).expect("seal");
+        wipe_plaintext_and_wal_shm(&plain).expect("wipe");
+
+        // Crash leftover under the SAME (correct) key, with a new row.
+        {
+            let conn = Connection::open(&plain).expect("open leftover");
+            pragma::configure_connection(&conn).expect("pragmas");
+            conn.execute_batch(
+                "CREATE TABLE t (id INTEGER PRIMARY KEY); INSERT INTO t VALUES (1); INSERT INTO t VALUES (2);",
+            )
+            .expect("seed leftover");
+        }
+        fs::write(&marker, b"").expect("marker");
+
+        recover_crash_leftovers(&sealed, &plain, &key).expect("recover with correct key");
+
+        assert!(!plain.exists());
+        assert!(!marker.exists());
+        let recovered = dir.path().join("recovered.sqlite");
+        open_file(&sealed, &recovered, &key).expect("open resealed with correct key");
+        let conn = Connection::open(&recovered).expect("open recovered");
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM t", [], |row| row.get(0))
+            .expect("count");
+        assert_eq!(count, 2, "folded leftover data must be present");
+    }
+
+    #[test]
+    fn leftover_with_no_sealed_file_still_recovers() {
+        let dir = tempdir().expect("tempdir");
+        let sealed = dir.path().join("edge.db.enc");
+        let plain = dir.path().join("edge.db");
+        let marker = marker_path(&plain);
+        let key = EncryptionKey::new([12u8; 32]);
+
+        // No sealed_path exists yet — genuine first-run crash. Any key is
+        // "correct" because there is nothing yet to be wrong about.
+        {
+            let conn = Connection::open(&plain).expect("open leftover");
+            pragma::configure_connection(&conn).expect("pragmas");
+            conn.execute_batch(
+                "CREATE TABLE t (id INTEGER PRIMARY KEY); INSERT INTO t VALUES (7);",
+            )
+            .expect("seed leftover");
+        }
+        fs::write(&marker, b"").expect("marker");
+
+        recover_crash_leftovers(&sealed, &plain, &key).expect("recover with no prior sealed file");
+
+        assert!(!plain.exists());
+        assert!(!marker.exists());
+        assert!(sealed.exists());
+        let recovered = dir.path().join("recovered.sqlite");
+        open_file(&sealed, &recovered, &key).expect("open newly sealed file");
+        let conn = Connection::open(&recovered).expect("open recovered");
+        let value: i64 = conn
+            .query_row("SELECT id FROM t", [], |row| row.get(0))
+            .expect("query");
+        assert_eq!(value, 7);
+    }
+
+    #[test]
+    fn no_leftover_wrong_key_still_yields_existing_open_file_error() {
+        let dir = tempdir().expect("tempdir");
+        let sealed = dir.path().join("edge.db.enc");
+        let plain = dir.path().join("edge.db");
+        let key_a = EncryptionKey::new([13u8; 32]);
+        let key_b = EncryptionKey::new([14u8; 32]);
+
+        {
+            let conn = Connection::open(&plain).expect("open");
+            pragma::configure_connection(&conn).expect("pragmas");
+            conn.execute_batch("CREATE TABLE t (id INTEGER PRIMARY KEY);")
+                .expect("seed");
+        }
+        seal_file(&plain, &sealed, &key_a).expect("seal");
+        wipe_plaintext_and_wal_shm(&plain).expect("wipe");
+        // No leftover exists: recover_crash_leftovers is a no-op regardless
+        // of key, because leftover_exists is false and there is no marker.
+        recover_crash_leftovers(&sealed, &plain, &key_b).expect("noop with no leftover");
+        assert!(!plain.exists());
+
+        // open_file with the wrong key still fails exactly as before.
+        let reopened = dir.path().join("reopened.sqlite");
+        let err = open_file(&sealed, &reopened, &key_b).expect_err("wrong key must fail");
+        assert!(matches!(err, DbError::Encryption(_)));
     }
 
     #[test]
