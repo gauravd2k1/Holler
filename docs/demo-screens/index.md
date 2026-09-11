@@ -1,4 +1,62 @@
-# Demo screens — presentability check (T14 follow-up)
+# Demo screens — presentability check (T14 follow-up, T19 controls/header pass)
+
+## T19 update (2026-09-11)
+
+T14 adopted the colour tokens (`.money`, status colours, the logo on
+`PosScreen`) but left the *controls* on raw browser defaults and the
+sub-screens with no header at all. T19 closes that: `.btn`/`.btn--primary`/
+`.btn--danger` on every control on `OrderListScreen`, `BillingScreen` and
+`CurrentStockScreen`; `.holler-header` (same logo, same position as
+`PosScreen`) on all three; their content grouped into `.card` blocks
+separated by `--space-5` (`.screen-body`); and the three screens honestly
+left un-`.money`'d by T14 — `AggregatorOrdersScreen`, `PurchaseReturnScreen`,
+`ReceivingScreen` — now carry it on every money cell. No fetch, command or
+displayed value changed anywhere; layout and class names only.
+
+Five files below were **re-captured** in this pass, driven by a fresh
+`browser-check`-style harness (`shoot.mjs`, throwaway, not part of this
+repository — same discipline as T14's: real `pnpm dev` server, real
+Chromium, `window.__TAURI_INTERNALS__.invoke` mocked with contract-shaped
+fixtures, every screen asserted on its own unique content before capture,
+never a bare `page.goto` reload after login (that drops the in-memory-only
+`useAuthStore`), and the whole set MD5-hashed afterward to prove no two
+files are byte-identical:
+
+| File | Screen | What changed |
+|---|---|---|
+| `pos-order-list.png` | Order List | `.holler-header` (logo + title), `.card` around the table, `.btn`/`.btn--primary` on every action |
+| `pos-order-list-kots.png` | Order List, KOT panel expanded | Same header/card/button pass; KOT status-transition buttons now `.btn` |
+| `pos-order-list-empty.png` | Order List, zero orders | Confirms the header/card treatment holds with an empty table body |
+| `pos-billing.png` | Billing, full invoice | `.holler-header`, every section (Cash Shift / Bill / Invoice / Payments / Take Payment) now its own `.card`, `--space-5` between them, `.btn--primary` on Issue Bill / Record Payment(s), `.btn--danger` on Void/Refund |
+| `pos-current-stock.png` | Current Stock | `.holler-header` (logo + title + seven nav actions + Back, wrapping on this one row deliberately — see `.current-stock-screen .holler-header` in `index.css`), `.card` around the table |
+
+`pos-billing-upi-qr.png`, `pos-crash-screen.png`, `pos-receiving.png`,
+`pos-purchase-return.png`, `pos-grn-gaps.png` and `kds-ticket.png` are
+**unchanged files from the T14 pass**, kept for their MD5s below. Layout on
+`ReceivingScreen` and `PurchaseReturnScreen` was not touched by T19 (only
+`.money` spans were added, per the task's explicit "layout only" scope for
+the three finish-`.money` screens) and `AggregatorOrdersScreen` still has no
+screenshot of its own, same gap T14 recorded.
+
+**MD5 set, this pass** (`md5sum docs/demo-screens/*.png`):
+
+```
+898c22bafbb4ebf8493362c8d8c2f332  kds-ticket.png
+f69af7491d769204905582bb38c62088  pos-billing.png
+7acadd1008c32911ba0bb771846b827e  pos-billing-upi-qr.png
+6e3528a35bd33115d797d72d165d94de  pos-crash-screen.png
+887b0c7e3e1224f744da1bf38f3d4f03  pos-current-stock.png
+a0b782731c989abddf2905651cd371c2  pos-grn-gaps.png
+ca2946ee5e1d61fa4322571e789dc47f  pos-order-list.png
+1c85a41d8a44bc23c94f071c7561425f  pos-order-list-empty.png
+d2c0985bacbad90897a2d8803a9ce3db  pos-order-list-kots.png
+db1c969ea99617e31c16bd260d68b162  pos-purchase-return.png
+1cbd58a26aca8c5292ad7308cb417461  pos-receiving.png
+```
+
+Eleven files, eleven distinct hashes.
+
+
 
 Screenshots of the screens the demo touches, taken after the T14 token
 adoption pass, in Chromium (1440x900) against each app's real `pnpm dev`
