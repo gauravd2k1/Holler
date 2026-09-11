@@ -505,10 +505,21 @@ fn html_kv_line(out: &mut String, label: &str, value: &str) {
 /// byte-stream counterpart that does not exist.
 ///
 /// The amount comes from `invoice.grand_total_paise` — the invoice's own
-/// stored total, never recomputed — and `tn` carries
-/// `ctx.order_display_number`, never a UUID (same binding rule as every
-/// other line on this receipt).
-fn render_upi_qr_block(invoice: &Invoice, ctx: &InvoicePrintContext) -> PrinterResult<Option<String>> {
+/// stored total, never recomputed — and `tn` carries `invoice.invoice_number`,
+/// **not** `ctx.order_display_number`: the two must agree with the
+/// invoice-screen QR (`apps/pos/src/components/BillingScreen.tsx`, which
+/// sends `inv.invoice_number`) or a customer who scans both sees two
+/// different references for one bill. The invoice number is also the
+/// stronger identifier of the two — the compliance document number, unique
+/// forever, and what a payment would be reconciled against, where an order
+/// display number is only unique per outlet per day.
+///
+/// **This does not touch the module's binding rule** (see the file header):
+/// that rule forbids `order.id`/`invoice.id`/`invoice.order_id` — the
+/// UUIDs — from ever reaching the byte/text stream, never
+/// `invoice.invoice_number`, which is the human-facing document number
+/// this receipt already prints on its own "Invoice No" line.
+fn render_upi_qr_block(invoice: &Invoice) -> PrinterResult<Option<String>> {
     let Some((vpa, payee_name)) = read_upi_demo_payee() else {
         return Ok(None);
     };
@@ -516,7 +527,7 @@ fn render_upi_qr_block(invoice: &Invoice, ctx: &InvoicePrintContext) -> PrinterR
         &vpa,
         &payee_name,
         invoice.grand_total_paise,
-        ctx.order_display_number,
+        &invoice.invoice_number,
     )?;
     let qr = qrcode::QrCode::new(link.as_bytes())
         .map_err(|e| PrinterError::InvalidInput(format!("UPI QR encode failed: {e}")))?;
@@ -720,7 +731,7 @@ pub fn render_invoice_html(
     }
     body.push_str("</div>\n");
 
-    if let Some(qr_block) = render_upi_qr_block(invoice, ctx)? {
+    if let Some(qr_block) = render_upi_qr_block(invoice)? {
         body.push_str(&qr_block);
     }
 
@@ -1189,6 +1200,13 @@ mod tests {
     /// (`rqrr`, dev-dependency only — never shipped). Equivalent to the
     /// TypeScript track's browser + `jsqr` round-trip check: a QR nobody
     /// has decoded is not a QR, it is a picture of one.
+    ///
+    /// Asserts `tn` carries `invoice.invoice_number`, **not**
+    /// `ctx.order_display_number`: the invoice-screen QR
+    /// (`apps/pos/src/components/BillingScreen.tsx`) sends
+    /// `inv.invoice_number`, and the two must agree or a customer scanning
+    /// both the screen and the printed receipt for one bill sees two
+    /// different references.
     #[test]
     fn upi_qr_on_html_receipt_decodes_back_to_the_expected_link() {
         std::env::set_var("HOLLER_DEMO_UPI_VPA", "demo@upi");
@@ -1238,12 +1256,12 @@ mod tests {
             "demo@upi",
             "Holler Demo Kitchen",
             invoice.grand_total_paise,
-            ctx.order_display_number,
+            &invoice.invoice_number,
         )
         .expect("builds link");
         assert_eq!(
             content, expected,
-            "decoded QR content must match the UPI link the invoice total and order number produce"
+            "decoded QR content must match the UPI link the invoice total and invoice number produce"
         );
     }
 }
