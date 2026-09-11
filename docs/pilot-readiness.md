@@ -138,14 +138,17 @@ Five questions, none of which has an answer yet:
   `System.Random` — a deterministic PRNG seeded from the clock, not a CSPRNG.**
   For a key protecting cached credential hashes and an outlet's trading history
   that is the wrong generator: its output is predictable to anyone who can
-  bracket the time the key was minted. Accepted for the demo; a pilot must use
-  `[System.Security.Cryptography.RandomNumberGenerator]::Create()` (available on
-  .NET Framework 4.x, so it works in Windows PowerShell 5.1) — preferred over
-  `RNGCryptoServiceProvider`, which is obsolete on newer runtimes. The change is
-  three one-line edits, at `dev-bootstrap.ps1:326`, `:351` and
-  `demo-reset.ps1:194`. Note what the entropy heuristic cannot do here: a
-  `Get-Random` key looks perfectly random to it, because the weakness is in how
-  the value was produced and not in how it is distributed.
+  bracket the time the key was minted. **RESOLVED in the demo build**
+  (`2c8093d`): all three call sites now use
+  `[System.Security.Cryptography.RandomNumberGenerator]::Create()`, verified on
+  this machine's PowerShell 5.1 — preferred over `RNGCryptoServiceProvider`,
+  which is obsolete on newer runtimes.
+  Note what the entropy heuristic could not have done here: a `Get-Random` key
+  looks perfectly random to it, because the weakness was in how the value was
+  **produced** and not in how it is distributed. Two guards on one value,
+  neither able to see the other's failure — which is why "who mints it, on what
+  machine" stays an open question for a pilot even though the command is now
+  correct.
 - **Storage.** A plaintext `.env` beside the binary is the key sitting next to
   the lock. Windows DPAPI, the Credential Manager, or a TPM-sealed blob are the
   obvious candidates on ADR-013's hardware; each needs a decision and a fallback
