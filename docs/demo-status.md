@@ -19,9 +19,9 @@ Read `CLAUDE.md`'s `## Current milestone:` block for scope and EXCLUDES.
 | **1** | Seed parity | **BUILT; row-for-row comparison UNRESOLVED** | below |
 | **2** | Demo seed content + reset command | **BUILT; never run with `-Force`** | below |
 | **3** | Rendered receipt | **DONE** | below |
-| **4** | Sync banner legibility | **CODE DONE; not observed in a browser** | below |
+| **4** | Sync banner legibility | **DONE, observed in Chromium** | below |
 | **5** | Offline tick | **NOT STARTED** — conditional on observing sluggishness with the cloud down |  |
-| **6** | Presentability | **CODE DONE; screenshots outstanding** | below |
+| **6** | Presentability | **DONE for POS and admin; KDS unreachable** | below |
 | **7** | `docs/demo-script.md` | **NOT STARTED** — Tuesday |  |
 | **8** | Three timed rehearsals | **NOT STARTED** — Tuesday, needs item 2's reset to run first |  |
 
@@ -295,10 +295,47 @@ between rows **given up on** (`blocked_at` set) and rows **still trying**
 is "still retrying" is a different lie in the same family as halting sync
 silently.
 
-**Outstanding: none of it has been observed in a browser.** 234 POS tests and 6
-admin tests pass, `tsc` and `vite build` are clean — and none of those can
-evaluate *full width, legible from a metre*. Work item 6 asks for a screenshot of
-every screen the story touches; that half is not done.
+### Observed in a real browser, and it found three bugs
+
+Chromium via the Playwright already installed under `apps/kds`, driven against
+each app's real dev server. **Admin at 1440x900** (backend confirmed by PID
+58148 through a health fetch, not by the port answering) and **POS at 1440x900**
+with Tauri IPC injected as contract-shaped fixtures, since no Tauri shell can be
+launched here.
+
+**The banner deliverable was inverted, and only a browser could see it.**
+`.pos-screen` is a CSS grid with every cell claimed by a named area; the three
+banners carried no `grid-area`, so auto-placement collapsed the sync banner into
+the **140px category sidebar** — the exact opposite of *full width, legible from
+a metre*. It was a regression introduced by the presentability pass's own CSS,
+and 234 passing tests, a clean `tsc` and a clean `vite build` all saw nothing.
+Fixed with a dedicated `.pos-banners { grid-area: banners }` row.
+
+Two pre-existing bugs found in the same run:
+
+- **`.sync-blocked-list { display: flex }` beat the `hidden` attribute**, so
+  "Hide details" relabelled the button and left every row visible. This is the
+  `[hidden]{display:none}` specificity trap, live.
+- `OrderListScreen.tsx` mapped rows with `<>` shorthand fragments, which cannot
+  carry a `key` — a real React console warning.
+
+Plus a smaller one: the IST helper rendered lowercase `am`/`pm`, which reads as a
+typo on a bill.
+
+After the fixes, screenshots confirm the populated banner full width with both a
+**will not reach the cloud** row (HTTP 422, `missing_reference`) and a **still
+retrying** row (HTTP 503), each reading `Order #A184 - Butter Chicken` and never
+a UUID; the collapse toggle genuinely hiding rows; and the banner element count
+at **0 when both queries are empty** — fully absent rather than an empty box.
+
+One false alarm was ruled out by the agent itself: a raw UUID on a category tab
+traced to its own fixture using `display_order` where the contract says
+`sort_order`, which failed Zod validation and emptied the category map. Not a
+product defect.
+
+**The KDS could not be reached**, and was not worked around.
+`VITE_KDS_DEVICE_TOKEN` lives in `apps/kds/.env.dev`, which is deny-ruled to
+agents exactly as the POS's is, and no edge LAN server is running here anyway.
 
 ---
 
