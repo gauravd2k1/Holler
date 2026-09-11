@@ -28,7 +28,7 @@ export function SentScreen({ order, kots, onDone }: Props) {
           </div>
         ))}
       </div>
-      <button type="button" className="big-button" onClick={onDone}>
+      <button type="button" className="btn btn--primary btn--lg btn--block" onClick={onDone}>
         Back to tables
       </button>
     </div>

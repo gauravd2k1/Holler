@@ -72,12 +72,12 @@ export function ModifierSheet({ item, onCancel, onConfirm }: Props) {
           </div>
         ))}
         <div className="modifier-sheet-actions">
-          <button type="button" className="big-button secondary" onClick={onCancel}>
+          <button type="button" className="btn btn--lg" onClick={onCancel}>
             Cancel
           </button>
           <button
             type="button"
-            className="big-button"
+            className="btn btn--primary btn--lg"
             disabled={!canConfirm}
             onClick={() => onConfirm(groups.flatMap((g) => selected.get(g.groupName) ?? []))}
           >

@@ -1,29 +1,16 @@
 /* Mobile-first, dense, touch-first, large targets, no decorative flourish
    (CLAUDE.md). A phone held in one hand is the only form factor that
-   matters — there is no desktop breakpoint. */
+   matters — there is no desktop breakpoint.
 
-* {
-  box-sizing: border-box;
-}
+   Reset, colour, type, .btn and .holler-header now come from
+   @holler/ui/tokens.css + base.css (imported in main.tsx, before this file).
+   What remains here is layout: how captain's own screens are arranged, never
+   a colour, a font size or a control style of its own. */
 
 html,
 body,
 #root {
   height: 100%;
-  margin: 0;
-}
-
-body {
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  background: #111;
-  color: #f5f5f5;
-  font-size: 18px;
-  -webkit-tap-highlight-color: transparent;
-}
-
-button {
-  font: inherit;
-  color: inherit;
 }
 
 main {
@@ -32,123 +19,111 @@ main {
   height: 100%;
 }
 
-header.app-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 12px 16px;
-  background: #1c1c1c;
-  border-bottom: 1px solid #333;
-  flex: none;
-}
-
-header.app-header h1 {
-  font-size: 18px;
-  margin: 0;
-}
-
 .screen {
   flex: 1;
   overflow-y: auto;
-  padding: 12px;
+  padding: var(--space-3);
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 .error {
-  color: #ff8080;
-  font-weight: 600;
+  color: var(--color-danger);
+  font-weight: var(--weight-semibold);
 }
 
+/* Layout only — sizing, colour and border all come from base.css's textarea
+   and input rules. */
 .big-input {
   width: 100%;
-  padding: 16px;
-  font-size: 18px;
-  border-radius: 8px;
-  border: 1px solid #444;
-  background: #1c1c1c;
-  color: #f5f5f5;
-}
-
-.big-button {
-  width: 100%;
-  padding: 18px;
-  font-size: 20px;
-  font-weight: 700;
-  border-radius: 10px;
-  border: none;
-  background: #2f8f4e;
-  color: #fff;
-  min-height: 56px;
-}
-
-.big-button:disabled {
-  background: #3a3a3a;
-  color: #888;
-}
-
-.big-button.secondary {
-  background: #333;
 }
 
 /* Tables grid: touch targets sized for a thumb, occupied vs free distinguishable
-   at a glance across a room, not just up close. */
+   at a glance across a room, not just up close. Free/occupied are genuine
+   state, not decoration, so they reach for the status tokens. */
 .table-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
-  gap: 10px;
+  gap: var(--space-3);
 }
 
 .table-tile {
   aspect-ratio: 1;
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   border: none;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 4px;
-  font-size: 20px;
-  font-weight: 700;
+  gap: var(--space-1);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-bold);
 }
 
 .table-tile.free {
-  background: #204a2c;
-  color: #a6e6b8;
+  background: var(--color-ok-bg);
+  color: var(--color-text);
+  border: 2px solid var(--color-ok);
 }
 
 .table-tile.occupied {
-  background: #5a2a1c;
-  color: #ffcfa8;
+  background: var(--color-warn-bg);
+  color: var(--color-text);
+  border: 2px solid var(--color-warn);
 }
 
 .table-tile .seats {
-  font-size: 13px;
-  font-weight: 400;
+  font-size: var(--text-xs);
+  font-weight: var(--weight-regular);
   opacity: 0.8;
 }
 
 /* Menu + cart */
+.screen--flush {
+  padding: 0;
+}
+
+.menu-cart-body {
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  flex: 1;
+  min-height: 0;
+}
+
+.menu-cart-title {
+  margin: 0;
+}
+
+.menu-cart-send-error {
+  padding: 0 var(--space-3);
+}
+
 .category-tabs {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
   overflow-x: auto;
   flex: none;
-  padding-bottom: 4px;
+  padding-bottom: var(--space-1);
 }
 
 .category-tabs button {
   flex: none;
-  padding: 10px 16px;
-  border-radius: 20px;
-  border: 1px solid #444;
-  background: #1c1c1c;
+  min-height: var(--control-height);
+  padding: 0 var(--space-4);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-surface-raised);
+  color: var(--color-text);
+  font-size: var(--text-base);
 }
 
 .category-tabs button.active {
-  background: #2f8f4e;
-  border-color: #2f8f4e;
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-accent-text);
 }
 
 .menu-list {
@@ -156,27 +131,27 @@ header.app-header h1 {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .menu-row {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 14px;
-  border-radius: 10px;
-  background: #1c1c1c;
-  border: none;
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
   text-align: left;
   min-height: 60px;
 }
 
 .menu-row:disabled {
-  opacity: 0.4;
+  opacity: 0.5;
 }
 
 .menu-row .name {
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
 }
 
 .menu-row .price {
@@ -184,8 +159,8 @@ header.app-header h1 {
 }
 
 .menu-row .unavailable-tag {
-  font-size: 12px;
-  color: #ffb0b0;
+  font-size: var(--text-xs);
+  color: var(--color-danger);
 }
 
 /* Cart bar — stays visible without scrolling */
@@ -194,33 +169,33 @@ header.app-header h1 {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 14px;
-  background: #1c1c1c;
-  border-top: 1px solid #333;
-  gap: 12px;
+  padding: var(--space-3);
+  background: var(--color-surface-raised);
+  border-top: 1px solid var(--color-border);
+  gap: var(--space-3);
 }
 
 .cart-bar .count {
-  font-weight: 700;
+  font-weight: var(--weight-bold);
 }
 
 .cart-bar .total {
   font-variant-numeric: tabular-nums;
-  font-size: 20px;
+  font-size: var(--text-lg);
 }
 
 .cart-line {
   display: flex;
   justify-content: space-between;
-  padding: 8px 0;
-  border-bottom: 1px solid #2a2a2a;
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--color-border);
 }
 
 /* Free-modifier picker sheet */
 .modifier-sheet-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.6);
+  background: rgba(18, 24, 48, 0.5);
   display: flex;
   align-items: flex-end;
   z-index: 10;
@@ -230,12 +205,12 @@ header.app-header h1 {
   width: 100%;
   max-height: 80vh;
   overflow-y: auto;
-  background: #1c1c1c;
-  border-radius: 16px 16px 0 0;
-  padding: 16px;
+  background: var(--color-surface-raised);
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  padding: var(--space-4);
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: var(--space-4);
 }
 
 .modifier-sheet h2 {
@@ -243,55 +218,58 @@ header.app-header h1 {
 }
 
 .modifier-group-name {
-  font-weight: 600;
-  margin-bottom: 8px;
+  font-weight: var(--weight-semibold);
+  margin-bottom: var(--space-2);
 }
 
 .required-tag {
-  font-weight: 400;
-  color: #ffcf80;
-  font-size: 13px;
+  font-weight: var(--weight-regular);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
 }
 
 .modifier-options {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .modifier-option {
-  padding: 12px 16px;
-  border-radius: 20px;
-  border: 1px solid #444;
-  background: #262626;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-surface);
+  color: var(--color-text);
   min-height: 48px;
 }
 
 .modifier-option.selected {
-  background: #2f8f4e;
-  border-color: #2f8f4e;
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-accent-text);
 }
 
 .modifier-sheet-actions {
   display: flex;
-  gap: 10px;
-  margin-top: 8px;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
 }
 
-.modifier-sheet-actions .big-button {
+.modifier-sheet-actions .btn {
   flex: 1;
 }
 
 .kot-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .kot-row {
   display: flex;
   justify-content: space-between;
-  padding: 12px;
-  background: #1c1c1c;
-  border-radius: 8px;
+  padding: var(--space-3);
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
 }

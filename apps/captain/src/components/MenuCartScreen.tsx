@@ -88,9 +88,9 @@ export function MenuCartScreen({
   }
 
   return (
-    <div className="screen" style={{ padding: 0 }}>
-      <div style={{ padding: 12, display: "flex", flexDirection: "column", gap: 12, flex: 1, minHeight: 0 }}>
-        <h2 style={{ margin: 0 }}>{tableName}</h2>
+    <div className="screen screen--flush">
+      <div className="menu-cart-body">
+        <h2 className="menu-cart-title">{tableName}</h2>
         <div className="category-tabs">
           {sortedCategories.map((c) => (
             <button
@@ -121,14 +121,13 @@ export function MenuCartScreen({
           ))}
         </div>
       </div>
-      {sendError !== null && <p className="error" style={{ padding: "0 12px" }}>{sendError}</p>}
+      {sendError !== null && <p className="error menu-cart-send-error">{sendError}</p>}
       <div className="cart-bar">
         <span className="count">{count} item{count === 1 ? "" : "s"}</span>
         <span className="total">{formatPaise(total)}</span>
         <button
           type="button"
-          className="big-button"
-          style={{ width: "auto", padding: "14px 20px" }}
+          className="btn btn--primary btn--lg"
           disabled={cart.length === 0 || sending}
           onClick={onSend}
         >

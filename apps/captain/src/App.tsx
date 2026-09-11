@@ -120,8 +120,11 @@ export function App() {
 
   return (
     <main>
-      <header className="app-header">
-        <span>{session?.outlet_name ?? "Holler Captain"}</span>
+      <header className="holler-header">
+        <div className="holler-header__brand">
+          <img src="/holler_no_bg.png" alt="Holler" className="holler-logo" />
+          <span>{session?.outlet_name ?? "Holler Captain"}</span>
+        </div>
       </header>
       {screen.kind === "pair" && <PairScreen onPaired={handlePaired} />}
       {screen.kind === "tables" && token !== null && (

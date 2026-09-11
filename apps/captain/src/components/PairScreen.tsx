@@ -53,7 +53,7 @@ export function PairScreen({ onPaired }: Props) {
       {error !== null && <p className="error">{error}</p>}
       <button
         type="button"
-        className="big-button"
+        className="btn btn--primary btn--lg btn--block"
         disabled={busy || token.trim() === ""}
         onClick={() => {
           handlePair().catch(() => undefined);
