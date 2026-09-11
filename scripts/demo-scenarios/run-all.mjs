@@ -30,7 +30,13 @@ const STAGES = [
   "04-kds-ui.mjs",
   "05-sync-replay.mjs",
   "06-admin-ui.mjs",
+  "08-backoffice-api.mjs",
 ];
+
+// 07-uplink-watch.mjs is NOT in that list. It samples for six minutes by
+// design — the thing it measures is an interval, and a one-shot probe cannot
+// see one. Run it alongside a full pass, with the till up:
+//   node scripts/demo-scenarios/07-uplink-watch.mjs 12 30
 
 const run = async () => {
   const waitIdx = process.argv.indexOf("--wait");

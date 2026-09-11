@@ -70,6 +70,28 @@ async function waitForFrame(handle, predicate, ms) {
 }
 
 const run = async () => {
+  // LIVENESS GUARD. Every http() helper here swallows a transport error into
+  // status 0, so a dead POS would rewrite rows an earlier pass captured
+  // against the live listener as FAILs — turning "the process was stopped"
+  // into "the product is broken", which is exactly the confusion S-ENV-02
+  // exists to prevent. Record one BLOCKED row and leave the rest untouched.
+  const alive = await http(`${CAPTAIN}/api/session`);
+  if (alive.status === 0) {
+    record({
+      id: "S-CAP-00",
+      demoStep: "1a",
+      scenario: "The captain listener was reachable when this stage ran",
+      surface: "captain 9320",
+      precondition: "The POS process hosting the captain listener on 9320",
+      steps: "GET /api/session",
+      expected: "Any HTTP response, even a 401",
+      actual: `No response at all: ${alive.transportError}. The POS process is not running, so this stage recorded nothing new; any S-CAP rows in this sheet are from the earlier pass taken while the listener was live.`,
+      status: "BLOCKED",
+      evidence: `transport error on ${CAPTAIN}/api/session`,
+    });
+    return;
+  }
+
   // ---------------------------------------------------------------- S-CAP-01
   const noAuth = await http(`${CAPTAIN}/api/session`);
   record({

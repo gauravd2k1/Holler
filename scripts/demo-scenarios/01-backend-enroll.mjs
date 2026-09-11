@@ -105,9 +105,13 @@ const run = async () => {
       "backend/internal/auth/ratelimit.go:16-17; observed 2026-09-11 — correct owner password refused 4× in a row " +
       "after the budget was spent, then accepted once the window rolled",
     notes:
-      "ADR-012 chose the identical body deliberately so the endpoint leaks nothing, so this is a UX gap not a " +
-      "security defect. Demo risk: a few fumbled sign-ins locks the admin console for 15 minutes and the screen " +
-      "says the password is wrong. CLAUDE.md already records this exact misread costing a debugging detour.",
+      "ADR-012 chose the identical body deliberately so the endpoint leaks nothing, so this is a UX gap and not a " +
+      "security defect. PARTLY MITIGATED WHERE IT WAS NOTICED: the admin console's own copy reads 'Repeated attempts " +
+      "are rate limited, and a limited attempt looks the same as a wrong password', which is the right handling — " +
+      "but that mitigation lives in one client's string, not in the response, so every other caller (the till login, " +
+      "any script, this suite) still cannot tell the two apart. DEMO RISK: five fumbled sign-ins from the demo " +
+      "machine lock every client on that IP for fifteen minutes, and only the admin console explains why. " +
+      "CLAUDE.md already records this exact misread costing a debugging detour.",
   });
 
   const token = owner.body?.access_token ?? cashier.body?.access_token;

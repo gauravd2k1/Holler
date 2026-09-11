@@ -14,7 +14,29 @@ import { KDS_UI, REPO_ROOT, record, shotPath, shotRel } from "./lib.mjs";
 const require = createRequire(join(REPO_ROOT, "apps", "kds", "package.json"));
 const { chromium } = require("@playwright/test");
 
+/**
+ * Is the LAN socket's HOST PROCESS up at all?
+ *
+ * The KDS dev server and the socket live in different processes, so 5174 can
+ * serve a perfectly healthy page while 9310 has nothing behind it. Without
+ * this the stage would record "the KDS does not connect" as a product FAIL
+ * when the truthful statement is "there was nothing to connect to" — the
+ * distinction S-ENV-02 exists to preserve.
+ */
+async function lanHostUp() {
+  try {
+    await fetch("http://localhost:9320/", { signal: AbortSignal.timeout(3000) });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const run = async () => {
+  const lanUp = await lanHostUp();
+  const downNote =
+    "The POS process that hosts the 9310 LAN server is not running, so this is BLOCKED by an absent process, not " +
+    "by a KDS defect. See S-ENV-02.";
   const browser = await chromium.launch();
   const page = await browser.newContext({ viewport: { width: 1280, height: 900 } }).then((c) => c.newPage());
   const consoleErrors = [];
@@ -62,8 +84,8 @@ const run = async () => {
     precondition: "POS process bound on 9310; KDS device credential cached at the edge",
     steps: 'Poll [data-testid="connection-status"] for data-status="connected" for up to 10s',
     expected: 'data-status="connected" and no connection banner',
-    actual: `data-status="${connState}"; banner=${JSON.stringify(bannerText)}`,
-    status: connState === "connected" ? "PASS" : "FAIL",
+    actual: `data-status="${connState}"; banner=${JSON.stringify(bannerText)}${lanUp ? "" : ". " + downNote}`,
+    status: connState === "connected" ? "PASS" : lanUp ? "FAIL" : "BLOCKED",
     evidence: shotRel("kds-02-connected"),
     notes: "The banner renders ONLY when not connected, so its absence is a second, independent signal.",
   });
@@ -86,8 +108,11 @@ const run = async () => {
     precondition: "KOTs exist at the edge (the POS and S-CAP-14 have cut several this session)",
     steps: "Wait up to 8s for article.ticket-card elements",
     expected: "At least one ticket card carrying a data-kot-id",
-    actual: cardCount > 0 ? `${cardCount} ticket cards rendered` : `No ticket cards; board says ${JSON.stringify(emptyText)}`,
-    status: cardCount > 0 ? "PASS" : "FAIL",
+    actual:
+      cardCount > 0
+        ? `${cardCount} ticket cards rendered`
+        : `No ticket cards; board says ${JSON.stringify(emptyText)}${lanUp ? "" : ". " + downNote}`,
+    status: cardCount > 0 ? "PASS" : lanUp ? "FAIL" : "BLOCKED",
     evidence: shotRel("kds-03-tickets"),
   });
 

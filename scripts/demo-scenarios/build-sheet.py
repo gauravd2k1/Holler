@@ -39,13 +39,14 @@ COLUMNS = [
 ]
 
 # Group order for the sheet: environment first, then the paths in demo order.
-GROUP_ORDER = ["S-ENV", "S-BE", "S-CAP", "S-CUI", "S-KDS", "S-ADM", "S-SYNC"]
+GROUP_ORDER = ["S-ENV", "S-BE", "S-CAP", "S-CUI", "S-KDS", "S-ADM", "S-API", "S-SYNC"]
 
 # Failures ranked by what they cost the demo, most severe first. An id absent
 # from this list sorts after every id present in it.
 SEVERITY = [
     "S-CUI-03",   # the waiter phone cannot pair at all -> demo step 1a is dead
     "S-SYNC-09",  # the pump's period is why it cannot pair
+    "S-SYNC-10",  # orders reach the cloud with a total and no lines
     "S-ENV-02",   # the POS process vanished mid-run
     "S-SYNC-04",  # gap A7: nothing but `order` reaches the cloud
     "S-ADM-08",   # demo step 4 has no screen

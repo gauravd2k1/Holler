@@ -28,7 +28,28 @@ const run = async () => {
   page.on("pageerror", (e) => consoleErrors.push(`pageerror: ${e.message}`));
 
   // ------------------------------------------------------------- S-CUI-01
-  const resp = await page.goto(CAPTAIN, { waitUntil: "domcontentloaded" });
+  // A dead POS process must not overwrite rows an earlier run captured
+  // against the live listener with an unhandled-error row. Leave them alone
+  // and say why.
+  let resp;
+  try {
+    resp = await page.goto(CAPTAIN, { waitUntil: "domcontentloaded", timeout: 15000 });
+  } catch (err) {
+    record({
+      id: "S-CUI-00",
+      demoStep: "1a",
+      scenario: "The captain page was reachable when this stage ran",
+      surface: "captain 9320",
+      precondition: "The POS process hosting the captain listener",
+      steps: "Navigate to http://localhost:9320/",
+      expected: "The page loads",
+      actual: `Could not reach the captain listener: ${String(err).slice(0, 140)}. The POS process is not running, so this stage recorded nothing new; any S-CUI rows in this sheet are from the earlier pass taken while the listener was live.`,
+      status: "BLOCKED",
+      evidence: "navigation error; nothing listening on 9320",
+    });
+    await browser.close();
+    return;
+  }
   await page.waitForTimeout(1200);
   const pairVisible = await page.getByRole("heading", { name: "Pair this phone" }).isVisible().catch(() => false);
   await page.screenshot({ path: shotPath("captain-01-pair"), fullPage: true });
@@ -73,6 +94,15 @@ const run = async () => {
   await page.waitForTimeout(2500);
   const tablesVisible = await page.getByRole("heading", { name: "Tables" }).isVisible().catch(() => false);
   const pairError = await page.locator("p.error").first().textContent().catch(() => null);
+  // REDACT BEFORE CAPTURE. The pair screen keeps the pasted token in its
+  // textarea after a rejection — deliberately, so a waiter can correct a
+  // typo — so a screenshot taken here publishes a live device credential into
+  // a committed file. Caught by reading the first run's PNG, not by reasoning
+  // about it: the leak is invisible in the script and obvious in the image.
+  if (!tablesVisible) {
+    await page.getByPlaceholder("credential_id.secret").fill(`<redacted device token — fingerprint ${fingerprint(TOKEN)}>`);
+    await page.waitForTimeout(200);
+  }
   await page.screenshot({ path: shotPath("captain-03-pair-real-token"), fullPage: true });
   record({
     id: "S-CUI-03",

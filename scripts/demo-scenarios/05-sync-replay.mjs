@@ -103,6 +103,36 @@ const run = async () => {
       "arrive. The KOT the KDS displayed in S-KDS-02 is real and LAN-local; it is simply invisible to the cloud.",
   });
 
+  // --------------------------------------------------------------- S-SYNC-10
+  // A replayed order that arrives with a total and no lines. The order row
+  // and its item rows travel as SEPARATE outbox entries, so the parent can
+  // land while every child is refused on order_item_variant_id_fkey — and
+  // nothing about the parent says so.
+  const empties = rows(
+    `select o.id||' status='||o.status||' total_paise='||o.total_paise::text||' lines='||(select count(*) from order_item oi where oi.order_id=o.id)::text from "order" o order by o.created_at;`,
+  );
+  const emptyCount = Number(
+    one(`select count(*) from "order" o where o.total_paise > 0 and not exists (select 1 from order_item oi where oi.order_id=o.id);`),
+  );
+  record({
+    id: "S-SYNC-10",
+    demoStep: "6",
+    scenario: "A replayed order carries its line items, not just its total",
+    surface: "postgres 5432",
+    precondition: "Orders have replayed (S-SYNC-01) and the cloud holds menu_item_variant rows",
+    steps: 'For every cloud order, count its order_item rows alongside its total_paise',
+    expected: "No order with money on it and nothing in it",
+    actual: `${emptyCount} order(s) carry a non-zero total with ZERO lines. Per order: ${empties.join(" | ")}`,
+    status: emptyCount === 0 ? "PASS" : "FAIL",
+    evidence: `SQL: ${empties.join(" ; ")}`,
+    notes:
+      "THE BACK OFFICE SHOWS AN ORDER FOR ₹300 WITH NOTHING IN IT. docs/backlog.md records every ItemAdded being " +
+      "refused on the variant foreign key, and this is that refusal seen from the cloud side: the order row and its " +
+      "item rows are separate outbox entries, so the parent lands and the children are rejected, leaving a total " +
+      "with no lines to explain it. S-SYNC-08 names the cause — 12 cloud menu items carry no variant at all. " +
+      "Demo step 6 reads from exactly this data.",
+  });
+
   // --------------------------------------------------------------- S-SYNC-05
   // Blocked-row surfacing. `sync_replay_block` is the ranged-stream table;
   // `ledger_replay_gap` is the cloud-side hole record.
