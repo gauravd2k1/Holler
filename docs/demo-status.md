@@ -356,6 +356,41 @@ belongs inside `drain_outbox` at all is the question to answer first.
 
 ---
 
+## The devseed idempotence fix is in a commit that does not mention it
+
+`edge/database/src/bin/devseed.rs`'s GRN and opening-stock seeding was not
+idempotent: a second run against the same data directory died on
+`UNIQUE constraint failed: goods_receipt_note.id` and **aborted before the
+bootstrap's device-enrolment steps**, leaving the edge seeded and the KDS and
+captain devices un-enrolled — the worst of the three outcomes, because it looks
+like it half-worked. The operator re-running the bootstrap on demo morning is
+the normal case, not the exceptional one.
+
+The enumeration found a second instance of the same shape: `write_opening_stock`
+would have failed on the very next run, invisible only because the GRN aborted
+the process first. Both now check for their fixed-id row and skip, which never
+attempts a second write against `stock_ledger_entry`'s append-only trigger and
+so neither weakens nor routes around it. Three consecutive runs produce
+identical counts — `goods_receipt_note: 1`, `grn_line: 7`, `grn_gap: 1` (the
+expected `NO_PURCHASE_ORDER`, neither multiplied nor eliminated),
+`stock_ledger_entry: 39`, `stock_count_line: 32`.
+
+**That fix lives in `e9ec3dc`, whose message is
+`style(admin): adopt @holler/ui tokens and add the header logo`.** Two builders
+were running in parallel and the styling track staged a file it did not own,
+sweeping the devseed change into its own commit — the exact incident CLAUDE.md's
+commit rules describe, this time caused by concurrency rather than by
+`git add -A`. The commit is pushed, history rewriting is denied, and rewriting
+shared history to correct a message would trade a real risk for a cosmetic gain.
+So the pointer is recorded here instead: **`git log` on `devseed.rs` will show an
+admin CSS commit message; the change is real, tested and correct.**
+
+The reusable lesson is narrower than "be careful": **staging by path is not
+enough when tracks overlap in time.** A builder that stages only its own paths
+can still capture another builder's work if that work is sitting staged in the
+same index. Ownership boundaries in a brief prevent two agents editing one file;
+they do not prevent one agent committing another's.
+
 ## Two commits are missing their `Claude-Session:` trailer
 
 `e9e7337` and `29df694`. Both are pushed. The builder flagged them rather than
