@@ -156,7 +156,7 @@ export function OrderListScreen() {
                     coloured dot. */}
                 <td>{orderStatusLabel(order.status)}</td>
                 <td>{order.items.length}</td>
-                <td>{formatPaiseAsRupees(order.total_paise)}</td>
+                <td className="money">{formatPaiseAsRupees(order.total_paise)}</td>
                 <td>{formatIST(order.timestamps.created_at)}</td>
                 <td className="order-actions">
                   {canOfferConfirm(order.status, principal) && (

@@ -51,7 +51,7 @@ export function UpiPaymentQr({ amountPaise, note }: UpiPaymentQrProps) {
   if (payee === null) return null;
 
   return (
-    <div className="upi-payment-qr">
+    <div className="upi-payment-qr card">
       <h4>Scan to pay via UPI</h4>
       {dataUrl && <img src={dataUrl} alt="UPI payment QR code" width={220} height={220} />}
       {error && (
@@ -60,7 +60,7 @@ export function UpiPaymentQr({ amountPaise, note }: UpiPaymentQrProps) {
         </p>
       )}
       <p>
-        {formatPaiseAsRupees(amountPaise)} to {payee.payeeName}
+        <span className="money">{formatPaiseAsRupees(amountPaise)}</span> to {payee.payeeName}
       </p>
     </div>
   );

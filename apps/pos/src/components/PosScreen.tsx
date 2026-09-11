@@ -322,7 +322,7 @@ export function PosScreen() {
               }
             >
               <span className="name">{item.name}</span>
-              <span className="price">{formatPaiseAsRupees(item.base_price_paise)}</span>
+              <span className="price money">{formatPaiseAsRupees(item.base_price_paise)}</span>
             </button>
             <button
               type="button"
@@ -347,7 +347,7 @@ export function PosScreen() {
                       onChange={() => setChosenVariantId(v.id)}
                     />
                     <span className="name">{v.name}</span>
-                    <span className="price">{formatPaiseAsRupees(variantPricePaise(item, v))}</span>
+                    <span className="price money">{formatPaiseAsRupees(variantPricePaise(item, v))}</span>
                   </label>
                 ))}
                 <div className="pos-variant-picker-actions">
@@ -416,7 +416,7 @@ export function PosScreen() {
               <ul className="pos-cart-line-modifiers">
                 {line.modifiers.map((m, i) => (
                   <li key={`${line.lineId}-${m.modifierId}-${i}`}>
-                    {m.optionName} ({formatPaiseAsRupees(m.priceDeltaPaise)})
+                    {m.optionName} (<span className="money">{formatPaiseAsRupees(m.priceDeltaPaise)}</span>)
                   </li>
                 ))}
               </ul>
@@ -440,7 +440,7 @@ export function PosScreen() {
                 +
               </button>
             </span>
-            <span className="line-total">{formatPaiseAsRupees(lineTotal(line))}</span>
+            <span className="line-total money">{formatPaiseAsRupees(lineTotal(line))}</span>
             <button
               type="button"
               disabled={!canCreateOrder || cartPending}
@@ -454,7 +454,7 @@ export function PosScreen() {
       </aside>
 
       <footer className="pos-bottom-bar">
-        <span className="pos-subtotal">Subtotal: {formatPaiseAsRupees(subtotalPaise)}</span>
+        <span className="pos-subtotal">Subtotal: <span className="money">{formatPaiseAsRupees(subtotalPaise)}</span></span>
         {cartError && (
           <span className="pos-send-error" role="alert">
             {cartError}

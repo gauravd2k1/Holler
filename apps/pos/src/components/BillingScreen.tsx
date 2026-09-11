@@ -526,7 +526,7 @@ export function BillingScreen() {
                 <div key={item.id} className="discount-line-row">
                   <span>
                     {menuItemName(item.menu_item_id)} x{item.quantity} (
-                    {formatPaiseAsRupees(item.unit_price_paise)}/ea)
+                    <span className="money">{formatPaiseAsRupees(item.unit_price_paise)}</span>/ea)
                   </span>
                   <select
                     value={staged?.discountDefinitionId ?? ""}
@@ -541,7 +541,7 @@ export function BillingScreen() {
                   </select>
                   {stagedDef && (
                     <span>
-                      -{formatPaiseAsRupees(previewLineDiscountPerUnitPaise(stagedDef, item.unit_price_paise))}
+                      -<span className="money">{formatPaiseAsRupees(previewLineDiscountPerUnitPaise(stagedDef, item.unit_price_paise))}</span>
                       /ea (preview — the edge recomputes this on issue)
                     </span>
                   )}
@@ -710,22 +710,22 @@ export function BillingScreen() {
                     <tr key={line.id}>
                       <td>{line.description}</td>
                       <td>{line.quantity}</td>
-                      <td>{formatPaiseAsRupees(line.discount_paise)}</td>
-                      <td>{formatPaiseAsRupees(line.taxable_value_paise)}</td>
-                      <td>{formatPaiseAsRupees(line.cgst_paise)}</td>
-                      <td>{formatPaiseAsRupees(line.sgst_paise)}</td>
-                      <td>{formatPaiseAsRupees(line.igst_paise)}</td>
-                      <td>{formatPaiseAsRupees(line.total_paise)}</td>
+                      <td className="money">{formatPaiseAsRupees(line.discount_paise)}</td>
+                      <td className="money">{formatPaiseAsRupees(line.taxable_value_paise)}</td>
+                      <td className="money">{formatPaiseAsRupees(line.cgst_paise)}</td>
+                      <td className="money">{formatPaiseAsRupees(line.sgst_paise)}</td>
+                      <td className="money">{formatPaiseAsRupees(line.igst_paise)}</td>
+                      <td className="money">{formatPaiseAsRupees(line.total_paise)}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
-              <p>Subtotal: {formatPaiseAsRupees(inv.subtotal_paise)}</p>
-              <p>Discount: {formatPaiseAsRupees(inv.discount_paise)}</p>
-              <p>Round off: {formatPaiseAsRupees(inv.round_off_paise)}</p>
-              <p className="grand-total">Grand Total: {formatPaiseAsRupees(inv.grand_total_paise)}</p>
+              <p>Subtotal: <span className="money">{formatPaiseAsRupees(inv.subtotal_paise)}</span></p>
+              <p>Discount: <span className="money">{formatPaiseAsRupees(inv.discount_paise)}</span></p>
+              <p>Round off: <span className="money">{formatPaiseAsRupees(inv.round_off_paise)}</span></p>
+              <p className="grand-total">Grand Total: <span className="money">{formatPaiseAsRupees(inv.grand_total_paise)}</span></p>
               <p className="amount-due">
-                Amount Due: {formatPaiseAsRupees(due)}
+                Amount Due: <span className="money">{formatPaiseAsRupees(due)}</span>
                 {billFullySettled && " — settled"}
               </p>
 
@@ -764,7 +764,7 @@ export function BillingScreen() {
                   {invoicePayments.map((p) => (
                     <tr key={p.id}>
                       <td>{p.method}</td>
-                      <td>{formatPaiseAsRupees(p.amount_paise)}</td>
+                      <td className="money">{formatPaiseAsRupees(p.amount_paise)}</td>
                       <td>{p.status}</td>
                       {/* "Reversal" only — never the reversed payment's raw
                           UUID. There is no human-facing number for a payment
@@ -837,8 +837,8 @@ export function BillingScreen() {
                 + Add Tender
               </button>
               {billFullySettled && <p>This bill is fully settled — no further tender is needed.</p>}
-              <p>Entered so far: {formatPaiseAsRupees(enteredTotal)}</p>
-              <p>Remaining after entered tenders: {formatPaiseAsRupees(remaining)}</p>
+              <p>Entered so far: <span className="money">{formatPaiseAsRupees(enteredTotal)}</span></p>
+              <p>Remaining after entered tenders: <span className="money">{formatPaiseAsRupees(remaining)}</span></p>
               {tenderError && (
                 <p className="billing-error" role="alert">
                   {tenderError}
