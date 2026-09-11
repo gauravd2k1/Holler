@@ -46,6 +46,7 @@ import {
 } from "../lib/tauri";
 import { useAuthStore } from "../store/auth";
 import { useCashShiftStore } from "../store/cashShift";
+import { formatIST } from "../lib/datetime";
 
 const PAYMENT_METHODS: PaymentMethod[] = [
   "CASH",
@@ -440,7 +441,10 @@ export function BillingScreen() {
   return (
     <main className="billing-screen">
       <header>
-        <h1>Billing — {orderQuery.data?.display_number ?? orderId}</h1>
+        {/* The order's human-facing number only — never its UUID
+            (CLAUDE.md §Money/time/identifiers). display_number is nullable
+            only for pre-0.4.0 legacy rows. */}
+        <h1>Billing — {orderQuery.data?.display_number ?? "order pending"}</h1>
         <button type="button" onClick={() => void navigate({ to: "/orders" })}>
           Back to Orders
         </button>
@@ -464,7 +468,10 @@ export function BillingScreen() {
         {openShiftId && shiftQuery.data && (
           <div>
             <p>
-              Shift {shiftQuery.data.id.slice(0, 8)} — opened {shiftQuery.data.opened_at} — status{" "}
+              {/* No truncated id — a partial UUID is still a UUID. Only one
+                  shift is ever open at a till at once, so "opened at / status"
+                  identifies it without needing a reference number at all. */}
+              Cash shift opened {formatIST(shiftQuery.data.opened_at)} — status{" "}
               {shiftQuery.data.status}
             </p>
             {shiftQuery.data.status === "OPEN" && (
@@ -751,7 +758,11 @@ export function BillingScreen() {
                       <td>{p.method}</td>
                       <td>{formatPaiseAsRupees(p.amount_paise)}</td>
                       <td>{p.status}</td>
-                      <td>{p.reverses_payment_id ?? "—"}</td>
+                      {/* "Reversal" only — never the reversed payment's raw
+                          UUID. There is no human-facing number for a payment
+                          row, and the reversed tender is already listed
+                          elsewhere in this same table. */}
+                      <td>{p.reverses_payment_id !== null ? "Reversal" : "—"}</td>
                       <td>
                         {/* No "edit payment" affordance exists anywhere in
                             this screen — a correction is always a new

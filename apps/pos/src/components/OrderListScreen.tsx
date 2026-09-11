@@ -22,6 +22,7 @@ import {
   stationsForKots,
 } from "../domain/kitchen";
 import { useAuthStore } from "../store/auth";
+import { formatIST } from "../lib/datetime";
 import { PrintFailureBanner } from "./PrintFailureBanner";
 import { SyncBlockedBanner } from "./SyncBlockedBanner";
 import { LowStockBanner } from "./LowStockBanner";
@@ -139,7 +140,11 @@ export function OrderListScreen() {
           {(ordersQuery.data ?? []).map((order) => (
             <>
               <tr key={order.holler_order_id}>
-                <td>{order.holler_order_id}</td>
+                {/* Human-facing display number only — never the row's UUID
+                    (CLAUDE.md §Money/time/identifiers). display_number is
+                    nullable only for pre-0.4.0 legacy rows; "unnumbered" is
+                    shown rather than falling back to the id. */}
+                <td>{order.display_number !== null ? `#${order.display_number}` : "unnumbered"}</td>
                 <td>{order.order_type}</td>
                 {/* Never colour-only (docs/spec/kitchen.md §KDS, applies
                     wherever status is rendered): plain-language text, not a
@@ -147,7 +152,7 @@ export function OrderListScreen() {
                 <td>{orderStatusLabel(order.status)}</td>
                 <td>{order.items.length}</td>
                 <td>{formatPaiseAsRupees(order.total_paise)}</td>
-                <td>{order.timestamps.created_at}</td>
+                <td>{formatIST(order.timestamps.created_at)}</td>
                 <td className="order-actions">
                   {canOfferConfirm(order.status, principal) && (
                     <button
@@ -272,9 +277,10 @@ function KotsPanel({
         <tbody>
           {kots.map((kot) => (
             <tr key={kot.id}>
-              <td>
-                #{kot.sequence} · {kot.id.slice(0, 8)}
-              </td>
+              {/* Ticket sequence only — never a truncated UUID. A partial
+                  UUID is still a UUID, and the defect class this avoids is
+                  named in `edge/printer/src/template.rs`. */}
+              <td>#{kot.sequence}</td>
               <td>{stationNameByCode.get(kot.station) ?? kot.station}</td>
               {/* Non-colour-only status: plain text label plus the
                   timestamp that grounds it (docs/spec/kitchen.md §KDS). */}
@@ -282,7 +288,7 @@ function KotsPanel({
               <td>
                 {kot.items.map((i) => `${i.quantity}x ${i.name}`).join(", ")}
               </td>
-              <td>{kot.updated_at}</td>
+              <td>{formatIST(kot.updated_at)}</td>
               <td>
                 {canOfferKotTransition(principal) &&
                   legalNextKotStatuses(kot.status).map((next) => (

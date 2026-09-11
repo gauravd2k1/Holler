@@ -39,11 +39,13 @@ export function PrintFailureBanner() {
           <li key={job.id}>
             {job.target === "KOT" ? (
               <span className="print-failure-target print-failure-target-kot">
-                KOT · station {job.kot_station ?? "unknown"}
+                {/* "Kitchen ticket", matching the KDS and the order list —
+                    not the internal enum member name "KOT". */}
+                Kitchen ticket · station {job.kot_station ?? "unknown"}
               </span>
             ) : (
               <span className="print-failure-target print-failure-target-invoice">
-                BILL · invoice {job.invoice_number ?? "unknown"}
+                Bill · invoice {job.invoice_number ?? "unknown"}
               </span>
             )}{" "}
             · {job.printer_name} · {job.attempt_count} attempt

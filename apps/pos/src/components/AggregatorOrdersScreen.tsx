@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
-import { queryKeys, useUnacceptedAggregatorOrdersQuery } from "../lib/queries";
+import { queryKeys, useMenuItemsQuery, useUnacceptedAggregatorOrdersQuery } from "../lib/queries";
 import { acceptAggregatorOrder, type UnacceptedAggregatorOrder } from "../lib/tauri";
 import { formatPaiseAsRupees } from "../domain/money";
+import { formatIST } from "../lib/datetime";
 
 // ---------------------------------------------------------------------------
 // DELIVERY-PLATFORM ORDERS — M6 C1
@@ -33,6 +34,9 @@ export function AggregatorOrdersScreen() {
   const queryClient = useQueryClient();
   const documentsQuery = useUnacceptedAggregatorOrdersQuery();
   const documents = documentsQuery.data ?? [];
+  const menuItemsQuery = useMenuItemsQuery();
+  const menuItemName = (menuItemId: string): string =>
+    menuItemsQuery.data?.find((m) => m.id === menuItemId)?.name ?? "matched item";
 
   const [accepting, setAccepting] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -92,7 +96,8 @@ export function AggregatorOrdersScreen() {
 
       {accepted !== null && (
         <section className="aggregator-accepted" role="status">
-          <h2>Accepted as order {accepted.displayNumber ?? accepted.orderId}</h2>
+          {/* The order's human-facing number, never its UUID. */}
+          <h2>Accepted as order {accepted.displayNumber ?? "(unnumbered)"}</h2>
           <p>
             Platform order {accepted.externalOrderId} · {accepted.linesCreated} line
             {accepted.linesCreated === 1 ? "" : "s"} on the bill
@@ -129,8 +134,8 @@ export function AggregatorOrdersScreen() {
                 {doc.platform} · {doc.external_order_id}
               </h2>
               <p>
-                Platform status {doc.platform_status} · received {doc.received_at} · business date{" "}
-                {doc.business_date} · document version {doc.document_version}
+                Platform status {doc.platform_status} · received {formatIST(doc.received_at)} ·
+                business date {doc.business_date} · document version {doc.document_version}
               </p>
               {/* The platform's own stated total, shown beside our lines rather
                   than instead of them: if the two disagree, a human needs to see
@@ -164,7 +169,11 @@ export function AggregatorOrdersScreen() {
                           ? "—"
                           : formatPaiseAsRupees(line.stated_unit_price_paise)}
                       </td>
-                      <td>{line.menu_item_id ?? "not matched"}</td>
+                      {/* The matched item's NAME, never its UUID — the
+                          previous version of this cell showed the raw id on
+                          every matched line, which is exactly backwards from
+                          what a human at this screen needs to read. */}
+                      <td>{line.menu_item_id !== null ? menuItemName(line.menu_item_id) : "not matched"}</td>
                     </tr>
                   ))}
                 </tbody>

@@ -48,9 +48,12 @@ export function App() {
   return (
     <main>
       <header>
-        <span>
-          {principal.full_name} · outlet {principal.outlet_id}
-        </span>
+        {/* The signed-in person's name only — never the outlet's UUID
+            (CLAUDE.md §Money/time/identifiers). This build serves one outlet
+            per environment, so there is nothing to disambiguate here today;
+            a friendly outlet name is `AuthenticatedPrincipal.outlet_id`
+            resolved, which the contract does not yet carry. */}
+        <span>{principal.full_name}</span>
         <button
           type="button"
           onClick={() => {

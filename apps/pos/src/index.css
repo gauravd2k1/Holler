@@ -497,36 +497,53 @@ button {
 .sync-blocked-banner {
   position: sticky;
   top: 0;
+  left: 0;
   z-index: 1002;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  box-sizing: border-box;
+  gap: 0.5rem;
+  padding: 0.75rem 1.25rem;
+  background: #4a1d5c;
+  border-bottom: 3px solid #b06fd0;
+  color: #fff;
+  /* Demo requirement: legible from a metre away, on a projector or across a
+     table — the default body size is not, so every line in this banner is
+     set explicitly rather than inherited. */
+  font-size: 1.15rem;
+  line-height: 1.5;
+}
+.sync-blocked-group,
+.sync-failing-group {
   display: flex;
   align-items: center;
   gap: 1rem;
   flex-wrap: wrap;
-  padding: 0.5rem 1rem;
-  background: #4a1d5c;
-  border-bottom: 3px solid #b06fd0;
-  color: #fff;
+  width: 100%;
 }
-.sync-blocked-summary {
-  font-weight: bold;
+.sync-blocked-summary,
+.sync-failing-summary {
+  font-weight: 700;
+  font-size: 1.2rem;
 }
 .sync-blocked-list {
   margin: 0;
   padding: 0;
   list-style: none;
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem;
-  flex: 1;
+  flex-direction: column;
+  gap: 0.4rem;
+  flex-basis: 100%;
 }
 .sync-blocked-aggregate {
-  font-weight: bold;
+  font-weight: 700;
 }
 /* The row list is capped and scrolls INSIDE the banner rather than growing it.
    Height that varies with row count is what let this overlay swallow the till
    header, and the count only ever grows. */
 .sync-blocked-list {
-  max-height: 4.5rem;
+  max-height: 9rem;
   overflow-y: auto;
 }
 .sync-blocked-toggle {
@@ -534,13 +551,15 @@ button {
   border: 1px solid #b06fd0;
   color: #fff;
   border-radius: 4px;
-  padding: 0.125rem 0.5rem;
+  padding: 0.25rem 0.75rem;
+  font-size: 1rem;
   cursor: pointer;
 }
 /* Deliberately not styled as an alarm: the local record is intact and the
    till is working. What is wrong is upstream, and the wording says so. */
 .sync-blocked-action {
   opacity: 0.85;
+  flex-basis: 100%;
 }
 .sync-failing-summary {
   opacity: 0.85;
