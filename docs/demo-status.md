@@ -339,6 +339,142 @@ agents exactly as the POS's is, and no edge LAN server is running here anyway.
 
 ---
 
+
+## Presentability, raised from a work item to a REQUIREMENT
+
+The operator raised it mid-build, with four parts: the Holler logo on every
+surface; **one design token set shared by all four apps, with no screen using
+ad-hoc values**; every screen the demo touches screenshotted for review; and a
+PWA manifest on the captain page.
+
+**Theme decision, the operator's:** light everywhere, **the KDS alone on the
+dark surface**. The captain page follows the till. The reasoning, which should
+not be relitigated: a till in a bright room reads better light and matches the
+brand, while a kitchen display is glanced at from across a hot line where
+dark-on-light glare is worse — which is why every KDS on the market is dark.
+
+### `packages/ui` — the token set
+
+`packages/ui` was **completely empty**; four apps carried 1,053 lines of
+unrelated CSS and the till alone used `#333`, `#f66`, `#b06fd0`, `#3a6` and a
+dozen more values chosen per screen.
+
+Every primitive is lifted from `website/holler-branded-website.html`, the
+existing brand system. **Two values are derived and both say so at their
+definition**: the brand carries no red and a till needs one, so a void or a
+permanently-blocked sync row does not read as the same severity as a warning;
+and the brand's muted text colour is tuned for paper and fails legibility on
+ink.
+
+**The constraint that keeps two surface modes from becoming two products:** the
+dark block remaps semantic tokens only and never redefines a primitive. The four
+status colours are deliberately **absent** from it, so they inherit the light
+values unchanged — a cook and a cashier read the same green as the same green.
+Where contrast needs work on ink, the tinted **ground** moves and the status
+colour does not.
+
+Three rules in `base.css` came from real defects rather than taste:
+`[hidden] { display: none !important }` (a `display: flex` rule beat the
+attribute, so "Hide details" relabelled the button and left every row visible);
+`--control-height: 44px`, the smallest target reliably hit without looking on a
+touchscreen till or a one-handed phone; and `.money`'s tabular figures, so a
+column of totals lines up and does not jitter.
+
+**Both adoption passes needed ZERO new tokens.** Two independent builders, four
+apps, no gaps — reasonable evidence the semantic layer was drawn at the right
+altitude.
+
+### The screenshots — and what nearly shipped instead
+
+`docs/demo-screens/` holds the reviewed set with an `index.md` naming each
+screen, its demo step and what changed.
+
+**The first attempt produced nine byte-identical copies of the login screen
+under nine different filenames.** `page.goto()` reloads after login dropped the
+in-memory auth store, so navigation never landed and the harness photographed
+whatever was on screen. Caught by hashing the files, not by looking at them.
+
+That is this repository's recurring failure in visual form: **an artefact that
+looks like coverage and is one observation** — the same shape as a fidelity test
+passing on absent data, or a suite reporting zero executed tests and exiting 0.
+Had it been reported as "nine screens observed", the claim would have survived
+until the operator opened them.
+
+The discipline that replaced it, and that every later capture follows:
+
+- **Navigate by clicking in-app; never `page.goto()` after login.**
+- **Assert the screen's own unique content before capturing**, throwing loudly
+  rather than photographing whatever is there.
+- **Hash the full set afterwards** and confirm every file is pairwise-distinct.
+
+Two fixture traps found by that discipline, both of which silently empty a
+screen: an ambiguous `:has-text("Kitchen")` selector clicking "Send to Kitchen"
+instead of the intended control, and a hand-built invoice whose
+`grand_total_paise: 87150` failed `InvoiceSchema`'s **whole-rupee refine** and
+skipped the entire invoice panel including the UPI QR.
+
+### Token adoption is not the same as looking designed
+
+The first POS pass applied every colour token correctly and the screens still
+did not look like a product: **`.btn` was never applied** — every control was a
+raw browser default about 24px tall, against a token set shipping 44px — and
+**no sub-screen carried the logo**, so clicking from the till to Orders or
+Billing left the product with no identity at all. Neither was a token problem;
+the classes simply were not used.
+
+That gap was only visible by **opening the screenshots and looking at them**.
+The pass reported success truthfully by its own terms — tokens adopted, tests
+green, screens observed — and the product still looked unfinished.
+
+### Two defects the reviews caught, reported rather than fixed
+
+- **`SuppliersScreen` rendered a raw `inventory_item_id`** on screen. Fixed by
+  withholding — `ingredient on file` — exactly as `GoodsReceiptsScreen` already
+  did. Same root cause: `SupplierItemSchema` carries no `inventory_item_name`.
+  **That is the second surface hit by the pending contract decision.**
+- **The admin and the till formatted money differently** — `1800.00` against
+  `₹1800.00`. Aligned, and split into a ₹-prefixed display formatter and a plain
+  one, because `MenuScreen`'s **editable** price input is seeded from it and a
+  `₹` there breaks `parseRupeesToPaise` on save. A cosmetic fix would have
+  introduced a real defect.
+
+### Logo, icons and the PWA manifest
+
+`imgs/` holds the mark; **there is no SVG in this repository**, every asset is
+raster.
+
+- **`bundle.icon` was `[]`** — the installed executable had carried **no icon at
+  all**, and `icon.ico` was a 16x16 placeholder of 1086 bytes from the original
+  scaffold. Replaced with a real multi-resolution `.ico`, **verified by parsing
+  the `ICONDIRENTRY` table by hand**: six entries at 16/24/32/48/64/256.
+  Window and installer icons both come from the same `bundle.icon` array — the
+  first `.ico` is embedded at resource ID `32512` (`IDI_APPLICATION`), read from
+  `tauri-build`'s source rather than assumed.
+- The receipt header carries the mark as a data URI. The full-size asset would
+  have added **~108KB of base64 to every rendered receipt**; downscaled to 180px
+  wide it adds ~51KB, screenshot-verified as still sharp at its display size.
+  Proposed rather than absorbed silently.
+- **The captain's `.webmanifest` was served as `application/octet-stream`** by
+  the POS listener, because `mime_for()` had no case for it. A manifest with the
+  wrong content type is **ignored silently**, so "Add to Home Screen" would have
+  given a screenshot icon and a browser-chrome launch. **Vite's dev server types
+  it correctly on its own**, so verification against Vite looked clean and only
+  the shipped path was wrong — the failure would have appeared on the phone, at
+  the demo, and nowhere earlier. Fixed, with the test asserting the served
+  header over the real socket rather than unit-testing the map, because a unit
+  test would have passed the day the defect shipped.
+
+### Outstanding
+
+- **No Inter font is shipped.** None exists in the repository and fetching one
+  was forbidden — an outlet with no uplink is the normal case (ADR-013) and a
+  web font that fails to load silently re-renders the whole product in a
+  fallback. All four apps therefore use the `--font-sans` stack, which resolves
+  to Segoe UI on Windows. It looks deliberate rather than broken, but it is not
+  the brand face. **With the operator.**
+- **The POS icon artwork** is the existing raster mark; no designer asset
+  exists.
+
 ## A finding about the milestone that just closed
 
 **`adr020_outbox_drain` has been red since 2026-09-08, and M6 was tagged
