@@ -16,6 +16,7 @@
 //! this crate touches the SQLite file directly).
 
 use std::env;
+use std::fs;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -24,10 +25,12 @@ use holler_edge_database::inventory::{grams, kilograms, litres, millilitres, pie
 use holler_edge_database::model::{
     AppUser, ComplianceVersion, Device, DiscountDefinition, InventoryItem, InvoiceSeries,
     ItemUnitConversion, MenuCategory, MenuItem, MenuItemModifier, MenuItemVariant,
-    ModifierIngredientDelta, Outlet, OutletFiscalProfile, Printer, Recipe, RecipeIngredient,
-    RestaurantTable, Station, TaxProfile, TaxRule,
+    ModifierIngredientDelta, NewGoodsReceiptNote, NewGrnLine, NewStockCount, NewStockCountLine,
+    Outlet, OutletFiscalProfile, Printer, Recipe, RecipeIngredient, RestaurantTable,
+    SupplierConfig, SupplierItemConfig, Station, TaxProfile, TaxRule,
 };
-use holler_edge_database::{repo, Db};
+use holler_edge_database::{repo, Db, DbError};
+use serde_json::{json, Value};
 
 // Fixed development ids. MUST match the constants in
 // backend/cmd/devseed/main.go — the two seeders describe the same outlet.
@@ -116,6 +119,14 @@ fn recipe_ingredient_id(seq: u32) -> String {
 }
 fn modifier_ingredient_delta_id(seq: u32) -> String {
     format!("0191e840-0000-7000-8000-{seq:012x}")
+}
+// Work item 2 (demo build): supplier/supplier_item/GRN/GRN-line ids, in
+// their own disjoint range, same deterministic scheme.
+fn supplier_item_id(seq: u32) -> String {
+    format!("0191e860-0000-7000-8000-{seq:012x}")
+}
+fn grn_line_seed_id(seq: u32) -> String {
+    format!("0191e870-0000-7000-8000-{seq:012x}")
 }
 
 /// The internal, non-sellable menu item/variant/category a sub-recipe binds
@@ -1325,6 +1336,129 @@ const SEED_CATEGORIES: &[(&str, i64, &[SeedItem])] = &[
     ),
 ];
 
+// ---- Demo build work item 2: supplier, pack sizes, opening stock, one
+// received GRN (docs/demo-kickoff.md, seed/README.md). These rows are
+// genuinely SHARED: `supplier`/`supplier_item` sync cloud->edge like every
+// other procurement config row (ADR-019). The goods receipt is the
+// deliberate exception `seed/README.md` documents — seeded directly into
+// both stores from the same description, never by replay, because
+// `edge/sync/src/route.rs` maps only `order`/`table_session` (carried gap
+// A7) and a GRN would otherwise never reach the admin console this demo
+// shows it in. Opening stock is likewise seeded directly (a stock count is
+// edge-authoritative and has no cloud read surface this demo needs).
+//
+// DEV VALUES ONLY, same posture as the rest of this file: a production
+// outlet configures its own supplier, pack sizes and prices.
+
+const SUPPLIER_ID: &str = "0191a000-0000-7000-8000-000000000050";
+const SUPPLIER_CODE: &str = "SUP-FRESHMART";
+const SUPPLIER_NAME: &str = "FreshMart Wholesale Suppliers";
+const SUPPLIER_GSTIN: &str = "27BBBBB1111B2Z6";
+
+/// One `supplier_item`: a real pack size and a representative price. Also
+/// the source for the single GRN below, entered as EXACTLY this pack size —
+/// the demo's receipt converts cleanly with zero `grn_gap` rows.
+struct SeedSupplierItem {
+    sku: &'static str,
+    purchase_unit: &'static str,
+    pack_size_micro: i64,
+    quantity_dimension: &'static str,
+    last_price_paise: i64,
+    /// Whole purchase units received on the one seeded GRN, x 1_000_000
+    /// (contracts: `entered_quantity_micro` is micro-units of the ENTERED
+    /// purchase unit, not of the item's base dimension).
+    grn_entered_quantity_micro: i64,
+}
+
+const SEED_SUPPLIER_ITEMS: &[SeedSupplierItem] = &[
+    SeedSupplierItem {
+        sku: "INV-ATTA",
+        purchase_unit: "sack",
+        pack_size_micro: kilograms(25),
+        quantity_dimension: "MASS",
+        last_price_paise: 140_000, // Rs 1,400 / 25kg sack
+        grn_entered_quantity_micro: 2_000_000, // 2 sacks
+    },
+    SeedSupplierItem {
+        sku: "INV-BASMATI",
+        purchase_unit: "sack",
+        pack_size_micro: kilograms(25),
+        quantity_dimension: "MASS",
+        last_price_paise: 220_000, // Rs 2,200 / 25kg sack
+        grn_entered_quantity_micro: 2_000_000, // 2 sacks
+    },
+    SeedSupplierItem {
+        sku: "INV-PANEER",
+        purchase_unit: "packet",
+        pack_size_micro: grams(200),
+        quantity_dimension: "MASS",
+        last_price_paise: 7_000, // Rs 70 / 200g packet
+        grn_entered_quantity_micro: 10_000_000, // 10 packets
+    },
+    SeedSupplierItem {
+        sku: "INV-CHICKEN",
+        purchase_unit: "kg",
+        pack_size_micro: kilograms(1),
+        quantity_dimension: "MASS",
+        last_price_paise: 22_000, // Rs 220 / kg
+        grn_entered_quantity_micro: 20_000_000, // 20 kg
+    },
+    SeedSupplierItem {
+        sku: "INV-ONION",
+        purchase_unit: "kg",
+        pack_size_micro: kilograms(1),
+        quantity_dimension: "MASS",
+        last_price_paise: 3_500, // Rs 35 / kg
+        grn_entered_quantity_micro: 15_000_000, // 15 kg
+    },
+    SeedSupplierItem {
+        sku: "INV-OIL",
+        purchase_unit: "tin",
+        pack_size_micro: litres(15),
+        quantity_dimension: "VOLUME",
+        last_price_paise: 195_000, // Rs 1,950 / 15L tin
+        grn_entered_quantity_micro: 1_000_000, // 1 tin
+    },
+    SeedSupplierItem {
+        sku: "INV-COKECAN",
+        purchase_unit: "crate",
+        pack_size_micro: pieces(24),
+        quantity_dimension: "COUNT",
+        last_price_paise: 96_000, // Rs 960 / 24-can crate
+        grn_entered_quantity_micro: 2_000_000, // 2 crates
+    },
+];
+
+/// The single GRN's own header fields.
+const GRN_ID: &str = "0191a000-0000-7000-8000-000000000051";
+const GRN_RECEIVED_AT: &str = "2026-08-09T06:00:00Z";
+const GRN_DELIVERY_NOTE_REF: &str = "DN-FRESHMART-0001";
+
+/// Opening stock: one `COUNT_ADJUSTMENT` line per inventory item, through the
+/// same sanctioned public entry point a real physical count uses
+/// (`Db::open_stock_count` / `add_or_update_stock_count_line` /
+/// `Db::complete_stock_count`) — never a raw ledger insert (CLAUDE.md's
+/// "enumerate the sinks" rule: `stock_ledger_entry` has exactly one non-test
+/// INSERT, reached through four origins, and `COUNT_ADJUSTMENT` is the one
+/// available to a caller outside this crate). A generous balance so no
+/// recipe's deduction during a normal demo run walks any item negative:
+/// 6x the reorder level where one is configured, else a flat per-dimension
+/// default.
+fn opening_stock_quantity_micro(dimension: &str, reorder_level_micro: Option<i64>) -> i64 {
+    match reorder_level_micro {
+        Some(reorder) => reorder.saturating_mul(6),
+        None => match dimension {
+            "VOLUME" => litres(15),
+            "COUNT" => pieces(150),
+            _ => kilograms(15), // MASS, and the fallback for any future dimension
+        },
+    }
+}
+
+const OPENING_STOCK_ID: &str = "0191a000-0000-7000-8000-000000000052";
+const OPENING_STOCK_STARTED_AT: &str = "2026-08-09T05:30:00Z";
+const OPENING_STOCK_COMPLETED_AT: &str = "2026-08-09T05:45:00Z";
+
 // ---- Billing / acceptance fixtures (opt-in, HOLLER_SEED_BILLING=1) ----
 //
 // OPT-IN ON PURPOSE. `tests/e2e-scenario/harness` invokes this binary and
@@ -1397,6 +1531,24 @@ const SEEDED_AT: &str = "2026-08-09T00:00:00Z";
 const CONFIG_VERSION: i64 = 1;
 
 fn main() -> ExitCode {
+    let args: Vec<String> = env::args().collect();
+    if let Some(path_arg) = args.iter().position(|a| a == "--emit-json").map(|i| i + 1) {
+        let Some(path) = args.get(path_arg) else {
+            eprintln!("devseed: --emit-json requires a path argument");
+            return ExitCode::FAILURE;
+        };
+        return match emit_json(PathBuf::from(path)) {
+            Ok(path) => {
+                println!("devseed: wrote shared catalogue to {}", path.display());
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("devseed: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+
     match run() {
         Ok(path) => {
             println!(
@@ -1415,10 +1567,50 @@ fn main() -> ExitCode {
     }
 }
 
+/// `--emit-json <path>`: serialises [`build_shared_catalogue`] — the Rust
+/// seed structs above, the authoring source — to `path`. Never touches
+/// SQLite; does not require `HOLLER_DB_KEY_HEX`/`HOLLER_SEED_PASSWORD_HASH`.
+/// See seed/README.md: this is the ONE emitter, and `seed/demo-outlet.json`
+/// is the ONE committed artefact both seeders read.
+fn emit_json(path: PathBuf) -> Result<PathBuf, String> {
+    let catalogue = build_shared_catalogue()?;
+    let mut text =
+        serde_json::to_string_pretty(&catalogue).map_err(|e| format!("serialising: {e}"))?;
+    text.push('\n');
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("creating {parent:?}: {e}"))?;
+    }
+    fs::write(&path, text).map_err(|e| format!("writing {path:?}: {e}"))?;
+    Ok(path)
+}
+
+/// Locates the committed `seed/demo-outlet.json` relative to this crate
+/// (`edge/database`), so the normal (non-`--emit-json`) seeding path works
+/// regardless of the working directory `cargo run --bin devseed` is invoked
+/// from.
+fn shared_catalogue_path() -> PathBuf {
+    if let Ok(p) = env::var("HOLLER_SEED_JSON_PATH") {
+        return PathBuf::from(p);
+    }
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("seed")
+        .join("demo-outlet.json")
+}
+
+fn load_shared_catalogue() -> Result<Value, String> {
+    let path = shared_catalogue_path();
+    let text = fs::read_to_string(&path)
+        .map_err(|e| format!("reading committed seed file {path:?}: {e} — run `cargo run --bin devseed -- --emit-json {path:?}` first, or set HOLLER_SEED_JSON_PATH"))?;
+    serde_json::from_str(&text).map_err(|e| format!("parsing {path:?}: {e}"))
+}
+
 fn run() -> Result<PathBuf, String> {
     let key_hex = require_env("HOLLER_DB_KEY_HEX")?;
     let password_hash = require_env("HOLLER_SEED_PASSWORD_HASH")?;
     let key = parse_key_hex(&key_hex)?;
+    let catalogue = load_shared_catalogue()?;
 
     // Must match AppState::open in apps/pos/src-tauri/src/state.rs: the POS
     // reads <app_data_dir>/edge.db.enc, so the seeder must write exactly there
@@ -1432,10 +1624,10 @@ fn run() -> Result<PathBuf, String> {
     let sealed_path = data_dir.join("edge.db.enc");
     let plaintext_path = data_dir.join("edge.db");
 
-    let db =
+    let mut db =
         Db::open(&sealed_path, &plaintext_path, key).map_err(|e| format!("opening db: {e}"))?;
 
-    seed(&db, &password_hash).map_err(|e| format!("seeding: {e}"))?;
+    seed(&mut db, &password_hash, &catalogue).map_err(|e| format!("seeding: {e}"))?;
 
     // close() checkpoints, re-seals with a fresh nonce and wipes the plaintext
     // working copy. Skipping it would leave an unencrypted edge.db on disk.

@@ -1,0 +1,157 @@
+{
+  "schema_version": 1,
+  "generated_by": "backend/cmd/devseed test fixture -- NOT the real seed/demo-outlet.json",
+
+  "tenant": { "id": "0191a000-0000-7000-8000-000000000001", "name": "Holler Dev Restaurant" },
+  "brand": { "id": "0191a000-0000-7000-8000-000000000002", "tenant_id": "0191a000-0000-7000-8000-000000000001", "name": "Holler Dev Brand" },
+  "outlet": {
+    "id": "0191a000-0000-7000-8000-00000000000a",
+    "brand_id": "0191a000-0000-7000-8000-000000000002",
+    "name": "Pune Test Outlet",
+    "timezone": "Asia/Kolkata",
+    "day_start_time": "05:00"
+  },
+
+  "tax_profiles": [
+    { "id": "0191afff-0000-7000-8000-000000000001", "outlet_id": "0191a000-0000-7000-8000-00000000000a", "code": "GST_5", "name": "GST 5%", "pricing_mode": "INCLUSIVE", "is_default": true, "is_active": true }
+  ],
+  "compliance_versions": [
+    { "id": "0191afff-0000-7000-8000-000000000002", "outlet_id": "0191a000-0000-7000-8000-00000000000a", "label": "FY26-baseline", "effective_from": "2025-04-01T00:00:00Z", "notes": null }
+  ],
+  "tax_rules": [
+    { "id": "0191afff-0000-7000-8000-000000000003", "tax_profile_id": "0191afff-0000-7000-8000-000000000001", "compliance_version_id": "0191afff-0000-7000-8000-000000000002", "component": "CGST", "rate_bps": 250, "effective_from": "2025-04-01T00:00:00Z", "effective_to": null },
+    { "id": "0191afff-0000-7000-8000-000000000004", "tax_profile_id": "0191afff-0000-7000-8000-000000000001", "compliance_version_id": "0191afff-0000-7000-8000-000000000002", "component": "SGST", "rate_bps": 250, "effective_from": "2025-04-01T00:00:00Z", "effective_to": null }
+  ],
+
+  "menu_categories": [
+    { "id": "0191afff-0000-7000-8000-000000000010", "outlet_id": "0191a000-0000-7000-8000-00000000000a", "name": "Beverages", "sort_order": 1 }
+  ],
+  "menu_items": [
+    {
+      "id": "0191afff-0000-7000-8000-000000000011", "outlet_id": "0191a000-0000-7000-8000-00000000000a",
+      "category_id": "0191afff-0000-7000-8000-000000000010", "name": "Masala Chai",
+      "base_price_paise": 4000, "is_available": true,
+      "tax_profile_id": null, "hsn_sac": "9963", "station_code": "MAIN_KITCHEN"
+    }
+  ],
+  "menu_item_variants": [
+    { "id": "0191afff-0000-7000-8000-000000000012", "menu_item_id": "0191afff-0000-7000-8000-000000000011", "name": "Regular", "price_delta_paise": 0, "is_default": true }
+  ],
+  "menu_item_modifiers": [
+    { "id": "0191afff-0000-7000-8000-000000000013", "menu_item_id": "0191afff-0000-7000-8000-000000000011", "group_name": "Sugar", "option_name": "Extra Sugar", "price_delta_paise": 500, "min_selection": 0, "max_selection": 1 }
+  ],
+
+  "inventory_items": [
+    { "id": "0191afff-0000-7000-8000-000000000020", "outlet_id": "0191a000-0000-7000-8000-00000000000a", "sku": "INV-TEA-LEAF", "name": "Tea Leaf", "category": "Dry Goods", "dimension": "MASS", "reorder_level_micro": 1000000 }
+  ],
+  "item_unit_conversions": [
+    { "id": "0191afff-0000-7000-8000-000000000021", "inventory_item_id": "0191afff-0000-7000-8000-000000000020", "pack_unit_label": "packet", "source_dimension": "MASS", "numerator": 250000000, "denominator": 1 }
+  ],
+  "recipes": [
+    { "id": "0191afff-0000-7000-8000-000000000030", "menu_item_variant_id": "0191afff-0000-7000-8000-000000000012", "name": "Masala Chai Recipe", "output_dimension": "COUNT", "output_quantity_micro": 1000000 }
+  ],
+  "recipe_ingredients": [
+    { "id": "0191afff-0000-7000-8000-000000000031", "recipe_id": "0191afff-0000-7000-8000-000000000030", "inventory_item_id": "0191afff-0000-7000-8000-000000000020", "sub_recipe_id": null, "quantity_micro": 5000000, "quantity_dimension": "MASS" }
+  ],
+  "modifier_ingredient_deltas": [
+    { "id": "0191afff-0000-7000-8000-000000000040", "menu_item_modifier_id": "0191afff-0000-7000-8000-000000000013", "inventory_item_id": "0191afff-0000-7000-8000-000000000020", "quantity_micro": 1000000 }
+  ],
+
+  "suppliers": [
+    { "id": "0191afff-0000-7000-8000-000000000050", "outlet_id": "0191a000-0000-7000-8000-00000000000a", "code": "SUP-TEA", "name": "Tea Traders Co", "gstin": null, "phone": null, "email": null, "address": null, "payment_terms_days": 15, "is_active": true }
+  ],
+  "supplier_items": [
+    { "id": "0191afff-0000-7000-8000-000000000051", "supplier_id": "0191afff-0000-7000-8000-000000000050", "inventory_item_id": "0191afff-0000-7000-8000-000000000020", "purchase_unit": "packet", "pack_size_micro": 250000000, "quantity_dimension": "MASS", "last_price_paise": 20000, "is_preferred": true }
+  ],
+
+  "goods_receipt": {
+    "id": "0191afff-0000-7000-8000-000000000060",
+    "outlet_id": "0191a000-0000-7000-8000-00000000000a",
+    "purchase_order_id": null,
+    "supplier_id": "0191afff-0000-7000-8000-000000000050",
+    "grn_number": "GRN/TEST/000001",
+    "delivery_note_ref": "DN-1",
+    "received_at": "2026-01-05T06:00:00Z",
+    "received_by_user_id": "0191a000-0000-7000-8000-00000000000c",
+    "business_date": "2026-01-05",
+    "notes": null,
+    "lines": [
+      {
+        "id": "0191afff-0000-7000-8000-000000000061",
+        "inventory_item_id": "0191afff-0000-7000-8000-000000000020",
+        "line_number": 1,
+        "purchase_order_line_id": null,
+        "entered_purchase_unit": "packet",
+        "entered_quantity_micro": 10000000,
+        "quantity_dimension": "MASS",
+        "base_quantity_micro": 2500000000,
+        "pack_size_micro_applied": 250000000,
+        "unit_cost_paise": 80,
+        "line_total_paise": 200000,
+        "batch_code": "BATCH-1",
+        "expiry_date": "2026-06-01"
+      }
+    ],
+    "ledger_entries": [
+      {
+        "id": "0191afff-0000-7000-8000-000000000062",
+        "outlet_id": null,
+        "entry_seq": null,
+        "inventory_item_id": "0191afff-0000-7000-8000-000000000020",
+        "inventory_item_name": "Tea Leaf",
+        "dimension": "MASS",
+        "entry_type": "PURCHASE",
+        "origin": "GOODS_RECEIPT",
+        "quantity_micro": 2500000000,
+        "recipe_id": null,
+        "recipe_version": null,
+        "recipe_name": null,
+        "reason_code": null,
+        "note": "Test fixture receipt",
+        "occurred_at": "2026-01-05T06:00:00Z",
+        "business_date": "2026-01-05",
+        "created_by_user_id": "0191a000-0000-7000-8000-00000000000c",
+        "modifier_delta_id": null,
+        "modifier_name": null,
+        "modifier_delta_version": null,
+        "unit_cost_paise": 80,
+        "line_total_paise": 200000,
+        "source_grn_id": "0191afff-0000-7000-8000-000000000060",
+        "source_purchase_return_id": null,
+        "source_stock_transfer_out_id": null,
+        "source_stock_count_id": null
+      }
+    ]
+  },
+
+  "opening_stock": [
+    {
+      "id": "0191afff-0000-7000-8000-000000000070",
+      "outlet_id": null,
+      "entry_seq": null,
+      "inventory_item_id": "0191afff-0000-7000-8000-000000000020",
+      "inventory_item_name": "Tea Leaf",
+      "dimension": "MASS",
+      "entry_type": "ADJUSTMENT",
+      "origin": "MANUAL",
+      "quantity_micro": 0,
+      "recipe_id": null,
+      "recipe_version": null,
+      "recipe_name": null,
+      "reason_code": "OPENING_BALANCE",
+      "note": "Opening stock fixture",
+      "occurred_at": "2026-01-05T05:00:00Z",
+      "business_date": "2026-01-05",
+      "created_by_user_id": "0191a000-0000-7000-8000-00000000000c",
+      "modifier_delta_id": null,
+      "modifier_name": null,
+      "modifier_delta_version": null,
+      "unit_cost_paise": null,
+      "line_total_paise": null,
+      "source_grn_id": null,
+      "source_purchase_return_id": null,
+      "source_stock_transfer_out_id": null,
+      "source_stock_count_id": null
+    }
+  ]
+}
