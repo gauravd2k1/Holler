@@ -128,6 +128,17 @@ fn supplier_item_id(seq: u32) -> String {
 fn grn_line_seed_id(seq: u32) -> String {
     format!("0191e870-0000-7000-8000-{seq:012x}")
 }
+/// `tax_rule.id` is `UUID PRIMARY KEY` in Postgres
+/// (`packages/contracts/postgres/0007_m3_billing.sql`). It was previously
+/// `format!("{tax_profile_id}-{component}")`, which SQLite stores as an
+/// opaque TEXT primary key without complaint but Postgres rejects outright
+/// (`22P02 invalid input syntax for type uuid`) -- caught only by running
+/// the cloud seeder against the real store, never by anything SQLite-backed.
+/// Own disjoint range, same deterministic seq -> id scheme as every other
+/// id in this file.
+fn tax_rule_id(seq: u32) -> String {
+    format!("0191e590-0000-7000-8000-{seq:012x}")
+}
 fn stock_ledger_entry_seed_id(seq: u32) -> String {
     format!("0191e880-0000-7000-8000-{seq:012x}")
 }
@@ -1928,6 +1939,7 @@ fn build_shared_catalogue() -> Result<Value, String> {
     })];
     let mut tax_profiles: Vec<Value> = Vec::new();
     let mut tax_rules: Vec<Value> = Vec::new();
+    let mut tax_rule_seq = 0u32;
     for (id, code, name, cgst_bps, sgst_bps) in [
         (
             TAX_PROFILE_FOOD5_ID,
@@ -1956,8 +1968,9 @@ fn build_shared_catalogue() -> Result<Value, String> {
             "pricing_mode": "INCLUSIVE", "is_default": false, "is_active": true
         }));
         for (component, rate_bps) in [("CGST", cgst_bps), ("SGST", sgst_bps)] {
+            tax_rule_seq += 1;
             tax_rules.push(json!({
-                "id": format!("{id}-{component}"), "tax_profile_id": id,
+                "id": tax_rule_id(tax_rule_seq), "tax_profile_id": id,
                 "compliance_version_id": COMPLIANCE_VERSION_ID, "component": component,
                 "rate_bps": rate_bps, "effective_from": "2020-01-01T00:00:00Z",
                 "effective_to": Value::Null
