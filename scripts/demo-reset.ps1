@@ -43,8 +43,9 @@ param(
     # 32-byte key, hex-encoded, for the edge database's encryption at rest
     # (ADR-011). Same rule as dev-bootstrap.ps1: NO DEFAULT. Falls back to
     # $env:HOLLER_DB_KEY_HEX; refuses to run without one. Must be the SAME
-    # key the till's apps\pos\.env.dev already carries, or the POS opens a
-    # different (empty) database than the one this script just seeded.
+    # key the till's apps\pos\.env.dev already carries -- a different key
+    # fails to open the sealed database this script just seeded; it does not
+    # open or create a different, empty one.
     [string]$DbKeyHex = "",
 
     # Must match Tauri's app_data_dir() for com.holler.pos -- same default

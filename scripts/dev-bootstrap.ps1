@@ -79,8 +79,11 @@ param(
     # Required to proceed when apps\pos\.env.dev already carries a
     # HOLLER_DB_KEY_HEX that DIFFERS from the incoming key (T24). Without
     # this flag the script refuses rather than silently rewriting the file:
-    # a different key does not error anywhere downstream, it opens a
-    # different, EMPTY database, which looks exactly like a fresh install.
+    # a different key fails to open the existing sealed database -- it does
+    # NOT create or open a different, empty one. Encryption::open_file
+    # refuses outright; the crash-recovery path (T25) refuses too, before
+    # touching anything on disk, rather than resealing the real database
+    # under the wrong key.
     [switch]$RotateKey
 )
 
@@ -323,7 +326,8 @@ Mint one for this machine and keep it out of the repository:
     `$env:HOLLER_DB_KEY_HEX = -join ((1..32) | ForEach-Object { '{0:x2}' -f (Get-Random -Max 256) })
 
 Then re-run this script. Use the SAME value every time on this machine -- a
-different key opens a different (empty) database, not an error.
+different key fails to open the existing sealed database rather than opening
+or creating a different, empty one.
 "@
 }
 if ($DbKeyHex -notmatch '^[0-9a-fA-F]{64}$') {
@@ -351,8 +355,7 @@ Then re-run this script.
 }
 
 # --- 0b. refuse to silently rotate the key apps\pos\.env.dev already carries -
-# A different key does not error anywhere downstream -- it opens a different,
-# EMPTY database, which is indistinguishable from a fresh install. Read the
+# A different key fails to open the existing sealed database. Read the
 # existing file (this script may; an agent's deny-rule on it is unaffected)
 # and compare by FINGERPRINT ONLY -- neither key is ever printed.
 $posEnvFile = Join-Path $repoRoot "apps\pos\.env.dev"
@@ -375,7 +378,9 @@ key this run would use.
 
 Proceeding would silently rewrite the file with the new key. The existing
 sealed database at this machine's edge data directory was encrypted under the
-OLD key and would become UNOPENABLE -- not an error, an empty-looking till.
+OLD key and would become UNOPENABLE under the new one -- the POS fails to
+open it and reports an error; it does not fall back to a different, empty
+database.
 
 If this rotation is intentional, re-run with -RotateKey. Otherwise, set
 -DbKeyHex / `$env:HOLLER_DB_KEY_HEX to the SAME key already in
