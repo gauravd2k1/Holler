@@ -133,6 +133,46 @@ const run = async () => {
       "Demo step 6 reads from exactly this data.",
   });
 
+  // --------------------------------------------------------------- S-SYNC-12
+  // Recorded from two measurements taken this run, not from one. Both
+  // artefacts are committed; the ids in their filenames are the process
+  // instances they were taken against.
+  record({
+    id: "S-SYNC-12",
+    demoStep: "1a / 6",
+    scenario: "A live POS keeps pumping for as long as it keeps serving",
+    surface: "POS process -> backend 8080 -> postgres 5432",
+    precondition:
+      "Two POS instances were observed this run. pid 74104 (started 14:04:44 UTC) and, after the operator " +
+      "restarted it, pid 80612 (started 14:31:36 UTC). The pump interval is 60s and S-SYNC-09 confirms pid 80612 " +
+      "hits it: contacts at 14:36:38, 14:37:39, 14:38:39.",
+    steps:
+      "Sample device_credential.last_used_at for the POS device across both instances and compare the contact " +
+      "pattern while each process was demonstrably still serving LAN requests",
+    expected: "Contact every ~60s for as long as the process is alive",
+    actual:
+      "pid 80612: contacts 60-61s apart, exactly as documented. pid 74104: LAST contact at 14:07:47, about three " +
+      "minutes after start, then NOTHING for the remaining ~12 minutes of its life — while it was still serving " +
+      "9320 (S-CUI-01 recorded HTTP 200 and a real captain 401 body from it at 14:22) and still hosting 9310. " +
+      "It then exited without the operator touching it.",
+    status: "FAIL",
+    evidence:
+      "docs/demo-screens/scenarios/pos-uplink-watch-instance-74104-stalled.txt (12 samples, one contact change in " +
+      "19 minutes) against pos-uplink-watch-instance-80612-healthy.txt (14 samples, 60s cadence)",
+    notes:
+      "THE PUMP IS NOT SLOW — IT STOPPED, AND THE PROCESS DID NOT. This is worse than a long interval, because " +
+      "every outward sign of health stayed green: the till served the LAN, the captain listener answered, the KDS " +
+      "socket accepted clients. Nothing surfaced that the outlet had gone silent toward the cloud. " +
+      "MEASURED CONSEQUENCE: the WAITER device enrolled at 14:14:23 could not pair until 14:31:37 — seventeen " +
+      "minutes — because the config pull that delivers a credential to device_credential_cache rides this same " +
+      "loop, and what finally delivered it was the STARTUP pull of the replacement process, not a tick. " +
+      "NOT DIAGNOSED HERE: whether the pump thread died, wedged on the database lock, or the process was already " +
+      "failing. This run observed the symptom on one instance and could not reproduce it on the second, so it is " +
+      "reported as an observation with its artefacts, not as a root cause. The first measurement's own conclusion " +
+      "('the pump interval is 12m27s') was WRONG and is superseded by this row: it spanned a process boundary, " +
+      "where a startup drain and a shutdown drain cannot be told apart from periodic ticks.",
+  });
+
   // --------------------------------------------------------------- S-SYNC-11
   // Config that is supposed to flow cloud -> edge, counted at the source.
   const cfg = {};

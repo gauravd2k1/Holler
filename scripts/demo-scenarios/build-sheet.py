@@ -163,6 +163,7 @@ SEVERITY = [
     "S-CUI-08",   # the same failure, seen on the real phone screen
     "S-SYNC-10",  # orders reach the cloud with a total and no lines
     "S-SYNC-11",  # the cloud holds no tables and no stations at all
+    "S-SYNC-12",  # a live POS stopped pumping while every health signal stayed green
     "S-ENV-02",   # the POS process vanished mid-run
     "S-SYNC-04",  # gap A7: nothing but `order` reaches the cloud
     "S-ADM-08",   # demo step 4 has no screen

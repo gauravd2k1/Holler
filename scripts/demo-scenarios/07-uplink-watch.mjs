@@ -95,13 +95,10 @@ function analyse(points, artefactPath) {
     status: ok ? "PASS" : "FAIL",
     evidence: `${artefactPath} — ${points.length} samples, window ${windowStart} to ${windowEnd}`,
     notes:
-      "DIRECT CONSEQUENCE, observed this run: the WAITER device enrolled at 14:14:23 UTC still could not pair at " +
-      "14:22, because GET /api/session answers 401 'device credential not cached locally' until a config pull " +
-      "delivers it. S-CUI-03 is that 401 on screen, and it is what blocks demo step 1a end to end. " +
-      "ONE ALTERNATIVE IS NOT EXCLUDED: the contact at 14:20:13 UTC fell close to the POS process disappearing, so " +
-      "it cannot be told apart from the SHUTDOWN drain — which would mean zero periodic ticks rather than a slow " +
-      "one. Either reading leaves the measured gap as it stands; separating them needs a run where the process is " +
-      "watched staying up across several ticks, which this environment did not provide.",
+      "MEASURED ON A PROCESS WATCHED STAYING UP THROUGHOUT, which is what makes the number mean anything: across a " +
+      "process start and a process stop, the startup drain and the shutdown drain are indistinguishable from " +
+      "periodic ticks, and a first attempt at this measurement spanned exactly that and had to be thrown away. " +
+      "See S-SYNC-12 for what that first attempt DID find, which is a different defect and a real one.",
   });
 }
 
