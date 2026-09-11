@@ -240,6 +240,9 @@ export function PosScreen() {
         <LowStockBanner />
       </div>
       <header className="pos-top-bar">
+        <div className="holler-header__brand">
+          <img src="/holler_no_bg.png" alt="Holler" className="holler-logo" />
+        </div>
         <input
           className="pos-search"
           placeholder="Search menu…"
