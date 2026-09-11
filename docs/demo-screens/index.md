@@ -1,5 +1,101 @@
 # Demo screens — presentability check (T14 follow-up, T19 controls/header pass)
 
+## T22 update (2026-09-11) — `admin-menu.png` re-captured, `pos-aggregator-orders.png` captured (first ever)
+
+Closes the presentability set. **No application code changed in this pass** —
+`apps/admin/` and `apps/pos/` are read-only to this track; both are exactly as
+T20/T21 left them.
+
+### `admin-menu.png` — re-captured
+
+Stale since `3ae0ba4` (admin money-formatting pass): the committed image
+predated `formatPaiseAsRupees`'s ₹ prefix and `.money` tabular figures on
+`MenuScreen`. Re-captured against the running `apps/admin` dev server
+(`pnpm dev`, port 5175), signed in, and — since `MenuScreen` starts on the
+"Menu and pricing" tab by default, no further in-app navigation was needed —
+asserted **both** money renderings before capture: the display cell for
+"Chicken Biryani" reads `₹450.00`, and after clicking that row's "Edit"
+button the price `<input>`'s value is `"450.00"` (plain decimal, no ₹
+prefix). **Both confirmed present and correct — this is the designed
+behaviour, not a bug**: the input is deliberately unprefixed because it
+round-trips through `parseRupeesToPaise` on save, and a ₹ in that string
+would break the parse. The captured image shows the Chicken Biryani row
+mid-edit (its `Save`/`Cancel` buttons and plain-decimal input visible) beside
+Paneer Tikka and Masala Chai still in display mode (`₹320.00`, `₹40.00`),
+so both states are visible in the one frame.
+
+Mocked via `page.route` against contract-shaped fixtures (`POST /auth/login`,
+`GET /menu/items`, `GET /menu/categories`, plus empty-list stubs for
+`/procurement/suppliers` and `/procurement/goods-receipts` so those tabs stay
+inert); no `page.goto` after sign-in. Throwaway script
+(`shoot-admin-menu.mjs`, session scratch directory), deleted after the
+capture.
+
+### `pos-aggregator-orders.png` — captured for the first time
+
+`AggregatorOrdersScreen` (demo step 6, the optional ONDC step) was
+token-converted and `.money`-applied in an earlier pass but never
+screenshotted. Captured against the running `apps/pos` dev server (`pnpm
+dev`, port 5173) with `window.__TAURI_INTERNALS__.invoke` mocked via
+`addInitScript` (no real Tauri shell here): `login`, `list_menu_items`,
+`list_menu_categories`, `list_menu_item_variants` (empty), `list_tables`
+(empty), `get_active_draft_order` (null), and
+`list_unaccepted_aggregator_orders` returning one ONDC document with two
+lines. Navigated by clicking "Platform Orders" on `PosScreen` after login —
+never a `page.goto` reload (the in-memory `useAuthStore` would drop).
+
+**The fixture deliberately carries one matched line and one unmatched
+line**, per the task note that an earlier pass fixed a defect where a
+matched line showed the raw `menu_item_id` and only an unmatched line showed
+a name — backwards from what the fixed code does. Confirmed on screen before
+capture: the matched line ("Chicken Biryani (Full)") resolves in the
+"Matched to this menu" column to the item's **name**, `"Chicken Biryani"`
+(never the UUID); the unmatched line ("Weekend Thali Combo") shows
+`"not matched"` in that column and its own platform-supplied name in the
+item column. Both are visible together in the captured frame, so the
+screenshot exercises the fixed path rather than only the unmatched one.
+
+Throwaway script (`shoot-pos-aggregator.mjs`, session scratch directory),
+deleted after the capture.
+
+### Full current set, MD5, 21 files pairwise distinct
+
+```
+0f4758073f2139056caa9eccb1907398  captain-tables.png
+1c85a41d8a44bc23c94f071c7561425f  pos-order-list-empty.png
+1cbd58a26aca8c5292ad7308cb417461  pos-receiving.png
+412a572f9d01d7ebb3080ce0c47299f0  captain-pair.png
+50ae7ecf0fdf025e7157d37efd768419  captain-modifier-sheet.png
+55e95f8bc0eff9f9f3c0a8d878437237  admin-sign-in.png
+65ef593004e37f919c9a7b62171d6764  admin-goods-receipts.png
+6e3528a35bd33115d797d72d165d94de  pos-crash-screen.png
+7acadd1008c32911ba0bb771846b827e  pos-billing-upi-qr.png
+887b0c7e3e1224f744da1bf38f3d4f03  pos-current-stock.png
+898c22bafbb4ebf8493362c8d8c2f332  kds-ticket.png
+92f4fd83078de61f1294d0205e92a560  pos-billing.png
+9e975e907ab7084a7248714e98594f8e  captain-menu-cart.png
+a0b782731c989abddf2905651cd371c2  pos-grn-gaps.png
+a15138dc8bce8025d57f0d1f81ef6e8e  captain-sent.png
+b9ee734280214518ab808bbf11fa1782  admin-menu.png
+ca2946ee5e1d61fa4322571e789dc47f  pos-order-list.png
+d21c25d317e82c94d8ebbb368a5e0669  admin-suppliers.png
+d2c0985bacbad90897a2d8803a9ce3db  pos-order-list-kots.png
+db1c969ea99617e31c16bd260d68b162  pos-purchase-return.png
+f4cf0bdc20616b063f8270ff81fd5b97  pos-aggregator-orders.png
+```
+
+21 files, 21 distinct hashes. `admin-menu.png`'s hash changed from
+`a0c246eff50ee9772cc18649cc7685e2` (T20/T21, stale) to
+`b9ee734280214518ab808bbf11fa1782` (this pass). `pos-aggregator-orders.png`
+is new.
+
+### Screen table addition
+
+| File | Screen | Demo step | What it shows |
+|---|---|---|---|
+| `admin-menu.png` | Admin — Menu and pricing | Step 5 | ₹-prefixed display prices on two rows, the third row mid-edit showing the plain-decimal (unprefixed) price input — both money renderings intentional, side by side |
+| `pos-aggregator-orders.png` | POS — Delivery-Platform Orders | Step 6 (optional, ONDC) | One ONDC document with a matched line (resolves to the menu item's name) and an unmatched line (shows "not matched"), exercising the fixed matched/unmatched display path |
+
 ## T20 update (2026-09-11) — billing screen fixes, re-taken `pos-billing.png`
 
 T19's `pos-billing.png` was captured without `VITE_HOLLER_DEMO_UPI_VPA` set,
