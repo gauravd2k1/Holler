@@ -694,6 +694,7 @@ fn mime_for(path: &Path) -> &'static str {
         Some("png") => "image/png",
         Some("ico") => "image/x-icon",
         Some("woff2") => "font/woff2",
+        Some("webmanifest") => "application/manifest+json",
         _ => "application/octet-stream",
     }
 }

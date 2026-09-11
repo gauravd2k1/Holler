@@ -529,6 +529,108 @@ fn sending_an_order_with_no_lines_is_rejected_with_400_not_an_empty_kot_set() {
     assert_eq!(created.body["code"], "EMPTY_ORDER");
 }
 
+/// Minimal raw HTTP/1.1 client that stops at the header block — unlike
+/// [`http_request`], the response here is a static asset, not JSON, so this
+/// reports the status line and the `Content-Type` header verbatim rather
+/// than attempting to parse a body.
+struct RawHttpResponse {
+    status: u16,
+    content_type: Option<String>,
+}
+
+fn http_request_raw(addr: SocketAddr, path: &str) -> RawHttpResponse {
+    let mut stream = TcpStream::connect(addr).expect("connect to captain listener");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("set read timeout");
+
+    let request = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+    stream
+        .write_all(request.as_bytes())
+        .expect("write request line/headers");
+
+    let mut raw = Vec::new();
+    stream
+        .read_to_end(&mut raw)
+        .expect("read full response before the server closes the connection");
+
+    let text = String::from_utf8_lossy(&raw);
+    let mut parts = text.splitn(2, "\r\n\r\n");
+    let head = parts.next().unwrap_or("");
+
+    let mut lines = head.lines();
+    let status_line = lines.next().unwrap_or("");
+    let status: u16 = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+
+    let content_type = lines
+        .find(|l| l.to_ascii_lowercase().starts_with("content-type:"))
+        .map(|l| l.split_once(':').map_or("", |(_, v)| v).trim().to_string());
+
+    RawHttpResponse {
+        status,
+        content_type,
+    }
+}
+
+/// Starts a captain listener whose static root is a temp directory this
+/// test controls, via `HOLLER_CAPTAIN_DIST_DIR` (`captain.rs::dist_dir`) —
+/// isolates the assertion from whatever `apps/captain/dist` happens to
+/// contain on disk when this suite runs, and lets the fixture cover the
+/// exact extension set the manifest track has added (icons, favicons, the
+/// manifest itself) without depending on a prior `pnpm build`.
+fn start_test_server_with_dist(files: &[(&str, &str)]) -> (SocketAddr, tempfile::TempDir) {
+    let dist = tempfile::tempdir().expect("create temp dist dir");
+    for (name, contents) in files {
+        std::fs::write(dist.path().join(name), contents).expect("write fixture static file");
+    }
+    // SAFETY (test-only race): no other test in this suite ever requests a
+    // non-`/api/` path, so no other test reads `dist_dir()`'s output in a
+    // way that observes this value — see the doc comment on
+    // `http_request_raw`/this function for why a leaked value is harmless.
+    std::env::set_var("HOLLER_CAPTAIN_DIST_DIR", dist.path());
+
+    let db = Db::open_in_memory_for_tests().expect("open in-memory db");
+    seed(&db);
+    let state = AppState::new(db, OUTLET_ID.to_string(), TILL_DEVICE_ID.to_string());
+    let addr: SocketAddr = "127.0.0.1:0".parse().expect("valid addr");
+    let bound = start_captain_server(addr, Arc::new(state))
+        .expect("captain server must bind an ephemeral port in a test environment");
+
+    std::env::remove_var("HOLLER_CAPTAIN_DIST_DIR");
+
+    (bound, dist)
+}
+
+/// Watches `mime_for` (`captain.rs`) fail before the fix: `.webmanifest`
+/// falls through to `application/octet-stream`, which a browser ignores
+/// silently — "Add to Home Screen" degrades to a screenshot icon instead of
+/// the standalone Holler window. Asserted over the real static-file serving
+/// path (a socket request), not a unit call to `mime_for` — a unit test of
+/// the map would pass today, since the map is doing exactly what it was
+/// written to do; the defect is what the map omits, and only the served
+/// response shows that.
+#[test]
+fn webmanifest_is_served_with_the_manifest_content_type() {
+    let (addr, _dist) = start_test_server_with_dist(&[(
+        "manifest.webmanifest",
+        r#"{"name":"Holler Captain","start_url":"/","display":"standalone"}"#,
+    )]);
+
+    let response = http_request_raw(addr, "/manifest.webmanifest");
+
+    assert_eq!(response.status, 200);
+    assert_eq!(
+        response.content_type.as_deref(),
+        Some("application/manifest+json"),
+        "manifest.webmanifest must be served as application/manifest+json or the browser \
+         ignores it silently and Add-to-Home-Screen degrades to a screenshot-icon launch"
+    );
+}
+
 #[test]
 fn a_null_variant_id_is_rejected_rather_than_passed_through() {
     let (addr, _db) = start_test_server();
