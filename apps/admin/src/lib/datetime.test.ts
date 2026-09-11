@@ -3,11 +3,11 @@ import { formatIST } from "./datetime";
 
 describe("formatIST", () => {
   it("renders a UTC timestamp in IST, offset +5:30 from UTC", () => {
-    expect(formatIST("2026-01-15T12:00:00.000Z")).toBe("15 Jan 2026, 05:30 pm IST");
+    expect(formatIST("2026-01-15T12:00:00.000Z")).toBe("15 Jan 2026, 05:30 PM IST");
   });
 
   it("crosses a calendar day when the IST offset pushes it past midnight", () => {
-    expect(formatIST("2026-01-15T19:00:00.000Z")).toBe("16 Jan 2026, 12:30 am IST");
+    expect(formatIST("2026-01-15T19:00:00.000Z")).toBe("16 Jan 2026, 12:30 AM IST");
   });
 
   it("returns an em dash for null, undefined or empty input", () => {

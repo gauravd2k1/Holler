@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import type { Kot, KotStatus } from "@holler/contracts";
@@ -138,7 +138,12 @@ export function OrderListScreen() {
         </thead>
         <tbody>
           {(ordersQuery.data ?? []).map((order) => (
-            <>
+            // Keyed Fragment, not the `<>` shorthand — the shorthand cannot
+            // carry a key at all, which produced a real "each child in a
+            // list should have a unique key" console warning (found in a
+            // real-browser pass, T7; pre-existing, not introduced by the
+            // cell-content changes in this same file).
+            <Fragment key={order.holler_order_id}>
               <tr key={order.holler_order_id}>
                 {/* Human-facing display number only — never the row's UUID
                     (CLAUDE.md §Money/time/identifiers). display_number is
@@ -210,7 +215,7 @@ export function OrderListScreen() {
                   </td>
                 </tr>
               )}
-            </>
+            </Fragment>
           ))}
         </tbody>
       </table>

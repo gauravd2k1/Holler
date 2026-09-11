@@ -28,5 +28,10 @@ export function formatIST(isoTimestamp: string | null | undefined): string {
   if (isoTimestamp == null || isoTimestamp === "") return "—";
   const date = new Date(isoTimestamp);
   if (Number.isNaN(date.getTime())) return isoTimestamp;
-  return `${IST_DATETIME.format(date)} IST`;
+  // en-IN's ICU data renders the day period lowercase ("01:49 am"), which on
+  // a real screen at a metre reads as a typo rather than a time — observed
+  // on the admin goods-receipts screen (T7 browser pass). Uppercased here
+  // rather than via an Intl option, because `dayPeriod` casing is not a
+  // configurable field on this formatter.
+  return `${IST_DATETIME.format(date).replace(/\b(am|pm)\b/, (m) => m.toUpperCase())} IST`;
 }

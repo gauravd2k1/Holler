@@ -225,9 +225,20 @@ export function PosScreen() {
 
   return (
     <main className="pos-screen">
-      <PrintFailureBanner />
-      <SyncBlockedBanner />
-      <LowStockBanner />
+      {/* `.pos-screen` is a CSS GRID with every cell of its 3x3 explicit
+          layout claimed by a named area (top/cats/grid/cart/bot). These
+          three banners carry no grid-area, so without this wrapper each one
+          is auto-placed by the grid algorithm into whatever cell is left —
+          observed in a real browser (T7) collapsing the sync banner into the
+          140px category-sidebar column instead of spanning full width, the
+          opposite of "full width, legible from a metre". This wrapper is
+          itself given `grid-area: banners` (index.css), a real row the grid
+          template reserves, rather than left to auto-placement. */}
+      <div className="pos-banners">
+        <PrintFailureBanner />
+        <SyncBlockedBanner />
+        <LowStockBanner />
+      </div>
       <header className="pos-top-bar">
         <input
           className="pos-search"

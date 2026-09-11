@@ -46,11 +46,21 @@ button {
   height: 100vh;
   display: grid;
   grid-template-columns: 140px 1fr 320px;
-  grid-template-rows: 64px 1fr 72px;
+  /* "banners" is `auto`-sized and collapses to zero height when every
+     banner inside it renders null — the common case. Without a reserved
+     row, PrintFailureBanner/SyncBlockedBanner/LowStockBanner (siblings with
+     no grid-area of their own) get auto-placed by the grid algorithm into
+     whatever named-area cell is left, which visually replaced the category
+     sidebar in a real browser (T7) rather than spanning full width. */
+  grid-template-rows: auto 64px 1fr 72px;
   grid-template-areas:
-    "top   top  top"
-    "cats  grid cart"
-    "bot   bot  bot";
+    "banners banners banners"
+    "top     top     top"
+    "cats    grid    cart"
+    "bot     bot     bot";
+}
+.pos-banners {
+  grid-area: banners;
 }
 
 .pos-top-bar {
@@ -535,6 +545,16 @@ button {
   flex-direction: column;
   gap: 0.4rem;
   flex-basis: 100%;
+}
+/* `display: flex` above beats the UA stylesheet's `[hidden] { display: none }`
+   because a class selector always outranks an attribute selector — so the
+   "Hide details" toggle set the `hidden` attribute exactly as intended and
+   the list stayed visible anyway. Observed in a real browser (T7): clicking
+   "Hide details" relabelled the button "Show details" with every row still
+   on screen. This rule restores the attribute's effect without an
+   `!important` war elsewhere in the sheet. */
+.sync-blocked-list[hidden] {
+  display: none;
 }
 .sync-blocked-aggregate {
   font-weight: 700;
