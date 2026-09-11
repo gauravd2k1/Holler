@@ -227,20 +227,30 @@ fn attempt_print(
 
     spool::mark_printing(conn, &job.id, now_str)?;
 
-    let bytes = match job
+    // The HTML companion exists only for invoices (T9): the demo's "opened
+    // on print" affordance is the bill, not the kitchen ticket, and there
+    // is no `render_kot_html` to call. `None` here reaches
+    // `PrinterTransport::send_html_companion`'s default no-op unchanged.
+    let (bytes, html) = match job
         .target()
         .map_err(|e| PrinterError::InvalidInput(e.to_string()))?
     {
-        PrintJobTarget::Kot(kot_id) => {
-            render_kot_job(conn, kot_id, now_str, &printer, order_ctx_for_kot)?
-        }
+        PrintJobTarget::Kot(kot_id) => (
+            render_kot_job(conn, kot_id, now_str, &printer, order_ctx_for_kot)?,
+            None,
+        ),
         PrintJobTarget::Invoice(invoice_id) => {
-            render_invoice_job(conn, invoice_id, &printer, order_ctx_for_invoice)?
+            let (bytes, html) = render_invoice_job(conn, invoice_id, &printer, order_ctx_for_invoice)?;
+            (bytes, Some(html))
         }
     };
 
     let mut transport = build_transport(&printer);
-    transport.send(&bytes)
+    transport.send(&bytes)?;
+    if let Some(html) = html {
+        transport.send_html_companion(&html)?;
+    }
+    Ok(())
 }
 
 fn render_kot_job(
@@ -277,12 +287,15 @@ fn render_kot_job(
 /// actually issued — `render_invoice` itself only reads columns already
 /// snapshotted on the `invoice`/`invoice_line` rows (§31 reproducibility;
 /// see `template.rs`'s module doc), never live `outlet_fiscal_profile`.
+/// Returns both the ESC/POS bytes and the independent HTML rendering
+/// ([`template::render_invoice_html`]) of the same invoice/lines/ctx — one
+/// DB read, two renderers, so the pair can never observe different data.
 fn render_invoice_job(
     conn: &Connection,
     invoice_id: &str,
     printer: &crate::model::Printer,
     order_ctx_for_invoice: &impl Fn(&str) -> PrinterResult<InvoiceOrderContext>,
-) -> PrinterResult<Vec<u8>> {
+) -> PrinterResult<(Vec<u8>, String)> {
     let invoice = db_repo::get_invoice(conn, invoice_id)
         .map_err(PrinterError::Db)?
         .ok_or(PrinterError::NotFound(
@@ -299,7 +312,9 @@ fn render_invoice_job(
         payment_summary: order_ctx.payment_summary.as_deref(),
     };
 
-    template::render_invoice(&invoice, &lines, &ctx, printer.paper_width_mm)
+    let bytes = template::render_invoice(&invoice, &lines, &ctx, printer.paper_width_mm)?;
+    let html = template::render_invoice_html(&invoice, &lines, &ctx)?;
+    Ok((bytes, html))
 }
 
 fn get_printer(conn: &Connection, id: &str) -> PrinterResult<Option<crate::model::Printer>> {

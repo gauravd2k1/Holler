@@ -21,6 +21,19 @@ use crate::model::{ConnectionKind, Printer};
 /// transport bug, not a spool concern.
 pub trait PrinterTransport {
     fn send(&mut self, bytes: &[u8]) -> PrinterResult<()>;
+
+    /// Optional human-readable companion for the print [`Self::send`] just
+    /// sent — a rendered receipt a person can read without an ESC/POS
+    /// decoder. Real hardware, [`NetworkTransport`] and [`PathTransport`]
+    /// have no notion of a companion file, so the default is a no-op; only
+    /// [`FileSinkTransport`] overrides it, writing `<same-stem>.html`
+    /// beside the `.escpos` file the preceding `send` wrote and opening it
+    /// with the OS default handler. Never call this for a job kind (KOT)
+    /// that has no independent HTML renderer — the default no-op is
+    /// correct there, not a workaround.
+    fn send_html_companion(&mut self, _html: &str) -> PrinterResult<()> {
+        Ok(())
+    }
 }
 
 /// Builds the real adapter for a `printer` row's `connection_kind`.

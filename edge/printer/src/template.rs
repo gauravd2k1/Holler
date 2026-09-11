@@ -448,6 +448,236 @@ pub fn render_invoice(
     Ok(b.into_bytes())
 }
 
+// ------------------------------------------------------- GST invoice HTML --
+
+/// Escapes the five characters that matter inside HTML text content and
+/// double-quoted attribute values. Every string interpolated into
+/// [`render_invoice_html`] that did not come from this module's own literal
+/// labels (legal name, address, customer name, item descriptions, ...) goes
+/// through this first — none of it is trusted markup.
+fn html_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// One line of the receipt: `<div class="line">...</div>`, escaped. Kept to
+/// a single line-emitting helper so every row of the rendered document is
+/// one block element, which is what makes a tag-stripped read-back agree
+/// line-for-line with [`to_readable_text`]-style extraction of the ESC/POS
+/// stream in the equivalence test (`transport/file_sink.rs`).
+fn html_line(out: &mut String, text: &str) {
+    out.push_str("<div class=\"line\">");
+    out.push_str(&html_escape(text));
+    out.push_str("</div>\n");
+}
+
+fn html_kv_line(out: &mut String, label: &str, value: &str) {
+    html_line(out, &format!("{label}: {value}"));
+}
+
+/// Renders one issued (or cancelled) GST invoice to a self-contained HTML
+/// document — the human-readable bill T9 opens on screen at demo time.
+///
+/// **Deliberately independent of [`render_invoice`]**: it does not call it,
+/// does not reuse [`EscPosBuilder`](crate::escpos::EscPosBuilder), and does
+/// not extract from a byte stream. It reads the same `invoice`/`lines`/`ctx`
+/// inputs directly and reimplements the same content decisions (which
+/// fields appear, in what order, under what label) in HTML. `transport::
+/// file_sink::tests` asserts the two agree line-for-line for the same
+/// invoice, which is the only thing that makes two independent renderers
+/// trustworthy rather than merely two chances to drift.
+///
+/// Same two binding rules as [`render_invoice`], inherited by construction
+/// because this function reads the identical fields:
+/// - only `ctx.order_display_number` is ever written — `invoice.id`,
+///   `invoice.order_id` and every line's `order_item_id` are UUIDs this
+///   function never formats;
+/// - every money field and the seller identity come from what `invoice`
+///   itself stored (`fiscal_profile_json`, the money columns), never live
+///   `outlet_fiscal_profile` config — so a reprint months later renders the
+///   identity that was true at issue (§31).
+///
+/// Pure function of its inputs — no clock, no live config lookup, no
+/// randomness — so two calls on the same invoice produce byte-identical
+/// HTML, same as the ESC/POS path.
+pub fn render_invoice_html(
+    invoice: &Invoice,
+    lines: &[InvoiceLine],
+    ctx: &InvoicePrintContext,
+) -> PrinterResult<String> {
+    let profile: FiscalProfileSnapshot = serde_json::from_str(&invoice.fiscal_profile_json)
+        .map_err(|e| PrinterError::InvalidInput(format!("invoice.fiscal_profile_json: {e}")))?;
+
+    let mut body = String::new();
+
+    body.push_str("<div class=\"header\">\n");
+    html_line(&mut body, profile.legal_name.trim());
+    if let Some(trade) = profile
+        .trade_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        html_line(&mut body, trade);
+    }
+    html_line(&mut body, &profile.address_line1);
+    if let Some(l2) = profile
+        .address_line2
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        html_line(&mut body, l2);
+    }
+    html_line(&mut body, &format!("{} {}", profile.city, profile.pincode));
+    html_kv_line(&mut body, "GSTIN", &profile.gstin);
+    if let Some(fssai) = profile
+        .fssai_number
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        html_kv_line(&mut body, "FSSAI", fssai);
+    }
+    body.push_str("</div>\n");
+
+    body.push_str("<div class=\"section\">\n");
+    html_line(
+        &mut body,
+        if invoice.status == "CANCELLED" {
+            "TAX INVOICE (CANCELLED)"
+        } else {
+            "TAX INVOICE"
+        },
+    );
+    if invoice.split_count > 1 {
+        html_kv_line(
+            &mut body,
+            "Bill",
+            &format!("{} of {}", invoice.split_index, invoice.split_count),
+        );
+    }
+    html_kv_line(&mut body, "Invoice No", &invoice.invoice_number);
+    html_kv_line(&mut body, "Date", &invoice.invoice_date);
+    // The one line the T10 brief pins: the short order number, never
+    // `invoice.order_id`/`invoice.id`.
+    html_kv_line(&mut body, "Order", ctx.order_display_number);
+    if let Some(table) = ctx.table_label {
+        html_kv_line(&mut body, "Table", table);
+    }
+    html_kv_line(
+        &mut body,
+        "Place of Supply",
+        &format!(
+            "{} ({})",
+            profile.state_code, invoice.place_of_supply_state_code
+        ),
+    );
+    if let Some(name) = invoice
+        .customer_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        html_kv_line(&mut body, "Customer", name);
+    }
+    if let Some(gstin) = invoice
+        .customer_gstin
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        html_kv_line(&mut body, "Customer GSTIN", gstin);
+    }
+    body.push_str("</div>\n");
+
+    body.push_str("<div class=\"section items\">\n");
+    for line in lines {
+        html_line(
+            &mut body,
+            &format!("{} x {}", line.quantity, line.description),
+        );
+        if let Some(hsn) = line
+            .hsn_sac
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            html_line(&mut body, &format!("  HSN/SAC {hsn}"));
+        }
+        html_line(
+            &mut body,
+            &format!(
+                "  Rate {}  Taxable {}",
+                money(line.unit_price_paise),
+                money(line.taxable_value_paise)
+            ),
+        );
+    }
+    body.push_str("</div>\n");
+
+    body.push_str("<div class=\"section totals\">\n");
+    html_kv_line(&mut body, "Taxable Value", &money(invoice.taxable_value_paise));
+    if invoice.discount_paise != 0 {
+        html_kv_line(&mut body, "Discount", &money(invoice.discount_paise));
+    }
+    if invoice.cgst_paise != 0 {
+        html_kv_line(&mut body, "CGST", &money(invoice.cgst_paise));
+    }
+    if invoice.sgst_paise != 0 {
+        html_kv_line(&mut body, "SGST", &money(invoice.sgst_paise));
+    }
+    if invoice.igst_paise != 0 {
+        html_kv_line(&mut body, "IGST", &money(invoice.igst_paise));
+    }
+    if invoice.cess_paise != 0 {
+        html_kv_line(&mut body, "Cess", &money(invoice.cess_paise));
+    }
+    if invoice.round_off_paise != 0 {
+        html_kv_line(&mut body, "Round Off", &money(invoice.round_off_paise));
+    }
+    html_kv_line(&mut body, "Grand Total", &money(invoice.grand_total_paise));
+    if let Some(payment) = ctx.payment_summary {
+        html_kv_line(&mut body, "Payment", payment);
+    }
+    body.push_str("</div>\n");
+
+    if let Some(footer) = profile
+        .invoice_footer_text
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        body.push_str("<div class=\"footer\">\n");
+        html_line(&mut body, footer);
+        body.push_str("</div>\n");
+    }
+
+    Ok(format!(
+        "<!DOCTYPE html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\n\
+         <title>{title}</title>\n\
+         <style>\n\
+         body {{ font-family: 'Courier New', monospace; max-width: 420px; margin: 2rem auto; }}\n\
+         .line {{ white-space: pre-wrap; }}\n\
+         .header .line:first-child {{ font-weight: bold; font-size: 1.2rem; text-align: center; }}\n\
+         .section {{ border-top: 1px dashed #000; padding-top: 0.5rem; margin-top: 0.5rem; }}\n\
+         .totals .line:last-of-type {{ font-weight: bold; }}\n\
+         .footer {{ text-align: center; margin-top: 1rem; }}\n\
+         </style></head><body>\n{body}</body></html>\n",
+        title = html_escape(&format!("Invoice {}", invoice.invoice_number)),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
