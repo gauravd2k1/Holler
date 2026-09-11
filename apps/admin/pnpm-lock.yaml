@@ -11,6 +11,9 @@ importers:
       '@holler/contracts':
         specifier: file:../../packages/contracts
         version: file:../../packages/contracts
+      '@holler/ui':
+        specifier: file:../../packages/ui
+        version: file:../../packages/ui
       '@tanstack/react-query':
         specifier: ^5.59.0
         version: 5.102.8(react@18.3.1)
@@ -305,6 +308,9 @@ packages:
 
   '@holler/contracts@file:../../packages/contracts':
     resolution: {directory: ../../packages/contracts, type: directory}
+
+  '@holler/ui@file:../../packages/ui':
+    resolution: {directory: ../../packages/ui, type: directory}
 
   '@jridgewell/gen-mapping@0.3.13':
     resolution: {integrity: sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA==}
@@ -1278,6 +1284,8 @@ snapshots:
   '@holler/contracts@file:../../packages/contracts':
     dependencies:
       zod: 3.25.76
+
+  '@holler/ui@file:../../packages/ui': {}
 
   '@jridgewell/gen-mapping@0.3.13':
     dependencies:

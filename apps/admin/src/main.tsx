@@ -2,6 +2,8 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { App } from "./App";
+import "@holler/ui/tokens.css";
+import "@holler/ui/base.css";
 import "./index.css";
 
 // One client for the app. Retries are OFF for mutations: a PATCH that failed

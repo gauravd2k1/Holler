@@ -46,7 +46,7 @@ export function SuppliersScreen() {
         </p>
       ) : (
         rows.map((supplier) => (
-          <article key={supplier.id}>
+          <article key={supplier.id} className="card">
             <h2>
               {supplier.name} <small>{supplier.code}</small>
             </h2>
@@ -173,6 +173,7 @@ function NewSupplierForm({ onCreated }: { onCreated: () => void }) {
 
   return (
     <form
+      className="card"
       onSubmit={(e) => {
         e.preventDefault();
         create.mutate();
@@ -220,7 +221,7 @@ function NewSupplierForm({ onCreated }: { onCreated: () => void }) {
         </p>
       </fieldset>
 
-      <button type="submit" disabled={create.isPending}>
+      <button type="submit" className="btn btn--primary" disabled={create.isPending}>
         {create.isPending ? "Saving…" : "Create supplier"}
       </button>
       {error !== null && <p className="error">{error}</p>}

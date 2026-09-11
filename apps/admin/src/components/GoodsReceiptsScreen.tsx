@@ -68,7 +68,7 @@ export function GoodsReceiptsScreen() {
         <p>No goods receipts have replayed for this outlet yet.</p>
       ) : (
         items.map((grn) => (
-          <article key={grn.id}>
+          <article key={grn.id} className="card">
             <h2>{grn.grn_number}</h2>
             <p>
               Received {formatIST(grn.received_at)} · business date {grn.business_date}
@@ -134,7 +134,7 @@ export function GoodsReceiptsScreen() {
         every list and reads as a bug the first time someone notices it.
       */}
       {page?.next_cursor != null && (
-        <button type="button" onClick={() => setCursor(page.next_cursor ?? undefined)}>
+        <button type="button" className="btn" onClick={() => setCursor(page.next_cursor ?? undefined)}>
           Load more
         </button>
       )}

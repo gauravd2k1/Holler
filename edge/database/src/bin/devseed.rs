@@ -21,6 +21,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use holler_edge_database::crypto::EncryptionKey;
+use rusqlite::OptionalExtension;
 use holler_edge_database::inventory::{grams, kilograms, litres, millilitres, pieces};
 use holler_edge_database::model::{
     AppUser, ComplianceVersion, Device, DiscountDefinition, InventoryItem, InvoiceSeries,
@@ -2787,6 +2788,28 @@ fn write_goods_receipt(db: &mut Db, catalogue: &Value) -> Result<(), DbError> {
     let Some(receipt) = catalogue.get("goods_receipt").filter(|v| !v.is_null()) else {
         return Ok(());
     };
+
+    // `Db::record_goods_receipt` is not an upsert: it mints a fresh GRN
+    // number, appends `stock_ledger_entry` rows (insert-only, trigger-
+    // guarded — see migrations.rs) and records `grn_gap` rows. None of that
+    // can be safely re-run. A re-run of this seeder must not call it twice
+    // for the same fixed `GRN_ID`, so check first and skip rather than let
+    // the second run hit `goods_receipt_note`'s UNIQUE(id) and abort.
+    let already_seeded: bool = db
+        .connection()
+        .query_row(
+            "SELECT 1 FROM goods_receipt_note WHERE id = ?1",
+            [GRN_ID],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(|e| DbError::InvalidInput(format!("devseed: checking seeded GRN: {e}")))?
+        .is_some();
+    if already_seeded {
+        println!("devseed: seed goods receipt — already present, skipping ({GRN_ID})");
+        return Ok(());
+    }
+
     let lines = jarr(receipt, "lines")?;
     let mut new_lines = Vec::with_capacity(lines.len());
     for l in lines {
@@ -2846,6 +2869,27 @@ fn write_goods_receipt(db: &mut Db, catalogue: &Value) -> Result<(), DbError> {
 fn write_opening_stock(db: &mut Db, catalogue: &Value) -> Result<(), DbError> {
     let rows = jarr(catalogue, "opening_stock")?;
     if rows.is_empty() {
+        return Ok(());
+    }
+
+    // Same shape as `write_goods_receipt`: `open_stock_count` /
+    // `complete_stock_count` append `stock_ledger_entry` rows (insert-only,
+    // trigger-guarded) and are not upserts. A re-run must not call this a
+    // second time for the same fixed `OPENING_STOCK_ID`.
+    let already_seeded: bool = db
+        .connection()
+        .query_row(
+            "SELECT 1 FROM stock_count WHERE id = ?1",
+            [OPENING_STOCK_ID],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(|e| DbError::InvalidInput(format!("devseed: checking seeded opening stock: {e}")))?
+        .is_some();
+    if already_seeded {
+        println!(
+            "devseed: seed opening stock — already present, skipping ({OPENING_STOCK_ID})"
+        );
         return Ok(());
     }
     let outlet_id = jstr(&rows[0], "outlet_id")?;

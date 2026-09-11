@@ -1,22 +1,88 @@
-:root { color-scheme: light dark; font: 15px/1.5 system-ui, sans-serif; }
-body { margin: 0; }
-main { padding: 1rem 1.5rem; max-width: 1100px; }
-nav { display: flex; gap: .5rem; margin-bottom: 1.5rem; }
-nav button { padding: .5rem 1rem; cursor: pointer; }
-nav button.active { font-weight: bold; text-decoration: underline; }
-table { border-collapse: collapse; width: 100%; margin-bottom: 1.5rem; }
-th, td { text-align: left; padding: .4rem .6rem; border-bottom: 1px solid #8884; }
-label { display: block; margin: .4rem 0; }
-fieldset { margin: 1rem 0; }
-.error { color: #b00020; }
-.warn { color: #a15c00; }
-.muted { opacity: .65; }
-.hint { font-size: .9em; opacity: .8; }
+/* Layout for the admin console. Reset, colour, type, .btn, .card, .status--*,
+   table styles and .holler-header all come from @holler/ui/tokens.css and
+   base.css (imported in main.tsx, before this file). What remains here is
+   this app's own arrangement — never a colour, a font size or a control
+   style of its own. */
+
+main {
+  padding: var(--space-5) var(--space-6);
+  max-width: 1100px;
+}
+
+main > section + section {
+  margin-top: var(--space-6);
+}
+
+section > .card + .card,
+section > article.card + article.card {
+  margin-top: var(--space-4);
+}
+
+nav {
+  display: flex;
+  gap: var(--space-2);
+  margin-bottom: var(--space-5);
+}
+
+table {
+  margin-bottom: var(--space-5);
+}
+
+label {
+  display: block;
+  margin: var(--space-2) 0;
+}
+
+label > input,
+label > select,
+label > textarea {
+  display: block;
+  margin-top: var(--space-1);
+}
+
+fieldset {
+  margin: var(--space-4) 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.error {
+  color: var(--color-danger);
+}
+
+/* Not decorative: this is the cell that would otherwise carry a raw UUID or
+   nothing at all. Styled like the status blocks in base.css — a tinted
+   ground under the default text colour — rather than a bare colour shift. */
+.warn {
+  display: inline-block;
+  background: var(--color-warn-bg);
+  color: var(--color-text);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+}
+
+.muted {
+  color: var(--color-text-muted);
+}
+
+.hint {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
 /* The replica/authority notes are load-bearing text, not chrome: they say
-   which copy of the truth the screen is showing. Styled to be read. */
+   which copy of the truth the screen is showing. The info status tokens
+   already carry exactly that "read this, it matters" weight. */
 .replica-note {
-  border-left: 4px solid #6a7;
-  padding: .5rem .75rem;
-  background: #6a71;
-  margin-bottom: 1.25rem;
+  background: var(--color-info-bg);
+  border-left: 4px solid var(--color-info);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  margin-bottom: var(--space-5);
+}
+
+.sign-in-card {
+  max-width: 360px;
+  margin: var(--space-7) auto 0;
 }

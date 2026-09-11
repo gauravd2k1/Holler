@@ -14,6 +14,19 @@ const TABS = [
 
 type TabId = (typeof TABS)[number]["id"];
 
+// The brand mark on every state this screen can be in, sign-in and
+// misconfigured included — not only once a principal is signed in.
+function Brand() {
+  return (
+    <header className="holler-header">
+      <div className="holler-header__brand">
+        <img src="/holler_no_bg.png" alt="Holler" className="holler-logo" />
+        <span>Holler Admin</span>
+      </div>
+    </header>
+  );
+}
+
 export function App() {
   const [tab, setTab] = useState<TabId>("menu");
   const [principal, setPrincipal] = useState<Principal | null>(currentPrincipal());
@@ -25,13 +38,15 @@ export function App() {
   const misconfigured = configError();
   if (misconfigured !== null) {
     return (
-      <main>
-        <h1>Holler Admin</h1>
-        <p className="error">
-          {misconfigured} Set it in <code>apps/admin/.env.local</code> and restart the dev
-          server.
-        </p>
-      </main>
+      <>
+        <Brand />
+        <main>
+          <p className="error">
+            {misconfigured} Set it in <code>apps/admin/.env.local</code> and restart the dev
+            server.
+          </p>
+        </main>
+      </>
     );
   }
 
@@ -39,23 +54,32 @@ export function App() {
   // deliberate cost of not putting a bearer token in localStorage.
   if (principal === null) {
     return (
-      <main>
-        <SignIn onSignedIn={setPrincipal} />
-      </main>
+      <>
+        <Brand />
+        <main>
+          <SignIn onSignedIn={setPrincipal} />
+        </main>
+      </>
     );
   }
 
   return (
-    <main>
-      <header>
+    <>
+      <header className="holler-header">
+        <div className="holler-header__brand">
+          <img src="/holler_no_bg.png" alt="Holler" className="holler-logo" />
+          <span>Holler Admin</span>
+        </div>
+        <div className="holler-header__spacer" />
         {/* The signed-in person's name only — never the outlet's UUID
             (CLAUDE.md §Money/time/identifiers). This build serves one outlet
             per environment, so there is nothing to disambiguate here today;
             a friendly outlet name is `AuthenticatedPrincipal.outlet_id`
             resolved, which the contract does not yet carry. */}
-        <span>{principal.full_name}</span>
+        <span className="muted">{principal.full_name}</span>
         <button
           type="button"
+          className="btn"
           onClick={() => {
             signOut();
             setPrincipal(null);
@@ -64,21 +88,23 @@ export function App() {
           Sign out
         </button>
       </header>
-      <nav>
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            className={t.id === tab ? "active" : ""}
-            onClick={() => setTab(t.id)}
-          >
-            {t.label}
-          </button>
-        ))}
-      </nav>
-      {tab === "menu" && <MenuScreen />}
-      {tab === "suppliers" && <SuppliersScreen />}
-      {tab === "receipts" && <GoodsReceiptsScreen />}
-    </main>
+      <main>
+        <nav>
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              className={t.id === tab ? "btn btn--primary" : "btn"}
+              onClick={() => setTab(t.id)}
+            >
+              {t.label}
+            </button>
+          ))}
+        </nav>
+        {tab === "menu" && <MenuScreen />}
+        {tab === "suppliers" && <SuppliersScreen />}
+        {tab === "receipts" && <GoodsReceiptsScreen />}
+      </main>
+    </>
   );
 }

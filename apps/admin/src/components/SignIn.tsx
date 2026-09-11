@@ -19,6 +19,7 @@ export function SignIn({ onSignedIn }: { onSignedIn: (p: Principal) => void }) {
 
   return (
     <form
+      className="card sign-in-card"
       onSubmit={(e) => {
         e.preventDefault();
         setBusy(true);
@@ -31,7 +32,7 @@ export function SignIn({ onSignedIn }: { onSignedIn: (p: Principal) => void }) {
           .finally(() => setBusy(false));
       }}
     >
-      <h1>Holler Admin</h1>
+      <h1>Sign in</h1>
       <label>
         Email
         <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
@@ -45,7 +46,7 @@ export function SignIn({ onSignedIn }: { onSignedIn: (p: Principal) => void }) {
           required
         />
       </label>
-      <button type="submit" disabled={busy}>
+      <button type="submit" className="btn btn--primary" disabled={busy}>
         {busy ? "Signing in…" : "Sign in"}
       </button>
       {error !== null && <p className="error">{error}</p>}

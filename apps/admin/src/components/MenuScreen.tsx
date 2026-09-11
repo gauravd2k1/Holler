@@ -122,7 +122,7 @@ function MenuItemRow({
         <td>{item.hsn_sac ?? <span className="warn">not set — cannot be billed</span>}</td>
         <td>{item.is_available ? "yes" : "no"}</td>
         <td>
-          <button type="button" onClick={() => setEditing(true)}>
+          <button type="button" className="btn" onClick={() => setEditing(true)}>
             Edit
           </button>
         </td>
@@ -147,10 +147,10 @@ function MenuItemRow({
       */}
       <td>{item.is_available ? "yes" : "no"}</td>
       <td>
-        <button type="button" onClick={() => save.mutate()} disabled={save.isPending}>
+        <button type="button" className="btn btn--primary" onClick={() => save.mutate()} disabled={save.isPending}>
           {save.isPending ? "Saving…" : "Save"}
         </button>
-        <button type="button" onClick={() => setEditing(false)}>
+        <button type="button" className="btn" onClick={() => setEditing(false)}>
           Cancel
         </button>
         {error !== null && <span className="error">{error}</span>}
