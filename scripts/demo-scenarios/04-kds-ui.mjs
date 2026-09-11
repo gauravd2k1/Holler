@@ -7,6 +7,7 @@
  * process. A bump is asserted on the CARD TEXT, never on the click — the KDS
  * is not authoritative and only repaints once the edge echoes kot_upserted.
  */
+import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { KDS_UI, REPO_ROOT, record, shotPath, shotRel } from "./lib.mjs";
@@ -30,6 +31,45 @@ async function lanHostUp() {
   } catch {
     return false;
   }
+}
+
+/**
+ * How many tickets does the EDGE actually put in the snapshot?
+ *
+ * An empty board has two completely different causes — the KDS failed to
+ * render what it was sent, or it was sent nothing — and they are
+ * indistinguishable from the page. Subscribing as a second client answers it
+ * directly, so an empty board is never reported as a KDS defect when the
+ * truthful statement is "there is no active ticket at the outlet".
+ *
+ * Returns null if the socket could not be used at all.
+ */
+async function snapshotTicketCount() {
+  const raw = readFileSync(join(REPO_ROOT, "apps", "kds", ".env.dev"), "utf8");
+  const env = {};
+  for (const l of raw.split("\n")) {
+    const m = l.match(/^(VITE_[A-Z_]+)=(.*)/);
+    if (m) env[m[1]] = m[2].trim();
+  }
+  if (!env.VITE_KDS_DEVICE_TOKEN) return null;
+  return new Promise((resolve) => {
+    let ws;
+    const done = (v) => { try { ws?.close(); } catch { /* already gone */ } resolve(v); };
+    const t = setTimeout(() => done(null), 8000);
+    try {
+      ws = new WebSocket(`ws://localhost:9310/kds?outlet_id=${env.VITE_KDS_OUTLET_ID}&device_id=${env.VITE_KDS_DEVICE_ID}`);
+    } catch {
+      clearTimeout(t);
+      return done(null);
+    }
+    ws.onopen = () => ws.send(JSON.stringify({ type: "auth", device_token: env.VITE_KDS_DEVICE_TOKEN }));
+    ws.onerror = () => { clearTimeout(t); done(null); };
+    ws.onmessage = (e) => {
+      let f;
+      try { f = JSON.parse(e.data); } catch { return; }
+      if (f.type === "snapshot") { clearTimeout(t); done((f.kots ?? f.payload ?? []).length); }
+    };
+  });
 }
 
 const run = async () => {
@@ -99,6 +139,7 @@ const run = async () => {
     await page.waitForTimeout(500);
   }
   const emptyText = await page.locator("p.kds-board__empty").textContent().catch(() => null);
+  const edgeTickets = await snapshotTicketCount();
   await page.screenshot({ path: shotPath("kds-03-tickets"), fullPage: true });
   record({
     id: "S-KDS-05",
@@ -110,10 +151,23 @@ const run = async () => {
     expected: "At least one ticket card carrying a data-kot-id",
     actual:
       cardCount > 0
-        ? `${cardCount} ticket cards rendered`
-        : `No ticket cards; board says ${JSON.stringify(emptyText)}${lanUp ? "" : ". " + downNote}`,
-    status: cardCount > 0 ? "PASS" : lanUp ? "FAIL" : "BLOCKED",
-    evidence: shotRel("kds-03-tickets"),
+        ? `${cardCount} ticket cards rendered, and the edge's own snapshot carried ${edgeTickets ?? "?"}`
+        : `No ticket cards; board says ${JSON.stringify(emptyText)}. The edge's own snapshot carried ` +
+          `${edgeTickets === null ? "could not be read" : edgeTickets} ticket(s)${lanUp ? "" : ". " + downNote}`,
+    // Three outcomes, not two. A board showing what the edge sent is a PASS; a
+    // board empty while the edge sent tickets is a real KDS FAIL; a board
+    // empty because the edge sent nothing is neither.
+    status: cardCount > 0 ? "PASS" : !lanUp ? "BLOCKED" : edgeTickets === 0 ? "BLOCKED" : "FAIL",
+    evidence: `${shotRel("kds-03-tickets")}; edge snapshot ticket count = ${edgeTickets === null ? "unreadable" : edgeTickets}`,
+    notes:
+      edgeTickets === 0
+        ? "NOT A KDS DEFECT. Subscribing to 9310 as a second client shows the EDGE puts zero tickets in the " +
+          "snapshot, so the board is showing exactly what it was sent. There is no active ticket at this outlet, " +
+          "and the two ways to create one are both unavailable here: the captain send fails on a foreign key " +
+          "(S-CAP-10) and the till UI is a native WebView2 that Playwright cannot drive. Read this row as 'the " +
+          "rendering path is unexercised', never as 'the KDS works' — an empty board is what a broken renderer " +
+          "looks like too, and this run cannot tell them apart."
+        : "",
   });
 
   if (cardCount === 0) {

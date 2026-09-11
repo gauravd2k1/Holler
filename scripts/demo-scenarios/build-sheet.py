@@ -44,9 +44,12 @@ GROUP_ORDER = ["S-ENV", "S-BE", "S-CAP", "S-CUI", "S-KDS", "S-ADM", "S-API", "S-
 # Failures ranked by what they cost the demo, most severe first. An id absent
 # from this list sorts after every id present in it.
 SEVERITY = [
-    "S-CUI-03",   # the waiter phone cannot pair at all -> demo step 1a is dead
-    "S-SYNC-09",  # the pump's period is why it cannot pair
+    "S-CAP-10",   # the waiter phone cannot create an order at all
+    "S-CAP-18",   # ...and this is the foreign key that stops it
+    "S-CUI-03",   # the pairing delay that blocked the first pass
+    "S-SYNC-09",  # the pump's period is why pairing was delayed
     "S-SYNC-10",  # orders reach the cloud with a total and no lines
+    "S-SYNC-11",  # the cloud holds no tables and no stations at all
     "S-ENV-02",   # the POS process vanished mid-run
     "S-SYNC-04",  # gap A7: nothing but `order` reaches the cloud
     "S-ADM-08",   # demo step 4 has no screen
@@ -64,7 +67,7 @@ SEVERITY = [
 def load_rows():
     if not os.path.exists(RESULTS):
         sys.exit(f"no results at {RESULTS} — run the scenario stages first")
-    latest = OrderedDict()
+    raw = []
     # utf-8-sig: the log is appended to by Node, but a PowerShell truncation
     # of the file can leave a byte-order mark on the first line.
     with open(RESULTS, "r", encoding="utf-8-sig") as fh:
@@ -72,8 +75,30 @@ def load_rows():
             line = line.strip()
             if not line:
                 continue
-            row = json.loads(line)
-            latest[row["id"]] = row  # last write wins
+            raw.append(json.loads(line))
+
+    # A STAGE'S RE-RUN SUPERSEDES EVERY ROW IT PREVIOUSLY WROTE, not merely the
+    # ids it happens to write again. Otherwise a stage that failed early and
+    # emitted a placeholder leaves that row behind forever, because the
+    # successful re-run never emits that id to overwrite it — and the sheet
+    # then shows one path both working and blocked at once.
+    newest_run = {}
+    for row in raw:
+        stage = row.get("stage", "unknown")
+        run = row.get("runId", "")
+        if run > newest_run.get(stage, ""):
+            newest_run[stage] = run
+
+    latest = OrderedDict()
+    dropped = 0
+    for row in raw:
+        stage = row.get("stage", "unknown")
+        if row.get("runId", "") != newest_run.get(stage, ""):
+            dropped += 1
+            continue
+        latest[row["id"]] = row  # last write wins within the surviving run
+    if dropped:
+        print(f"(superseded by a later run of the same stage: {dropped} row(s))")
     return list(latest.values())
 
 

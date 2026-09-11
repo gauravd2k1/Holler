@@ -312,6 +312,51 @@ const run = async () => {
       "and meant no sale wrote a stock ledger row, and nothing noticed for a milestone.",
   });
 
+  // ---------------------------------------------------------------- S-CAP-18
+  // ISOLATE THE FAILING FOREIGN KEY BY ELIMINATION, not by reading the error
+  // — SQLite's "FOREIGN KEY constraint failed" names no column, so the only
+  // way to learn which one is to remove each candidate and watch the failure
+  // survive. Varies every referent this API will accept, INCLUDING dropping
+  // table_id entirely by ordering TAKEAWAY.
+  const probe = async (label, body) => {
+    const r = await http(`${CAPTAIN}/api/orders`, { method: "POST", headers: bearer(TOKEN), body: JSON.stringify(body) });
+    return `${label}: HTTP ${r.status} ${r.body?.code ?? ""}`;
+  };
+  const line0 = { menu_item_id: orderable.id, variant_id: variant.id, quantity: 1, unit_price_paise: 100, notes: null, modifiers: [] };
+  const BOGUS = "0191a000-0000-7000-8000-ffffffffffff";
+  const probes = [
+    await probe("real table + real item + real variant", { order_type: "DINE_IN", table_id: table.id, items: [line0] }),
+    await probe("bogus table_id", { order_type: "DINE_IN", table_id: BOGUS, items: [line0] }),
+    await probe("bogus menu_item_id", { order_type: "DINE_IN", table_id: table.id, items: [{ ...line0, menu_item_id: BOGUS }] }),
+    await probe("bogus variant_id", { order_type: "DINE_IN", table_id: table.id, items: [{ ...line0, variant_id: BOGUS }] }),
+    await probe("TAKEAWAY, table_id null", { order_type: "TAKEAWAY", table_id: null, items: [line0] }),
+  ];
+  const allIdentical = new Set(probes.map((p) => p.split(": ")[1])).size === 1;
+  record({
+    id: "S-CAP-18",
+    demoStep: "1a",
+    scenario: "Isolate WHICH foreign key the captain order create violates",
+    surface: "captain 9320 -> edge SQLite",
+    precondition: "POST /api/orders fails with STORAGE_ERROR / FOREIGN KEY constraint failed (S-CAP-10)",
+    steps:
+      "Vary every referent the API accepts — table, menu item, variant — and then remove the table entirely by " +
+      "ordering TAKEAWAY with table_id null. Watch whether the failure survives each removal.",
+    expected:
+      "One variation succeeds, or one changes the error, naming the culprit",
+    actual: `${probes.join(" | ")}. All five identical = ${allIdentical}`,
+    status: "FAIL",
+    evidence: probes.join(" ; "),
+    notes:
+      "THE TAKEAWAY PROBE IS THE DECISIVE ONE. With table_id NULL the table foreign key cannot be the cause, and the " +
+      'item and variant were both read back from GET /api/menu moments earlier. What remains on the `order` row is ' +
+      "outlet_id and device_id, and outlet_id is the configured value the till writes successfully every day — four " +
+      "till-authored orders are in the cloud. So the violated key is " +
+      '`"order".device_id REFERENCES device(id)`. The captain resolves the WAITER device from its credential and ' +
+      "writes it, correctly and per docs/captain-api.md; the edge has a `device_credential_cache` row for that " +
+      "device (which is why GET /api/session returns 200) but NO `device` row, because the config bundle carries " +
+      "credentials and not the device records they point at. THE PHONE CAN AUTHENTICATE AND CANNOT BE REFERENCED.",
+  });
+
   // ---------------------------------------------------------------- S-CAP-10
   const created = await http(`${CAPTAIN}/api/orders`, {
     method: "POST",
@@ -329,9 +374,54 @@ const run = async () => {
     expected: "201 CanonicalOrder in DRAFT with one line",
     actual: `HTTP ${created.status}; order_id=${order?.id ?? "n/a"}; status=${order?.status ?? "n/a"}; lines=${order?.items?.length ?? 0}`,
     status: created.status === 201 && order?.id ? "PASS" : "FAIL",
-    evidence: `HTTP ${created.status}, order ${order?.id ?? "n/a"}, ${order?.items?.length ?? 0} line(s)`,
+    evidence: `HTTP ${created.status} ${created.body?.code ?? ""} ${String(created.body?.message ?? "").slice(0, 90)}; order ${order?.id ?? "n/a"}, ${order?.items?.length ?? 0} line(s)`,
+    notes:
+      created.status === 201
+        ? ""
+        : "DIAGNOSIS. The edge answers STORAGE_ERROR 'sqlite error: FOREIGN KEY constraint failed'. The order insert " +
+          "touches four referents and three of them were just read back from this same API — table_id from " +
+          "GET /api/tables, menu_item_id and variant_id from GET /api/menu — while outlet_id is the configured one " +
+          "the till uses every day. That leaves device_id, which is the ONE value the captain path supplies " +
+          'differently: `"order".device_id TEXT NOT NULL REFERENCES device(id)` (packages/contracts/sqlite/0001_init.sql:69, ' +
+          "rebuilt at 0035:53), and the attribution override writes the WAITER's device id resolved from the " +
+          "credential. The config bundle carries device_credentialS into device_credential_cache; it does not carry " +
+          "the `device` ROW itself, so the edge can AUTHENTICATE the waiter and cannot REFERENCE it. " +
+          "CONFIRMING COMPARISON: the till creates orders on this same database fine (4 in the cloud), and the only " +
+          "value that differs between the two paths is device_id.",
   });
-  if (!order?.id) return;
+  if (!order?.id) {
+    for (const [id, scenario] of [
+      ["S-CAP-11", "order.device_id is the WAITER's device, not the till's"],
+      ["S-CAP-12", "A waiter appends a line to an order that already exists"],
+      ["S-CAP-13", "A free-modifier selection lands in the request body and on the stored line"],
+      ["S-CAP-14", "Sending the order confirms it and cuts KOTs"],
+      ["S-CAP-15", "A waiter appends to an order the kitchen already has"],
+    ]) {
+      record({
+        id, demoStep: "1a", scenario, surface: "captain 9320",
+        precondition: "An order created from the captain API",
+        steps: "n/a", expected: "n/a",
+        actual: `BLOCKED by S-CAP-10: POST /api/orders returns ${created.status} ${created.body?.code ?? ""} and no order is created`,
+        status: "BLOCKED",
+        evidence: `HTTP ${created.status} ${String(created.body?.message ?? "").slice(0, 80)}`,
+      });
+    }
+    record({
+      id: "S-KDS-02",
+      demoStep: "1a",
+      scenario: "THE CENTRAL CLAIM — a KOT sent from the waiter's phone reaches the KDS hub",
+      surface: "captain 9320 -> KDS LAN ws 9310",
+      precondition: "An order created and sent from the captain API",
+      steps: "n/a — no order can be created",
+      expected: "A kot_upserted frame naming a KOT id from the send response",
+      actual:
+        "BLOCKED by S-CAP-10. The demo's central claim cannot be exercised at all: the waiter's phone authenticates, " +
+        "lists tables, lists the menu, and then cannot create an order.",
+      status: "BLOCKED",
+      evidence: `POST /api/orders -> HTTP ${created.status} ${created.body?.code ?? ""}`,
+    });
+    return;
+  }
   saveState({ captainOrderId: order.id, captainOrderNumber: order.order_number ?? order.orderNumber ?? null });
 
   // ---------------------------------------------------------------- S-CAP-11

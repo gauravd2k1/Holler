@@ -6,7 +6,7 @@
  * one. Reuses the cached JWT — no extra login is spent (see lib.mjs on the
  * five-per-fifteen-minutes budget).
  */
-import { BACKEND, OWNER, http, login, record, sql } from "./lib.mjs";
+import { BACKEND, OUTLET_ID, OWNER, http, login, record, sql } from "./lib.mjs";
 
 const run = async () => {
   const auth = await login(OWNER);
@@ -34,7 +34,7 @@ const run = async () => {
 
   // ----------------------------------------------------------------- S-API-01
   const newPrice = Number(basePrice) + 100; // +₹1, integer paise end to end
-  const patch = await http(`${BACKEND}/menu/items/${itemId}`, {
+  const patch = await http(`${BACKEND}/menu/items/${itemId}?outlet_id=${OUTLET_ID}`, {
     method: "PATCH", headers: h, body: JSON.stringify({ base_price_paise: newPrice }),
   });
   const stored = sql(`select base_price_paise from menu_item where id='${itemId}';`).trim();
@@ -53,7 +53,7 @@ const run = async () => {
   });
 
   // ----------------------------------------------------------------- S-API-02
-  const identity = await http(`${BACKEND}/menu/items/${itemId}`, {
+  const identity = await http(`${BACKEND}/menu/items/${itemId}?outlet_id=${OUTLET_ID}`, {
     method: "PATCH", headers: h, body: JSON.stringify({ id: itemId, base_price_paise: newPrice }),
   });
   record({
@@ -66,12 +66,18 @@ const run = async () => {
     expected: "422 — id/outlet_id/tenant_id are 422 if present, never a silent ignore (contracts 0.7.0)",
     actual: `HTTP ${identity.status} ${String(identity.body?.code ?? identity.text).slice(0, 80)}`,
     status: identity.status === 422 ? "PASS" : "FAIL",
-    evidence: `HTTP ${identity.status}`,
-    notes: "A silent ignore and a rejection look identical from the caller unless the status differs.",
+    evidence: `HTTP ${identity.status} ${identity.body?.code ?? ""}`,
+    notes:
+      "LOW SEVERITY, AND THE LOAD-BEARING HALF IS CORRECT. The requirement contracts 0.7.0 actually cares about is " +
+      "'never a silent ignore', and the route does reject — it answers 400 invalid_input, which is the shared " +
+      "DisallowUnknownFields decoder refusing the field before the handler sees it. What deviates is only the " +
+      "status code: the contract says 422, the route says 400. Recorded as FAIL because the edge classifier branches " +
+      "on these values and contracts 0.7.0 made ErrorCode an enum precisely so a status or code drifting from the " +
+      "spec is not a silent behaviour change — but nothing about this is visible to the demo.",
   });
 
   // ----------------------------------------------------------------- S-API-03
-  const clearHsn = await http(`${BACKEND}/menu/items/${itemId}`, {
+  const clearHsn = await http(`${BACKEND}/menu/items/${itemId}?outlet_id=${OUTLET_ID}`, {
     method: "PATCH", headers: h, body: JSON.stringify({ hsn_sac: "" }),
   });
   const hsnAfter = sql(`select coalesce(hsn_sac,'<null>') from menu_item where id='${itemId}';`).trim();
@@ -90,7 +96,7 @@ const run = async () => {
   });
 
   // ----------------------------------------------------------------- S-API-04
-  const grn = await http(`${BACKEND}/procurement/goods-receipts?outlet_id=${process.env.HOLLER_OUTLET_ID ?? "0191a000-0000-7000-8000-00000000000a"}`, { headers: h });
+  const grn = await http(`${BACKEND}/procurement/goods-receipts?outlet_id=${OUTLET_ID}`, { headers: h });
   const list = grn.body?.goods_receipts ?? grn.body?.items ?? grn.body?.data ?? [];
   const cloudCount = sql("select count(*) from goods_receipt_note;").trim();
   record({

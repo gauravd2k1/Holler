@@ -11,7 +11,7 @@
  */
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -54,6 +54,20 @@ export function redact(text) {
 const RESULTS_FILE = join(RESULT_DIR, "results.jsonl");
 
 /**
+ * Which stage recorded a row, and which execution of it.
+ *
+ * A STAGE'S RE-RUN SUPERSEDES EVERY ROW IT PREVIOUSLY WROTE, not merely the
+ * ids it happens to write again. Without this, a stage that failed early and
+ * emitted a placeholder (S-CAP-BLOCKED) leaves that row in the sheet forever,
+ * because the successful re-run never emits that id to overwrite it — and the
+ * sheet then shows a path both working and blocked at once. Same defect shape
+ * as an exemption outliving its reason: the stale row reads exactly like a
+ * fresh one.
+ */
+const STAGE = basename(process.argv[1] ?? "unknown");
+const RUN_ID = new Date().toISOString();
+
+/**
  * Record one scenario row. `status` is PASS / FAIL / BLOCKED / NOT TESTABLE.
  * Every field is written even when empty so the sheet's columns stay aligned.
  */
@@ -70,6 +84,8 @@ export function record(row) {
     status: row.status,
     evidence: redact(String(row.evidence ?? "")),
     notes: redact(String(row.notes ?? "")),
+    stage: STAGE,
+    runId: RUN_ID,
     at: new Date().toISOString(),
   };
   appendFileSync(RESULTS_FILE, JSON.stringify(full) + "\n", "utf8");

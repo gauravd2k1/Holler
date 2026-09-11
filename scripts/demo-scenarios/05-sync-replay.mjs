@@ -133,6 +133,36 @@ const run = async () => {
       "Demo step 6 reads from exactly this data.",
   });
 
+  // --------------------------------------------------------------- S-SYNC-11
+  // Config that is supposed to flow cloud -> edge, counted at the source.
+  const cfg = {};
+  for (const t of ["restaurant_table", "station", "printer", "tax_profile", "menu_category", "menu_item", "supplier"]) {
+    cfg[t] = one(`select count(*) from ${t};`);
+  }
+  const cfgSummary = Object.entries(cfg).map(([t, n]) => `${t}=${n}`).join(", ");
+  const emptyConfig = Object.entries(cfg).filter(([, n]) => n === "0").map(([t]) => t);
+  record({
+    id: "S-SYNC-11",
+    demoStep: "1a / 2",
+    scenario: "The cloud actually holds the config it is the authority for",
+    surface: "postgres 5432",
+    precondition:
+      "restaurant_table, station, printer, tax_profile and the menu are CONFIG, cloud-authoritative, syncing down " +
+      "(ADR-011, ADR-014). The edge caches them; the cloud owns them.",
+    steps: "Count each cloud-authoritative config table in Postgres",
+    expected: "Non-zero for every table the outlet is currently using",
+    actual: `${cfgSummary}. Empty cloud-side: ${emptyConfig.length ? emptyConfig.join(", ") : "none"}`,
+    status: emptyConfig.length === 0 ? "PASS" : "FAIL",
+    evidence: `SQL counts — ${cfgSummary}`,
+    notes:
+      "THE TILL HAS TABLES AND STATIONS; THE CLOUD HAS NEITHER. They came from the edge dev seed, and " +
+      "config apply UPSERTS WITHOUT PRUNING (contracts 0.7.0), so a pull can never add them and can never remove " +
+      "them either — the outlet runs on config the cloud cannot reproduce, manage or show. For a demo whose pitch " +
+      "is 'manage it from the back office', every table on the waiter's phone and every station a KOT routes to is " +
+      "invisible to the back office. Note the asymmetry with menu_item, which IS seeded cloud-side and therefore IS " +
+      "editable in the admin console.",
+  });
+
   // --------------------------------------------------------------- S-SYNC-05
   // Blocked-row surfacing. `sync_replay_block` is the ranged-stream table;
   // `ledger_replay_gap` is the cloud-side hole record.
