@@ -51,10 +51,15 @@ Read these three now. Each of them looks exactly like a broken demo and is not.
 
    That cache is populated **only** by a successful `GET /sync/config` pull
    (`edge/sync/src/config.rs:769`, `repo::replace_device_credential_cache`), and
-   **nothing seeds it** — `edge/database/src/bin/devseed.rs` seeds `device` rows
-   but no `device_credential_cache` row at all (verified: no match for
-   `credential` in that file). So the order is always **enrol in the cloud →
-   POS pulls config → device can connect**, never the other way round.
+   **nothing seeds it locally** — `edge/database/src/bin/devseed.rs` seeds
+   `device` rows but no `device_credential_cache` row at all (verified: no
+   match for `credential` in that file). So the order is always **enrol in
+   the cloud → POS pulls config → device can connect**, never the other way
+   round. As of T15, `scripts/dev-bootstrap.ps1` performs the cloud enrolment
+   step for you, for both the POS's own sync credential and the KDS's, when
+   it can reach `-CloudBaseUrl` at bootstrap time (steps 3b/3c) — see
+   section 5.1. It cannot pull the config for you; that still happens only
+   when the POS actually starts.
 
 ### Files you own, that no agent can touch
 
@@ -330,17 +335,42 @@ expected result here).
 
 ## 5. Enrolling a second PC as the KDS
 
-The KDS needs **four** things in `apps/kds/.env.dev`, and the bootstrap writes
-only three of them. **`VITE_KDS_DEVICE_TOKEN` is not written by
-`scripts/dev-bootstrap.ps1`** (verified: its `$kdsEnvLines` block writes
-`VITE_KDS_LAN_URL`, `VITE_KDS_OUTLET_ID` and `VITE_KDS_DEVICE_ID` only) while
-`apps/kds/src/lib/lanConfig.ts` throws without it. You supply it by hand.
+The KDS needs **four** things in `apps/kds/.env.dev`. **As of T15,
+`scripts/dev-bootstrap.ps1` writes all four** — `VITE_KDS_LAN_URL`,
+`VITE_KDS_OUTLET_ID`, `VITE_KDS_DEVICE_ID` and `VITE_KDS_DEVICE_TOKEN` — as
+long as `-CloudBaseUrl` was reachable when the bootstrap ran (its `[3c/4]`
+step). **Confirm it worked**: the bootstrap prints `KDS credential ENABLED
+(token written to apps\kds\.env.dev only)`. If instead it printed `[3c/4] KDS
+credential SKIPPED: ...` (in **red**, not the yellow used for the POS's own
+sync-credential skip — the KDS is unstartable without this one), the token
+line was **not** written, `apps/kds/src/lib/lanConfig.ts` will throw at
+startup, and you have two options: re-run the bootstrap once the reason
+printed above that line is fixed (usually "no API at ..." — start the
+backend first), or do the enrolment by hand below and paste the token into
+`apps\kds\.env.dev` yourself.
 
-### 5.1 Enrol a KDS device against the cloud
+**One correction to keep in mind either way**: the bootstrap's `-KdsDeviceId`
+(default `0191a000-0000-7000-8000-00000000000d`, the seeded local `device`
+row) and the id `POST /devices/enroll` returns for the KDS's *credential* are
+**deliberately two different device ids**, not a mismatch to fix. Verification
+(`edge/device/src/auth.rs`, `CachedCredentialVerifier::check_cached_row`)
+checks a cached credential's `outlet_id` and `device_kind` only — never
+`device_id` — so any KDS-kind credential enrolled for this outlet
+authenticates the connection. `VITE_KDS_DEVICE_ID` has a separate job: it is
+the value the edge stamps into `kot_status_history.changed_by_device_id`,
+which carries a real `REFERENCES device(id)` foreign key
+(`packages/contracts/sqlite/0005_m2_kitchen_stations_printers.sql:114`) —
+that row must exist in the **local** `device` table, which only the seeded
+id does (nothing syncs the `device` table itself down from the cloud; only
+`device_credentials` travels in the config bundle). So: leave
+`VITE_KDS_DEVICE_ID` as the seeded value; only the token changes.
 
-On the machine that can reach the backend. `POST /devices/enroll` is gated on
-`outlet.manage`, which the seeded cashier does **not** hold — log in as
-`owner@holler.test` (`scripts/dev-bootstrap.ps1`, `$SyncEnrollEmail`).
+### 5.1 Enrol a KDS device against the cloud, by hand (fallback)
+
+Only needed if the bootstrap's `[3c/4]` step was skipped. On the machine that
+can reach the backend. `POST /devices/enroll` is gated on `outlet.manage`,
+which the seeded cashier does **not** hold — log in as `owner@holler.test`
+(`scripts/dev-bootstrap.ps1`, `$SyncEnrollEmail`).
 
 Request shape and response fields are from
 `backend/internal/outlet/device_http.go:55-60` (`enrollDeviceRequest`:
@@ -387,19 +417,22 @@ On the **hub**, edit `apps\kds\.env.dev` so it reads exactly:
 ```
 VITE_KDS_LAN_URL=ws://192.168.137.1:9310/kds
 VITE_KDS_OUTLET_ID=<outlet id>
-VITE_KDS_DEVICE_ID=<device_id from step 5.1>
+VITE_KDS_DEVICE_ID=0191a000-0000-7000-8000-00000000000d
 VITE_KDS_DEVICE_TOKEN=<token from step 5.1>
 ```
 
-Two things to get right:
+One thing to get right:
 
 - **`VITE_KDS_LAN_URL` must carry `<HUB_IP>`, never `localhost`.** The bootstrap
   guesses this with `Get-LanIPv4`, which takes the first non-loopback address —
   on a multi-NIC machine that is often the wrong one. Correct it against what
   you confirmed in §1.
-- **`VITE_KDS_DEVICE_ID` must be the id the enrol call returned**, not the
-  seeded `0191a000-0000-7000-8000-00000000000d` the bootstrap writes — that
-  seeded device has no credential anywhere.
+
+**Leave `VITE_KDS_DEVICE_ID` as the seeded `0191a000-0000-7000-8000-00000000000d`
+— do not replace it with the id this enrol call returned.** See the note at
+the top of this section: the credential's `device_id` and the connection's
+`device_id` serve different, deliberately unrelated purposes, and only the
+seeded id satisfies the local `kot_status_history` foreign key.
 
 ### 5.3 The credential must reach the till before the KDS can connect
 
@@ -607,14 +640,25 @@ enrols a `POS` device named `Holler Dev Till` and writes the three lines for you
 
 **Check:** the bootstrap prints `sync ENABLED for this till (token written to
 .env.dev only)`. If it prints `sync credential SKIPPED: no API at …`, PC-B is not
-reachable — fix that before going further.
+reachable — fix that before going further. The same applies to `[3c/4]` and the
+KDS token; both enrolments run against whichever `-CloudBaseUrl` you passed.
 
-**Note:** the bootstrap also seeds the **edge** database on the machine it runs
-on, and its device-lookup step shells into a container named
-`holler-postgres-1` on the **local** Docker. With Docker on PC-B, that lookup
-finds nothing and the script takes the *enrol* branch rather than the *rotate*
-branch — which returns 409 if the device already exists. If that happens, rotate
-by hand (§5.1's 409 note) and paste the token into `apps\pos\.env.dev` yourself.
+**Note (fixed at T15):** the device-lookup step used to shell into a container
+named `holler-postgres-1` on the **local** Docker unconditionally, so pointed
+at PC-B it silently found nothing and the script took the *enrol* branch every
+run — 409 on any re-run instead of rotating. It now detects whether
+`-CloudBaseUrl`'s host is `localhost`/`127.0.0.1`: on the hub against
+`http://<PC_B_IP>:8080` that is false, so it skips the local Postgres lookup
+and instead remembers the device id it minted, per `(cloud url, outlet, kind,
+name)`, in `%LOCALAPPDATA%\Holler\dev-bootstrap-state.json` on **this**
+machine — machine-local bookkeeping, never committed, never containing the
+token itself. A **re-run on the same hub machine** against the same PC-B
+therefore rotates correctly. If that state file is missing or was cleared (a
+fresh checkout, a different machine, or the device was enrolled by hand) and
+the name is already taken on PC-B, the bootstrap does not guess: it throws a
+message naming exactly that — no LIST route exists to recover the id
+automatically, so the fix is a manual rotate (§5.1) with whatever id you
+noted from the original enrolment, or enrolling under a different name.
 
 Also update `apps\admin\.env.local` so `VITE_ADMIN_API_BASE_URL` is
 `http://<PC_B_IP>:8080` (`apps/admin/src/lib/api.ts:27`), alongside

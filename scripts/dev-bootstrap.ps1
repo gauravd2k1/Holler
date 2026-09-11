@@ -90,6 +90,126 @@ function Get-LanIPv4 {
     return "127.0.0.1"
 }
 
+# --- device enrollment helpers (T15) -----------------------------------------
+# Shared by the POS's own sync credential (3b) and the KDS credential (3c).
+#
+# Device lookup for the rotate-vs-enroll decision. `POST /devices/enroll`
+# matches an existing device by (tenant, outlet, name) and 409s if one already
+# exists, and there is deliberately no device LIST route (device_http.go),
+# so "does a device by this name already exist" can only be answered two
+# ways: a direct Postgres lookup (only possible when the cloud IS the local
+# Docker stack this script itself started), or remembering an id this script
+# minted on a previous run.
+#
+# T15 defect: the previous version always tried the Postgres lookup via
+# `docker exec holler-postgres-1`, unconditionally -- correct only when
+# -CloudBaseUrl is the local stack. Pointed at a second machine (the
+# documented two-machine demo setup, docs/lan-setup.md section 7), that
+# `docker exec` finds a container that was never asked about THIS cloud, so
+# the lookup silently returns nothing and the script takes the enroll branch
+# every time, hitting 409 on every re-run instead of rotating. Detect which
+# case this is instead of guessing.
+function Test-CloudBaseUrlIsLocal {
+    param([string]$CloudBaseUrl)
+    try {
+        $targetHost = ([Uri]$CloudBaseUrl).Host
+    } catch {
+        return $false
+    }
+    return ($targetHost -eq "localhost" -or $targetHost -eq "127.0.0.1" -or $targetHost -eq "::1")
+}
+
+# Local-machine memory of device ids this script has minted, keyed by
+# (cloud url, outlet, kind, name) so a rotate on a later run against a
+# NON-local cloud (no Postgres lookup available) still finds the right
+# device instead of guessing. Deliberately outside the repository --
+# machine-local bookkeeping, not something to ever commit -- and separate
+# from apps\pos\.env.dev / apps\kds\.env.dev, which carry only what the
+# running apps read.
+$script:BootstrapStateFile = Join-Path $env:LOCALAPPDATA "Holler\dev-bootstrap-state.json"
+
+function Get-BootstrapStateMap {
+    $map = @{}
+    if (Test-Path $script:BootstrapStateFile) {
+        try {
+            $raw = Get-Content $script:BootstrapStateFile -Raw -ErrorAction Stop
+            if ($raw) {
+                $obj = $raw | ConvertFrom-Json -ErrorAction Stop
+                foreach ($prop in $obj.PSObject.Properties) { $map[$prop.Name] = [string]$prop.Value }
+            }
+        } catch {
+            # A corrupt/partial state file is machine-local cache, not a
+            # source of truth -- treat it as empty rather than failing the
+            # bootstrap over it.
+            $map = @{}
+        }
+    }
+    return $map
+}
+
+function Set-BootstrapStateEntry {
+    param([string]$Key, [string]$Value)
+    $map = Get-BootstrapStateMap
+    $map[$Key] = $Value
+    $dir = Split-Path -Parent $script:BootstrapStateFile
+    if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+    ($map | ConvertTo-Json) | Out-File -FilePath $script:BootstrapStateFile -Encoding ascii
+}
+
+# Resolves an enrolled device credential for (OutletId, Kind, Name) against
+# $CloudBaseUrl: rotate if a device is already known (by local Postgres
+# lookup when the cloud is local, or by this script's own state file
+# otherwise), enroll if not. Returns @{ Token; DeviceId; Status }. Throws on
+# an unrecoverable case -- callers decide whether that is fatal to the
+# bootstrap (it never is here; see the "NOTHING HERE MAY FAIL THE BOOTSTRAP"
+# note below).
+function Resolve-DeviceEnrollment {
+    param(
+        [string]$CloudBaseUrl,
+        [hashtable]$Headers,
+        [string]$OutletId,
+        [string]$Kind,
+        [string]$Name,
+        [bool]$IsLocalCloud
+    )
+
+    $stateKey = "$CloudBaseUrl|$OutletId|$Kind|$Name"
+    $existingId = $null
+
+    if ($IsLocalCloud) {
+        $existingId = (docker exec holler-postgres-1 psql -U holler -d holler -t -A -c `
+            "SELECT d.id FROM device d JOIN device_credential c ON c.device_id = d.id AND c.revoked_at IS NULL WHERE d.outlet_id = '$OutletId' AND d.name = '$Name' LIMIT 1;" 2>$null)
+        if ($existingId) { $existingId = $existingId.Trim() }
+    }
+    if (-not $existingId) {
+        $map = Get-BootstrapStateMap
+        if ($map.ContainsKey($stateKey)) { $existingId = $map[$stateKey] }
+    }
+
+    if ($existingId) {
+        $rotateBody = @{ label = "dev-bootstrap" } | ConvertTo-Json
+        $enrolled = Invoke-RestMethod -Uri "$CloudBaseUrl/devices/$existingId/credentials/rotate" `
+            -Method Post -Body $rotateBody -ContentType 'application/json' -Headers $Headers
+        Set-BootstrapStateEntry -Key $stateKey -Value $existingId
+        return @{ Token = $enrolled.token; DeviceId = $existingId; Status = "rotated" }
+    }
+
+    try {
+        $enrollBody = @{ outlet_id = $OutletId; kind = $Kind; name = $Name; label = "dev-bootstrap" } | ConvertTo-Json
+        $enrolled = Invoke-RestMethod -Uri "$CloudBaseUrl/devices/enroll" -Method Post `
+            -Body $enrollBody -ContentType 'application/json' -Headers $Headers
+        Set-BootstrapStateEntry -Key $stateKey -Value $enrolled.device_id
+        return @{ Token = $enrolled.token; DeviceId = $enrolled.device_id; Status = "enrolled" }
+    } catch {
+        $detail = $_.ErrorDetails.Message
+        if (-not $detail) { $detail = $_.Exception.Message }
+        if ((-not $IsLocalCloud) -and ($detail -match "already enrolled")) {
+            throw "a device named '$Name' already exists on $CloudBaseUrl, but this script has no local record of its id: the Postgres lookup only runs against a LOCAL cloud ($CloudBaseUrl is not localhost) and $script:BootstrapStateFile has no entry for it -- most likely because a previous enrollment for this cloud/outlet/name ran from a different machine, or this machine's state file was cleared. There is no device LIST route (device_http.go) to recover the id automatically. Fix: log in as owner@holler.test against $CloudBaseUrl and POST /devices/{deviceId}/credentials/rotate by hand with the id from wherever it was first enrolled, then paste the resulting token into the env file yourself; or enroll under a different -SyncEnrollEmail/name."
+        }
+        throw $detail
+    }
+}
+
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
@@ -203,8 +323,11 @@ try {
     Remove-Item Env:\HOLLER_SEED_BILLING -ErrorAction SilentlyContinue
 }
 
-# --- 3b. sync credential (ADR-020) -------------------------------------------
-# The POS process HOSTS the sync worker, and it needs three variables together:
+# --- 3b/3c. sync + KDS device credentials (ADR-020, T15) ---------------------
+# One cloud login, two enrollments: 3b is the POS's own sync credential; 3c
+# (below, once logged in) is the KDS screen's credential -- both use
+# Resolve-DeviceEnrollment. The POS process HOSTS the sync worker, and it
+# needs three variables together:
 # HOLLER_CLOUD_BASE_URL, HOLLER_TENANT_ID and HOLLER_DEVICE_TOKEN. All three or
 # none -- a worker with a URL and no credential 401s every request and burns
 # retry budget doing it.
@@ -216,11 +339,14 @@ try {
 # backend AFTER this script, so a first run on a cold machine reaches this point
 # with nothing listening. Re-run the bootstrap once the API is up.
 $syncEnvLines = @()
+$kdsEnvExtraLines = @()
 $deviceToken = $null
+$isLocalCloud = Test-CloudBaseUrlIsLocal -CloudBaseUrl $CloudBaseUrl
 
-# A fixed name, because POST /devices/enroll matches an existing device by
+# Fixed names, because POST /devices/enroll matches an existing device by
 # (tenant, outlet, name). That is what makes this step re-runnable.
 $syncDeviceName = "Holler Dev Till"
+$kdsSyncDeviceName = "Holler Dev KDS"
 
 $apiUp = $false
 try {
@@ -234,11 +360,15 @@ if (-not $apiUp) {
     Write-Host "`n[3b/4] sync credential SKIPPED: no API at $CloudBaseUrl" -ForegroundColor Yellow
     Write-Host "  The POS will start with sync disabled and say so. Start the backend and re-run" -ForegroundColor Yellow
     Write-Host "  this bootstrap to enroll -- re-running is safe." -ForegroundColor Yellow
+    Write-Host "[3b/4] KDS credential SKIPPED for the same reason." -ForegroundColor Red
+    Write-Host "  apps\kds\.env.dev will be written WITHOUT VITE_KDS_DEVICE_TOKEN. The KDS" -ForegroundColor Red
+    Write-Host "  throws a config error at startup until this bootstrap is re-run with the" -ForegroundColor Red
+    Write-Host "  backend reachable -- see docs/lan-setup.md section 5." -ForegroundColor Red
 } else {
-    Write-Host "`n[3b/4] enrolling this till's sync credential..." -ForegroundColor Cyan
+    $tenantId = $values['HOLLER_TENANT_ID']
+    $authHeaders = @{ 'X-Tenant-ID' = $tenantId }
+    $headers = $null
     try {
-        $tenantId = $values['HOLLER_TENANT_ID']
-        $authHeaders = @{ 'X-Tenant-ID' = $tenantId }
         $loginBody = @{
             email     = $SyncEnrollEmail
             password  = $SyncEnrollPassword
@@ -250,58 +380,11 @@ if (-not $apiUp) {
             'X-Tenant-ID'   = $tenantId
             'Authorization' = "Bearer $($session.access_token)"
         }
-
-        # Enrollment is ONCE-ONLY: a second enroll of the same device returns
-        # 409 "device already enrolled; rotate its credential instead" (ADR-017 --
-        # the plaintext token is issued exactly once). So look first, and pick
-        # the matching route.
-        #
-        # The lookup goes through psql because there is deliberately no device
-        # LIST route, and the 409 body does not carry the device id. Acceptable
-        # here and nowhere else: this script already requires Docker and already
-        # talks to this database directly. A production enrollment flow is a
-        # separate, operator-facing thing (docs/backlog.md).
-        $existingId = (docker exec holler-postgres-1 psql -U holler -d holler -t -A -c `
-            "SELECT d.id FROM device d JOIN device_credential c ON c.device_id = d.id AND c.revoked_at IS NULL WHERE d.outlet_id = '$($values['HOLLER_OUTLET_ID'])' AND d.name = '$syncDeviceName' LIMIT 1;" 2>$null)
-        if ($existingId) { $existingId = $existingId.Trim() }
-
-        if ($existingId) {
-            $rotateBody = @{ label = "dev-bootstrap" } | ConvertTo-Json
-            $enrolled = Invoke-RestMethod -Uri "$CloudBaseUrl/devices/$existingId/credentials/rotate" `
-                -Method Post -Body $rotateBody -ContentType 'application/json' -Headers $headers
-            Write-Host "rotated the existing credential for device $existingId"
-        } else {
-            $enrollBody = @{
-                outlet_id = $values['HOLLER_OUTLET_ID']
-                kind      = 'POS'
-                name      = $syncDeviceName
-                label     = 'dev-bootstrap'
-            } | ConvertTo-Json
-            $enrolled = Invoke-RestMethod -Uri "$CloudBaseUrl/devices/enroll" -Method Post `
-                -Body $enrollBody -ContentType 'application/json' -Headers $headers
-            Write-Host "enrolled device $($enrolled.device_id)"
-        }
-
-        $deviceToken = $enrolled.token
-        if ([string]::IsNullOrWhiteSpace($deviceToken)) {
-            throw "the response carried no token"
-        }
-
-        # NOTE the device id: the POS stamps this on what it sends, so the
-        # credential and the identity must agree.
-        $syncEnvLines = @(
-            "HOLLER_CLOUD_BASE_URL=$CloudBaseUrl",
-            "HOLLER_TENANT_ID=$tenantId",
-            "HOLLER_DEVICE_TOKEN=$deviceToken"
-        )
-        Write-Host "sync ENABLED for this till (token written to .env.dev only)" -ForegroundColor Cyan
     } catch {
         $detail = $_.ErrorDetails.Message
         if (-not $detail) { $detail = $_.Exception.Message }
-        Write-Host "[3b/4] sync credential SKIPPED: $detail" -ForegroundColor Yellow
-        Write-Host "  Not fatal. The POS starts with sync disabled and logs which variables" -ForegroundColor Yellow
-        Write-Host "  were missing. Enrollment needs a principal holding outlet.manage" -ForegroundColor Yellow
-        Write-Host "  (owner@holler.test is seeded with it); override with -SyncEnrollEmail." -ForegroundColor Yellow
+        Write-Host "`n[3b/4] sync credential SKIPPED: could not log in as $SyncEnrollEmail : $detail" -ForegroundColor Yellow
+        Write-Host "  Not fatal. The POS and KDS start with sync/credential disabled." -ForegroundColor Yellow
         if ($detail -match "authentication required") {
             # ADR-012 deliberately returns the SAME response for a bad password
             # and for a throttled one, so this cannot be distinguished from the
@@ -312,7 +395,65 @@ if (-not $apiUp) {
             Write-Host "  indistinguishable from a wrong password (ADR-012). Repeated bootstrap" -ForegroundColor Yellow
             Write-Host "  runs can trip it; restart the backend or wait out the 15-minute window." -ForegroundColor Yellow
         }
-        $syncEnvLines = @()
+    }
+
+    if ($headers) {
+        Write-Host "`n[3b/4] enrolling this till's sync credential..." -ForegroundColor Cyan
+        try {
+            $pos = Resolve-DeviceEnrollment -CloudBaseUrl $CloudBaseUrl -Headers $headers `
+                -OutletId $values['HOLLER_OUTLET_ID'] -Kind 'POS' -Name $syncDeviceName -IsLocalCloud $isLocalCloud
+            $deviceToken = $pos.Token
+            if ([string]::IsNullOrWhiteSpace($deviceToken)) { throw "the response carried no token" }
+            Write-Host "$($pos.Status) device $($pos.DeviceId)"
+
+            # NOTE the device id: the POS stamps this on what it sends, so the
+            # credential and the identity must agree.
+            $syncEnvLines = @(
+                "HOLLER_CLOUD_BASE_URL=$CloudBaseUrl",
+                "HOLLER_TENANT_ID=$tenantId",
+                "HOLLER_DEVICE_TOKEN=$deviceToken"
+            )
+            Write-Host "sync ENABLED for this till (token written to .env.dev only)" -ForegroundColor Cyan
+        } catch {
+            $detail = $_.Exception.Message
+            Write-Host "[3b/4] sync credential SKIPPED: $detail" -ForegroundColor Yellow
+            Write-Host "  Not fatal. The POS starts with sync disabled and logs which variables" -ForegroundColor Yellow
+            Write-Host "  were missing. Enrollment needs a principal holding outlet.manage" -ForegroundColor Yellow
+            Write-Host "  (owner@holler.test is seeded with it); override with -SyncEnrollEmail." -ForegroundColor Yellow
+            $syncEnvLines = @()
+        }
+
+        # --- 3c. KDS device credential (T15) -------------------------------------
+        # apps/kds/src/lib/lanConfig.ts throws without VITE_KDS_DEVICE_TOKEN, and
+        # devseed.rs seeds a `device` row for the KDS but no `device_credential_cache`
+        # row -- there is no offline path to a working credential, a real cloud
+        # enrollment is mandatory (docs/lan-setup.md section 0.3). This enrolls a
+        # KDS device SEPARATE from the seeded local `device` row referenced by
+        # $KdsDeviceId: verification (edge/device/src/auth.rs CachedCredentialVerifier)
+        # checks the credential's outlet_id and device_kind, never device_id, so the
+        # credential's own device_id need not equal $KdsDeviceId -- only $KdsDeviceId
+        # needs to exist locally, which devseed already guarantees (it is also the
+        # value kot_status_history.changed_by_device_id's FK is checked against).
+        Write-Host "`n[3c/4] enrolling this till's KDS credential..." -ForegroundColor Cyan
+        try {
+            $kds = Resolve-DeviceEnrollment -CloudBaseUrl $CloudBaseUrl -Headers $headers `
+                -OutletId $values['HOLLER_OUTLET_ID'] -Kind 'KDS' -Name $kdsSyncDeviceName -IsLocalCloud $isLocalCloud
+            if ([string]::IsNullOrWhiteSpace($kds.Token)) { throw "the response carried no token" }
+            Write-Host "$($kds.Status) device $($kds.DeviceId)"
+            $kdsEnvExtraLines = @("VITE_KDS_DEVICE_TOKEN=$($kds.Token)")
+            Write-Host "KDS credential ENABLED (token written to apps\kds\.env.dev only)" -ForegroundColor Cyan
+        } catch {
+            $detail = $_.Exception.Message
+            Write-Host "[3c/4] KDS credential SKIPPED: $detail" -ForegroundColor Red
+            Write-Host "  apps\kds\.env.dev will be written WITHOUT VITE_KDS_DEVICE_TOKEN. The KDS" -ForegroundColor Red
+            Write-Host "  throws a config error at startup until this is fixed -- re-run this" -ForegroundColor Red
+            Write-Host "  bootstrap once the cause above is resolved. Not fatal to this bootstrap" -ForegroundColor Red
+            Write-Host "  run: the outlet still works offline (ADR-013), just without a KDS." -ForegroundColor Red
+            $kdsEnvExtraLines = @()
+        }
+    } else {
+        Write-Host "[3c/4] KDS credential SKIPPED: no login session (see above)." -ForegroundColor Red
+        Write-Host "  apps\kds\.env.dev will be written WITHOUT VITE_KDS_DEVICE_TOKEN." -ForegroundColor Red
     }
 }
 
@@ -365,8 +506,21 @@ $kdsEnvLines = @(
     "VITE_KDS_OUTLET_ID=$($values['HOLLER_OUTLET_ID'])",
     "VITE_KDS_DEVICE_ID=$KdsDeviceId"
 )
+# T15. VITE_KDS_DEVICE_TOKEN, from step 3c -- the credential this token
+# belongs to is a SEPARATE cloud-enrolled device from $KdsDeviceId above;
+# see the 3c comment for why that is correct rather than a mismatch.
+# Appended only when 3c actually obtained one -- a stale/empty token line
+# would be worse than the file omitting it, since lanConfig.ts's error for
+# "unset" ("no enrolled credential") is a clearer signal than whatever an
+# empty string would produce.
+$kdsEnvLines += $kdsEnvExtraLines
 $kdsEnvLines | Out-File -FilePath $kdsEnvFile -Encoding ascii
 Write-Host "wrote $kdsEnvFile (LAN URL host detected as $lanIp -- verify with ipconfig if this machine has more than one network adapter)" -ForegroundColor Cyan
+if ($kdsEnvExtraLines.Count -eq 0) {
+    Write-Host "  WARNING: VITE_KDS_DEVICE_TOKEN was NOT written -- the KDS will throw a" -ForegroundColor Red
+    Write-Host "  config error at startup. See the [3c/4] message above and docs/lan-setup.md" -ForegroundColor Red
+    Write-Host "  section 5. Re-run this bootstrap once that is resolved." -ForegroundColor Red
+}
 
 Write-Host "`nready." -ForegroundColor Green
 Write-Host "`nLaunch the POS with:" -ForegroundColor Cyan
