@@ -1445,3 +1445,139 @@ Two corollaries, both live:
   predicted a 500 for the KOT route from its repository call site and was
   wrong about the mechanism while right about the route. **A scan that stops
   where the SQL is cannot see a decision made above it.**
+
+---
+
+## 2026-09-11 — A criterion a pre-fix binary also passes is not evidence for the fix
+
+M6 C4 was run twice. The first run satisfied the falsifier **as written** and was
+thrown away.
+
+The falsifier said: `taskkill` the app so `RunEvent::Exit` never fires, confirm
+the order is absent from the cloud, then watch the pump land it with the window
+open. That is exactly what happened — the POS started at 18:50:54 and the order
+was in Postgres by 18:51:11, seventeen seconds later, operator touching nothing.
+
+The problem is what else explains it. **The startup drain has existed since long
+before A5**, the feature under test. A row landing seventeen seconds after
+process start is equally consistent with "the periodic pump works" and "the
+drain that has always run at startup ran at startup". The pre-fix binary passes
+that test. So the observation measured nothing about A5 and was discarded.
+
+The second run excluded the alternative **structurally rather than by argument**:
+the POS process stayed up across the whole sequence. Cloud stopped by pid, order
+rung offline and verified absent, cloud restarted on a new pid at 19:08:12, row
+present by 19:08:29 — with the POS pid identical before and after, so no process
+start could have occurred between the cloud coming back and the row landing.
+
+Two general points, both of which cost time here:
+
+- **Write the falsifier against the alternative explanations, not against the
+  feature.** "The pump lands it" is not falsifiable by watching a row land; it is
+  falsifiable only once every other way that row could have landed is closed off.
+  The original wording isolated the *shutdown* drain and said nothing about the
+  startup one, and nobody noticed until the run produced an answer too fast to
+  be the pump.
+- **The falsifier's own premise was also wrong**, separately. It assumed a normal
+  exit fires `RunEvent::Exit`; neither `Ctrl+C` nor a window close does on this
+  build. So the "abnormal exit" it set out to isolate does not exist as a
+  distinct state here at all.
+
+## 2026-09-11 — A reconstructed pre-fix binary reproduces the shape of a defect, not its duration
+
+M6 C3 needs the same fixture on the pre-fix binary. Nothing in the tree builds
+one, so the A2 fix was removed by hand — one line, the per-aggregate blocked
+check replaced with a global one — following the C8 planted-branch precedent.
+
+It worked: the neighbour was stranded across roughly twelve pump ticks and
+landed only afterwards. But **the reconstruction is bounded in a way the real
+defect was not**, and the bound is not obvious from the diff.
+
+`blocked` is a `HashSet` local to one `pump_outbox` call, and the persisted
+`outbox_row_is_blocked` check short-circuits *before* the planted line is
+reached. So the plant strands neighbours only while the offending row is still
+being attempted — about fifty seconds at a ten-second tick, five attempts. Then
+the row is abandoned, the short-circuit takes over, and the plant fires on
+nothing. Real pre-A2 had no per-row budget and would have wedged the neighbour
+permanently.
+
+**A reconstruction removes a fix; it does not restore the world the fix was
+written in.** Everything built *since* is still present and still interacts —
+here, A3's retry budget quietly put a fifty-second ceiling on a defect that was
+originally unbounded. The reconstruction is still worth doing, and the ceiling
+has to be written down beside the result, or the next reader takes "neighbour
+stranded" to mean the same thing it meant in M5.
+
+A second-order effect from the same mechanism, observed the same night: because
+the abandoned-row short-circuit runs first, **later rows of a partly-refused
+order are sent after one of its rows has been abandoned** — per-aggregate
+ordering stops protecting an aggregate at exactly the point it starts failing.
+That was an open design question from 2026-09-07 and now has an outlet
+observation attached.
+
+## 2026-09-11 — The fixture's assumption was falsified by the fixture
+
+The C3 run was planned on a stated cause: the cloud seeds two `menu_item` rows
+against the edge's forty-three, so an order for anything else is refused. It was
+wrong, and the run itself proved it — an order for **Veg Thali, which the cloud
+does hold**, was refused anyway.
+
+The real refusal is `order_item_variant_id_fkey`. The cloud seeds **one**
+`menu_item_variant` row; the edge mints one per item. So an item event is
+refused whenever the variant does not resolve, regardless of the menu item.
+
+Three things fell out of it that no amount of planning would have:
+
+- **It is the cause of the divergence finding** filed two hours earlier as
+  "reproduced twice, cause unknown". `order` has no foreign key to `menu_item`,
+  so a create always lands whatever it references; `order_item` has three, and
+  one of them never resolves. The cloud copy is a create and nothing else, for
+  every order.
+- **A fix for one defect uncovered this one, and nothing announced it.** Before
+  `7e88d1c` the till hardcoded `variantId: null`, which satisfied the foreign key
+  trivially; 35 landed lines carry a null variant and 2 carry a real one. The M4
+  criterion-1 fix is what started sending real variants into a cloud that had
+  none.
+- **The probe was mis-specified for two hours** because of the same assumption:
+  "is the order in Postgres" cannot distinguish a refused item event from an
+  accepted one, since the create lands either way. The right observable was the
+  till's own blocked-sync banner.
+
+The lesson is narrow and repeatable: **when a fixture depends on a failure, name
+the exact constraint that fails and reproduce it in isolation before building the
+run on it.** One rolled-back `INSERT` against Postgres would have named
+`order_item_variant_id_fkey` in the first minute.
+
+## 2026-09-11 — A check that cannot see the schema is a check with a hole where it matters most
+
+`scripts/check-aggregator-boundary.mjs` exists so a platform's name cannot reach
+code that should be platform-agnostic. It was watched going RED on a planted
+branch when it was built, and it found a real leak on its first run. It still had
+two holes, and both were found the same way — by planting a value and watching it
+**pass**.
+
+- **`packages/contracts` was not in its search roots, and `.sql` was not in its
+  extensions.** So the shared schema — the one place a platform name binds every
+  consumer at once and is hardest to remove later — was the one place the check
+  could not look.
+- **Its word boundary could not match an enum member.** `\b(ondc)\b` does not
+  match `AGGREGATOR_ONDC`, because `_` is a word character. A member named for a
+  platform is the single likeliest way a platform name enters a schema, and it
+  went through cleanly.
+
+Either hole alone would have let `AGGREGATOR_ONDC` land in both stores with the
+build green.
+
+**A check is falsified by what it lets through, not by what it catches.** Both
+were found only because a value was planted specifically to see the check fail —
+the same discipline applied to acceptance criteria, pointed at the tooling.
+Watching a check go red once, when it is written, proves it can fire; it says
+nothing about the region it never looks at.
+
+The narrowing needed afterwards is its own small lesson. Two legitimate things
+now trip it: the deprecated platform-named members that the schema must keep, and
+the migration guard that must name one to test that it refuses. Both are
+exempted by exact shape and location, with the same removal trigger as the
+members themselves — because **an exemption that outlives its reason is a
+silenced failure**, and the cheapest moment to bind an exemption to its trigger
+is when it is written.

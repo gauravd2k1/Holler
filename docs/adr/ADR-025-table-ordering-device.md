@@ -121,7 +121,10 @@ a device in public hands touching money. Parked deliberately, not forgotten.
    and must replay. Today `edge/sync/src/route.rs` maps only `order` and
    `table_session`, so a KOT has no route at all; a tab on top of that is a
    customer ordering into a queue nothing drains.
-2. **The `order.source` widening** (0.8.1, before M6 closes).
+2. **The `order.source` widening** — **DONE**, contracts 0.8.1 (ADR-026,
+   2026-09-11). `TABLE_TAB` exists in both stores and all three wire types, and
+   is pinned as having NO WRITER by `scripts/check-order-source-drift.mjs`. The
+   change that first writes it removes it from that list in the same commit.
 3. **The LAN security gate review**, for a device the public holds.
 4. **A pilot running `STAFF_ONLY`** in at least one outlet. Table ordering is
    not the thing to discover an outlet's LAN with.

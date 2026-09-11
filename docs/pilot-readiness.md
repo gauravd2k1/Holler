@@ -1,0 +1,193 @@
+# Pilot readiness — everything that must be looked at before the first outlet runs
+
+**Compiled:** 2026-09-11, at the M6 Phase C boundary
+**Source:** `docs/backlog.md` (every row whose trigger names a pilot), the Phase A
+carries, the Phase B carries, and `docs/adr/ADR-025-table-ordering-device.md`.
+
+**This is a LIST, not a plan.** No new work was invented while writing it, nothing
+was re-scoped, and no item was closed on the strength of reading it. Where a row
+has been overtaken by work that has since landed, it is marked **RESOLVED** with
+what resolved it, because a list that still names fixed things trains its reader
+to skim.
+
+**"Blocks pilot"** means: an outlet running this build in a real restaurant would
+lose data, lose money, expose credentials, or be unable to start — not "would be
+better with it fixed".
+
+**Size** is a rough order of magnitude, given so the list can be triaged, not
+committed to: **S** ≈ under a day, **M** ≈ a few days, **L** ≈ a week or more.
+Sizes are estimates from reading the entries, not from planning the work.
+
+---
+
+## A. The Phase A carries — what A4, A6 and A7 actually are
+
+Phase A closed with **five of seven landed (A1, A1b, A2, A3, A5) and three
+carried**. The kickoff note says only "carried", which is why they are spelled
+out here.
+
+### A4 — `Offline` conflates four distinct states · **Blocks pilot: NO** · **Size: S**
+
+`StopReason::Offline` is returned for four different situations: **no listener on
+the port**, **a listener that refused the connection**, **a stale pooled socket**,
+and **a host that answered with an error**. An operator and a log reader cannot
+tell a shop whose WAN is down from a backend that is up and rejecting everything,
+and those two need opposite responses — wait, versus call someone.
+
+The transport half landed at `262e03a`. **What is carried is the reporting half
+only**, and it must reuse the three-probe fail-closed logic already in
+`scripts/check-cloud-unreachable.ps1` rather than growing a second, weaker
+version. It degrades diagnosis rather than losing data, which is why Phase A
+closed without it.
+
+### A6 — no exit path runs the shutdown drain or seals the database · **Blocks pilot: YES** · **Size: M**
+
+Two observations that turned out to be one.
+
+**(a)** The drain reports through `eprintln` (`state.rs`) and those lines have
+been seen in some runs and not others. The work is to establish **which
+build/attach state loses them** — a different fix from adding a log line.
+
+**(b)** No exit path on this build fires `RunEvent::Exit`. Closing the window
+under `tauri dev` leaves `holler-pos.exe` alive with the pump still ticking and
+the database open; `Ctrl+C` from the launching terminal — the documented correct
+way — terminates the process but **still does not seal**. Observed 2026-09-05,
+again 2026-09-07, and again 2026-09-10, when `edge.db.enc` carried the time the
+app *opened* while an evening's trading sat in the plaintext file beside it.
+Observed once more while writing this report: a plaintext `edge.db` and its
+`-wal` sitting alongside the `.enc` at an identical mtime.
+
+**Why this blocks a pilot:** it is the mechanism behind the credential-exposure
+row in §B, and it is why no trustworthy backup can be taken before a risky
+migration (§B, rebuild-class migrations). It is also why M6 C4's falsifier could
+not isolate an "abnormal" exit — there is no normal one.
+
+### A7 — 78 outbox rows have no edge route and can never be sent · **Blocks pilot: YES** · **Size: M**
+
+`edge/sync/src/route.rs` maps only `order` and `table_session`. Every other
+aggregate's rows are reported `unrouted_skipped` and sit pending forever; the
+drain counts them and nothing can send them.
+
+Measured on the live edge database 2026-09-07: **78 pending rows with no route —
+55 `kot`, 22 `stock_count`, 1 `invoice`** — alongside 24 pending `order` rows
+that do have one. The cloud ingest routes already exist, so this is an edge
+resolver and envelope job covering `kot`, `invoice`, `payment`, `cash_shift`,
+`stock_count` and item availability.
+
+**This is the largest single carry out of Phase A**, the reason the pending count
+never reaches zero however healthy the drain looks, and a prerequisite for the
+table tab (ADR-025) and for any aggregate beyond `order` replaying at all. An
+outlet running a pilot today would keep every invoice and every payment on one
+disk indefinitely.
+
+---
+
+## B. Carried by a pilot trigger, from `docs/backlog.md`
+
+Grouped by what they threaten. Titles are abbreviated; the backlog row is the
+authority.
+
+### B1. Data leaves the till, or does not
+
+| Item | Blocks pilot | Size | Note |
+|---|---|---|---|
+| **A7 — aggregates with no edge route** | **YES** | M | §A above |
+| **A 500 on a replayed row wedges the outbox forever** | — | — | **RESOLVED** by A1/A1b/A2/A3; M6 C7 closed 2026-09-07 and M6 C3 2026-09-11 |
+| **No periodic sync pump while the till is open** | — | — | **RESOLVED** by A5; M6 C4 observed 2026-09-11 |
+| **`edge/sync` has no host — nothing that ships calls it** | — | — | **RESOLVED**: the A5 loop drives both the pump and `pull_and_apply_config` (contracts 0.7.0) |
+| **The shutdown drain is the only outbound path** | — | — | **SUPERSEDED** by A5 for data loss; the exit-path half survives as A6 |
+| **A6 — no exit path drains or seals** | **YES** | M | §A above |
+| **Rebuild-class migration can leave the edge database mid-rebuild, and the `.enc` backup cannot be trusted** | **YES** | M | Two halves; the backup half is a prerequisite for the other. Filed 2026-09-11 |
+| **Three block-and-budget mechanisms for one concept** | NO | M | Drift risk, not loss. Trigger is also "a fourth stream needs a budget" |
+
+### B2. The cloud's copy is wrong
+
+| Item | Blocks pilot | Size | Note |
+|---|---|---|---|
+| **Nothing checks a line's `variant_id` against the cloud before queueing; failure mode is a silently divergent copy** | **YES** | M | Cause of the row below. Lands with the config-push work |
+| **The cloud's copy of an order stops tracking the till after create** | **YES** | — | Same fix as above; cause identified 2026-09-10 |
+| **The inventory config push has never moved a row** | **YES** | M | Never demonstrated for any catalogue |
+| **The cloud menu seed is a token (2 rows) and the edge's is real (43)** | **YES** | S | Same family |
+| **The cloud devseed inserts `menu_item` with no `hsn_sac`** | **YES** | S | An invoice cannot legally issue without it |
+| **A menu item deleted in the cloud is never removed from an edge** | NO | M | Apply upserts and does not prune |
+
+### B3. Security and access
+
+| Item | Blocks pilot | Size | Note |
+|---|---|---|---|
+| **No clean exit path, so the plaintext edge database with credential hashes lands on disk every shutdown** | **YES** | M | Same root cause as A6 |
+| **Device enrollment flow — no operator-facing flow exists** | **YES** | L | Hard trigger: *any* pilot deployment. No device LIST route; the 409 body carries no id |
+| **Split `outlet.manage` — it has become a de-facto admin role** | **YES** | M | One grant gates table config, GSTIN writes and hardware enrollment. Enrollment sits behind it |
+| **LAN security gate review for a public-facing device** | NO | M | Trigger is the first tab enrolled, not this pilot |
+| **Repository is public** | NO | — | **DECIDED 2026-08-31: stay public.** Listed so it is not re-raised |
+
+### B4. Money and reporting
+
+| Item | Blocks pilot | Size | Note |
+|---|---|---|---|
+| **Nothing distinguishes tax-inclusive from tax-exclusive purchase price at entry** | NO | M | Mitigation is a field label; the real fix needs input-tax-credit handling |
+| **Cost is a lifetime cumulative purchase-weighted average, not WAC of stock on hand** | NO | M | Only half was ever decided; food costing is a headline claim |
+
+### B5. What the operator sees
+
+| Item | Blocks pilot | Size | Note |
+|---|---|---|---|
+| **The sync banner is unreadable on a till** | NO | S | The only surface a rejected row is ever shown on |
+| **The banner prints `aggregate_id`, so one order appears once per outbox row** | NO | S | Land with the row above |
+| **The banner covers the POS top bar** | NO | S | Land with the two rows above — one pass |
+| **The pump makes the till sluggish while the cloud is down** | NO | S–M | Against ADR-013's own promise. Severity at the shipped 60s interval is unmeasured |
+| **The Orders screen renders raw UTC** | NO | S | Read as a clock fault by the operator mid-run |
+| **Four M1/M2 POS ordering defects** | NO | M | Filed with an M6 trigger, listed here as operator-facing |
+
+### B6. Tooling and environment
+
+| Item | Blocks pilot | Size | Note |
+|---|---|---|---|
+| **`dev-up.ps1` runs the bootstrap before starting the backend, so a cold stack comes up with sync disabled** | NO | S | Also triggers before the next sync-dependent acceptance run |
+| **A wall-clock assertion in `stale_connection.rs:160` fails under load** | NO | S | A flaky suite is how a real regression gets waved through |
+
+---
+
+## C. The Phase B carries
+
+Phase B closed with **three surfaces built and two carried** — not all five.
+
+| Item | Blocks pilot | Size | Note |
+|---|---|---|---|
+| **Admin: PURCHASE ORDERS surface** | NO | M | Deferred because no M6 criterion touched it |
+| **Admin: STAFF AND PERMISSIONS surface** | **YES** | M | An outlet cannot create or change its own staff without it; interacts with the `outlet.manage` split |
+| **`apps/admin` mints ids with `crypto.randomUUID()` (UUIDv4), against §74** | NO | S | Every supplier and pack size created in the console |
+| **Admin supplier form collects no GSTIN; pack-size table shows a raw UUID** | NO | S | — |
+
+---
+
+## D. Summary
+
+**Blocks a pilot — 11 items:** A6, A7, the rebuild/backup pair, the four
+cloud-copy and config-push rows (`variant_id` check, order copy, inventory push,
+menu seed), the cloud `hsn_sac` seed, the plaintext database on shutdown, device
+enrollment, the `outlet.manage` split, and the admin staff surface.
+
+They are not eleven independent pieces of work. **Three roots account for eight
+of them:**
+
+1. **No exit path drains or seals** — A6, the plaintext database, and the
+   untrustworthy backup that blocks safe migrations.
+2. **The config push has never moved a row for any catalogue** — inventory, menu,
+   `hsn_sac`, the `variant_id` check, and the divergent cloud copy.
+3. **Enrollment has no operator-facing flow** — the flow itself, the missing
+   device LIST route, and the `outlet.manage` split it sits behind.
+
+A7 and the admin staff surface stand alone.
+
+**Does not block, but is visible to an operator every shift:** the three banner
+rows, the UTC column and the pump sluggishness — five items, all small, all on
+the two screens an outlet looks at most.
+
+**Explicitly decided and not to be re-raised:** the repository stays public
+(2026-08-31). **Explicitly parked on hardware:** ESC/POS on paper and the bare
+4GB Windows 10 VM run, both in `CLAUDE.md`.
+
+**Not on this list by design:** ADR-025's table-ordering work, whose trigger is
+*after* the first pilot runs on `STAFF_ONLY`, and M6 C2, parked behind platform
+sandbox access.
