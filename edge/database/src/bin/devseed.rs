@@ -26,8 +26,8 @@ use holler_edge_database::model::{
     AppUser, ComplianceVersion, Device, DiscountDefinition, InventoryItem, InvoiceSeries,
     ItemUnitConversion, MenuCategory, MenuItem, MenuItemModifier, MenuItemVariant,
     ModifierIngredientDelta, NewGoodsReceiptNote, NewGrnLine, NewStockCount, NewStockCountLine,
-    Outlet, OutletFiscalProfile, Printer, Recipe, RecipeIngredient, RestaurantTable,
-    SupplierConfig, SupplierItemConfig, Station, TaxProfile, TaxRule,
+    Outlet, OutletFiscalProfile, Printer, Recipe, RecipeIngredient, RestaurantTable, Station,
+    SupplierConfig, SupplierItemConfig, TaxProfile, TaxRule,
 };
 use holler_edge_database::{repo, Db, DbError};
 use serde_json::{json, Value};
@@ -140,7 +140,10 @@ fn stock_ledger_entry_seed_id(seq: u32) -> String {
 /// data), so the simpler unsigned-shaped implementation is exact for every
 /// input this file actually produces.
 fn round_half_away_from_zero(numerator: i128, denominator: i128) -> i128 {
-    assert!(denominator > 0, "devseed: round with a non-positive denominator");
+    assert!(
+        denominator > 0,
+        "devseed: round with a non-positive denominator"
+    );
     assert!(numerator >= 0, "devseed: round with a negative numerator");
     (numerator * 2 + denominator) / (denominator * 2)
 }
@@ -1395,7 +1398,7 @@ const SEED_SUPPLIER_ITEMS: &[SeedSupplierItem] = &[
         purchase_unit: "sack",
         pack_size_micro: kilograms(25),
         quantity_dimension: "MASS",
-        last_price_paise: 140_000, // Rs 1,400 / 25kg sack
+        last_price_paise: 140_000,             // Rs 1,400 / 25kg sack
         grn_entered_quantity_micro: 2_000_000, // 2 sacks
     },
     SeedSupplierItem {
@@ -1403,7 +1406,7 @@ const SEED_SUPPLIER_ITEMS: &[SeedSupplierItem] = &[
         purchase_unit: "sack",
         pack_size_micro: kilograms(25),
         quantity_dimension: "MASS",
-        last_price_paise: 220_000, // Rs 2,200 / 25kg sack
+        last_price_paise: 220_000,             // Rs 2,200 / 25kg sack
         grn_entered_quantity_micro: 2_000_000, // 2 sacks
     },
     SeedSupplierItem {
@@ -1411,7 +1414,7 @@ const SEED_SUPPLIER_ITEMS: &[SeedSupplierItem] = &[
         purchase_unit: "packet",
         pack_size_micro: grams(200),
         quantity_dimension: "MASS",
-        last_price_paise: 7_000, // Rs 70 / 200g packet
+        last_price_paise: 7_000,                // Rs 70 / 200g packet
         grn_entered_quantity_micro: 10_000_000, // 10 packets
     },
     SeedSupplierItem {
@@ -1419,7 +1422,7 @@ const SEED_SUPPLIER_ITEMS: &[SeedSupplierItem] = &[
         purchase_unit: "kg",
         pack_size_micro: kilograms(1),
         quantity_dimension: "MASS",
-        last_price_paise: 22_000, // Rs 220 / kg
+        last_price_paise: 22_000,               // Rs 220 / kg
         grn_entered_quantity_micro: 20_000_000, // 20 kg
     },
     SeedSupplierItem {
@@ -1427,7 +1430,7 @@ const SEED_SUPPLIER_ITEMS: &[SeedSupplierItem] = &[
         purchase_unit: "kg",
         pack_size_micro: kilograms(1),
         quantity_dimension: "MASS",
-        last_price_paise: 3_500, // Rs 35 / kg
+        last_price_paise: 3_500,                // Rs 35 / kg
         grn_entered_quantity_micro: 15_000_000, // 15 kg
     },
     SeedSupplierItem {
@@ -1435,7 +1438,7 @@ const SEED_SUPPLIER_ITEMS: &[SeedSupplierItem] = &[
         purchase_unit: "tin",
         pack_size_micro: litres(15),
         quantity_dimension: "VOLUME",
-        last_price_paise: 195_000, // Rs 1,950 / 15L tin
+        last_price_paise: 195_000,             // Rs 1,950 / 15L tin
         grn_entered_quantity_micro: 1_000_000, // 1 tin
     },
     SeedSupplierItem {
@@ -1443,7 +1446,7 @@ const SEED_SUPPLIER_ITEMS: &[SeedSupplierItem] = &[
         purchase_unit: "crate",
         pack_size_micro: pieces(24),
         quantity_dimension: "COUNT",
-        last_price_paise: 96_000, // Rs 960 / 24-can crate
+        last_price_paise: 96_000,              // Rs 960 / 24-can crate
         grn_entered_quantity_micro: 2_000_000, // 2 crates
     },
 ];
@@ -1805,9 +1808,9 @@ fn build_shared_catalogue() -> Result<Value, String> {
     let mut ingredient_seq = 0u32;
 
     let push_ingredients = |recipe_id_for_row: &str,
-                                 ingredients: &[Comp],
-                                 ingredient_seq: &mut u32,
-                                 recipe_ingredients: &mut Vec<Value>|
+                            ingredients: &[Comp],
+                            ingredient_seq: &mut u32,
+                            recipe_ingredients: &mut Vec<Value>|
      -> Result<(), String> {
         for comp in ingredients.iter() {
             *ingredient_seq += 1;
@@ -1926,7 +1929,13 @@ fn build_shared_catalogue() -> Result<Value, String> {
     let mut tax_profiles: Vec<Value> = Vec::new();
     let mut tax_rules: Vec<Value> = Vec::new();
     for (id, code, name, cgst_bps, sgst_bps) in [
-        (TAX_PROFILE_FOOD5_ID, "GST_FOOD_5", "GST 5% (food)", 250i64, 250i64),
+        (
+            TAX_PROFILE_FOOD5_ID,
+            "GST_FOOD_5",
+            "GST 5% (food)",
+            250i64,
+            250i64,
+        ),
         (
             TAX_PROFILE_PACKAGED18_ID,
             "GST_PACKAGED_18",
@@ -1966,7 +1975,10 @@ fn build_shared_catalogue() -> Result<Value, String> {
     let mut supplier_items: Vec<Value> = Vec::new();
     for (seq, si) in SEED_SUPPLIER_ITEMS.iter().enumerate() {
         let inventory_item_id_val = inventory_id_by_sku.get(si.sku).ok_or_else(|| {
-            format!("build_shared_catalogue: supplier_item for unknown sku {}", si.sku)
+            format!(
+                "build_shared_catalogue: supplier_item for unknown sku {}",
+                si.sku
+            )
         })?;
         supplier_items.push(json!({
             "id": supplier_item_id(seq as u32 + 1), "supplier_id": SUPPLIER_ID,
@@ -1997,9 +2009,17 @@ fn build_shared_catalogue() -> Result<Value, String> {
         let inv = SEED_INVENTORY_ITEMS
             .iter()
             .find(|i| i.sku == si.sku)
-            .ok_or_else(|| format!("build_shared_catalogue: grn line for unknown sku {}", si.sku))?;
+            .ok_or_else(|| {
+                format!(
+                    "build_shared_catalogue: grn line for unknown sku {}",
+                    si.sku
+                )
+            })?;
         let inventory_item_id_val = inventory_id_by_sku.get(si.sku).cloned().ok_or_else(|| {
-            format!("build_shared_catalogue: grn line for unknown sku {}", si.sku)
+            format!(
+                "build_shared_catalogue: grn line for unknown sku {}",
+                si.sku
+            )
         })?;
         let entered_quantity_micro = si.grn_entered_quantity_micro;
         let purchase_price_paise = si.last_price_paise;
@@ -2066,9 +2086,13 @@ fn build_shared_catalogue() -> Result<Value, String> {
     // ---- opening stock: one COUNT_ADJUSTMENT stock_ledger_entry per item ----
     let mut opening_stock: Vec<Value> = Vec::new();
     for (seq, item) in SEED_INVENTORY_ITEMS.iter().enumerate() {
-        let inventory_item_id_val = inventory_id_by_sku.get(item.sku).cloned().ok_or_else(|| {
-            format!("build_shared_catalogue: opening stock for unknown sku {}", item.sku)
-        })?;
+        let inventory_item_id_val =
+            inventory_id_by_sku.get(item.sku).cloned().ok_or_else(|| {
+                format!(
+                    "build_shared_catalogue: opening stock for unknown sku {}",
+                    item.sku
+                )
+            })?;
         let quantity_micro = opening_stock_quantity_micro(item.dimension, item.reorder_level_micro);
         opening_stock.push(json!({
             "id": stock_ledger_entry_seed_id(1000 + seq as u32 + 1), "outlet_id": OUTLET_ID,
@@ -2373,9 +2397,9 @@ fn seed(
 // applies to a dangling sku/variant-name lookup.
 
 fn jarr<'a>(v: &'a Value, key: &str) -> Result<&'a Vec<Value>, DbError> {
-    v.get(key)
-        .and_then(|x| x.as_array())
-        .ok_or_else(|| DbError::InvalidInput(format!("devseed: catalogue missing array field {key}")))
+    v.get(key).and_then(|x| x.as_array()).ok_or_else(|| {
+        DbError::InvalidInput(format!("devseed: catalogue missing array field {key}"))
+    })
 }
 
 fn jstr(v: &Value, key: &str) -> Result<String, DbError> {
@@ -2383,7 +2407,9 @@ fn jstr(v: &Value, key: &str) -> Result<String, DbError> {
         .and_then(|x| x.as_str())
         .map(|s| s.to_string())
         .ok_or_else(|| {
-            DbError::InvalidInput(format!("devseed: catalogue row missing string field {key}: {v}"))
+            DbError::InvalidInput(format!(
+                "devseed: catalogue row missing string field {key}: {v}"
+            ))
         })
 }
 
@@ -2393,7 +2419,9 @@ fn jstr_opt(v: &Value, key: &str) -> Option<String> {
 
 fn ji64(v: &Value, key: &str) -> Result<i64, DbError> {
     v.get(key).and_then(|x| x.as_i64()).ok_or_else(|| {
-        DbError::InvalidInput(format!("devseed: catalogue row missing integer field {key}: {v}"))
+        DbError::InvalidInput(format!(
+            "devseed: catalogue row missing integer field {key}: {v}"
+        ))
     })
 }
 
@@ -2403,7 +2431,9 @@ fn ji64_opt(v: &Value, key: &str) -> Option<i64> {
 
 fn jbool(v: &Value, key: &str) -> Result<bool, DbError> {
     v.get(key).and_then(|x| x.as_bool()).ok_or_else(|| {
-        DbError::InvalidInput(format!("devseed: catalogue row missing bool field {key}: {v}"))
+        DbError::InvalidInput(format!(
+            "devseed: catalogue row missing bool field {key}: {v}"
+        ))
     })
 }
 
@@ -2637,7 +2667,9 @@ fn write_recipes(conn: &rusqlite::Connection, catalogue: &Value) -> Result<(), D
                 )))
             }
         };
-        let sort_order = sort_order_by_recipe.entry(recipe_id_val.clone()).or_insert(0);
+        let sort_order = sort_order_by_recipe
+            .entry(recipe_id_val.clone())
+            .or_insert(0);
         repo::upsert_recipe_ingredient(
             conn,
             &RecipeIngredient {
@@ -2761,10 +2793,7 @@ fn write_goods_receipt(db: &mut Db, catalogue: &Value) -> Result<(), DbError> {
                 if entered == 0 {
                     0
                 } else {
-                    i64::try_from(
-                        i128::from(total) * 1_000_000 / i128::from(entered),
-                    )
-                    .unwrap_or(0)
+                    i64::try_from(i128::from(total) * 1_000_000 / i128::from(entered)).unwrap_or(0)
                 }
             },
             batch_code: jstr_opt(l, "batch_code"),
@@ -2830,8 +2859,13 @@ fn write_opening_stock(db: &mut Db, catalogue: &Value) -> Result<(), DbError> {
     }
 
     db.complete_stock_count(OPENING_STOCK_ID, &outlet_id, OPENING_STOCK_COMPLETED_AT)
-        .map_err(|e| DbError::InvalidInput(format!("devseed: completing opening stock count: {e}")))?;
-    println!("devseed: seed opening stock — {} inventory items", rows.len());
+        .map_err(|e| {
+            DbError::InvalidInput(format!("devseed: completing opening stock count: {e}"))
+        })?;
+    println!(
+        "devseed: seed opening stock — {} inventory items",
+        rows.len()
+    );
     Ok(())
 }
 
