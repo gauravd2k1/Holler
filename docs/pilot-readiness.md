@@ -98,6 +98,36 @@ the till has taken.
 development arrangement standing in for a production one, and nothing about it
 is suitable for an outlet.
 
+### The wrong-key path destroys the database rather than refusing — CORRECTED 2026-09-11
+
+This entry originally repeated the scripts' own warning, that a wrong key
+"opens a different, empty database, not an error". **Reading the code showed
+that is wrong in the reassuring direction, and the truth is worse.**
+
+`Db::open` (`edge/database/src/lib.rs:104`) runs `crypto::recover_crash_leftovers`
+**before** `crypto::open_file`. With no plaintext leftover the behaviour is
+already correct: `open_file` fails to decrypt and the POS refuses to start,
+pinned by `crypto.rs`'s `open_with_wrong_key_fails`.
+
+But when a plaintext leftover is present, recovery opens it — **no key is needed,
+it is plaintext** — and then calls `seal_file(plaintext, sealed, key)`, resealing
+it over `edge.db.enc` **under whatever key was supplied**, with nothing checking
+that the key matches the file it is overwriting. `open_file` then succeeds,
+because the file was just encrypted with the key in hand.
+
+So a wrong key does not open an empty database. **It overwrites the real one**,
+and the correct key then opens nothing, because nothing encrypted under it
+remains.
+
+**Gap A6 makes this the normal case, not an edge case**: no exit path on this
+build seals the database, so a plaintext `edge.db` is left beside the `.enc`
+after every run.
+
+Fixed in the demo build — recovery now proves the key opens the existing sealed
+file before it is allowed to reseal over it. The entry stays on this list
+because the surrounding questions remain open, and because the wrong wording
+survived in two scripts and one register until someone read the code.
+
 Five questions, none of which has an answer yet:
 
 - **Generation.** Who mints the key for an outlet, on what machine, and how is
