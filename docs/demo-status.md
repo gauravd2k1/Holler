@@ -67,6 +67,88 @@ Everything here is blocked on something no agent in this project can do.
 
 ## Item 1 and 2 — seed parity
 
+### Every menu item now carries a variant (2026-09-12)
+
+Twelve of forty-three seeded items had no `menu_item_variant` row at all:
+Veg Thali, Samosa (2 pc), Pani Puri (6 pc), Aloo Tikki Chaat, Seekh Kebab
+(4 pc), Egg Bhurji, Jeera Rice, Steamed Rice, Laccha Paratha, Filter Coffee,
+Gulab Jamun (2 pc), Gajar Halwa. That is the scenario board's S-CAP-06, and
+the cloud-side histogram in S-SYNC-08 (`0|12, 1|9, 2|22`) is the same twelve
+seen from Postgres, not a second defect.
+
+**A variant-less item fails twice, silently and in different directions.** A
+`recipe` binds to a `menu_item_variant_id` (ADR-018 §2.1), so such an item can
+carry no recipe and **selling it deducts no stock whatsoever** — demo step 3
+reads exactly that. And `apps/captain` refuses to put it in a cart at all
+(`MenuCartScreen.tsx:56-60` — *"has no variant configured. This is a seed
+defect"*), so on the waiter's phone twelve of forty-three items were
+un-orderable in step 1a. Neither failure announces itself on a screen.
+
+Fixed at the authoring source, both halves together, because the seed is bound
+to a spec document by a test: the eleven `variants: &[]` rows in
+`SEED_CATEGORIES` and the matching eleven em-dash cells in
+`HOLLER_DEV_MENU_SPEC.md`, plus the legacy `ITEM_THALI_ID` fixture, which
+takes a new fixed `VARIANT_THALI_ID`. Every added variant is named `Regular`
+with `price_delta_paise: 0` and `is_default: true`, so **no price moves** and
+the legacy ids, prices and routing `tests/e2e-scenario/harness` pins are
+untouched. Six items already carried a `Regular` for the costing reason alone;
+this extends that precedent to the rest rather than inventing a convention.
+
+**The old fixture became the guard.** `samosa_has_no_variant_at_all` asserted
+the defect — it needed a variant-less item to exist. It is now
+`a_null_variant_is_a_novariant_gap_and_no_seeded_item_is_variant_less`, which
+keeps the real subject (a null variant resolves to `GapReason::NoVariant`,
+a path aggregator lines still reach) and adds the inverse: no seeded item may
+be variant-less. **Falsified** by planting `variants: &[]` back on Samosa and
+watching it fail by name — `these have none: ["Samosa (2 pc)"]` — then
+reverting. `spec_and_seed_agree_on_item_and_variant_counts` moved 50 -> 61 with
+both sides edited together, which is the whole point of that guard.
+
+### Verified, and on which store
+
+- Edge authoring source: 8 tests executed via
+  `scripts/assert-tests-ran.mjs`, `cargo fmt --check` and
+  `cargo clippy --bin devseed` clean. (`cargo fmt` also absorbed three
+  pre-existing hunks in that file — an import order and a `println!` wrap —
+  that were red before this work touched it.)
+- Re-emission byte-stable: emitted twice, SHA-256 identical
+  (`F99D4454…3763AC`), and `check-seed-drift.mjs` green against the committed
+  file.
+- Cloud: `go test -count=1 ./cmd/devseed/...` against live Postgres, and the
+  real seeder run against a **clean scratch database**
+  (`holler_seedcheck`) from the real committed file — `EXIT=0`, then queried:
+  **43 items, 0 variant-less, 65 variant rows, histogram `1|21, 2|22`**,
+  matching the emitted file exactly.
+
+### The row-for-row comparison, half-closed
+
+The UNRESOLVED item above asked for contents, not counts. Cloud-versus-file is
+now done on the clean seed, by id, field for field:
+`menu_item` 43, `menu_item_variant` 65, `recipe` 24, `recipe_ingredient` 93,
+`inventory_item` 32, `supplier_item` 7 — **zero rows only in one side, zero
+content differences in any table.** The edge half still needs
+`scripts/demo-reset.ps1 -Force`, which only the operator can run, but both
+stores read the same committed bytes.
+
+### A finding: the cloud seeder cannot renumber ids in place
+
+Running the seeder against the **already-seeded** dev database failed loudly:
+
+```
+seeding menu_item_variant Half: ERROR: duplicate key value violates unique
+constraint "idx_menu_item_variant_one_default" (SQLSTATE 23505)
+```
+
+Adding variants mid-sequence shifts every later `menu_variant_id(seq)`, and the
+seeder **upserts without pruning** (contracts 0.7.0, config apply has the same
+property), so the previous seed's default row for that item survives beside the
+new one and the one-default-per-item partial index rejects the pair. It is not
+a defect in the fix and it is not silent — but it means **a seed change that
+renumbers ids is only safe through `scripts/demo-reset.ps1 -Force`**, which
+drops the schema first. The live dev `holler` database therefore still holds
+the pre-change variant rows until that reset runs.
+
+
 **Design: one emitter, one committed generated artefact, two readers.**
 `edge/database/src/bin/devseed.rs --emit-json` produces `seed/demo-outlet.json`;
 both seeders consume that file. Hand-transcribing the catalogue into JSON was
@@ -117,6 +199,12 @@ the shared JSON or Postgres.
   report STALE.
 
 ### UNRESOLVED
+
+**Half-closed on 2026-09-12** — cloud-versus-committed-file is now compared by
+id, field for field, on a clean scratch database (six tables, zero
+differences; see the seed-parity section above). What remains is the EDGE
+half, which needs `scripts/demo-reset.ps1 -Force` and therefore the operator.
+The original statement follows, unedited.
 
 **Row-for-row comparison of the two stores has never happened.** The live
 Postgres carries 991 `menu_item`, 123 `tax_profile` and 345 `recipe` rows from

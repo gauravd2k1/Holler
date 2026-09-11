@@ -1231,350 +1231,434 @@
       "price_delta_paise": 1500
     },
     {
+      "id": "0191a000-0000-7000-8000-000000000016",
+      "is_default": true,
+      "menu_item_id": "0191a000-0000-7000-8000-000000000012",
+      "name": "Regular",
+      "price_delta_paise": 0
+    },
+    {
       "id": "0191e300-0000-7000-8000-000000000001",
+      "is_default": true,
+      "menu_item_id": "0191e200-0000-7000-8000-000000000001",
+      "name": "Regular",
+      "price_delta_paise": 0
+    },
+    {
+      "id": "0191e300-0000-7000-8000-000000000002",
       "is_default": true,
       "menu_item_id": "0191e200-0000-7000-8000-000000000002",
       "name": "Half",
       "price_delta_paise": 0
     },
     {
-      "id": "0191e300-0000-7000-8000-000000000002",
+      "id": "0191e300-0000-7000-8000-000000000003",
       "is_default": false,
       "menu_item_id": "0191e200-0000-7000-8000-000000000002",
       "name": "Full",
       "price_delta_paise": 0
     },
     {
-      "id": "0191e300-0000-7000-8000-000000000003",
+      "id": "0191e300-0000-7000-8000-000000000004",
       "is_default": true,
       "menu_item_id": "0191e200-0000-7000-8000-000000000003",
       "name": "Dry",
       "price_delta_paise": 0
     },
     {
-      "id": "0191e300-0000-7000-8000-000000000004",
+      "id": "0191e300-0000-7000-8000-000000000005",
       "is_default": false,
       "menu_item_id": "0191e200-0000-7000-8000-000000000003",
       "name": "Gravy",
       "price_delta_paise": 0
     },
     {
-      "id": "0191e300-0000-7000-8000-000000000005",
+      "id": "0191e300-0000-7000-8000-000000000006",
       "is_default": true,
       "menu_item_id": "0191e200-0000-7000-8000-000000000004",
       "name": "Half",
-      "price_delta_paise": 0
-    },
-    {
-      "id": "0191e300-0000-7000-8000-000000000006",
-      "is_default": false,
-      "menu_item_id": "0191e200-0000-7000-8000-000000000004",
-      "name": "Full",
       "price_delta_paise": 0
     },
     {
       "id": "0191e300-0000-7000-8000-000000000007",
-      "is_default": true,
-      "menu_item_id": "0191e200-0000-7000-8000-000000000007",
-      "name": "Half",
+      "is_default": false,
+      "menu_item_id": "0191e200-0000-7000-8000-000000000004",
+      "name": "Full",
       "price_delta_paise": 0
     },
     {
       "id": "0191e300-0000-7000-8000-000000000008",
-      "is_default": false,
-      "menu_item_id": "0191e200-0000-7000-8000-000000000007",
-      "name": "Full",
+      "is_default": true,
+      "menu_item_id": "0191e200-0000-7000-8000-000000000005",
+      "name": "Regular",
       "price_delta_paise": 0
     },
     {
       "id": "0191e300-0000-7000-8000-000000000009",
       "is_default": true,
-      "menu_item_id": "0191e200-0000-7000-8000-000000000009",
-      "name": "Half",
+      "menu_item_id": "0191e200-0000-7000-8000-000000000006",
+      "name": "Regular",
       "price_delta_paise": 0
     },
     {
       "id": "0191e300-0000-7000-8000-00000000000a",
-      "is_default": false,
-      "menu_item_id": "0191e200-0000-7000-8000-000000000009",
-      "name": "Full",
-      "price_delta_paise": 0
-    },
-    {
-      "id": "0191e300-0000-7000-8000-00000000000b",
       "is_default": true,
-      "menu_item_id": "0191e200-0000-7000-8000-00000000000a",
+      "menu_item_id": "0191e200-0000-7000-8000-000000000007",
       "name": "Half",
       "price_delta_paise": 0
     },
     {
-      "id": "0191e300-0000-7000-8000-00000000000c",
+      "id": "0191e300-0000-7000-8000-00000000000b",
       "is_default": false,
-      "menu_item_id": "0191e200-0000-7000-8000-00000000000a",
+      "menu_item_id": "0191e200-0000-7000-8000-000000000007",
       "name": "Full",
+      "price_delta_paise": 0
+    },
+    {
+      "id": "0191e300-0000-7000-8000-00000000000c",
+      "is_default": true,
+      "menu_item_id": "0191e200-0000-7000-8000-000000000008",
+      "name": "Regular",
       "price_delta_paise": 0
     },
     {
       "id": "0191e300-0000-7000-8000-00000000000d",
       "is_default": true,
-      "menu_item_id": "0191e200-0000-7000-8000-00000000000b",
+      "menu_item_id": "0191e200-0000-7000-8000-000000000009",
       "name": "Half",
       "price_delta_paise": 0
     },
     {
       "id": "0191e300-0000-7000-8000-00000000000e",
       "is_default": false,
-      "menu_item_id": "0191e200-0000-7000-8000-00000000000b",
+      "menu_item_id": "0191e200-0000-7000-8000-000000000009",
       "name": "Full",
       "price_delta_paise": 0
     },
     {
       "id": "0191e300-0000-7000-8000-00000000000f",
       "is_default": true,
-      "menu_item_id": "0191e200-0000-7000-8000-00000000000c",
+      "menu_item_id": "0191e200-0000-7000-8000-00000000000a",
       "name": "Half",
       "price_delta_paise": 0
     },
     {
       "id": "0191e300-0000-7000-8000-000000000010",
       "is_default": false,
-      "menu_item_id": "0191e200-0000-7000-8000-00000000000c",
+      "menu_item_id": "0191e200-0000-7000-8000-00000000000a",
       "name": "Full",
       "price_delta_paise": 0
     },
     {
       "id": "0191e300-0000-7000-8000-000000000011",
       "is_default": true,
-      "menu_item_id": "0191e200-0000-7000-8000-00000000000d",
+      "menu_item_id": "0191e200-0000-7000-8000-00000000000b",
       "name": "Half",
       "price_delta_paise": 0
     },
     {
       "id": "0191e300-0000-7000-8000-000000000012",
       "is_default": false,
-      "menu_item_id": "0191e200-0000-7000-8000-00000000000d",
+      "menu_item_id": "0191e200-0000-7000-8000-00000000000b",
       "name": "Full",
       "price_delta_paise": 0
     },
     {
       "id": "0191e300-0000-7000-8000-000000000013",
       "is_default": true,
-      "menu_item_id": "0191e200-0000-7000-8000-00000000000e",
+      "menu_item_id": "0191e200-0000-7000-8000-00000000000c",
       "name": "Half",
       "price_delta_paise": 0
     },
     {
       "id": "0191e300-0000-7000-8000-000000000014",
       "is_default": false,
-      "menu_item_id": "0191e200-0000-7000-8000-00000000000e",
+      "menu_item_id": "0191e200-0000-7000-8000-00000000000c",
       "name": "Full",
       "price_delta_paise": 0
     },
     {
       "id": "0191e300-0000-7000-8000-000000000015",
       "is_default": true,
-      "menu_item_id": "0191e200-0000-7000-8000-00000000000f",
+      "menu_item_id": "0191e200-0000-7000-8000-00000000000d",
       "name": "Half",
       "price_delta_paise": 0
     },
     {
       "id": "0191e300-0000-7000-8000-000000000016",
       "is_default": false,
-      "menu_item_id": "0191e200-0000-7000-8000-00000000000f",
+      "menu_item_id": "0191e200-0000-7000-8000-00000000000d",
       "name": "Full",
       "price_delta_paise": 0
     },
     {
       "id": "0191e300-0000-7000-8000-000000000017",
       "is_default": true,
-      "menu_item_id": "0191e200-0000-7000-8000-000000000010",
+      "menu_item_id": "0191e200-0000-7000-8000-00000000000e",
       "name": "Half",
       "price_delta_paise": 0
     },
     {
       "id": "0191e300-0000-7000-8000-000000000018",
       "is_default": false,
-      "menu_item_id": "0191e200-0000-7000-8000-000000000010",
+      "menu_item_id": "0191e200-0000-7000-8000-00000000000e",
       "name": "Full",
       "price_delta_paise": 0
     },
     {
       "id": "0191e300-0000-7000-8000-000000000019",
       "is_default": true,
-      "menu_item_id": "0191e200-0000-7000-8000-000000000011",
+      "menu_item_id": "0191e200-0000-7000-8000-00000000000f",
       "name": "Half",
       "price_delta_paise": 0
     },
     {
       "id": "0191e300-0000-7000-8000-00000000001a",
       "is_default": false,
-      "menu_item_id": "0191e200-0000-7000-8000-000000000011",
+      "menu_item_id": "0191e200-0000-7000-8000-00000000000f",
       "name": "Full",
       "price_delta_paise": 0
     },
     {
       "id": "0191e300-0000-7000-8000-00000000001b",
       "is_default": true,
-      "menu_item_id": "0191e200-0000-7000-8000-000000000012",
+      "menu_item_id": "0191e200-0000-7000-8000-000000000010",
       "name": "Half",
       "price_delta_paise": 0
     },
     {
       "id": "0191e300-0000-7000-8000-00000000001c",
       "is_default": false,
-      "menu_item_id": "0191e200-0000-7000-8000-000000000012",
+      "menu_item_id": "0191e200-0000-7000-8000-000000000010",
       "name": "Full",
       "price_delta_paise": 0
     },
     {
       "id": "0191e300-0000-7000-8000-00000000001d",
       "is_default": true,
-      "menu_item_id": "0191e200-0000-7000-8000-000000000014",
+      "menu_item_id": "0191e200-0000-7000-8000-000000000011",
       "name": "Half",
       "price_delta_paise": 0
     },
     {
       "id": "0191e300-0000-7000-8000-00000000001e",
       "is_default": false,
-      "menu_item_id": "0191e200-0000-7000-8000-000000000014",
+      "menu_item_id": "0191e200-0000-7000-8000-000000000011",
       "name": "Full",
       "price_delta_paise": 0
     },
     {
       "id": "0191e300-0000-7000-8000-00000000001f",
       "is_default": true,
-      "menu_item_id": "0191e200-0000-7000-8000-000000000015",
+      "menu_item_id": "0191e200-0000-7000-8000-000000000012",
       "name": "Half",
       "price_delta_paise": 0
     },
     {
       "id": "0191e300-0000-7000-8000-000000000020",
       "is_default": false,
-      "menu_item_id": "0191e200-0000-7000-8000-000000000015",
+      "menu_item_id": "0191e200-0000-7000-8000-000000000012",
       "name": "Full",
       "price_delta_paise": 0
     },
     {
       "id": "0191e300-0000-7000-8000-000000000021",
       "is_default": true,
+      "menu_item_id": "0191e200-0000-7000-8000-000000000013",
+      "name": "Regular",
+      "price_delta_paise": 0
+    },
+    {
+      "id": "0191e300-0000-7000-8000-000000000022",
+      "is_default": true,
+      "menu_item_id": "0191e200-0000-7000-8000-000000000014",
+      "name": "Half",
+      "price_delta_paise": 0
+    },
+    {
+      "id": "0191e300-0000-7000-8000-000000000023",
+      "is_default": false,
+      "menu_item_id": "0191e200-0000-7000-8000-000000000014",
+      "name": "Full",
+      "price_delta_paise": 0
+    },
+    {
+      "id": "0191e300-0000-7000-8000-000000000024",
+      "is_default": true,
+      "menu_item_id": "0191e200-0000-7000-8000-000000000015",
+      "name": "Half",
+      "price_delta_paise": 0
+    },
+    {
+      "id": "0191e300-0000-7000-8000-000000000025",
+      "is_default": false,
+      "menu_item_id": "0191e200-0000-7000-8000-000000000015",
+      "name": "Full",
+      "price_delta_paise": 0
+    },
+    {
+      "id": "0191e300-0000-7000-8000-000000000026",
+      "is_default": true,
       "menu_item_id": "0191e200-0000-7000-8000-000000000016",
       "name": "Half",
       "price_delta_paise": 0
     },
     {
-      "id": "0191e300-0000-7000-8000-000000000022",
+      "id": "0191e300-0000-7000-8000-000000000027",
       "is_default": false,
       "menu_item_id": "0191e200-0000-7000-8000-000000000016",
       "name": "Full",
       "price_delta_paise": 0
     },
     {
-      "id": "0191e300-0000-7000-8000-000000000023",
+      "id": "0191e300-0000-7000-8000-000000000028",
+      "is_default": true,
+      "menu_item_id": "0191e200-0000-7000-8000-000000000017",
+      "name": "Regular",
+      "price_delta_paise": 0
+    },
+    {
+      "id": "0191e300-0000-7000-8000-000000000029",
+      "is_default": true,
+      "menu_item_id": "0191e200-0000-7000-8000-000000000018",
+      "name": "Regular",
+      "price_delta_paise": 0
+    },
+    {
+      "id": "0191e300-0000-7000-8000-00000000002a",
       "is_default": true,
       "menu_item_id": "0191e200-0000-7000-8000-000000000019",
       "name": "Regular",
       "price_delta_paise": 0
     },
     {
-      "id": "0191e300-0000-7000-8000-000000000024",
+      "id": "0191e300-0000-7000-8000-00000000002b",
       "is_default": true,
       "menu_item_id": "0191e200-0000-7000-8000-00000000001a",
       "name": "Regular",
       "price_delta_paise": 0
     },
     {
-      "id": "0191e300-0000-7000-8000-000000000025",
+      "id": "0191e300-0000-7000-8000-00000000002c",
       "is_default": true,
       "menu_item_id": "0191e200-0000-7000-8000-00000000001b",
       "name": "Plain",
       "price_delta_paise": 0
     },
     {
-      "id": "0191e300-0000-7000-8000-000000000026",
+      "id": "0191e300-0000-7000-8000-00000000002d",
       "is_default": false,
       "menu_item_id": "0191e200-0000-7000-8000-00000000001b",
       "name": "Butter",
       "price_delta_paise": 0
     },
     {
-      "id": "0191e300-0000-7000-8000-000000000027",
+      "id": "0191e300-0000-7000-8000-00000000002e",
+      "is_default": true,
+      "menu_item_id": "0191e200-0000-7000-8000-00000000001c",
+      "name": "Regular",
+      "price_delta_paise": 0
+    },
+    {
+      "id": "0191e300-0000-7000-8000-00000000002f",
       "is_default": true,
       "menu_item_id": "0191e200-0000-7000-8000-00000000001d",
       "name": "Regular",
       "price_delta_paise": 0
     },
     {
-      "id": "0191e300-0000-7000-8000-000000000028",
-      "is_default": true,
-      "menu_item_id": "0191e200-0000-7000-8000-00000000001f",
-      "name": "Sweet",
-      "price_delta_paise": 0
-    },
-    {
-      "id": "0191e300-0000-7000-8000-000000000029",
-      "is_default": false,
-      "menu_item_id": "0191e200-0000-7000-8000-00000000001f",
-      "name": "Salted",
-      "price_delta_paise": 0
-    },
-    {
-      "id": "0191e300-0000-7000-8000-00000000002a",
-      "is_default": true,
-      "menu_item_id": "0191e200-0000-7000-8000-000000000020",
-      "name": "Sweet",
-      "price_delta_paise": 0
-    },
-    {
-      "id": "0191e300-0000-7000-8000-00000000002b",
-      "is_default": false,
-      "menu_item_id": "0191e200-0000-7000-8000-000000000020",
-      "name": "Mango",
-      "price_delta_paise": 0
-    },
-    {
-      "id": "0191e300-0000-7000-8000-00000000002c",
-      "is_default": true,
-      "menu_item_id": "0191e200-0000-7000-8000-000000000021",
-      "name": "Regular",
-      "price_delta_paise": 0
-    },
-    {
-      "id": "0191e300-0000-7000-8000-00000000002d",
-      "is_default": true,
-      "menu_item_id": "0191e200-0000-7000-8000-000000000022",
-      "name": "Mango",
-      "price_delta_paise": 0
-    },
-    {
-      "id": "0191e300-0000-7000-8000-00000000002e",
-      "is_default": false,
-      "menu_item_id": "0191e200-0000-7000-8000-000000000022",
-      "name": "Mixed",
-      "price_delta_paise": 0
-    },
-    {
-      "id": "0191e300-0000-7000-8000-00000000002f",
-      "is_default": true,
-      "menu_item_id": "0191e200-0000-7000-8000-000000000023",
-      "name": "Regular",
-      "price_delta_paise": 0
-    },
-    {
       "id": "0191e300-0000-7000-8000-000000000030",
       "is_default": true,
-      "menu_item_id": "0191e200-0000-7000-8000-000000000024",
+      "menu_item_id": "0191e200-0000-7000-8000-00000000001e",
       "name": "Regular",
       "price_delta_paise": 0
     },
     {
       "id": "0191e300-0000-7000-8000-000000000031",
       "is_default": true,
+      "menu_item_id": "0191e200-0000-7000-8000-00000000001f",
+      "name": "Sweet",
+      "price_delta_paise": 0
+    },
+    {
+      "id": "0191e300-0000-7000-8000-000000000032",
+      "is_default": false,
+      "menu_item_id": "0191e200-0000-7000-8000-00000000001f",
+      "name": "Salted",
+      "price_delta_paise": 0
+    },
+    {
+      "id": "0191e300-0000-7000-8000-000000000033",
+      "is_default": true,
+      "menu_item_id": "0191e200-0000-7000-8000-000000000020",
+      "name": "Sweet",
+      "price_delta_paise": 0
+    },
+    {
+      "id": "0191e300-0000-7000-8000-000000000034",
+      "is_default": false,
+      "menu_item_id": "0191e200-0000-7000-8000-000000000020",
+      "name": "Mango",
+      "price_delta_paise": 0
+    },
+    {
+      "id": "0191e300-0000-7000-8000-000000000035",
+      "is_default": true,
+      "menu_item_id": "0191e200-0000-7000-8000-000000000021",
+      "name": "Regular",
+      "price_delta_paise": 0
+    },
+    {
+      "id": "0191e300-0000-7000-8000-000000000036",
+      "is_default": true,
+      "menu_item_id": "0191e200-0000-7000-8000-000000000022",
+      "name": "Mango",
+      "price_delta_paise": 0
+    },
+    {
+      "id": "0191e300-0000-7000-8000-000000000037",
+      "is_default": false,
+      "menu_item_id": "0191e200-0000-7000-8000-000000000022",
+      "name": "Mixed",
+      "price_delta_paise": 0
+    },
+    {
+      "id": "0191e300-0000-7000-8000-000000000038",
+      "is_default": true,
+      "menu_item_id": "0191e200-0000-7000-8000-000000000023",
+      "name": "Regular",
+      "price_delta_paise": 0
+    },
+    {
+      "id": "0191e300-0000-7000-8000-000000000039",
+      "is_default": true,
+      "menu_item_id": "0191e200-0000-7000-8000-000000000024",
+      "name": "Regular",
+      "price_delta_paise": 0
+    },
+    {
+      "id": "0191e300-0000-7000-8000-00000000003a",
+      "is_default": true,
+      "menu_item_id": "0191e200-0000-7000-8000-000000000025",
+      "name": "Regular",
+      "price_delta_paise": 0
+    },
+    {
+      "id": "0191e300-0000-7000-8000-00000000003b",
+      "is_default": true,
+      "menu_item_id": "0191e200-0000-7000-8000-000000000026",
+      "name": "Regular",
+      "price_delta_paise": 0
+    },
+    {
+      "id": "0191e300-0000-7000-8000-00000000003c",
+      "is_default": true,
       "menu_item_id": "0191e200-0000-7000-8000-000000000027",
       "name": "Malai",
       "price_delta_paise": 0
     },
     {
-      "id": "0191e300-0000-7000-8000-000000000032",
+      "id": "0191e300-0000-7000-8000-00000000003d",
       "is_default": false,
       "menu_item_id": "0191e200-0000-7000-8000-000000000027",
       "name": "Pista",
@@ -3800,154 +3884,154 @@
     },
     {
       "id": "0191e820-0000-7000-8000-000000000001",
-      "menu_item_variant_id": "0191e300-0000-7000-8000-000000000002",
+      "menu_item_variant_id": "0191e300-0000-7000-8000-000000000003",
       "name": "Paneer Tikka",
       "output_dimension": "COUNT",
       "output_quantity_micro": 1000000
     },
     {
       "id": "0191e820-0000-7000-8000-000000000002",
-      "menu_item_variant_id": "0191e300-0000-7000-8000-000000000004",
+      "menu_item_variant_id": "0191e300-0000-7000-8000-000000000005",
       "name": "Veg Manchurian",
       "output_dimension": "COUNT",
       "output_quantity_micro": 1000000
     },
     {
       "id": "0191e820-0000-7000-8000-000000000003",
-      "menu_item_variant_id": "0191e300-0000-7000-8000-000000000006",
+      "menu_item_variant_id": "0191e300-0000-7000-8000-000000000007",
       "name": "Chicken 65",
       "output_dimension": "COUNT",
       "output_quantity_micro": 1000000
     },
     {
       "id": "0191e820-0000-7000-8000-000000000004",
-      "menu_item_variant_id": "0191e300-0000-7000-8000-000000000008",
+      "menu_item_variant_id": "0191e300-0000-7000-8000-00000000000b",
       "name": "Tandoori Chicken",
       "output_dimension": "COUNT",
       "output_quantity_micro": 1000000
     },
     {
       "id": "0191e820-0000-7000-8000-000000000005",
-      "menu_item_variant_id": "0191e300-0000-7000-8000-00000000000a",
+      "menu_item_variant_id": "0191e300-0000-7000-8000-00000000000e",
       "name": "Malai Tikka",
       "output_dimension": "COUNT",
       "output_quantity_micro": 1000000
     },
     {
       "id": "0191e820-0000-7000-8000-000000000006",
-      "menu_item_variant_id": "0191e300-0000-7000-8000-00000000000c",
+      "menu_item_variant_id": "0191e300-0000-7000-8000-000000000010",
       "name": "Paneer Butter Masala",
       "output_dimension": "COUNT",
       "output_quantity_micro": 1000000
     },
     {
       "id": "0191e820-0000-7000-8000-000000000007",
-      "menu_item_variant_id": "0191e300-0000-7000-8000-00000000000e",
+      "menu_item_variant_id": "0191e300-0000-7000-8000-000000000012",
       "name": "Dal Makhani",
       "output_dimension": "COUNT",
       "output_quantity_micro": 1000000
     },
     {
       "id": "0191e820-0000-7000-8000-000000000008",
-      "menu_item_variant_id": "0191e300-0000-7000-8000-000000000010",
+      "menu_item_variant_id": "0191e300-0000-7000-8000-000000000014",
       "name": "Palak Paneer",
       "output_dimension": "COUNT",
       "output_quantity_micro": 1000000
     },
     {
       "id": "0191e820-0000-7000-8000-000000000009",
-      "menu_item_variant_id": "0191e300-0000-7000-8000-000000000016",
+      "menu_item_variant_id": "0191e300-0000-7000-8000-00000000001a",
       "name": "Butter Chicken",
       "output_dimension": "COUNT",
       "output_quantity_micro": 1000000
     },
     {
       "id": "0191e820-0000-7000-8000-00000000000a",
-      "menu_item_variant_id": "0191e300-0000-7000-8000-000000000018",
+      "menu_item_variant_id": "0191e300-0000-7000-8000-00000000001c",
       "name": "Chicken Curry",
       "output_dimension": "COUNT",
       "output_quantity_micro": 1000000
     },
     {
       "id": "0191e820-0000-7000-8000-00000000000b",
-      "menu_item_variant_id": "0191e300-0000-7000-8000-00000000001a",
+      "menu_item_variant_id": "0191e300-0000-7000-8000-00000000001e",
       "name": "Mutton Rogan Josh",
       "output_dimension": "COUNT",
       "output_quantity_micro": 1000000
     },
     {
       "id": "0191e820-0000-7000-8000-00000000000c",
-      "menu_item_variant_id": "0191e300-0000-7000-8000-00000000001e",
+      "menu_item_variant_id": "0191e300-0000-7000-8000-000000000023",
       "name": "Chicken Biryani",
       "output_dimension": "COUNT",
       "output_quantity_micro": 1000000
     },
     {
       "id": "0191e820-0000-7000-8000-00000000000d",
-      "menu_item_variant_id": "0191e300-0000-7000-8000-000000000020",
+      "menu_item_variant_id": "0191e300-0000-7000-8000-000000000025",
       "name": "Veg Biryani",
       "output_dimension": "COUNT",
       "output_quantity_micro": 1000000
     },
     {
       "id": "0191e820-0000-7000-8000-00000000000e",
-      "menu_item_variant_id": "0191e300-0000-7000-8000-000000000025",
+      "menu_item_variant_id": "0191e300-0000-7000-8000-00000000002c",
       "name": "Tandoori Roti",
       "output_dimension": "COUNT",
       "output_quantity_micro": 1000000
     },
     {
       "id": "0191e820-0000-7000-8000-00000000000f",
-      "menu_item_variant_id": "0191e300-0000-7000-8000-000000000028",
+      "menu_item_variant_id": "0191e300-0000-7000-8000-000000000031",
       "name": "Fresh Lime Soda",
       "output_dimension": "COUNT",
       "output_quantity_micro": 1000000
     },
     {
       "id": "0191e820-0000-7000-8000-000000000010",
-      "menu_item_variant_id": "0191e300-0000-7000-8000-000000000031",
+      "menu_item_variant_id": "0191e300-0000-7000-8000-00000000003c",
       "name": "Kulfi",
       "output_dimension": "COUNT",
       "output_quantity_micro": 1000000
     },
     {
       "id": "0191e820-0000-7000-8000-000000000011",
-      "menu_item_variant_id": "0191e300-0000-7000-8000-000000000027",
+      "menu_item_variant_id": "0191e300-0000-7000-8000-00000000002f",
       "name": "Masala Chai",
       "output_dimension": "COUNT",
       "output_quantity_micro": 1000000
     },
     {
       "id": "0191e820-0000-7000-8000-000000000012",
-      "menu_item_variant_id": "0191e300-0000-7000-8000-000000000023",
+      "menu_item_variant_id": "0191e300-0000-7000-8000-00000000002a",
       "name": "Butter Naan",
       "output_dimension": "COUNT",
       "output_quantity_micro": 1000000
     },
     {
       "id": "0191e820-0000-7000-8000-000000000013",
-      "menu_item_variant_id": "0191e300-0000-7000-8000-000000000024",
+      "menu_item_variant_id": "0191e300-0000-7000-8000-00000000002b",
       "name": "Garlic Naan",
       "output_dimension": "COUNT",
       "output_quantity_micro": 1000000
     },
     {
       "id": "0191e820-0000-7000-8000-000000000014",
-      "menu_item_variant_id": "0191e300-0000-7000-8000-00000000002c",
+      "menu_item_variant_id": "0191e300-0000-7000-8000-000000000035",
       "name": "Bottled Water 1L",
       "output_dimension": "COUNT",
       "output_quantity_micro": 1000000
     },
     {
       "id": "0191e820-0000-7000-8000-000000000015",
-      "menu_item_variant_id": "0191e300-0000-7000-8000-00000000002f",
+      "menu_item_variant_id": "0191e300-0000-7000-8000-000000000038",
       "name": "Coca-Cola (can)",
       "output_dimension": "COUNT",
       "output_quantity_micro": 1000000
     },
     {
       "id": "0191e820-0000-7000-8000-000000000016",
-      "menu_item_variant_id": "0191e300-0000-7000-8000-000000000030",
+      "menu_item_variant_id": "0191e300-0000-7000-8000-000000000039",
       "name": "Thums Up (can)",
       "output_dimension": "COUNT",
       "output_quantity_micro": 1000000

@@ -21,15 +21,16 @@ Notes:
   the tax component from the inclusive price. This exercises the inclusive-mode path.
 - HSN codes below are realistic representative codes for seed purposes; a production
   outlet sets its own per its CA. Good enough to prove the field flows end-to-end.
-- **Six items below carry a "Regular" variant instead of "—"** (Masala Chai, Bottled
-  Water 1L, Coca-Cola, Thums Up, Butter Naan, Garlic Naan): ADR-018 §2.1 binds a
+- **Every item below carries at least one variant, a plain "Regular" where the dish
+  has no real size or style distinction**: ADR-018 §2.1 binds a
   `recipe` to a `menu_item_variant_id`, never directly to a `menu_item`, because
   costing is scoped to a sellable UNIT — an item with no variant row has nothing a
-  recipe can bind to and can never be costed. Every item this seed gives a recipe to
-  (the M4 devseed, `edge/database/src/bin/devseed.rs`) therefore needs at least one
-  variant, even where the dish itself has no real half/full or size distinction. This
-  is a devseed correction, not a menu-management feature: a production outlet's own
-  catalogue makes its own variant/costing decisions.
+  recipe can bind to and can never be costed. A variant-less item is also not
+  orderable from `apps/captain`, which refuses the line as a seed defect rather
+  than sending a null (`docs/captain-api.md`). Six items carried "Regular" for the
+  costing reason alone; the remaining eleven were given one for both reasons during
+  the demo build. This is a devseed correction, not a menu-management feature: a
+  production outlet's own catalogue makes its own variant/costing decisions.
 
 ## Stations (seed if missing)
 TANDOOR, MAIN (main kitchen / curries), CHAT (cold/snacks), BAR (drinks/beverages), DESSERT
@@ -40,19 +41,19 @@ TANDOOR, MAIN (main kitchen / curries), CHAT (cold/snacks), BAR (drinks/beverage
 
 | item                     | price(paise) | tax_profile | HSN/SAC | station | variants        | modifiers |
 |--------------------------|--------------|-------------|---------|---------|-----------------|-----------|
-| Samosa (2 pc)            | 6000         | GST_FOOD_5  | 9963    | CHAT    | —               | Extra chutney (+1500) |
+| Samosa (2 pc)            | 6000         | GST_FOOD_5  | 9963    | CHAT    | Regular         | Extra chutney (+1500) |
 | Paneer Tikka             | 32000        | GST_FOOD_5  | 9963    | TANDOOR | Half/Full       | Spice: Mild/Med/Hot |
 | Veg Manchurian           | 24000        | GST_FOOD_5  | 9963    | MAIN    | Dry/Gravy       | Spice: Mild/Med/Hot |
 | Chicken 65               | 34000        | GST_FOOD_5  | 9963    | MAIN    | Half/Full       | Spice: Mild/Med/Hot |
-| Pani Puri (6 pc)         | 8000         | GST_FOOD_5  | 9963    | CHAT    | —               | Extra puri (+3000) |
-| Aloo Tikki Chaat         | 12000        | GST_FOOD_5  | 9963    | CHAT    | —               | Extra dahi (+2000) |
+| Pani Puri (6 pc)         | 8000         | GST_FOOD_5  | 9963    | CHAT    | Regular         | Extra puri (+3000) |
+| Aloo Tikki Chaat         | 12000        | GST_FOOD_5  | 9963    | CHAT    | Regular         | Extra dahi (+2000) |
 
 ## Category: Tandoor & Kebabs  → station TANDOOR
 
 | item                     | price(paise) | tax_profile | HSN/SAC | station | variants   | modifiers |
 |--------------------------|--------------|-------------|---------|---------|------------|-----------|
 | Tandoori Chicken         | 42000        | GST_FOOD_5  | 9963    | TANDOOR | Half/Full  | Spice: Mild/Med/Hot |
-| Seekh Kebab (4 pc)       | 36000        | GST_FOOD_5  | 9963    | TANDOOR | —          | Spice: Mild/Med/Hot |
+| Seekh Kebab (4 pc)       | 36000        | GST_FOOD_5  | 9963    | TANDOOR | Regular    | Spice: Mild/Med/Hot |
 | Malai Tikka              | 34000        | GST_FOOD_5  | 9963    | TANDOOR | Half/Full  | — |
 
 ## Category: Main Course — Veg  → station MAIN
@@ -73,7 +74,7 @@ TANDOOR, MAIN (main kitchen / curries), CHAT (cold/snacks), BAR (drinks/beverage
 | Chicken Curry            | 34000        | GST_FOOD_5  | 9963    | MAIN    | Half/Full  | Spice: Mild/Med/Hot |
 | Mutton Rogan Josh        | 46000        | GST_FOOD_5  | 9963    | MAIN    | Half/Full  | Spice: Mild/Med/Hot |
 | Fish Curry               | 40000        | GST_FOOD_5  | 9963    | MAIN    | Half/Full  | Spice: Mild/Med/Hot |
-| Egg Bhurji               | 18000        | GST_FOOD_5  | 9963    | MAIN    | —          | — |
+| Egg Bhurji               | 18000        | GST_FOOD_5  | 9963    | MAIN    | Regular    | — |
 
 ## Category: Biryani & Rice  → station MAIN
 
@@ -82,8 +83,8 @@ TANDOOR, MAIN (main kitchen / curries), CHAT (cold/snacks), BAR (drinks/beverage
 | Chicken Biryani          | 32000        | GST_FOOD_5  | 9963    | MAIN    | Half/Full  | Spice: Mild/Med/Hot; Extra raita (+3000) |
 | Veg Biryani              | 26000        | GST_FOOD_5  | 9963    | MAIN    | Half/Full  | Extra raita (+3000) |
 | Mutton Biryani           | 42000        | GST_FOOD_5  | 9963    | MAIN    | Half/Full  | Spice: Mild/Med/Hot |
-| Jeera Rice               | 14000        | GST_FOOD_5  | 9963    | MAIN    | —          | — |
-| Steamed Rice             | 10000        | GST_FOOD_5  | 9963    | MAIN    | —          | — |
+| Jeera Rice               | 14000        | GST_FOOD_5  | 9963    | MAIN    | Regular    | — |
+| Steamed Rice             | 10000        | GST_FOOD_5  | 9963    | MAIN    | Regular    | — |
 
 ## Category: Breads  → station TANDOOR
 
@@ -92,7 +93,7 @@ TANDOOR, MAIN (main kitchen / curries), CHAT (cold/snacks), BAR (drinks/beverage
 | Butter Naan              | 6000         | GST_FOOD_5  | 9963    | TANDOOR | Regular  | Extra butter (+1500) |
 | Garlic Naan              | 7000         | GST_FOOD_5  | 9963    | TANDOOR | Regular  | — |
 | Tandoori Roti            | 4000         | GST_FOOD_5  | 9963    | TANDOOR | Plain/Butter | — |
-| Laccha Paratha           | 7000         | GST_FOOD_5  | 9963    | TANDOOR | —        | — |
+| Laccha Paratha           | 7000         | GST_FOOD_5  | 9963    | TANDOOR | Regular  | — |
 
 ## Category: Beverages  → station BAR
 ### The tax-rate showcase — three different profiles in one category
@@ -100,7 +101,7 @@ TANDOOR, MAIN (main kitchen / curries), CHAT (cold/snacks), BAR (drinks/beverage
 | item                     | price(paise) | tax_profile     | HSN/SAC | station | variants        | modifiers |
 |--------------------------|--------------|-----------------|---------|---------|-----------------|-----------|
 | Masala Chai              | 4000         | GST_FOOD_5      | 9963    | BAR     | Regular         | Extra strong |
-| Filter Coffee            | 5000         | GST_FOOD_5      | 9963    | BAR     | —               | — |
+| Filter Coffee            | 5000         | GST_FOOD_5      | 9963    | BAR     | Regular         | — |
 | Fresh Lime Soda          | 8000         | GST_FOOD_5      | 9963    | BAR     | Sweet/Salted    | — |
 | Sweet Lassi              | 9000         | GST_FOOD_5      | 9963    | BAR     | Sweet/Mango     | — |
 | Bottled Water 1L         | 2000         | GST_PACKAGED_18 | 2201    | BAR     | Regular         | — |
@@ -112,8 +113,8 @@ TANDOOR, MAIN (main kitchen / curries), CHAT (cold/snacks), BAR (drinks/beverage
 
 | item                     | price(paise) | tax_profile | HSN/SAC | station | variants | modifiers |
 |--------------------------|--------------|-------------|---------|---------|----------|-----------|
-| Gulab Jamun (2 pc)       | 8000         | GST_FOOD_5  | 9963    | DESSERT | —        | — |
-| Gajar Halwa              | 12000        | GST_FOOD_5  | 9963    | DESSERT | —        | Extra dry fruits (+3000) |
+| Gulab Jamun (2 pc)       | 8000         | GST_FOOD_5  | 9963    | DESSERT | Regular  | — |
+| Gajar Halwa              | 12000        | GST_FOOD_5  | 9963    | DESSERT | Regular  | Extra dry fruits (+3000) |
 | Kulfi                    | 9000         | GST_FOOD_5  | 9963    | DESSERT | Malai/Pista | — |
 
 ---

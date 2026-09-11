@@ -21,7 +21,6 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use holler_edge_database::crypto::EncryptionKey;
-use rusqlite::OptionalExtension;
 use holler_edge_database::inventory::{grams, kilograms, litres, millilitres, pieces};
 use holler_edge_database::model::{
     AppUser, ComplianceVersion, Device, DiscountDefinition, InventoryItem, InvoiceSeries,
@@ -31,6 +30,7 @@ use holler_edge_database::model::{
     SupplierConfig, SupplierItemConfig, TaxProfile, TaxRule,
 };
 use holler_edge_database::{repo, Db, DbError};
+use rusqlite::OptionalExtension;
 use serde_json::{json, Value};
 
 // Fixed development ids. MUST match the constants in
@@ -55,6 +55,13 @@ const CATEGORY_ID: &str = "0191a000-0000-7000-8000-000000000010";
 const ITEM_CHAI_ID: &str = "0191a000-0000-7000-8000-000000000011";
 const ITEM_THALI_ID: &str = "0191a000-0000-7000-8000-000000000012";
 const VARIANT_ID: &str = "0191a000-0000-7000-8000-000000000013";
+/// Veg Thali's only variant. ADDITIVE and zero-delta: the legacy fixture's
+/// id, its 22000-paise price and its routing are untouched, which is what
+/// `tests/e2e-scenario/harness` pins. It exists because a variant-less item
+/// cannot be ordered from `apps/captain` at all (it refuses the line as a
+/// seed defect) and cannot carry a recipe, since `recipe` binds to
+/// `menu_item_variant_id` — so such an item silently deducts no stock.
+const VARIANT_THALI_ID: &str = "0191a000-0000-7000-8000-000000000016";
 const MOD_LESS_SUGAR_ID: &str = "0191a000-0000-7000-8000-000000000014";
 const MOD_EXTRA_SUGAR_ID: &str = "0191a000-0000-7000-8000-000000000015";
 const TABLE_1_ID: &str = "0191a000-0000-7000-8000-000000000020";
@@ -972,7 +979,7 @@ const SEED_CATEGORIES: &[(&str, i64, &[SeedItem])] = &[
                 tax_profile_id: TAX_PROFILE_FOOD5_ID,
                 hsn_sac: "9963",
                 station_code: STATION_CHAT_CODE,
-                variants: &[],
+                variants: &["Regular"],
                 modifier_groups: &[("Extras", &[("Extra chutney", 1500)])],
             },
             SeedItem {
@@ -1008,7 +1015,7 @@ const SEED_CATEGORIES: &[(&str, i64, &[SeedItem])] = &[
                 tax_profile_id: TAX_PROFILE_FOOD5_ID,
                 hsn_sac: "9963",
                 station_code: STATION_CHAT_CODE,
-                variants: &[],
+                variants: &["Regular"],
                 modifier_groups: &[("Extras", &[("Extra puri", 3000)])],
             },
             SeedItem {
@@ -1017,7 +1024,7 @@ const SEED_CATEGORIES: &[(&str, i64, &[SeedItem])] = &[
                 tax_profile_id: TAX_PROFILE_FOOD5_ID,
                 hsn_sac: "9963",
                 station_code: STATION_CHAT_CODE,
-                variants: &[],
+                variants: &["Regular"],
                 modifier_groups: &[("Extras", &[("Extra dahi", 2000)])],
             },
         ],
@@ -1041,7 +1048,7 @@ const SEED_CATEGORIES: &[(&str, i64, &[SeedItem])] = &[
                 tax_profile_id: TAX_PROFILE_FOOD5_ID,
                 hsn_sac: "9963",
                 station_code: STATION_TANDOOR_CODE,
-                variants: &[],
+                variants: &["Regular"],
                 modifier_groups: &[SPICE_GROUP],
             },
             SeedItem {
@@ -1152,7 +1159,7 @@ const SEED_CATEGORIES: &[(&str, i64, &[SeedItem])] = &[
                 tax_profile_id: TAX_PROFILE_FOOD5_ID,
                 hsn_sac: "9963",
                 station_code: STATION_MAIN_CODE,
-                variants: &[],
+                variants: &["Regular"],
                 modifier_groups: &[],
             },
         ],
@@ -1194,7 +1201,7 @@ const SEED_CATEGORIES: &[(&str, i64, &[SeedItem])] = &[
                 tax_profile_id: TAX_PROFILE_FOOD5_ID,
                 hsn_sac: "9963",
                 station_code: STATION_MAIN_CODE,
-                variants: &[],
+                variants: &["Regular"],
                 modifier_groups: &[],
             },
             SeedItem {
@@ -1203,7 +1210,7 @@ const SEED_CATEGORIES: &[(&str, i64, &[SeedItem])] = &[
                 tax_profile_id: TAX_PROFILE_FOOD5_ID,
                 hsn_sac: "9963",
                 station_code: STATION_MAIN_CODE,
-                variants: &[],
+                variants: &["Regular"],
                 modifier_groups: &[],
             },
         ],
@@ -1249,7 +1256,7 @@ const SEED_CATEGORIES: &[(&str, i64, &[SeedItem])] = &[
                 tax_profile_id: TAX_PROFILE_FOOD5_ID,
                 hsn_sac: "9963",
                 station_code: STATION_TANDOOR_CODE,
-                variants: &[],
+                variants: &["Regular"],
                 modifier_groups: &[],
             },
         ],
@@ -1273,7 +1280,7 @@ const SEED_CATEGORIES: &[(&str, i64, &[SeedItem])] = &[
                 tax_profile_id: TAX_PROFILE_FOOD5_ID,
                 hsn_sac: "9963",
                 station_code: STATION_BAR_CODE,
-                variants: &[],
+                variants: &["Regular"],
                 modifier_groups: &[],
             },
             SeedItem {
@@ -1342,7 +1349,7 @@ const SEED_CATEGORIES: &[(&str, i64, &[SeedItem])] = &[
                 tax_profile_id: TAX_PROFILE_FOOD5_ID,
                 hsn_sac: "9963",
                 station_code: STATION_DESSERT_CODE,
-                variants: &[],
+                variants: &["Regular"],
                 modifier_groups: &[],
             },
             SeedItem {
@@ -1351,7 +1358,7 @@ const SEED_CATEGORIES: &[(&str, i64, &[SeedItem])] = &[
                 tax_profile_id: TAX_PROFILE_FOOD5_ID,
                 hsn_sac: "9963",
                 station_code: STATION_DESSERT_CODE,
-                variants: &[],
+                variants: &["Regular"],
                 modifier_groups: &[("Extras", &[("Extra dry fruits", 3000)])],
             },
             SeedItem {
@@ -1671,6 +1678,10 @@ fn build_shared_catalogue() -> Result<Value, String> {
     menu_item_variants.push(json!({
         "id": VARIANT_ID, "menu_item_id": ITEM_CHAI_ID, "name": "Large",
         "price_delta_paise": 1500, "is_default": true
+    }));
+    menu_item_variants.push(json!({
+        "id": VARIANT_THALI_ID, "menu_item_id": ITEM_THALI_ID, "name": "Regular",
+        "price_delta_paise": 0, "is_default": true
     }));
     menu_item_modifiers.push(json!({
         "id": MOD_LESS_SUGAR_ID, "menu_item_id": ITEM_CHAI_ID, "group_name": "Sugar",
@@ -2887,9 +2898,7 @@ fn write_opening_stock(db: &mut Db, catalogue: &Value) -> Result<(), DbError> {
         .map_err(|e| DbError::InvalidInput(format!("devseed: checking seeded opening stock: {e}")))?
         .is_some();
     if already_seeded {
-        println!(
-            "devseed: seed opening stock — already present, skipping ({OPENING_STOCK_ID})"
-        );
+        println!("devseed: seed opening stock — already present, skipping ({OPENING_STOCK_ID})");
         return Ok(());
     }
     let outlet_id = jstr(&rows[0], "outlet_id")?;
@@ -3323,24 +3332,38 @@ mod t1b_seed_resolves_tests {
         assert_eq!(outcome, ResolveOutcome::Gap(GapReason::NoRecipe));
     }
 
-    /// Samosa has no variant at all (the spec itself gives it none) — an
-    /// order line for it carries no `menu_item_variant_id`, which is
-    /// `NoVariant`, structurally different from `Chana Masala`'s gap above.
+    /// A line carrying no `menu_item_variant_id` is a `NoVariant` gap,
+    /// structurally different from `Chana Masala`'s `NoRecipe` gap above.
+    /// That path stays reachable in production -- any caller that sends a
+    /// null variant lands here -- so it is asserted directly against the
+    /// resolver rather than through a seeded item that happens to have none.
+    ///
+    /// The second half is the guard the demo build added: NO seeded item may
+    /// be variant-less. Samosa used to be this test's fixture, and a
+    /// variant-less item is two silent failures, not one -- it can carry no
+    /// recipe (ADR-018 2.1 binds a recipe to a variant, so selling it deducts
+    /// nothing at all) and `apps/captain` refuses to order it, treating it as
+    /// a seed defect rather than sending a null (`MenuCartScreen.tsx`).
     #[test]
-    fn samosa_has_no_variant_at_all() {
+    fn a_null_variant_is_a_novariant_gap_and_no_seeded_item_is_variant_less() {
         let db = seeded_db();
-        let variant_count: i64 = db
-            .connection()
-            .query_row(
-                "SELECT COUNT(*) FROM menu_item_variant v JOIN menu_item m ON m.id = v.menu_item_id \
-                 WHERE m.name = 'Samosa (2 pc)'",
-                [],
-                |r| r.get(0),
-            )
-            .expect("query succeeds");
-        assert_eq!(variant_count, 0);
         let outcome = resolve_recipe_for_variant(db.connection(), None, 1).expect("no DbError");
         assert_eq!(outcome, ResolveOutcome::Gap(GapReason::NoVariant));
+
+        let variant_less: Vec<String> = db
+            .connection()
+            .prepare(
+                "SELECT m.name FROM menu_item m                  WHERE NOT EXISTS                  (SELECT 1 FROM menu_item_variant v WHERE v.menu_item_id = m.id)                  ORDER BY m.name",
+            )
+            .expect("prepare succeeds")
+            .query_map([], |r| r.get::<_, String>(0))
+            .expect("query succeeds")
+            .collect::<Result<Vec<String>, _>>()
+            .expect("rows read");
+        assert!(
+            variant_less.is_empty(),
+            "every seeded menu_item needs at least one variant; these have none: {variant_less:?}"
+        );
     }
 
     /// The signed modifier delta pair on the legacy Sugar group: positive
@@ -3473,10 +3496,12 @@ mod t1b_seed_resolves_tests {
     /// copies of the same 39-item menu, and nothing but this test would
     /// notice if someone edited one without the other — exactly the
     /// silent-drift failure mode CLAUDE.md's spec/seed rule exists to catch.
-    /// The 39/28/50 literals are a snapshot of both sides AT THE TIME this
+    /// The 39/61 literals are a snapshot of both sides AT THE TIME this
     /// guard was written (quoted here so a future diff on either side is
     /// visible without cross-referencing); a deliberate change to the menu
-    /// updates all four numbers together, never just one.
+    /// updates all four numbers together, never just one. The variant count
+    /// moved 50 -> 61 during the demo build, when the eleven remaining
+    /// em-dash rows were given a "Regular" variant on BOTH sides together.
     #[test]
     fn spec_and_seed_agree_on_item_and_variant_counts() {
         let (spec_items, spec_variants) = count_spec_items_and_variants();
@@ -3486,7 +3511,7 @@ mod t1b_seed_resolves_tests {
              update this guard's literals together with SEED_CATEGORIES"
         );
         assert_eq!(
-            spec_variants, 50,
+            spec_variants, 61,
             "HOLLER_DEV_MENU_SPEC.md's variant-instance count changed — if \
              deliberate, update this guard's literals together with SEED_CATEGORIES"
         );
