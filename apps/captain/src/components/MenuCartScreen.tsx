@@ -1,8 +1,9 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { fetchMenu, type CaptainMenuItem } from "../lib/api";
-import { addToCart, cartTotalPaise, defaultVariant, type CartLine } from "../lib/cart";
+import { fetchMenu, type CaptainMenuItem, type CaptainModifier } from "../lib/api";
+import { addToCart, cartTotalPaise, defaultVariant, freeModifierGroups, type CartLine } from "../lib/cart";
 import { formatPaise } from "../lib/money";
+import { ModifierSheet } from "./ModifierSheet";
 
 interface Props {
   token: string;
@@ -31,6 +32,11 @@ export function MenuCartScreen({
 }: Props) {
   const query = useQuery({ queryKey: ["captain", "menu"], queryFn: () => fetchMenu(token) });
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
+  // The item currently awaiting a free-modifier choice, plus the resolved
+  // variant it will be added with once the sheet confirms.
+  const [pending, setPending] = useState<{ item: CaptainMenuItem; variantId: string } | null>(
+    null,
+  );
 
   const categories = query.data?.categories ?? [];
   const items = query.data?.items ?? [];
@@ -54,10 +60,26 @@ export function MenuCartScreen({
       );
       return;
     }
-    // Only free modifiers are selectable in this reduced scope
-    // (docs/captain-api.md), and this reduced flow offers no modifier picker
-    // at all — tap-to-add sends the line with none selected.
-    onCartChange(addToCart(cart, item, variant, []));
+    // A group with no free option, or an item with no groups at all, adds in
+    // one tap — no dialog in front of the common case. A group with at least
+    // one free option (required or not) is offered, because an optional free
+    // choice is exactly what a waiter needs to reach for (docs/captain-api.md).
+    if (freeModifierGroups(item).length === 0) {
+      onCartChange(addToCart(cart, item, variant, []));
+      return;
+    }
+    setPending({ item, variantId: variant.id });
+  }
+
+  function handleConfirmModifiers(selected: CaptainModifier[]) {
+    if (pending === null) return;
+    const variant = pending.item.variants.find((v) => v.id === pending.variantId);
+    if (variant === undefined) {
+      setPending(null);
+      return;
+    }
+    onCartChange(addToCart(cart, pending.item, variant, selected));
+    setPending(null);
   }
 
   if (query.isLoading) return <p className="screen">Loading menu…</p>;
@@ -113,6 +135,13 @@ export function MenuCartScreen({
           {sending ? "Sending…" : "Send"}
         </button>
       </div>
+      {pending !== null && (
+        <ModifierSheet
+          item={pending.item}
+          onCancel={() => setPending(null)}
+          onConfirm={handleConfirmModifiers}
+        />
+      )}
     </div>
   );
 }

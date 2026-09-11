@@ -30,6 +30,54 @@ export function freeModifiers(item: CaptainMenuItem): CaptainModifier[] {
   return item.modifiers.filter((m) => m.price_delta_paise === 0);
 }
 
+/**
+ * A group of an item's FREE modifier options, keyed by group_name. Only free
+ * options are selectable in this reduced scope (docs/captain-api.md) — a
+ * group whose options are all priced simply does not appear here, which is
+ * how "no free options in a group" reduces to a one-tap add with no dialog.
+ *
+ * `min_selection`/`max_selection` are carried per option row in the API
+ * response rather than once per group; every option in one group is assumed
+ * to agree, so the first row's values are taken as the group's.
+ */
+export interface FreeModifierGroup {
+  groupName: string;
+  minSelection: number;
+  maxSelection: number;
+  options: CaptainModifier[];
+}
+
+export function freeModifierGroups(item: CaptainMenuItem): FreeModifierGroup[] {
+  const groups: FreeModifierGroup[] = [];
+  const byName = new Map<string, FreeModifierGroup>();
+  for (const m of freeModifiers(item)) {
+    let group = byName.get(m.group_name);
+    if (group === undefined) {
+      group = { groupName: m.group_name, minSelection: m.min_selection, maxSelection: m.max_selection, options: [] };
+      byName.set(m.group_name, group);
+      groups.push(group);
+    }
+    group.options.push(m);
+  }
+  return groups;
+}
+
+/** A group the waiter must resolve before the line can be added. */
+export function groupRequiresSelection(group: FreeModifierGroup): boolean {
+  return group.minSelection >= 1;
+}
+
+/** All required groups have at least one selected option. */
+export function modifierSelectionSatisfied(
+  groups: FreeModifierGroup[],
+  selected: Map<string, CaptainModifier[]>,
+): boolean {
+  return groups.every((g) => {
+    if (!groupRequiresSelection(g)) return true;
+    return (selected.get(g.groupName) ?? []).length > 0;
+  });
+}
+
 function lineKey(menuItemId: string, variantId: string, modifierIds: string[]): string {
   return [menuItemId, variantId, ...[...modifierIds].sort()].join("|");
 }
