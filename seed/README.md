@@ -115,92 +115,105 @@ of them silently breaks that harness.
 ## File format
 
 `seed/demo-outlet.json`, UTF-8, LF, two-space indent, keys in the order below,
-arrays in a stable order. One top-level object:
+arrays in a stable order. One top-level object.
 
-```jsonc
-{
-  "schema_version": 1,
-  "generated_by": "edge/database/src/bin/devseed.rs --emit-json",
+**`backend/cmd/devseed/seedfile.go` is the executable statement of this format.**
+It decodes with `DisallowUnknownFields`, so a field the emitter invents and this
+document does not list is a **loud decode failure**, not a silent drop. That is
+deliberate: `json.Unmarshal`'s leniency already cost this repo a column once
+(contracts 0.5.9 — the edge wrote `source_stock_count_id`, the cloud had never
+heard of it, and every Postgres row was NULL in silence).
 
-  "tenant":  { "id": "...", "name": "..." },
-  "brand":   { "id": "...", "tenant_id": "...", "name": "..." },
-  "outlet":  {
-    "id": "...", "brand_id": "...", "name": "...",
-    "timezone": "Asia/Kolkata", "day_start_time": "05:00"
-  },
+Every field below is required unless marked nullable. Nullable means the key is
+present with a JSON `null`, never absent.
 
-  "tax_profiles": [
-    { "id": "...", "outlet_id": "...", "name": "...", "is_default": false }
-  ],
-  "compliance_versions": [ { "id": "...", "...": "..." } ],
-  "tax_rules": [ { "id": "...", "tax_profile_id": "...", "compliance_version_id": "...", "...": "..." } ],
+```
+schema_version            int         // 1
+generated_by              string      // "edge/database/src/bin/devseed.rs --emit-json"
 
-  "menu_categories": [
-    { "id": "...", "outlet_id": "...", "name": "...", "sort_order": 0 }
-  ],
-  "menu_items": [
-    {
-      "id": "...", "outlet_id": "...", "category_id": "...",
-      "name": "...", "base_price_paise": 0,
-      "is_available": true,
-      "tax_profile_id": "..." ,          // null means fall back to the outlet default
-      "hsn_sac": "...",                  // NEVER null and NEVER blank — an invoice
-                                         // cannot issue without it (contracts 0.4.5)
-      "station_code": "..."              // consumed by the EDGE only, to build
-                                         // menu_item_station; there is no such
-                                         // table in Postgres
-    }
-  ],
-  "menu_item_variants": [
-    { "id": "...", "menu_item_id": "...", "name": "...",
-      "price_delta_paise": 0, "is_default": true }
-  ],
-  "menu_item_modifiers": [
-    { "id": "...", "menu_item_id": "...", "group_name": "...",
-      "option_name": "...", "price_delta_paise": 0,
-      "min_selection": 0, "max_selection": 1 }
-  ],
+tenant                    { id, name }
+brand                     { id, tenant_id, name }
+outlet                    { id, brand_id, name, timezone, day_start_time }
 
-  "inventory_items": [
-    { "id": "...", "outlet_id": "...", "sku": "...", "name": "...",
-      "category": "...", "dimension": "MASS",
-      "reorder_level_micro": 5000000 }   // null is legal and deliberate
-  ],
-  "item_unit_conversions": [
-    { "id": "...", "inventory_item_id": "...", "...": "..." }
-  ],
-  "recipes": [
-    { "id": "...", "menu_item_variant_id": "...",
-      "output_dimension": "MASS", "output_quantity_micro": 1000000 }
-  ],
-  "recipe_ingredients": [
-    { "id": "...", "recipe_id": "...",
-      "inventory_item_id": "...",        // exactly one of these two is set
-      "sub_recipe_id": null,
-      "quantity_micro": 220000000,
-      "quantity_dimension": "MASS"       // THE UNIT THE AUTHOR CHOSE. See below
-    }
-  ],
-  "modifier_ingredient_deltas": [
-    { "id": "...", "menu_item_modifier_id": "...", "...": "..." }
-  ],
+tax_profiles[]            { id, outlet_id, code, name, pricing_mode, is_default, is_active }
+compliance_versions[]     { id, outlet_id, label, effective_from, notes? }
+tax_rules[]               { id, tax_profile_id, compliance_version_id, component,
+                            rate_bps, effective_from, effective_to? }
 
-  "suppliers": [ { "id": "...", "outlet_id": "...", "name": "...", "...": "..." } ],
-  "supplier_items": [
-    { "id": "...", "supplier_id": "...", "inventory_item_id": "...",
-      "pack_size_micro": 1000000, "...": "..." }
-  ],
+menu_categories[]         { id, outlet_id, name, sort_order }
+menu_items[]              { id, outlet_id, category_id, name, base_price_paise,
+                            is_available, tax_profile_id?, hsn_sac, station_code }
+menu_item_variants[]      { id, menu_item_id, name, price_delta_paise, is_default }
+menu_item_modifiers[]     { id, menu_item_id, group_name, option_name,
+                            price_delta_paise, min_selection, max_selection }
 
-  "goods_receipt": { "...": "..." },     // see the exception above
-  "opening_stock": [
-    { "inventory_item_id": "...", "quantity_micro": 0, "...": "..." }
-  ]
-}
+inventory_items[]         { id, outlet_id, sku, name, category?, dimension,
+                            reorder_level_micro? }
+item_unit_conversions[]   { id, inventory_item_id, pack_unit_label,
+                            source_dimension, numerator, denominator }
+recipes[]                 { id, menu_item_variant_id, name,
+                            output_dimension, output_quantity_micro }
+recipe_ingredients[]      { id, recipe_id, inventory_item_id?, sub_recipe_id?,
+                            quantity_micro, quantity_dimension }
+modifier_ingredient_deltas[] { id, menu_item_modifier_id, inventory_item_id,
+                            quantity_micro }
+
+suppliers[]               { id, outlet_id, code, name, gstin?, phone?, email?,
+                            address?, payment_terms_days, is_active }
+supplier_items[]          { id, supplier_id, inventory_item_id, purchase_unit,
+                            pack_size_micro, quantity_dimension,
+                            last_price_paise?, is_preferred }
+
+goods_receipt             { id, outlet_id, purchase_order_id?, supplier_id?,
+                            grn_number, delivery_note_ref?, received_at,
+                            received_by_user_id, business_date, notes?,
+                            lines[], ledger_entries[] }
+  lines[]                 { id, inventory_item_id, line_number,
+                            purchase_order_line_id?, entered_purchase_unit,
+                            entered_quantity_micro, quantity_dimension,
+                            base_quantity_micro, pack_size_micro_applied,
+                            unit_cost_paise, line_total_paise,
+                            batch_code?, expiry_date? }
+
+opening_stock[]           <stock_ledger_entry>
+goods_receipt.ledger_entries[] <stock_ledger_entry>
+
+stock_ledger_entry        { id, outlet_id?, entry_seq?, inventory_item_id,
+                            inventory_item_name, dimension, entry_type, origin,
+                            quantity_micro, recipe_id?, recipe_version?,
+                            recipe_name?, reason_code?, note?, occurred_at,
+                            business_date, created_by_user_id?,
+                            modifier_delta_id?, modifier_name?,
+                            modifier_delta_version?, unit_cost_paise?,
+                            line_total_paise?, source_grn_id?,
+                            source_purchase_return_id?,
+                            source_stock_transfer_out_id?,
+                            source_stock_count_id? }
 ```
 
-`"...": "..."` above marks a group whose remaining columns are taken verbatim
-from the frozen schema — the emitter writes every column the store requires, and
-the reader writes every column it reads. Neither side invents one.
+Notes that are load-bearing, not stylistic:
+
+- **`menu_item.station_code` is consumed by the EDGE only**, to build
+  `menu_item_station`. Postgres has no such table; the cloud reader decodes it
+  and discards it deliberately.
+- **`menu_item.tax_profile_id` nullable means "fall back to the outlet
+  default"**, and only the legacy chai/thali pair relies on that path.
+- **`menu_item.hsn_sac` is never null and never blank.** An invoice cannot issue
+  without it (contracts 0.4.5). Both readers fail loudly on a blank rather than
+  inserting one.
+- **`recipe_ingredient` sets exactly one of `inventory_item_id` /
+  `sub_recipe_id`**, never both, never neither.
+- **`stock_ledger_entry.entry_seq` nullable means "assign from the store's
+  current high-water mark".** It is 1-based and cursors default to 0 meaning
+  "nothing acked" — a 0-based sequence skips every outlet's first entry,
+  permanently and silently (contracts 0.5.8).
+- **`line_total_paise` is set on receipt-origin rows and NULL on every other
+  origin** (contracts 0.6.3). The CHECK is directional: a total never appears
+  without its rate, a rate may stand alone. Opening-stock rows are not receipts.
+- **`source_stock_count_id` and the other three provenance columns travel.**
+  Each must be populated on at least one row of the fixture, or a fidelity test
+  passes on absent data — 0.5.9's lesson, where a null round-tripped through a
+  nonexistent field perfectly and the storage compare stayed green.
 
 ### Three rules that bind whoever touches the emitter or either reader
 
