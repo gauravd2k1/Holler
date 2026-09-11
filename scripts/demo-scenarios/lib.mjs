@@ -84,6 +84,10 @@ export function record(row) {
     status: row.status,
     evidence: redact(String(row.evidence ?? "")),
     notes: redact(String(row.notes ?? "")),
+    // Why this row moved, when it moved. Empty on a row recorded once and
+    // never revisited — an empty Re-run cell means "first and only run", not
+    // "unchanged", and the Summary sheet says so.
+    rerun: redact(String(row.rerun ?? "")),
     stage: STAGE,
     runId: RUN_ID,
     at: new Date().toISOString(),
