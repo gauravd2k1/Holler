@@ -6748,7 +6748,11 @@ pub fn clear_outbox_failure(conn: &Connection, outlet_id: &str, outbox_id: &str)
 
 /// Whether this row has already been given up on, so a drain can skip it
 /// instead of spending a request per pump on an answer it has already had.
-pub fn outbox_row_is_blocked(conn: &Connection, outlet_id: &str, outbox_id: &str) -> DbResult<bool> {
+pub fn outbox_row_is_blocked(
+    conn: &Connection,
+    outlet_id: &str,
+    outbox_id: &str,
+) -> DbResult<bool> {
     let blocked: Option<String> = conn
         .query_row(
             "SELECT blocked_at FROM sync_outbox_block \

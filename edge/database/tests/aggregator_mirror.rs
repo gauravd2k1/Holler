@@ -102,11 +102,16 @@ fn applying_the_same_document_twice_leaves_one_row() {
         .connection()
         .query_row("SELECT count(*) FROM aggregator_order", [], |r| r.get(0))
         .expect("count");
-    assert_eq!(count, 1, "re-applying a document must not create a second one");
+    assert_eq!(
+        count, 1,
+        "re-applying a document must not create a second one"
+    );
 
     let lines_count: i64 = db
         .connection()
-        .query_row("SELECT count(*) FROM aggregator_order_line", [], |r| r.get(0))
+        .query_row("SELECT count(*) FROM aggregator_order_line", [], |r| {
+            r.get(0)
+        })
         .expect("count lines");
     assert_eq!(lines_count, 1, "lines must not accumulate across applies");
 }
@@ -268,7 +273,10 @@ fn an_unmapped_line_is_stored_with_its_platform_name() {
         )
         .expect("read line");
 
-    assert!(menu_item.is_none(), "nothing local matched, so this must stay NULL");
+    assert!(
+        menu_item.is_none(),
+        "nothing local matched, so this must stay NULL"
+    );
     assert_eq!(name, "Some Dish", "the platform's own name must survive");
 }
 

@@ -579,8 +579,18 @@ mod tests {
         configure_connection(&conn).expect("pragmas");
         apply_through_0034(&conn);
 
-        insert_order(&conn, "01a08e41-0000-7000-8000-00000000a001", "POS", Some("A1"));
-        insert_order(&conn, "01a08e41-0000-7000-8000-00000000a002", "DIRECT", None);
+        insert_order(
+            &conn,
+            "01a08e41-0000-7000-8000-00000000a001",
+            "POS",
+            Some("A1"),
+        );
+        insert_order(
+            &conn,
+            "01a08e41-0000-7000-8000-00000000a002",
+            "DIRECT",
+            None,
+        );
 
         let before: String = conn
             .query_row(
@@ -606,7 +616,10 @@ mod tests {
                 |r| r.get(0),
             )
             .expect("after");
-        assert_eq!(after, before, "a column-order slip in INSERT ... SELECT looks exactly like this");
+        assert_eq!(
+            after, before,
+            "a column-order slip in INSERT ... SELECT looks exactly like this"
+        );
     }
 
     /// ADR-026 deprecates the platform-named members on the stated basis that
@@ -657,11 +670,26 @@ mod tests {
         configure_connection(&conn).expect("pragmas");
         apply_all(&conn).expect("apply");
 
-        insert_order(&conn, "01a08e41-0000-7000-8000-00000000b001", "AGGREGATOR", None);
-        insert_order(&conn, "01a08e41-0000-7000-8000-00000000b002", "TABLE_TAB", None);
+        insert_order(
+            &conn,
+            "01a08e41-0000-7000-8000-00000000b001",
+            "AGGREGATOR",
+            None,
+        );
+        insert_order(
+            &conn,
+            "01a08e41-0000-7000-8000-00000000b002",
+            "TABLE_TAB",
+            None,
+        );
 
         let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            insert_order(&conn, "01a08e41-0000-7000-8000-00000000b003", "NOT_A_SOURCE", None);
+            insert_order(
+                &conn,
+                "01a08e41-0000-7000-8000-00000000b003",
+                "NOT_A_SOURCE",
+                None,
+            );
         }));
         assert!(
             err.is_err(),
