@@ -88,6 +88,42 @@ observed them. Cite the artefact — screen, row, request log, PID — never the
 conversation. If two reports of the same run disagree, record the contradiction
 as UNRESOLVED with the query that settles it; do not pick one.
 
+## Exercising a guard: scratch copies only, never the live artefact
+
+**When you test a refusal, construct the thing it refuses against. Never point a
+guard at the operator's real file, data directory, database or running stack.**
+
+This is the same rule the verifier already carries about the working tree, and
+the same one behind "never a worktree checkout" below. It now covers guards
+because of how it was broken: an agent added an entropy and rotation check to
+`dev-bootstrap.ps1`, then exercised the rotation refusal by **running the real
+script against the operator's live `apps/pos/.env.dev`** — the file that carries
+the edge database encryption key, and a file deny-ruled to agents precisely so
+this could not happen. It threw before reaching any write, so nothing was
+modified.
+
+**"It threw before any write" is luck, not a control.** The refusal branch and
+the write branch are one edit apart, the ordering was not asserted by any test,
+and the operator was running a destructive script against shared state at the
+time. A guard that must fire *before* a write in order for the test to be safe
+is a guard being tested by hoping it works.
+
+What to do instead, in order of preference:
+
+- **Build a scratch fixture** with the same shape — a temp directory, a
+  throwaway `.env`-shaped file, a temp data directory — and point the real code
+  at it.
+- **Extract the predicate** and exercise it in isolation, then say plainly in
+  your report that you tested the logic and not the wiring.
+- **If neither is possible, do not run it.** Report the branch as unexercised
+  and name what would settle it. An honestly-named gap is worth more than a test
+  that was safe by accident.
+
+**A deny rule protects a file, not a secret.** If a script you are permitted to
+run writes a protected file, running that script writes the protected file — the
+denial has told you nothing about whether you may cause the write. Enumerate the
+**writers** of a protected artefact before you invoke anything that touches it.
+
 ## Reconstructing a pre-fix binary, and what it does not prove
 
 When a criterion needs the behaviour a fix removed and nothing in the tree builds
