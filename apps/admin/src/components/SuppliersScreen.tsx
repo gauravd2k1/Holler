@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError, createSupplier, listSuppliers, outletId } from "../lib/api";
 import { formatMicro, parseToMicro } from "../lib/quantity";
-import { formatPaise } from "../lib/money";
+import { formatPaiseAsRupees } from "../lib/money";
 import type { SupplierItem } from "@holler/contracts";
 
 /**
@@ -67,7 +67,19 @@ export function SuppliersScreen() {
               <tbody>
                 {supplier.items.map((it) => (
                   <tr key={it.id}>
-                    <td>{it.inventory_item_id}</td>
+                    {/*
+                      No inventory-item NAME travels on SupplierItemSchema —
+                      it carries inventory_item_id and nothing else, unlike
+                      stock_ledger_entry/stock_count_line which already
+                      denormalise the name. That is a contract gap left with
+                      the operator as a pending decision (do not close it
+                      here). This app has no inventory-items query anywhere
+                      to resolve the id against, so — same call
+                      GoodsReceiptsScreen makes for its own missing name —
+                      the raw UUID is withheld rather than shown: a raw UUID
+                      must never reach a screen a human reads.
+                    */}
+                    <td className="muted">ingredient on file</td>
                     <td>{it.purchase_unit}</td>
                     <td>{formatMicro(it.pack_size_micro)}</td>
                     {/* Shown, not inferred. See the header. */}
@@ -79,7 +91,9 @@ export function SuppliersScreen() {
                       thinking in paise, on the one screen where they are
                       comparing what a supplier charges.
                     */}
-                    <td>{it.last_price_paise === null ? "—" : formatPaise(it.last_price_paise)}</td>
+                    <td className="money">
+                      {it.last_price_paise === null ? "—" : formatPaiseAsRupees(it.last_price_paise)}
+                    </td>
                   </tr>
                 ))}
               </tbody>

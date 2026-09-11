@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { MenuItem } from "@holler/contracts";
 import { listMenuCategories, listMenuItems, patchMenuItem, ApiError } from "../lib/api";
-import { formatPaise, parseRupeesToPaise } from "../lib/money";
+import { formatPaiseAsPlainDecimal, formatPaiseAsRupees, parseRupeesToPaise } from "../lib/money";
 
 /**
  * Menu and pricing.
@@ -85,7 +85,10 @@ function MenuItemRow({
   onSaved: () => void;
 }) {
   const [editing, setEditing] = useState(false);
-  const [price, setPrice] = useState(formatPaise(item.base_price_paise));
+  // Plain decimal, deliberately no ₹ prefix: this seeds an editable input
+  // that round-trips through parseRupeesToPaise on save, which a currency
+  // symbol in the string would break.
+  const [price, setPrice] = useState(formatPaiseAsPlainDecimal(item.base_price_paise));
   const [name, setName] = useState(item.name);
   const [error, setError] = useState<string | null>(null);
 
@@ -118,7 +121,7 @@ function MenuItemRow({
       <tr>
         <td>{item.name}</td>
         <td>{categoryName}</td>
-        <td>{formatPaise(item.base_price_paise)}</td>
+        <td className="money">{formatPaiseAsRupees(item.base_price_paise)}</td>
         <td>{item.hsn_sac ?? <span className="warn">not set — cannot be billed</span>}</td>
         <td>{item.is_available ? "yes" : "no"}</td>
         <td>

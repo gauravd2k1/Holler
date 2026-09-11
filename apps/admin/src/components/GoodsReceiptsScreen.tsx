@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { listGoodsReceipts, listSuppliers } from "../lib/api";
 import { formatMicro } from "../lib/quantity";
-import { formatPaise } from "../lib/money";
+import { formatPaiseAsRupees } from "../lib/money";
 import { formatIST } from "../lib/datetime";
 
 /**
@@ -119,7 +119,7 @@ export function GoodsReceiptsScreen() {
                     <td>{formatMicro(line.pack_size_micro_applied)}</td>
                     <td>{formatMicro(line.base_quantity_micro)}</td>
                     <td>{line.quantity_dimension}</td>
-                    <td>{formatPaise(line.line_total_paise)}</td>
+                    <td className="money">{formatPaiseAsRupees(line.line_total_paise)}</td>
                   </tr>
                 ))}
               </tbody>
