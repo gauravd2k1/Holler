@@ -1581,3 +1581,88 @@ exempted by exact shape and location, with the same removal trigger as the
 members themselves — because **an exemption that outlives its reason is a
 silenced failure**, and the cheapest moment to bind an exemption to its trigger
 is when it is written.
+
+---
+
+## 2026-09-11 — M6 was tagged with a red test, and the job that looks like it would have caught it only compiles
+
+**Severity:** medium. No code defect; a milestone tag asserting a verification that was never performed, and a CI step whose name claims coverage it does not provide.
+
+### What happened
+
+`apps/pos/src-tauri/tests/adr020_outbox_drain.rs`'s
+`drain_before_the_seal_publishes_and_after_the_seal_publishes_nothing` has been
+failing since **2026-09-08**. M6 was tagged `m6-complete` on **2026-09-11**. It
+is still red at HEAD:
+
+```
+assertion `left == right` failed: three ingest calls should have reached the cloud
+  left: 4
+ right: 3
+```
+
+**The drain is correct; the test is stale.** `bdc40d3` (M6 Phase C, criterion 1)
+added `worker.pull_aggregator_orders` to `AppState::drain_outbox` — the
+cloud→edge aggregator down-path, deliberately on the same loop. That test's
+`fake_cloud()` helper excludes only `/sync/config` from its ingest counter, so
+it counts the aggregator **pull** as a fourth **publish**. The test's own log
+lines say so plainly: `drain [orders] published=3`, immediately after an
+aggregator pull that failed to deserialise but had already made its request.
+
+Both `bdc40d3` and the test's own commit are ancestors of the demo build's base
+commit, confirmed by `git merge-base --is-ancestor`, so nothing in the demo work
+caused it.
+
+### Which rule was breached
+
+**§84 rule 8 — "Do not claim success without actual verification."** A tag is a
+success claim over everything under it. The suite was either not run before
+tagging or run and not read; from outside, those are the same thing.
+
+### The check that should have caught it does not exist, and the one that looks like it doesn't run
+
+This is the part worth carrying. **No CI job anywhere runs `cargo test` for
+`apps/pos/src-tauri`.**
+
+The `rust-seams` job has this step:
+
+```yaml
+- name: pos (Tauri crate + its own tests)
+  run: cargo check --all-targets --manifest-path apps/pos/src-tauri/Cargo.toml
+```
+
+`cargo check --all-targets` **compiles** the test targets and never **runs** a
+single one. The step's name says "its own tests"; its command type-checks them.
+A reader auditing coverage sees the name and moves on.
+
+The exclusion is deliberate and defensible for the crate *build* — a Linux
+runner cannot honestly stand in for a Tauri/WebView2 Windows target (ADR-013),
+and the CI file says so in a comment. But `rust-seams` already **runs on
+`windows-latest`**, so the platform argument does not cover it. The tests are
+compiled on the right OS and then not executed.
+
+So the honest answer to "what should have caught this at tag time" is: nothing
+could have. There is no tag-time gate, and the job that appears to cover these
+tests only ever type-checked them.
+
+### The rules
+
+- **A CI step's name is a claim, and an unrun test is indistinguishable from a
+  passing one.** `cargo check --all-targets` proves a test compiles, which is
+  exactly the guarantee the `lan-integration` job was silently failing to give
+  when its bridge stopped compiling — the same family, one rung up: that
+  incident was "it did not build", this one is "it built and never ran". Name a
+  step for what it executes, not for what it touches.
+- **A milestone tag needs a gate, not a habit.** `check-milestone-marker.mjs`
+  exists because a prose claim about the current milestone went false silently;
+  a tag is a stronger claim with no check at all behind it. Filed in
+  `docs/backlog.md`: **before the next milestone tag**, either run the POS
+  crate's tests in `rust-seams` (it is already on Windows) or state in the CI
+  file that they are unrun and why — an exclusion that is written down can be
+  argued with; one that hides behind a step name cannot.
+- **Fix the test's subject, not its arithmetic.** Widening the exclusion to
+  ignore the aggregator endpoint makes it green, but the test exists to prove
+  the drain publishes before the seal and nothing after. A **pull** is not a
+  publish, and a counter that cannot tell them apart is the actual defect.
+  Whether `pull_aggregator_orders` belongs inside `drain_outbox` at all is the
+  question to answer first.
