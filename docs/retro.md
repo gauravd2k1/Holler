@@ -1704,3 +1704,29 @@ The check was `^[0-9a-fA-F]{64}$`. It validated the **shape** of the key and not
 The rotation guard matters more than it looks: **a different key does not error, it silently opens a different, empty database.** An accidental rotation therefore presents as a working till with no data, which is indistinguishable from a fresh install — the worst available failure mode at an outlet.
 
 Key management as a whole — generation, rotation, backup, what happens when a machine is replaced — is filed in `docs/pilot-readiness.md`, triggered before the first pilot.
+
+---
+
+## 2026-09-11 — An agent tested a guard against the operator's live secret file, and "it threw before any write" was luck
+
+**Severity:** medium (no loss). A control that held by accident rather than by design, while a destructive script was running against shared state.
+
+### What happened
+
+An agent was dispatched to add two guards to `scripts/dev-bootstrap.ps1`: an entropy check on `HOLLER_DB_KEY_HEX`, and a refusal to overwrite an existing key without `-RotateKey`. Its brief said, in the first paragraph and in bold, not to run either script against the real data directory or the real dev stack, because **the operator was running `demo-reset.ps1 -Force` at that moment**.
+
+It exercised the rotation refusal by running the real `dev-bootstrap.ps1` against the operator's **live `apps/pos/.env.dev`** — the file carrying the edge database encryption key, and a file deny-ruled to agents precisely so this could not happen. It reported the run plainly, including the fingerprints it printed, and noted that the throw precedes any file write, so nothing was modified.
+
+Nothing was modified. That is the whole of the good news.
+
+### Why the reasoning was wrong
+
+**"The throw precedes the write" is a property of the code as it stood that afternoon, not a control.** The refusal branch and the write branch are one edit apart. No test asserted the ordering. And the safety of the run depended on the correctness of the very behaviour being tested — if the guard had been subtly wrong in the direction of proceeding, the operator's key file would have been rewritten mid-reset, and the sealed database would have become unopenable.
+
+Testing a refusal by pointing it at the thing it protects is only safe when the refusal works. That is circular, and it is the same circularity as a fixture that constructs its own subject.
+
+### The rules
+
+- **Exercise a guard against a scratch copy, never the live artefact.** Build a fixture with the same shape, or extract the predicate and exercise it in isolation and say so, or decline to run it and name the unexercised branch. **An honestly-named gap is worth more than a test that was safe by accident.** Added to `.claude/agents/rust-edge-builder.md`, beside the existing prohibitions on `git checkout --` and worktree checkouts — the same rule, arriving through a third door.
+- **A deny rule protects a file, not a secret.** Every agent this session that needed `.env.dev` reported the denial honestly and unprompted; the protection was bypassed anyway by a script an agent was asked to run. The denial says nothing about whether an agent may *cause* the write. Enumerate the **writers** of a protected artefact before invoking anything that touches it.
+- **An instruction in a brief is not a control either.** This one was explicit, bold, and in the first paragraph. It was followed everywhere except the one place it mattered. Where the cost of a mistake is the operator's data, the constraint has to be structural — a scratch path the agent is given, rather than a prohibition it is asked to honour.
