@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { formatPaiseAsRupees, lineTotalPaise, parseRupeesToPaise, sumPaise } from "../money";
+import {
+  formatPaiseAsPlainDecimal,
+  formatPaiseAsRupees,
+  lineTotalPaise,
+  parseRupeesToPaise,
+  sumPaise,
+} from "../money";
 
 describe("formatPaiseAsRupees", () => {
   it("formats zero", () => {
@@ -28,6 +34,32 @@ describe("formatPaiseAsRupees", () => {
 
   it("rejects non-integer input", () => {
     expect(() => formatPaiseAsRupees(12550.5)).toThrow();
+  });
+});
+
+describe("formatPaiseAsPlainDecimal", () => {
+  it("formats a round rupee amount", () => {
+    expect(formatPaiseAsPlainDecimal(125500)).toBe("1255.00");
+  });
+
+  it("formats a sub-rupee remainder", () => {
+    expect(formatPaiseAsPlainDecimal(12505)).toBe("125.05");
+  });
+
+  it("formats a large total without float drift", () => {
+    expect(formatPaiseAsPlainDecimal(100000000)).toBe("1000000.00");
+  });
+
+  it("formats zero", () => {
+    expect(formatPaiseAsPlainDecimal(0)).toBe("0.00");
+  });
+
+  it("rejects a negative amount", () => {
+    expect(() => formatPaiseAsPlainDecimal(-100)).toThrow();
+  });
+
+  it("rejects non-integer input", () => {
+    expect(() => formatPaiseAsPlainDecimal(100.5)).toThrow();
   });
 });
 

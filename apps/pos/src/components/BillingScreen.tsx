@@ -47,6 +47,7 @@ import {
 import { useAuthStore } from "../store/auth";
 import { useCashShiftStore } from "../store/cashShift";
 import { formatIST } from "../lib/datetime";
+import { UpiPaymentQr } from "./UpiPaymentQr";
 
 const PAYMENT_METHODS: PaymentMethod[] = [
   "CASH",
@@ -727,6 +728,13 @@ export function BillingScreen() {
                 Amount Due: {formatPaiseAsRupees(due)}
                 {billFullySettled && " — settled"}
               </p>
+
+              {/* T8, demo build: customer-facing UPI QR for the exact
+                  invoice total. Renders nothing if no demo payee VPA is
+                  configured — see UpiPaymentQr / domain/upi.ts. This is not
+                  a payment integration; the cashier still records the
+                  tender separately below. */}
+              <UpiPaymentQr amountPaise={inv.grand_total_paise} note={inv.invoice_number} />
 
               <p className="print-bill">
                 <button

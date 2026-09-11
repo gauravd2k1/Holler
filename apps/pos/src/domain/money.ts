@@ -29,6 +29,28 @@ export function formatPaiseAsRupees(paise: number): string {
   return `${sign}₹${rupees}.${paiseStr}`;
 }
 
+/**
+ * Formats integer paise as a plain (no ₹ symbol, no thousands separator)
+ * decimal rupee string with exactly two digits after the point, e.g.
+ * 12550 -> "125.50", 0 -> "0.00". Uses only integer div/mod by 100 — never
+ * a float division of paise by 100.
+ *
+ * This is the shape a UPI deep link's `am` parameter needs
+ * (`upi://pay?...&am=125.50&...`), which is why it lives beside
+ * `formatPaiseAsRupees` rather than being built ad hoc at each call site
+ * (`domain/upi.ts`). Rejects a negative amount — a UPI request for a
+ * negative amount is not a thing a payment app can act on.
+ */
+export function formatPaiseAsPlainDecimal(paise: number): string {
+  assertIntegerPaise(paise);
+  if (paise < 0) {
+    throw new Error(`amount must not be negative, got ${paise} paise`);
+  }
+  const rupees = Math.trunc(paise / PAISE_PER_RUPEE);
+  const remainderPaise = paise % PAISE_PER_RUPEE;
+  return `${rupees}.${remainderPaise.toString().padStart(2, "0")}`;
+}
+
 /** Sums an array of integer paise amounts using integer addition only. */
 export function sumPaise(amounts: readonly number[]): number {
   return amounts.reduce((total, amount) => {
