@@ -25,7 +25,10 @@ const run = async () => {
   const resp = await page.goto(KDS_UI, { waitUntil: "domcontentloaded" });
   await page.waitForTimeout(2500);
   const configError = await page.locator("main.kds-config-error").count();
-  const heading = await page.getByRole("heading", { name: "Kitchen Display" }).isVisible().catch(() => false);
+  // Located by text, not by role: the KDS renders its title in a header
+  // element that carries no heading role, so getByRole("heading") finds
+  // nothing even when the app has mounted correctly.
+  const heading = await page.getByText("Kitchen Display", { exact: true }).first().isVisible().catch(() => false);
   await page.screenshot({ path: shotPath("kds-01-loaded"), fullPage: true });
   record({
     id: "S-KDS-03",
