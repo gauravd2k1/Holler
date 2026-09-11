@@ -1,10 +1,10 @@
-# Resume state — 2026-09-10
+# Resume state — 2026-09-11
 
 > ## READ THIS BLOCK FIRST. THE REST OF THIS FILE IS M5 AND EARLY-M6 HISTORY.
 >
-> **Current position: SIX of eight M6 criteria are MET. C3 is the only one still
-> open, and C2 is parked.** Phases A and B are closed. C1, C4, C5, C6, C7 and C8
-> are observed and recorded. **"Phase C is code complete" is what an earlier
+> **Current position: SEVEN of eight M6 criteria are MET. Only C2 remains, and it
+> is PARKED behind platform sandbox access.** Phases A and B are closed. C1, C3,
+> C4, C5, C6, C7 and C8 are observed and recorded on the shipping binaries. **"Phase C is code complete" is what an earlier
 > version of this block said, and C1 disproved it** — the accept path C1 needs
 > did not exist and was built on 2026-09-10, so treat any "complete" claim about
 > Phase C as unverified until its sinks are counted.
@@ -22,12 +22,14 @@
 > is the pre-fix comparison.
 >
 > - **C4 MET** — by the STRICT run, not the first attempt. See the warning below.
-> - **C3 POSITIVE HALF OBSERVED** — eight rows blocked at 5 attempts with
->   `missing_reference (HTTP 422)` on the till's own banner while a new order
->   published past all of them. **C3 is NOT closed:** its falsifier needs the same
->   fixture on the PRE-FIX binary with neighbour counts recorded both times, and
->   that exists only as a harness result (`left: [] right: ["outbox-2"]`). Nothing
->   in the working tree builds the pre-fix binary today.
+> - **C3 MET 2026-09-11, both halves.** The pre-fix binary was RECONSTRUCTED by
+>   removing the A2 line by hand (the C8 planted-branch precedent, not a worktree
+>   checkout): neighbour stranded. Restored binary (`df5e030`, `git diff` empty):
+>   neighbour landed while the refusing row stayed blocked. **Two limits are
+>   recorded with it and must survive any summary** — the reconstruction strands
+>   neighbours only for the ~50s a refused row is still being attempted, because
+>   `outbox_row_is_blocked` short-circuits before the plant; and both halves are
+>   bounded by reads rather than measured per tick.
 > - C1, C5, C6, C8 met earlier the same day; C7 closed 2026-09-07. Do not re-run.
 >
 > ### THE FIRST C4 RUN WAS REJECTED. DO NOT RESURRECT IT FROM THE TIMESTAMPS
@@ -51,6 +53,26 @@
 > C4's falsifier assumed a normal exit fires `RunEvent::Exit`, which **neither
 > Ctrl+C nor a window close does on this build**, so it never isolated an
 > abnormal path.
+>
+> ### THE FIXTURE'S REFUSAL PATH IS THE VARIANT FK, AND THAT IS ALSO THE DIVERGENCE
+>
+> Planned on the assumption that the cloud's 2-row menu seed against the edge's 43
+> was the only refusal path. **That was falsified mid-run** by an order whose menu
+> item the cloud DOES hold being refused anyway. The cloud seeds ONE
+> `menu_item_variant` row (Large, on Masala Chai); the edge mints one per item;
+> `order_item` has three foreign keys and the variant one does not resolve.
+> Reproduced in a rolled-back transaction as
+> `order_item_variant_id_fkey`. **This is the cause of the DRAFT-copy divergence
+> on both instances** — `order` has no FK to `menu_item`, so a create always
+> lands, and every `ItemAdded` since the M4 variant fix (`7e88d1c`) has been
+> refused except where the variant happens to exist. 35 historic lines carry
+> `variant_id IS NULL`, from the till that hardcoded it; 2 carry a real variant
+> and both are Chai. Filed in `docs/backlog.md` with the config-push work.
+>
+> Also learned, and it changes how run records must be read: **ringing an item
+> while a draft is open on that table APPENDS to that draft** rather than creating
+> a new order. Two Palak lines in this run landed on existing orders, which is why
+> the banner grew a second row against an id already in it.
 >
 > ### Three findings carried out of this run, all filed with the pilot trigger
 >
@@ -103,7 +125,7 @@
 > encryption key, so **the operator runs anything that needs it**, including the
 > bootstrap and the device token.
 >
-> ### After C3, in this order
+> ### NEXT, in this order
 >
 > 1. **Contracts 0.8.1 — the `order.source` widening**, on the M6 BOUNDARY LIST in
 >    `docs/m6-acceptance.md`: one CHECK widening carrying **two** values, the

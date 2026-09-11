@@ -839,7 +839,7 @@ because a CHECK widening was already pending for 0.8.1.
 |---|---|---|
 | C1 | Aggregator order bills and closes with the cloud unreachable | **MET — observed 2026-09-10**, both halves, after the accept path it needs was found MISSING and built the same day. Print evidenced by the file sink, not paper (that gate stays parked) |
 | C2 | Stock-out snoozes on ONDC staging | **PARKED** behind platform sandbox access |
-| C3 | A permanently-rejected row blocks itself and not its neighbours | **POSITIVE HALF OBSERVED 2026-09-10 (evening)**, on the shipping binaries: eight rows blocked at 5 attempts with `missing_reference (HTTP 422)` while a new order published past all of them. **The pre-fix comparison remains a harness result only** and cannot be observed without the pre-fix binary, so C3 is NOT closed |
+| C3 | A permanently-rejected row blocks itself and not its neighbours | **MET — both halves observed 2026-09-10/11** on the shipping binaries. Falsifier watched on a RECONSTRUCTED pre-fix binary (the A2 line removed by hand, C8 precedent): neighbour stranded. Restored binary (`df5e030`, `git diff` empty): neighbour landed while the refusing row stayed blocked. Neighbour counts recorded both times; reconstruction limit and precision caveat stated in the section below |
 | C4 | An offline order reaches the cloud without the operator closing the app | **MET — observed 2026-09-10 (evening)** on the shipping binaries by the strict run: order created with the cloud stopped by pid, cloud restarted, row landed inside one pump interval with the POS pid unchanged and the window never touched. An earlier run the same evening was REJECTED because a startup drain could equally explain it |
 | C5 | Supplier and pack size created in admin convert on the next receipt | **MET — observed 2026-09-10.** Falsifier watched first (`NO_SUPPLIER_ITEM` on `GRN/20260910/0001`), then absent on `GRN/20260910/0003` after the supplier item was created in the console |
 | C6 | A goods receipt is readable back in-product | **MET — observed 2026-09-10.** Screen half at step 11, edge row at step 23; every field agrees including the nulls, and the row carries `NO_PURCHASE_ORDER` only |
@@ -1074,17 +1074,15 @@ inconsistency.
 
 ## M6 C3 — a permanently-rejected row blocks itself and not its neighbours
 
-**State: POSITIVE HALF OBSERVED 2026-09-10, NOT CLOSED.** The mechanism, its
-falsifications and its commits are in the C7 table above. The positive half is
-now an outlet observation rather than a harness result — see the evening run
-below.
+**State: MET — both halves observed 2026-09-10/11 on the shipping binaries.**
+The mechanism, its falsifications and its commits are in the C7 table above.
 
 The falsifier this criterion names — *the same fixture on the pre-fix binary
-strands the neighbours, neighbour counts recorded both times* — is still
-Executed only as a harness result (`left: [] right: ["outbox-2"]`) and **not**
-as an observed outlet run. Observing it needs the pre-fix binary, which nothing
-in the working tree builds today. That is why C3 stays open despite the positive
-half being real.
+strands the neighbours, neighbour counts recorded both times* — was Executed
+only as a harness result (`left: [] right: ["outbox-2"]`) until 2026-09-11.
+Nothing in the working tree builds a pre-fix binary, so one was RECONSTRUCTED by
+removing the A2 line by hand. The full run, its reconstruction limit and its
+precision caveat are in the final section of this file.
 
 ---
 
@@ -1216,3 +1214,140 @@ Cosmetic, no data implication, filed with the other two.
 ---
 
 *Last updated 2026-09-10, during M6 Phase C.*
+
+---
+
+## M6 C3 — MET 2026-09-10/11, BOTH HALVES OBSERVED ON THE SHIPPING BINARIES
+
+Driven by Claude, with Gaurav operating the till. This closes the criterion that
+had stood at "code complete, awaiting observation" since Phase A, and whose
+positive half was observed earlier the same evening without its falsifier.
+
+### The pre-fix binary, and why it is a reconstruction rather than a checkout
+
+C3's falsifier requires the same fixture on the **pre-fix** binary. Nothing in
+the working tree builds one, so the A2 fix was removed by hand: one line in
+`edge/sync/src/worker.rs`, `if blocked.contains(&aggregate_key)` replaced by
+`if !blocked.is_empty()`, reconstructing pre-A2 GLOBAL head-of-line blocking —
+once any aggregate is refused in a tick, every row behind it is held regardless
+of which aggregate it belongs to. The C8 precedent (a planted
+`if in.Platform == "ondc"` watched RED, then removed) was followed deliberately
+over a worktree checkout, which this repository has a data-loss incident against.
+
+**The reconstruction is PARTIAL, and the limit is stated here rather than
+discovered later.** `blocked` is a `HashSet` local to `pump_outbox`
+(`worker.rs:341`), seeded only by refusals in that same call, and
+`repo::outbox_row_is_blocked` short-circuits at `worker.rs:349` BEFORE the
+plant is reached. So the plant strands neighbours only while the offending row
+is still being attempted — about 50 seconds at a 10-second tick, five attempts.
+Real pre-A2 had no per-row budget and would have wedged the neighbour
+permanently. The reconstruction therefore reproduces the SHAPE of the defect for
+a bounded window, not its duration.
+
+### The fixture, and the correction to what makes it work
+
+**The refusal path is the VARIANT foreign key, not the menu one.** This was
+assumed backwards when the run was planned — "the cloud menu seed is a token, 2
+rows against the edge's 43" — and the assumption was falsified mid-run by an
+order whose menu item the cloud DOES hold being refused anyway. The cloud holds
+exactly one `menu_item_variant` row for the seeded outlet
+(`backend/cmd/devseed/main.go:267`, Large on Masala Chai) against a variant per
+item on the edge, and `order_item` carries three foreign keys. Reproduced in a
+rolled-back transaction:
+
+```
+ERROR:  insert or update on table "order_item" violates foreign key constraint "order_item_variant_id_fkey"
+```
+
+So the fixture is: **Palak Paneer refuses** (neither its menu item nor its
+variant exists cloud-side), **plain Masala Chai succeeds** (both exist, proven
+empirically — two Chai lines carrying variant `...0013` landed during this run).
+The full finding is in `docs/backlog.md`; it is also the cause of the DRAFT-copy
+divergence recorded earlier the same evening.
+
+One behaviour to know when reading the ids below: **ringing an item while a
+draft is open on that table APPENDS to the open draft** rather than creating a
+new order. Both Palak lines therefore landed on existing orders, which is why
+the banner grows a second row against an id already in it.
+
+### Pre-fix half — THE NEIGHBOUR IS STRANDED
+
+Binary: planted `worker.rs`, POS pid 25836. Cloud up, pid 64312.
+
+| | Value |
+|---|---|
+| X (refusing row) | Palak Paneer line appended to `01a08bc4-ef94-77f1-9349-a983e447eb4b` |
+| X observed | banner, 5 attempts, `missing_reference (HTTP 422)` |
+| Y (neighbour) | `01a08e33-a7b5-7fd2-a81b-bd9534a4b846`, plain Masala Chai, created 02:02:25.077Z |
+| Banner | **11 → 12** |
+| Postgres `"order"` count | 253 at the read after Y was rung — **Y ABSENT** |
+| Y in banner | **no** |
+| Later | Y landed, count 254, only after X exhausted its five attempts |
+
+**Y was never attempted, and that is provable without the encrypted outbox.**
+Plain Masala Chai with variant `...0013` is the one line shape that succeeds
+here, and it succeeds on its first attempt. A row that succeeds on first attempt
+cannot remain unsent across roughly twelve 10-second ticks unless it was never
+sent. It drained only once X moved into `sync_outbox_block`, after which the
+short-circuit at `worker.rs:349` runs before the plant and the plant fires on
+nothing — the bounded window described above, observed from both sides.
+
+### Post-fix half — THE NEIGHBOUR IS NOT STRANDED
+
+Binary: `edge/sync/src/worker.rs` restored, `git diff` EMPTY, zero plant markers,
+built from commit **`df5e030`**. POS pid 26140, started 07:36:37. Cloud up, pid
+64312.
+
+| | Value |
+|---|---|
+| X' (refusing row) | Palak Paneer line appended to `01a08e33-a7b5-7fd2-a81b-bd9534a4b846` |
+| X' observed | banner, 5 attempts, `missing_reference (HTTP 422)` |
+| Y' (neighbour) | `01a08e3b-eecf-7d61-ad23-1dce200b32a4`, plain Masala Chai, created 02:11:27.567Z |
+| Banner | **12 → 13** |
+| Postgres `"order"` count | **254 → 255, Y' PRESENT** while X' is blocked |
+| Y' in banner | **no** |
+
+### Neighbour counts, both times — the comparison the criterion asks for
+
+| Binary | Refusing row surfaced | Neighbour reached the cloud while it was blocked |
+|---|---|---|
+| Pre-fix (planted) | yes, 5 attempts | **NO** |
+| Post-fix (`df5e030`) | yes, 5 attempts | **YES** |
+
+**A permanently-rejected row blocks itself and not its neighbours.** C3 is MET.
+
+### PRECISION CAVEAT — stated because the evidence is coarser than it reads
+
+Both halves are **bounded by reads, not measured per tick.** Y's stranding is
+established by one read showing it absent and a later read showing it present,
+about two minutes apart; Y' was first polled roughly 88 seconds after it was
+rung, so its landing is bounded at <=88s rather than pinned to a tick. **The
+verdict does not depend on this**: the pre-fix claim is "not sent across many
+ticks", which coarse reads establish, and the post-fix claim is "present while
+the refusing row is blocked", which does not need a timestamp at all.
+
+### Supplementary, NOT the criterion's evidence
+
+To remove the looseness on the post-fix side at no cost, a 2-second poll was
+started BEFORE a single plain Masala Chai was rung on the same binary: order
+`01a08e41-74c0-7991-abc5-3f4e8e557608`, created 07:47:29.536 local
+(02:17:29.536Z), observed in Postgres at **07:47:36 — about 6.5 seconds, inside
+one 10-second pump interval**, with 13 rows blocked in the banner at that moment.
+
+This is recorded as supplementary because it has no refusing row of its own: it
+measures how fast a good row lands on the fixed binary, not neighbour behaviour.
+A deliberate choice was made NOT to re-plant for a matching tick-level
+measurement of the pre-fix side — it would have cost another build cycle and
+added another permanently-blocked row to the live edge database to confirm what
+the absence already shows.
+
+### What this run cost the live database, recorded so it is not mistaken for a defect
+
+Two further permanently-blocked outbox rows (the two Palak lines), taking the
+banner from 11 to 13. Both are `missing_reference` on the variant foreign key
+and are the fixture, not a fault. Nothing was seeded to make them go away, per
+the standing rule that the drift is the stimulus.
+
+---
+
+*Last updated 2026-09-11, during M6 Phase C.*
