@@ -82,6 +82,12 @@ export function App() {
 
   return (
     <main className="kds-screen">
+      <header className="holler-header">
+        <div className="holler-header__brand">
+          <img src="/holler_no_bg.png" alt="Holler" className="holler-logo" />
+          <span>Kitchen Display</span>
+        </div>
+      </header>
       {/* Permanent status indicator, unlike `ConnectionBanner` (which hides
           itself once connected so a healthy screen isn't cluttered). This one
           stays in the DOM in every state, including "connected", so a smoke

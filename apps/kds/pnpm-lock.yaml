@@ -11,6 +11,9 @@ importers:
       '@holler/contracts':
         specifier: file:../../packages/contracts
         version: file:../../packages/contracts
+      '@holler/ui':
+        specifier: file:../../packages/ui
+        version: file:../../packages/ui
       react:
         specifier: ^18.3.0
         version: 18.3.1
@@ -347,6 +350,9 @@ packages:
 
   '@holler/contracts@file:../../packages/contracts':
     resolution: {directory: ../../packages/contracts, type: directory}
+
+  '@holler/ui@file:../../packages/ui':
+    resolution: {directory: ../../packages/ui, type: directory}
 
   '@humanfs/core@0.19.2':
     resolution: {integrity: sha512-UhXNm+CFMWcbChXywFwkmhqjs3PRCmcSa/hfBgLIb7oQ5HNb1wS0icWsGtSAUNgefHeI+eBrA8I1fxmbHsGdvA==}
@@ -1669,6 +1675,8 @@ snapshots:
   '@holler/contracts@file:../../packages/contracts':
     dependencies:
       zod: 3.25.76
+
+  '@holler/ui@file:../../packages/ui': {}
 
   '@humanfs/core@0.19.2':
     dependencies:
