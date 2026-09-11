@@ -175,8 +175,12 @@
 > POS comes up with **sync silently disabled**. The working sequence and its
 > four traps are in `docs/M6 kickoff.md`; the defect is in `docs/backlog.md`.
 >
-> Contracts FROZEN at **v0.8.0** (ADR-022, M6 Phase C aggregator shapes);
-> migrations through **sqlite 0034 / postgres 0034**.
+> Contracts FROZEN at **v0.8.1** (ADR-022 M6 Phase C aggregator shapes;
+> ADR-026 the `order.source` widening); migrations through **sqlite 0035 /
+> postgres 0035**. Note 0035 is applied in POSTGRES and NOT YET on the live
+> edge database: the widening has no writer, so the edge takes it at the next
+> clean bootstrap rather than rebuilding a live file with no trustworthy
+> backup (see `docs/backlog.md`).
 
 ---
 
@@ -223,7 +227,7 @@
 > involved, and no retry budget was ever at risk — transport failures are
 > classified transient and charge nothing.
 
-Contracts are **FROZEN at v0.8.0** (ADR-022, M6 Phase C aggregator shapes; ADR-024 M6 Phase B admin routes;
+Contracts are **FROZEN at v0.8.1** (ADR-026 the `order.source` widening; ADR-022 M6 Phase C aggregator shapes; ADR-024 M6 Phase B admin routes;
 ADR-021 remains the M5 baseline); migrations run
 through **sqlite 0031 / postgres 0031**. **ALL 16 CI JOBS ARE GREEN** as of
 `310d3a1` (run 33335138157, 2026-08-30) — the first fully green run in the
@@ -771,7 +775,7 @@ database, and the fail-fast CI job shape that hid four pushes of verdicts.
 counter reset; `formatter_never_repeats_past_the_old_wrap_point` drives past the
 old collision point (25975).
 
-**Contracts are FROZEN at v0.8.0**, cross-checked against
+**Contracts are FROZEN at v0.8.1**, cross-checked against
 `packages/contracts/package.json` by `scripts/check-milestone-marker.mjs` — which
 caught this very line claiming 0.6.2 after the bump, and failed CI for it.
 

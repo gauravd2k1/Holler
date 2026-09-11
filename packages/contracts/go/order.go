@@ -20,11 +20,30 @@ const (
 type OrderSource string
 
 const (
-	OrderSourcePOS              OrderSource = "POS"
-	OrderSourceQR               OrderSource = "QR"
+	OrderSourcePOS OrderSource = "POS"
+	OrderSourceQR  OrderSource = "QR"
+	// Deprecated: OrderSourceAggregatorZomato names one platform in a schema
+	// that is otherwise platform-agnostic. Use OrderSourceAggregator, whose
+	// platform is carried by aggregator_order.platform and
+	// order.source_payload_json. Kept because removing a CHECK member is a
+	// breaking change; removal trigger is the next breaking contracts bump
+	// (ADR-026). Nothing has ever written it.
 	OrderSourceAggregatorZomato OrderSource = "AGGREGATOR_ZOMATO"
+	// Deprecated: see OrderSourceAggregatorZomato. Same reason, same removal
+	// trigger, also never written.
 	OrderSourceAggregatorSwiggy OrderSource = "AGGREGATOR_SWIGGY"
 	OrderSourceDirect           OrderSource = "DIRECT"
+	// OrderSourceAggregator is every aggregator channel without exception. One
+	// generic member rather than one per platform: aggregator_order.platform is
+	// free TEXT precisely so a new platform needs no migration (contracts
+	// 0032), and the aggregator boundary check keeps platform names out of the
+	// core. NO WRITER EMITS THIS YET — the accept path still writes
+	// OrderSourceDirect until it is switched in its own change (ADR-026).
+	OrderSourceAggregator OrderSource = "AGGREGATOR"
+	// OrderSourceTableTab is an order a customer placed from a table device
+	// (ADR-025, PROPOSED). NO WRITER EMITS THIS YET and none exists: the member
+	// lands ahead of the code so the widening is one migration rather than two.
+	OrderSourceTableTab OrderSource = "TABLE_TAB"
 )
 
 // OrderStatus mirrors docs/domain/ORDER_STATE_MACHINE.md. Do not add states

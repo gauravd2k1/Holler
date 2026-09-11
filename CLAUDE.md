@@ -60,7 +60,7 @@ The split that matters: WSL2 hosts the **cloud** dependencies for local developm
 - POS: `pnpm test` / `pnpm tauri dev` inside `apps/pos/`.
 - CI: lint, format, unit, integration, contract-drift check, build, security scan.
 
-## Contracts status: FROZEN at v0.8.0 (M6 Phase C aggregator shapes, ADR-022; migrations through sqlite 0034 / postgres 0034)
+## Contracts status: FROZEN at v0.8.1 (M6 Phase C aggregator shapes ADR-022, `order.source` widening ADR-026; migrations through sqlite 0035 / postgres 0035)
 <!-- The version and migration numbers on the heading above are checked by
      scripts/check-milestone-marker.mjs against packages/contracts/package.json
      and the migration files on disk. Third staleness of this line (0.4.7,
@@ -135,6 +135,43 @@ v0.6.0 (ADR-019) added the Milestone 5 procurement shapes — `supplier`, `suppl
 - **`GET /procurement/goods-receipts` serves a REPLICA and every surface must label it as one.** A GRN is edge-authoritative (ADR-019); the cloud holds a copy, the outlet's own view may legitimately differ, and the two are **shown and labelled, never reconciled**. Read-only: a receipt is corrected by an appended `purchase_return`, never an edit. All three quantity fields travel — `entered_quantity_micro`, `base_quantity_micro`, `pack_size_micro_applied` — because "what did they actually type?" must stay answerable from the row, and the nullable `purchase_order_id`/`supplier_id`/`purchase_order_line_id` are served **as nulls**, because a GRN never blocks on a PO and no read path may imply it did.
 - **`ErrorCode` is an enum now, and the edge classifier must read the generated set, not string literals.** The error body was `{ code: string, message: string }` with no enumeration while the edge branched on the value, so a cloud-side rename was a silent behaviour change no drift test could see. **An enum nothing consumes is a column nothing reads** (0.5.2's rule, pointed at a wire field).
 - **THE CONFIG PULL NOW HAS A PRODUCTION CALLER, AND UNTIL 0.7.0 IT HAD NONE.** `config::pull_and_apply_config` had existed since M1 with exactly one caller in the repository — a test — so a price edited in the cloud never reached a till. It is now driven by the A5 periodic loop, inside the same database lock as the outbox pump so a config apply and a pump cannot interleave on one connection. **A failed pull is logged and nothing else**: the till keeps its last applied config and carries on selling, because an outlet with no uplink is the normal case (ADR-013). Note what apply does and does not do: it **upserts, it does not prune** — a menu item deleted in the cloud is never removed from an edge, which is why the dev seed's extra items survive a pull and why C7's seed drift is still there (C7 is closed; the drift is no longer needed).
+
+**0.8.1** (ADR-026) widened the `order.source` CHECK with **`AGGREGATOR`** and
+**`TABLE_TAB`**. Four rules bind every builder:
+- **ONE GENERIC AGGREGATOR MEMBER, NEVER ONE PER PLATFORM.** `aggregator_order.platform`
+  is free TEXT precisely so a new platform needs no migration (0032), and the
+  boundary check exists to keep platform names out of the core. A
+  platform-named member re-imports that rejected decision AND becomes a new lie
+  the first time a different platform arrives down the same path — which is the
+  defect being fixed, under a new name. The platform is already recorded twice,
+  in `aggregator_order.platform` and `order.source_payload_json`.
+- **THE TWO PLATFORM-NAMED MEMBERS ARE DEPRECATED, NOT REMOVED** — removal is
+  breaking; the trigger is the next breaking bump. Nothing has ever written
+  either, and that claim is ENFORCED rather than asserted: the postgres
+  migration raises and the SQLite pre-condition refuses to run if any row
+  carries one. A deprecation note that silently widens over live data it claims
+  does not exist was false when it was written.
+- **NOTHING WRITES EITHER NEW MEMBER YET, and that is pinned by exact
+  assertion.** The accept path still writes `DIRECT`; `TABLE_TAB` has no code at
+  all. `scripts/check-order-source-drift.mjs` fails the build if anything under
+  `edge/` or `apps/pos/src-tauri/src` emits one, and the writer that starts
+  writing one removes it from that list IN THE SAME COMMIT — forced removal, not
+  remembered removal.
+- **SQLite cannot ALTER a CHECK, so 0035 REBUILDS the order table** and proves
+  its own guarantees: row count, a sampled row compared column for column with
+  nulls encoded, all four indexes restored, and the CHECK watched REJECTING a
+  real INSERT inside a rolled-back savepoint. Note the difference from 0030 —
+  the order table carries NO triggers, so there is no append-only guard to watch
+  fire and the CHECK is the only live guard there is.
+
+0.8.1 also closed two holes in the aggregator boundary check, both found by
+planting a value and watching it pass: **`packages/contracts` was outside
+`SEARCH_ROOTS` and `.sql` outside its extensions**, so the shared schema — where
+a platform name binds every consumer at once — was the one place it could not
+see; and **a word-boundary match on `ondc` cannot match `AGGREGATOR_ONDC`**, because `_` is a word
+character, so an enum member named for a platform passed cleanly. Platform names
+now match with separator-aware lookarounds; protocol tokens keep the word-boundary match, so a
+trigger named `..._on_update` is not read as a Beckn callback.
 
 Two cross-cutting rules the 0.4.x line established the hard way: contract-shaped changes cascade across crates that do not share a cargo workspace (see `docs/retro.md` 2026-08-15), so run `make check-seams` after changing any `pub` signature in `edge/` or `apps/pos/src-tauri`; and a migration that exists on disk but is absent from `edge/database/src/migrations.rs`'s `MIGRATIONS` list **never applies** — 0009–0011 sat dead for exactly that reason, and 0005 before them.
 

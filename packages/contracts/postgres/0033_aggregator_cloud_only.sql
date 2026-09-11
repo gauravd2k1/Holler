@@ -78,7 +78,8 @@ CREATE TABLE aggregator_callback_receipt (
     tenant_id      UUID NOT NULL REFERENCES tenant(id),
     platform       TEXT NOT NULL,
 
-    -- The platform's own message identifier. Beckn calls it message_id; a
+    -- The platform's own message identifier. The async protocol calls it
+    -- message_id; a
     -- sync-REST platform calls it something else. The column is named for what
     -- it does here, not for what any one platform calls it -- platform
     -- vocabulary belongs inside its adapter (C-4).

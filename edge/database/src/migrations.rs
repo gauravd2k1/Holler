@@ -200,6 +200,14 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0034_aggregator_mirror_is_pure.sql",
         include_str!("../../../packages/contracts/sqlite/0034_aggregator_mirror_is_pure.sql"),
     ),
+    // contracts 0.8.1 (ADR-026). Widens the `order.source` CHECK with
+    // AGGREGATOR and TABLE_TAB. SQLite cannot ALTER a CHECK, so this is a
+    // REBUILD of the order table -- see the pre- and post-conditions either
+    // side of `execute_batch` in `apply_all`.
+    (
+        "0035_order_source_widened.sql",
+        include_str!("../../../packages/contracts/sqlite/0035_order_source_widened.sql"),
+    ),
 ];
 
 /// Applies any migrations not yet reflected in `PRAGMA user_version`. Safe
@@ -218,10 +226,22 @@ pub fn apply_all(conn: &Connection) -> DbResult<()> {
     }
 
     for (name, sql) in MIGRATIONS.iter().skip(current) {
+        // 0035 rebuilds the order table, so its before-state must be captured
+        // BEFORE the batch runs -- afterwards the old table no longer exists
+        // and "did the rebuild carry everything across?" is unanswerable.
+        let order_rebuild_before = if *name == "0035_order_source_widened.sql" {
+            Some(capture_order_rebuild_preconditions(conn)?)
+        } else {
+            None
+        };
+
         conn.execute_batch(sql)
             .map_err(|e| DbError::Migration(format!("applying {name}: {e}")))?;
         if *name == "0030_ledger_line_total.sql" {
             assert_ledger_rebuild_survived(conn)?;
+        }
+        if let Some(before) = order_rebuild_before {
+            assert_order_rebuild_survived(conn, &before)?;
         }
         let applied = MIGRATIONS
             .iter()
@@ -229,6 +249,178 @@ pub fn apply_all(conn: &Connection) -> DbResult<()> {
             .expect("name is from MIGRATIONS")
             + 1;
         conn.pragma_update(None, "user_version", applied as i64)?;
+    }
+
+    Ok(())
+}
+
+/// What the order table looked like before 0035 rebuilt it.
+///
+/// Captured rather than re-derived, because every property worth checking is a
+/// COMPARISON: a row count means nothing on its own, and "the sampled row is
+/// intact" cannot be asserted against a table that has already been replaced.
+struct OrderRebuildPreconditions {
+    row_count: i64,
+    /// One row, every column concatenated with a separator, chosen
+    /// deterministically by `id` so the same row is compared on both sides.
+    /// `None` when the table is empty -- a fresh database being migrated has
+    /// nothing to sample and that is not a failure.
+    sample: Option<(String, String)>,
+}
+
+/// Reads the before-state for 0035, and REFUSES TO PROCEED if any row carries a
+/// deprecated member.
+///
+/// ADR-026 deprecates the two platform-named members of `order.source` on the
+/// stated basis that nothing has ever written either. If that is wrong, the
+/// right outcome is a stopped migration and a human reading this message -- not
+/// a widening that silently carries the rows across and leaves a deprecation
+/// note that was false when it was written. The postgres half raises for the
+/// same reason.
+///
+/// The query matches by SHAPE (`AGGREGATOR_` + a suffix) rather than naming the
+/// platforms. Two reasons, and the second is the better one: the aggregator
+/// boundary check forbids platform vocabulary in edge code, and a shape match
+/// also catches a platform-named member added later, which a literal list would
+/// silently miss. `AGGREGATOR` itself carries no underscore and is not matched.
+fn capture_order_rebuild_preconditions(conn: &Connection) -> DbResult<OrderRebuildPreconditions> {
+    let legacy: i64 = conn.query_row(
+        // GLOB, not LIKE: in GLOB `_` is a literal and `*` is the wildcard, so
+        // this needs no ESCAPE clause and cannot be broken by one. Matches
+        // `AGGREGATOR_` followed by at least one character -- every
+        // platform-named member, present or future. Plain `AGGREGATOR` has no
+        // underscore and is not matched.
+        r#"SELECT COUNT(*) FROM "order" WHERE source GLOB 'AGGREGATOR_?*'"#,
+        [],
+        |r| r.get(0),
+    )?;
+    if legacy > 0 {
+        return Err(DbError::Migration(format!(
+            "0035: {legacy} order row(s) carry a DEPRECATED platform-named source member (ADR-026 deprecates them on the stated basis that nothing has ever written one). Stop and report rather than widening over live data the note claims does not exist."
+        )));
+    }
+
+    let row_count: i64 = conn.query_row("SELECT COUNT(*) FROM \"order\"", [], |r| r.get(0))?;
+
+    let sample = if row_count > 0 {
+        Some(conn.query_row(
+            "SELECT id, id || '|' || outlet_id || '|' || device_id || '|' || order_type || '|' ||
+                    status || '|' || COALESCE(table_id,'~') || '|' || subtotal_paise || '|' ||
+                    discount_paise || '|' || taxes_paise || '|' || total_paise || '|' || version || '|' ||
+                    sync_status || '|' || created_at || '|' || updated_at || '|' || source || '|' ||
+                    COALESCE(external_order_id,'~') || '|' || payment_status || '|' ||
+                    COALESCE(payment_source,'~') || '|' || COALESCE(confirmed_at,'~') || '|' ||
+                    COALESCE(source_payload_json,'~') || '|' || schema_version || '|' ||
+                    COALESCE(preparation_time_minutes,'~') || '|' || COALESCE(display_number,'~')
+             FROM \"order\" ORDER BY id LIMIT 1",
+            [],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        )?)
+    } else {
+        None
+    };
+
+    Ok(OrderRebuildPreconditions { row_count, sample })
+}
+
+/// Proves that the 0035 rebuild carried the order table across intact.
+///
+/// Four properties, each of which a rebuild can lose SILENTLY while every test
+/// in the suite still passes -- the 0029/0030 lesson applied to a second table:
+///
+/// 1. **Row count.** A `SELECT` that quietly dropped rows (a mistyped column
+///    list, a `WHERE` that should not be there) leaves a smaller table that
+///    looks entirely normal.
+/// 2. **A sampled row, compared byte for byte.** Column ORDER matters in an
+///    `INSERT ... SELECT`, and two columns of the same type swapped produce a
+///    table that is the right size, the right shape, and wrong. Nulls are
+///    encoded rather than skipped so a null that became a value (or the
+///    reverse) shows up as a difference.
+/// 3. **The four indexes.** `DROP TABLE` takes them with it.
+/// 4. **The widened CHECK actually rejects.** Note what is NOT asserted here:
+///    the order table carries NO triggers, so unlike `stock_ledger_entry` there
+///    is no append-only guard to watch fire. The CHECK is the only live guard
+///    on this table, so a real INSERT of a value outside the set is attempted
+///    and required to be REJECTED -- a `sqlite_master` name lookup would pass
+///    against a CHECK that was rebuilt empty.
+fn assert_order_rebuild_survived(
+    conn: &Connection,
+    before: &OrderRebuildPreconditions,
+) -> DbResult<()> {
+    let after: i64 = conn.query_row("SELECT COUNT(*) FROM \"order\"", [], |r| r.get(0))?;
+    if after != before.row_count {
+        return Err(DbError::Migration(format!(
+            "0035 changed the order row count: {} before, {after} after. The rebuild's INSERT ... SELECT did not carry every row.",
+            before.row_count
+        )));
+    }
+
+    if let Some((id, expected)) = &before.sample {
+        let actual: String = conn.query_row(
+            "SELECT id || '|' || outlet_id || '|' || device_id || '|' || order_type || '|' ||
+                    status || '|' || COALESCE(table_id,'~') || '|' || subtotal_paise || '|' ||
+                    discount_paise || '|' || taxes_paise || '|' || total_paise || '|' || version || '|' ||
+                    sync_status || '|' || created_at || '|' || updated_at || '|' || source || '|' ||
+                    COALESCE(external_order_id,'~') || '|' || payment_status || '|' ||
+                    COALESCE(payment_source,'~') || '|' || COALESCE(confirmed_at,'~') || '|' ||
+                    COALESCE(source_payload_json,'~') || '|' || schema_version || '|' ||
+                    COALESCE(preparation_time_minutes,'~') || '|' || COALESCE(display_number,'~')
+             FROM \"order\" WHERE id = ?1",
+            [id],
+            |r| r.get(0),
+        )?;
+        if &actual != expected {
+            return Err(DbError::Migration(format!(
+                "0035 did not carry order {id} across unchanged.\n  before: {expected}\n  after:  {actual}\nA column-order mistake in the rebuild's INSERT ... SELECT produces exactly this."
+            )));
+        }
+    }
+
+    for index in [
+        "idx_order_outlet_id",
+        "idx_order_sync_status",
+        "idx_order_display_number",
+        "idx_order_external_order_id",
+    ] {
+        let present: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?1 AND tbl_name = 'order'",
+            [index],
+            |r| r.get(0),
+        )?;
+        if present == 0 {
+            return Err(DbError::Migration(format!(
+                "0035 did not restore index {index} on the order table. DROP TABLE takes indexes with it in silence."
+            )));
+        }
+    }
+
+    // A real INSERT, rejected. The row is written inside a savepoint that is
+    // always rolled back, so this probe cannot leave anything behind whether it
+    // is rejected or (wrongly) accepted.
+    conn.execute_batch("SAVEPOINT order_check_probe")?;
+    let probe = conn.execute(
+        "INSERT INTO \"order\" (id, outlet_id, device_id, order_type, status, created_at, updated_at, source)
+         VALUES ('00000000-0000-0000-0000-0000000035ca', 'probe-outlet', 'probe-device', 'DINE_IN', 'DRAFT', '1970-01-01T00:00:00Z', '1970-01-01T00:00:00Z', 'NOT_A_SOURCE')",
+        [],
+    );
+    conn.execute_batch("ROLLBACK TO order_check_probe; RELEASE order_check_probe")?;
+    match probe {
+        Ok(_) => {
+            return Err(DbError::Migration(
+                "0035 left the order table with NO source CHECK: an INSERT of 'NOT_A_SOURCE' succeeded. The rebuild carried the column but not its constraint."
+                    .to_string(),
+            ))
+        }
+        Err(e) => {
+            let message = e.to_string();
+            // A foreign key or NOT NULL rejection would also be an Err, and
+            // would hide a missing CHECK behind an unrelated failure.
+            if !message.to_ascii_uppercase().contains("CHECK") {
+                return Err(DbError::Migration(format!(
+                    "0035: an INSERT with an invalid source was rejected, but not by a CHECK constraint: {message}"
+                )));
+            }
+        }
     }
 
     Ok(())
@@ -328,6 +520,153 @@ mod tests {
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
         assert_eq!(version_after_second, version_after_first);
+    }
+
+    /// Applies every migration EXCEPT 0035, so a test can put rows in the old
+    /// order table and then watch the rebuild carry them.
+    ///
+    /// `apply_all` is all-or-nothing by design, so this walks the list itself.
+    /// It deliberately does NOT duplicate the SQL: it runs the same
+    /// `MIGRATIONS` entries, stopping one short.
+    fn apply_through_0034(conn: &Connection) {
+        let upto = MIGRATIONS
+            .iter()
+            .position(|(name, _)| *name == "0035_order_source_widened.sql")
+            .expect("0035 is registered");
+        for (name, sql) in MIGRATIONS.iter().take(upto) {
+            conn.execute_batch(sql)
+                .unwrap_or_else(|e| panic!("applying {name}: {e}"));
+        }
+        conn.pragma_update(None, "user_version", upto as i64)
+            .expect("user_version");
+    }
+
+    fn insert_order(conn: &Connection, id: &str, source: &str, display_number: Option<&str>) {
+        conn.execute(
+            "INSERT INTO outlet (id, brand_id, name, timezone, config_version, created_at, updated_at)
+             SELECT 'o1','b1','Test','Asia/Kolkata',1,'1970-01-01T00:00:00Z','1970-01-01T00:00:00Z'
+             WHERE NOT EXISTS (SELECT 1 FROM outlet WHERE id='o1')",
+            [],
+        )
+        .expect("outlet");
+        conn.execute(
+            "INSERT INTO device (id, outlet_id, kind, name, created_at)
+             SELECT 'd1','o1','POS','Till','1970-01-01T00:00:00Z'
+             WHERE NOT EXISTS (SELECT 1 FROM device WHERE id='d1')",
+            [],
+        )
+        .expect("device");
+        conn.execute(
+            "INSERT INTO \"order\" (id, outlet_id, device_id, order_type, status, table_id,
+                 subtotal_paise, discount_paise, taxes_paise, total_paise, version, sync_status,
+                 created_at, updated_at, source, external_order_id, payment_status, payment_source,
+                 confirmed_at, source_payload_json, schema_version, preparation_time_minutes, display_number)
+             VALUES (?1,'o1','d1','DINE_IN','DRAFT',NULL,10000,0,500,10500,1,'PENDING',
+                 '2026-09-11T02:00:00Z','2026-09-11T02:00:00Z',?2,NULL,'UNPAID',NULL,NULL,NULL,1,NULL,?3)",
+            rusqlite::params![id, source, display_number],
+        )
+        .expect("order");
+    }
+
+    /// 0035 rebuilds the order table, and a rebuild that drops rows, reorders
+    /// columns or loses the CHECK passes every other test in this file. This is
+    /// the only test that watches it happen WITH DATA PRESENT -- every other
+    /// test migrates an empty database, where the sample comparison has nothing
+    /// to compare and the row count is 0 on both sides.
+    #[test]
+    fn migration_0035_carries_the_order_table_across_intact() {
+        let conn = Connection::open_in_memory().expect("open");
+        configure_connection(&conn).expect("pragmas");
+        apply_through_0034(&conn);
+
+        insert_order(&conn, "01a08e41-0000-7000-8000-00000000a001", "POS", Some("A1"));
+        insert_order(&conn, "01a08e41-0000-7000-8000-00000000a002", "DIRECT", None);
+
+        let before: String = conn
+            .query_row(
+                "SELECT total_paise || '|' || source || '|' || COALESCE(display_number,'~')
+                 FROM \"order\" WHERE id = '01a08e41-0000-7000-8000-00000000a001'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("before");
+
+        apply_all(&conn).expect("0035 applies, and its own assertions pass");
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM \"order\"", [], |r| r.get(0))
+            .expect("count");
+        assert_eq!(count, 2, "the rebuild must carry every row");
+
+        let after: String = conn
+            .query_row(
+                "SELECT total_paise || '|' || source || '|' || COALESCE(display_number,'~')
+                 FROM \"order\" WHERE id = '01a08e41-0000-7000-8000-00000000a001'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("after");
+        assert_eq!(after, before, "a column-order slip in INSERT ... SELECT looks exactly like this");
+    }
+
+    /// ADR-026 deprecates the platform-named members on the stated basis that
+    /// nothing has ever written one, and 0035's pre-condition REFUSES TO RUN if
+    /// that turns out to be false. A guard nobody has watched refuse is not a
+    /// guard -- and this one is the only thing standing between a false
+    /// deprecation note and a silent widening over live data.
+    #[test]
+    fn migration_0035_refuses_to_run_over_a_deprecated_source_member() {
+        let conn = Connection::open_in_memory().expect("open");
+        configure_connection(&conn).expect("pragmas");
+        apply_through_0034(&conn);
+
+        insert_order(
+            &conn,
+            "01a08e41-0000-7000-8000-00000000c001",
+            "AGGREGATOR_ZOMATO",
+            None,
+        );
+
+        let err = apply_all(&conn).expect_err("0035 must refuse to widen over a deprecated member");
+        let message = err.to_string();
+        assert!(
+            message.contains("0035") && message.contains("DEPRECATED"),
+            "the refusal must name the migration and the reason, so whoever sees it knows what to report: {message}"
+        );
+
+        // And it must have stopped BEFORE widening: the CHECK is still the old
+        // one, so a new member is still rejected.
+        let widened = conn.execute(
+            "INSERT INTO \"order\" (id, outlet_id, device_id, order_type, status, created_at, updated_at, source)
+             VALUES ('01a08e41-0000-7000-8000-00000000c002','o1','d1','DINE_IN','DRAFT','1970-01-01T00:00:00Z','1970-01-01T00:00:00Z','TABLE_TAB')",
+            [],
+        );
+        assert!(
+            widened.is_err(),
+            "a refused migration must leave the schema untouched -- half-applying the widening is worse than not applying it"
+        );
+    }
+
+    /// The two members contracts 0.8.1 adds must be ACCEPTED by the widened
+    /// CHECK, and a value outside the set must still be REJECTED. Both halves
+    /// matter: a rebuild that dropped the CHECK entirely would accept the new
+    /// members too, and would pass a test that only checked the happy path.
+    #[test]
+    fn migration_0035_widens_the_source_check_without_opening_it() {
+        let conn = Connection::open_in_memory().expect("open");
+        configure_connection(&conn).expect("pragmas");
+        apply_all(&conn).expect("apply");
+
+        insert_order(&conn, "01a08e41-0000-7000-8000-00000000b001", "AGGREGATOR", None);
+        insert_order(&conn, "01a08e41-0000-7000-8000-00000000b002", "TABLE_TAB", None);
+
+        let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            insert_order(&conn, "01a08e41-0000-7000-8000-00000000b003", "NOT_A_SOURCE", None);
+        }));
+        assert!(
+            err.is_err(),
+            "the widened CHECK must still reject a value outside the set -- a rebuild that lost the constraint accepts everything and looks fine"
+        );
     }
 
     #[test]

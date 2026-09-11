@@ -180,6 +180,18 @@ jobs:
       # its first run.
       - name: platform vocabulary stays inside its adapter
         run: node scripts/check-aggregator-boundary.mjs
+      # order.source is declared FIVE times -- a CHECK in each store, a Zod
+      # enum, a Go const block and an OpenAPI enum -- and nothing made them
+      # agree. A member present in one store and absent from the other is a row
+      # one side writes and the other refuses, which surfaces as a replay
+      # failure on a till hours later rather than as a red build. This also pins
+      # AGGREGATOR and TABLE_TAB as having NO WRITER (contracts 0.8.1,
+      # ADR-026): they exist in the schema ahead of their code, so "declared but
+      # never emitted" is the correct state and has to be asserted, not assumed.
+      # Watched RED against a member removed from one store before it was
+      # trusted.
+      - name: order.source agrees across both stores and all three wire types
+        run: node scripts/check-order-source-drift.mjs
       # The Go guard in backend/cmd/api/syncconfig_guard_test.go proves the
       # cloud SENDS a config column. It cannot prove an outlet STORES it, and
       # at 0.6.0 four procurement families passed that guard, shipped in every

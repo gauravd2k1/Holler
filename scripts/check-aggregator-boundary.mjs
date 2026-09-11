@@ -23,12 +23,26 @@ const ROOT = process.cwd();
 
 // Searched for leaks. Deliberately NOT the whole repository: the contracts
 // package, the docs and this script itself all legitimately discuss platforms.
-const SEARCH_ROOTS = ["backend/internal", "backend/cmd", "edge", "apps/pos/src", "apps/admin/src"];
+// packages/contracts was OUTSIDE this list until contracts 0.8.1, and .sql was
+// outside EXTENSIONS, so the shared schema -- the one place a platform name
+// would be hardest to remove later and would bind every consumer at once --
+// was the one place this check could not see. Found while widening
+// `order.source`: a per-platform member such as AGGREGATOR_ONDC would have
+// landed in both stores with the boundary check green. Watched failing against
+// a planted member before this line was added (ADR-026).
+const SEARCH_ROOTS = [
+  "backend/internal",
+  "backend/cmd",
+  "edge",
+  "apps/pos/src",
+  "apps/admin/src",
+  "packages/contracts",
+];
 
 // The one place platform vocabulary is allowed to live.
 const ADAPTER_DIR = join("backend", "internal", "aggregators", "adapters");
 
-const EXTENSIONS = new Set([".go", ".ts", ".tsx", ".rs"]);
+const EXTENSIONS = new Set([".go", ".ts", ".tsx", ".rs", ".sql", ".yaml"]);
 
 // Word-boundary matched, case-insensitive. Two groups, and the distinction
 // matters when reading a failure:
@@ -67,8 +81,68 @@ const FORBIDDEN = [
   "x-gateway-authorization",
 ];
 
-const pattern = new RegExp(`\\b(${FORBIDDEN.map((t) => t.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&")).join("|")})\\b`, "i");
+// TWO patterns, because the two groups need different boundary rules.
+//
+// PLATFORM NAMES are separator-aware: `` treats `_` as a word character, so
+// `ondc` does NOT match AGGREGATOR_ONDC, ondc_platform or PLATFORM_ONDC --
+// which is to say it misses the single most likely way a platform name enters a
+// shared schema, as part of an enum member. Found by planting AGGREGATOR_ONDC
+// in packages/contracts and watching this check stay GREEN (contracts 0.8.1,
+// ADR-026).
+//
+// PROTOCOL TOKENS keep ``. `on_update` in its Beckn sense is a standalone
+// callback name; `order_item_quantity_is_bounded_on_update` is a trigger whose
+// name happens to end that way, and flagging it would teach everyone to ignore
+// this check -- the failure mode of a check that cries wolf is that it stops
+// being read at all.
+const PROTOCOL_TOKENS = new Set([
+  "beckn",
+  "on_search", "on_select", "on_init", "on_confirm", "on_status", "on_cancel",
+  "on_update", "on_track", "on_rating", "on_support", "on_subscribe",
+  "bpp_id", "bap_id", "bpp_uri", "bap_uri", "x-gateway-authorization",
+]);
 
+const escapeToken = (t) => t.replace(/[-/\^$*+?.()|[\]{}]/g, "\$&");
+const platformNames = FORBIDDEN.filter((t) => !PROTOCOL_TOKENS.has(t));
+const protocolTokens = FORBIDDEN.filter((t) => PROTOCOL_TOKENS.has(t));
+
+const patterns = [
+  new RegExp(`(?<![A-Za-z0-9])(${platformNames.map(escapeToken).join("|")})(?![A-Za-z0-9])`, "i"),
+  new RegExp(`\b(${protocolTokens.map(escapeToken).join("|")})\b`, "i"),
+];
+
+// The DEPRECATED members of order.source (ADR-026). AGGREGATOR_ZOMATO and
+// AGGREGATOR_SWIGGY name platforms in the shared schema and are exactly what
+// this check exists to prevent -- but they were written in contracts 0004,
+// nothing has ever emitted either, and REMOVING a CHECK member is a breaking
+// change. They are carried, deprecated, until the next breaking bump.
+//
+// The exemption is deliberately NARROW: declaration files under
+// packages/contracts only. The same member appearing in backend, edge or app
+// code is still a violation, because that would be the core branching on a
+// platform rather than a schema carrying a legacy value.
+//
+// REMOVAL TRIGGER: the next breaking contracts bump removes both members, and
+// removes this exemption in the same commit. An exemption that outlives its
+// reason is a silenced failure (contracts 0.6.0).
+const DEPRECATED_MEMBER_LINE = /AGGREGATOR_(ZOMATO|SWIGGY)/;
+const EXEMPT_ROOT = "packages/contracts";
+
+// The ONE file outside packages/contracts that may name a deprecated member:
+// the migration runner that refuses to widen over one. Its guard has a test,
+// and a test proving "the migration stops when a row carries this member"
+// cannot be written without naming the member -- the pre-0035 CHECK admits only
+// the original five, so no stand-in value can reach the guard at all.
+//
+// Same removal trigger as the members themselves: the next breaking contracts
+// bump deletes both members, this exemption and that test together.
+const DEPRECATION_GUARD_FILE = "edge/database/src/migrations.rs";
+
+function isExempt(rel, line) {
+  if (!DEPRECATED_MEMBER_LINE.test(line)) return false;
+  const path = rel.split(sep).join("/");
+  return path.startsWith(EXEMPT_ROOT) || path === DEPRECATION_GUARD_FILE;
+}
 function walk(dir, out) {
   let entries;
   try {
@@ -108,8 +182,14 @@ for (const file of files) {
 
   const lines = readFileSync(file, "utf8").split(/\r?\n/);
   lines.forEach((line, i) => {
-    const m = line.match(pattern);
-    if (m) violations.push({ file: rel, line: i + 1, token: m[1], text: line.trim().slice(0, 120) });
+    if (isExempt(rel, line)) return;
+    for (const pattern of patterns) {
+      const m = line.match(pattern);
+      if (m) {
+        violations.push({ file: rel, line: i + 1, token: m[1], text: line.trim().slice(0, 120) });
+        break;
+      }
+    }
   });
 }
 

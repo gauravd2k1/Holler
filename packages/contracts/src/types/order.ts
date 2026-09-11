@@ -18,12 +18,28 @@ export const OrderTypeSchema = z.enum([
 ]);
 export type OrderType = z.infer<typeof OrderTypeSchema>;
 
+// Channel of origin. Mirrors the CHECK on `order.source` in both stores; the
+// two must agree member for member and `scripts/check-order-source-drift.mjs`
+// fails the build when they do not.
+//
+// AGGREGATOR_ZOMATO and AGGREGATOR_SWIGGY are DEPRECATED (ADR-026): they name a
+// platform in a schema that is otherwise platform-agnostic. Neither has ever
+// been written. They stay because removing a CHECK member is breaking; the
+// removal trigger is the next breaking contracts bump.
+//
+// AGGREGATOR and TABLE_TAB are the 0.8.1 additions and NOTHING WRITES EITHER
+// YET — the aggregator accept path still writes DIRECT, and the table device
+// (ADR-025) has no code at all.
 export const OrderSourceSchema = z.enum([
   "POS",
   "QR",
+  /** @deprecated ADR-026 — use "AGGREGATOR"; removal at the next breaking bump. */
   "AGGREGATOR_ZOMATO",
+  /** @deprecated ADR-026 — use "AGGREGATOR"; removal at the next breaking bump. */
   "AGGREGATOR_SWIGGY",
   "DIRECT",
+  "AGGREGATOR",
+  "TABLE_TAB",
 ]);
 export type OrderSource = z.infer<typeof OrderSourceSchema>;
 

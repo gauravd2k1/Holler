@@ -3221,7 +3221,11 @@ components:
         external_order_id: { type: string, nullable: true }
         source:
           type: string
-          enum: [POS, QR, AGGREGATOR_ZOMATO, AGGREGATOR_SWIGGY, DIRECT]
+          # AGGREGATOR_ZOMATO and AGGREGATOR_SWIGGY are DEPRECATED (ADR-026):
+          # platform names in a platform-agnostic schema, never written, kept
+          # because removing a member is breaking. AGGREGATOR and TABLE_TAB are
+          # the 0.8.1 additions and nothing writes either yet.
+          enum: [POS, QR, AGGREGATOR_ZOMATO, AGGREGATOR_SWIGGY, DIRECT, AGGREGATOR, TABLE_TAB]
         outlet_id: { type: string, format: uuid }
         order_type: { $ref: "#/components/schemas/OrderType" }
         status: { $ref: "#/components/schemas/OrderStatus" }

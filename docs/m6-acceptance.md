@@ -782,7 +782,52 @@ Not the backlog. The backlog holds what M6 ships without; this list holds what M
 cannot close without. An item arrives here only by decision, with the reason
 recorded.
 
-### 1. Contracts 0.8.1 — `order.source` must be able to name the platform
+### 1. Contracts 0.8.1 — `order.source` must be able to name the platform — **LANDED 2026-09-11 (ADR-026)**
+
+**STATUS: LANDED**, with one deliberate deviation from the item as written below
+and one part explicitly deferred. Read this block before the original, which is
+kept for its reasoning.
+
+**The deviation: ONE GENERIC `AGGREGATOR` MEMBER, NOT A PLATFORM-NAMED ONE.**
+The item said the column must "name the platform". It cannot, and should not.
+`aggregator_order.platform` is free `TEXT` because contracts 0032 decided a new
+platform must not require a migration, and the aggregator boundary check exists
+to keep platform names out of the core — so a per-platform member would reverse a
+recorded decision and re-create the same lie one platform later. The platform is
+already stored twice, in `aggregator_order.platform` and
+`order.source_payload_json`. Escalated before writing anything and ruled on by
+Gaurav; the premise was a review-partner error, recorded as such in ADR-026.
+
+**The consumer list is done:** sqlite 0035 (a table REBUILD, since SQLite cannot
+`ALTER` a CHECK), postgres 0035, the Go constants, the Zod enum, the OpenAPI
+enum, and `scripts/check-order-source-drift.mjs` proving all five agree — watched
+RED with a member removed from one store before being trusted.
+
+**The edge writer deliberately still writes `DIRECT`.** Switching it is its own
+change, and until then "declared but never emitted" is the correct state for both
+new members, pinned by exact assertion rather than left to memory: the drift
+check fails the build if anything under `edge/` or `apps/pos/src-tauri/src`
+emits `AGGREGATOR` or `TABLE_TAB`, and the writer that starts emitting one
+removes it from that list in the same commit.
+
+**0035 is applied in POSTGRES ONLY so far.** The edge takes it at the next clean
+bootstrap: applying it to the live edge database would rebuild a file for which
+no trustworthy backup can currently be taken (the `.enc` is only as current as
+the last successful seal, and the sealing defect is open). Nothing writes the new
+members, so a lagging edge schema changes no behaviour. Filed with the runner fix
+in `docs/backlog.md`.
+
+**Two boundary-check holes were found and closed while landing this**, both by
+planting a value and watching it pass: `packages/contracts` was outside the
+check's search roots, and its word-boundary pattern could not match
+`AGGREGATOR_ONDC` because `_` is a word character. The check that exists to keep
+platform names out of the core could not see the schema, and could not have
+matched the most likely form. Both fixed, both re-planted afterwards to confirm
+the fix catches what the plant proved it missed.
+
+---
+
+#### The original item, kept for its reasoning
 
 **Decided 2026-09-10 by Gaurav, pulled FORWARD out of `docs/backlog.md`**, where
 it had been filed with the trigger *before the first pilot*. The accept path built
