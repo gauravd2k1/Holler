@@ -70,3 +70,21 @@ how the precondition was established and independently verified, who observed it
 on what date. A verdict that exists only in a session transcript is erased by a
 restart, and what replaces it is a reconstruction from git history. Judge the
 committed file, never a builder's account of a run.
+
+## Two traps that have produced false verdicts in this repository
+
+**A criterion a pre-fix binary also passes is not evidence for the fix.** Check,
+for every observation you accept, what ELSE explains it. M6 C4's first run
+satisfied its falsifier word for word and was discarded, because the row landed
+seventeen seconds after process start and a startup drain that predates the
+feature explains that equally well. Ask what would have to be true for the
+observation to happen WITHOUT the change under test; if you cannot rule it out,
+the run proves nothing regardless of how exactly it matches the written steps.
+
+**A check is falsified by what it lets through.** A guard script that has been
+watched going red once is not thereby trustworthy: the aggregator boundary check
+had been watched red AND had caught a real leak, and still could not see
+`packages/contracts` at all, nor match `AGGREGATOR_ONDC` with a word-boundary
+pattern. When you are asked to verify that a guard covers something, plant a
+violation in the specific place claimed and watch it fail there — not somewhere
+else.

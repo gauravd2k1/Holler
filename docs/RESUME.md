@@ -1,106 +1,73 @@
 # Resume state — 2026-09-11
 
-> ## READ THIS BLOCK FIRST. THE REST OF THIS FILE IS M5 AND EARLY-M6 HISTORY.
+> ## READ THIS BLOCK FIRST. THE REST OF THIS FILE IS M5 AND M6 HISTORY.
 >
-> **Current position: SEVEN of eight M6 criteria are MET. Only C2 remains, and it
-> is PARKED behind platform sandbox access.** Phases A and B are closed. C1, C3,
-> C4, C5, C6, C7 and C8 are observed and recorded on the shipping binaries. **"Phase C is code complete" is what an earlier
-> version of this block said, and C1 disproved it** — the accept path C1 needs
-> did not exist and was built on 2026-09-10, so treat any "complete" claim about
-> Phase C as unverified until its sinks are counted.
+> # Next work: DEMO BUILD — see `docs/demo-kickoff.md`
 >
-> **Start at `docs/m6-acceptance.md`** — it holds every criterion, what was
-> observed and what is still owed, with the evening run of 2026-09-10 in its own
-> section. This block points at it rather than copying it.
+> **That file is the brief and it is the first thing to read.** Purpose is a
+> client demo: presentability and reliability of what already exists. **No new
+> features, no M6.1, no pilot-only work** — the pilot list in
+> `docs/pilot-readiness.md` stays untouched, and an item being on it is not a
+> reason to do it now. **Report demo blockers only.**
 >
-> ### Where the sitting stands, 2026-09-10 (late evening)
+> One ruling in that brief reverses a standing M5/M6 prohibition, so read it
+> deliberately rather than from memory: **seeding the cloud's catalogue is now
+> ALLOWED**, because the defects that prohibition protected (P2/P3/P5) are fixed.
+> Seed parity across cloud and edge is the first item of demo work.
 >
-> **SIX OF EIGHT M6 CRITERIA ARE MET AND RECORDED: C1, C4, C5, C6, C7, C8.** Each
-> is written up in `docs/m6-acceptance.md` with what was observed, by whom and
-> when. **C2 stays PARKED** behind platform sandbox access. **C3 is the only
-> criterion still open**, and its positive half is now observed — what it lacks
-> is the pre-fix comparison.
+> ## M6 IS CLOSED — tagged `m6-complete`, 2026-09-11
 >
-> - **C4 MET** — by the STRICT run, not the first attempt. See the warning below.
-> - **C3 MET 2026-09-11, both halves.** The pre-fix binary was RECONSTRUCTED by
->   removing the A2 line by hand (the C8 planted-branch precedent, not a worktree
->   checkout): neighbour stranded. Restored binary (`df5e030`, `git diff` empty):
->   neighbour landed while the refusing row stayed blocked. **Two limits are
->   recorded with it and must survive any summary** — the reconstruction strands
->   neighbours only for the ~50s a refused row is still being attempted, because
->   `outbox_row_is_blocked` short-circuits before the plant; and both halves are
->   bounded by reads rather than measured per tick.
-> - C1, C5, C6, C8 met earlier the same day; C7 closed 2026-09-07. Do not re-run.
+> **Seven of eight criteria met and observed on the shipping binaries: C1, C3,
+> C4, C5, C6, C7, C8.** C8 is recorded `SHAPE ONLY — no integration evidence`
+> and its integration half travels to M6.1 as an explicitly unmet row.
 >
-> ### THE FIRST C4 RUN WAS REJECTED. DO NOT RESURRECT IT FROM THE TIMESTAMPS
+> **C2 is PARKED, and M6 closed WITH it parked, deliberately.** Trigger: *any
+> platform sandbox access granted*. It cannot be evidenced from our own logs —
+> "never evidence a snooze from our own log" is the criterion's own wording —
+> so M6 closes without it rather than with a fake pass.
 >
-> At 18:51:11 the previous session's pending order landed in Postgres seventeen
-> seconds after the POS started, window open, operator closing nothing. That
-> satisfies the WORDS of C4's falsifier and was still thrown away, because the
-> startup drain predates A5 and would have landed it too — **a criterion a
-> pre-fix binary also passes is not evidence for the fix.**
+> **Do not re-run any criterion and do not reconstruct a verdict from git
+> history.** Every one is written up with its observation, its falsifier and its
+> date in `docs/m6-acceptance.md`. The end-of-phase handover — including what
+> was learned, what is carried and what must not be tidied away — is
+> `docs/m6-phase-c-boundary.md`.
 >
-> The accepted run left the POS process up across the whole sequence: cloud
-> stopped by pid 3104 with all three probes agreeing, order
-> `01a08b85-dbdd-7670-ae18-42b674510ad5` (₹300.00) rung with the cloud down and
-> verified ABSENT from Postgres at count 250, cloud restarted 19:08:10 and bound
-> 19:08:12 on new pid 64312, row present by 19:08:29 at count 251, **POS pid
-> 28796 identical before and after**. No process started between cloud-up and
-> row-landed, so no startup drain could have run.
+> ### Three facts about the live stack that will otherwise waste an hour
 >
-> Two things the record must keep saying: the run used
-> `HOLLER_SYNC_PUMP_INTERVAL_SECS=10`, not the shipped 60-second default; and
-> C4's falsifier assumed a normal exit fires `RunEvent::Exit`, which **neither
-> Ctrl+C nor a window close does on this build**, so it never isolated an
-> abnormal path.
+> - **Contracts are at v0.8.1 (ADR-026), and sqlite 0035 has NOT been applied to
+>   the live edge database.** Postgres has it. The edge takes it at the next
+>   clean bootstrap, which the demo seed work does anyway. Nothing writes the two
+>   new `order.source` members, so the lag changes no behaviour.
+> - **Thirteen rows are permanently blocked in the live edge outbox, and they are
+>   C3's FIXTURE, not a fault.** Each is `missing_reference (HTTP 422)` on the
+>   variant foreign key. The demo's clean reseed clears them. **Do not clear them
+>   by seeding only the cloud's catalogue against the current edge database** —
+>   that makes the symptom vanish while leaving the underlying gap (§3.1 of the
+>   boundary report) unfixed.
+> - **No exit path on this build seals the edge database.** Neither a window
+>   close nor `Ctrl+C` fires `RunEvent::Exit`, so a plaintext `edge.db` is left
+>   beside the `.enc` every time, and the `.enc` is only as current as the last
+>   successful seal. That is A6, it blocks a pilot, and it is why no trustworthy
+>   backup can be taken before a risky migration.
 >
-> ### THE FIXTURE'S REFUSAL PATH IS THE VARIANT FK, AND THAT IS ALSO THE DIVERGENCE
+> ### Where everything is
 >
-> Planned on the assumption that the cloud's 2-row menu seed against the edge's 43
-> was the only refusal path. **That was falsified mid-run** by an order whose menu
-> item the cloud DOES hold being refused anyway. The cloud seeds ONE
-> `menu_item_variant` row (Large, on Masala Chai); the edge mints one per item;
-> `order_item` has three foreign keys and the variant one does not resolve.
-> Reproduced in a rolled-back transaction as
-> `order_item_variant_id_fkey`. **This is the cause of the DRAFT-copy divergence
-> on both instances** — `order` has no FK to `menu_item`, so a create always
-> lands, and every `ItemAdded` since the M4 variant fix (`7e88d1c`) has been
-> refused except where the variant happens to exist. 35 historic lines carry
-> `variant_id IS NULL`, from the till that hardcoded it; 2 carry a real variant
-> and both are Chai. Filed in `docs/backlog.md` with the config-push work.
->
-> Also learned, and it changes how run records must be read: **ringing an item
-> while a draft is open on that table APPENDS to that draft** rather than creating
-> a new order. Two Palak lines in this run landed on existing orders, which is why
-> the banner grew a second row against an id already in it.
->
-> ### Three findings carried out of this run, all filed with the pilot trigger
->
-> **The cloud's copy of an order stops tracking the till after create —
-> reproduced twice, cause unknown, A7 RULED OUT for the second instance.** Order
-> `01a08b38-91a6-78d0-b805-123e9ff75a10` is two items and ₹385.00 on the till,
-> and `DRAFT` at `5500` paise in Postgres with one line worth `22000` — a total
-> agreeing with neither. `order` HAS a route, so A7 does not explain it. The
-> create event itself is sound: C4's order landed at exactly `30000` paise.
-> Untested lead: both banner-blocked ids are present in Postgres AS ORDERS, so
-> what is blocked are later events on orders whose creates landed. **Do not use
-> any cloud order copy as evidence against the till until this is understood.**
->
-> **The pump makes the till sluggish while the cloud is down**, observed with the
-> cloud confirmed down by three probes — against ADR-013's own promise. Severity
-> at the shipped 60-second interval is unmeasured.
->
-> **The Orders screen renders raw UTC**, which the operator reported as a clock
-> fault mid-run.
+> | What | File |
+> |---|---|
+> | **The demo brief** | `docs/demo-kickoff.md` |
+> | M6 criteria and their evidence | `docs/m6-acceptance.md` |
+> | The Phase C handover | `docs/m6-phase-c-boundary.md` |
+> | Everything triggered before a pilot | `docs/pilot-readiness.md` |
+> | Every deferred item, single register | `docs/backlog.md` |
+> | Method lessons | `docs/retro.md`, folded into `CLAUDE.md` |
 >
 > ### Stack state as this session ended
 >
-> - Postgres, Redis, NATS: **up and healthy**.
-> - Backend: **pid 64312**, bound 8080 at 19:08:12. Verify by identity, never by
->   the port answering.
-> - POS: **pid 28796**, started 18:50:54, **still running with the window open**,
->   pump interval 10s. It has not been closed since C4 began.
-> - Admin dev server and KDS: not started this session.
+> - Postgres, Redis, NATS: up and healthy. Postgres carries migration 0035.
+> - Backend: pid **58148**. Verify by identity, never by the port answering.
+> - POS: pid **26140**, built from `df5e030`, window open, pump interval 10s
+>   (set for the C3/C4 runs; the shipped default is 60s).
+> - Admin dev server and KDS: not started.
 >
 > ### Rebuilding the stack from cold, if it is down
 >

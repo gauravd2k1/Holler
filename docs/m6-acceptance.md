@@ -878,6 +878,28 @@ it.** Proposed landing is **M8**, trigger *after the first pilot runs on
 exception is the `order.source` widening above, which is pulled forward only
 because a CHECK widening was already pending for 0.8.1.
 
+## M6 IS CLOSED — 2026-09-11, tagged `m6-complete`
+
+**Closed by Gaurav on seven of eight criteria, with C2 PARKED.** C1, C3, C4, C5,
+C6, C7 and C8 were each observed on the shipping binaries, with the falsifier
+watched first, and are written up below with what was seen, by whom and when.
+
+**C2 is parked behind the trigger *any platform sandbox access granted*, and the
+milestone closed WITH it parked rather than waiting.** That is the criterion's
+own instruction: a snooze can only be evidenced on the platform's surface, and
+"never evidence a snooze from our own log -- that is a criterion that cannot
+fail" is written into the row. M6 closes without it rather than with a fake pass.
+
+**C8 remains `SHAPE ONLY -- no integration evidence`.** Both adapters ran against
+fakes we authored, so it proves the contract shape twice and the integration zero
+times. The integration half travels to M6.1 as an explicitly unmet row (M6.1 C1),
+carried rather than merged into C8.
+
+The end-of-phase handover, including what is carried and what must not be tidied
+away, is `docs/m6-phase-c-boundary.md`.
+
+---
+
 ## Status summary
 
 | # | Criterion | State |

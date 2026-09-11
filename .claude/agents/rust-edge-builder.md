@@ -87,3 +87,18 @@ them unobserved, while holding the commit made *because* of the run that
 observed them. Cite the artefact — screen, row, request log, PID — never the
 conversation. If two reports of the same run disagree, record the contradiction
 as UNRESOLVED with the query that settles it; do not pick one.
+
+## Reconstructing a pre-fix binary, and what it does not prove
+
+When a criterion needs the behaviour a fix removed and nothing in the tree builds
+that binary, remove the fix by hand (the planted-branch precedent) — never a
+worktree checkout, which this repository has a data-loss incident against.
+
+**Then state the limit.** A reconstruction removes a fix; it does not restore the
+world that fix was written in. Everything built since is still present and still
+interacting. Removing A2's per-aggregate blocked check reproduced global
+head-of-line blocking for only about fifty seconds, because A3's later per-row
+retry budget bounds what was originally unbounded — `blocked` is local to one
+`pump_outbox` call and the persisted `outbox_row_is_blocked` check short-circuits
+before the planted line is ever reached. The result is still worth having; a
+result reported without that ceiling is misleading.
