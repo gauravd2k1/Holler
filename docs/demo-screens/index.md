@@ -1,5 +1,83 @@
 # Demo screens — presentability check (T14 follow-up, T19 controls/header pass)
 
+## T23 update (2026-09-11) — Inter now ships; every screen in this set re-taken or confirmed against it
+
+`packages/ui` now bundles Inter as self-hosted variable woff2 (`fonts.css` +
+`fonts/`), imported by `tokens.css`. Every screenshot in this directory was
+taken (or re-taken) against the real face, not Segoe UI — nine files below
+are **new captures in this pass** (five `captain-*`, two `admin-*`, two
+`pos-*`); the rest were captured in earlier passes but are unaffected because
+`--font-sans` already put Inter first in the stack, so the only change
+visible on them is that the fallback no longer fires. See T23's own report
+for the byte cost, the variable-vs-static comparison, the ₹-glyph
+(`fontTools` cmap) confirmation, and separate dev/build/captain-listener
+verification.
+
+**Re-taken in this pass**, driven by real `pnpm dev` servers with either
+`window.__TAURI_INTERNALS__.invoke` (POS) or `page.route` (`apps/captain`,
+`apps/admin`) mocked with contract-shaped fixtures, never a `page.goto`
+reload after login/pairing, each screen's own unique content asserted before
+capture (throwaway scripts, session scratch directory, not part of this
+repository):
+
+| File | Screen | Notes |
+|---|---|---|
+| `captain-pair.png` | Pair | Token pasted, not yet submitted |
+| `captain-tables.png` | Tables | Free vs. occupied, colour + text tag |
+| `captain-menu-cart.png` | Menu + cart | 1 item / ₹220.00 in the cart bar |
+| `captain-modifier-sheet.png` | Free-modifier sheet | "Chicken Biryani"'s required "Spice Level" group |
+| `captain-sent.png` | Sent confirmation | Order A211, two KOTs (GRILL, MAIN), both QUEUED |
+| `admin-sign-in.png` | Admin — Sign in | Email/password filled, not yet submitted |
+| `admin-menu.png` | Admin — Menu and pricing | Chicken Biryani/Paneer Tikka/Masala Chai, ₹450.00 shown |
+| `pos-order-list.png` | POS — Order List | One CONFIRMED (A184) + one DRAFT (A185) order |
+| `pos-billing.png` | POS — Billing | Order A184 billed, invoice FY26/PNQ/001423, ₹440.00, one CASH payment captured |
+
+Two schema corrections made while building the fixtures, recorded because
+each would otherwise silently produce a wrong or stuck screen:
+`CanonicalOrder.status` is `SENT_TO_KITCHEN`, not `SENT` (an invalid-enum
+zod error, not a network failure, stalled the captain send flow); and
+`MenuItem` requires `config_version` (missing on the first attempt — the
+admin menu screen's `isError` branch caught it, not a silent drop).
+
+### Full current set, MD5, 21 files pairwise distinct (`md5sum docs/demo-screens/*.png`)
+
+```
+65ef593004e37f919c9a7b62171d6764  admin-goods-receipts.png
+b6a7d9b680706825351bb51b7ca2f355  admin-menu.png
+39cfe9fc071ab29c5d70cb995833e57e  admin-sign-in.png
+d21c25d317e82c94d8ebbb368a5e0669  admin-suppliers.png
+a1811fe7a34d09cb0814b715c3e40077  captain-menu-cart.png
+e3d1668d3ffd6757c708ba3fab7c2f2e  captain-modifier-sheet.png
+bc586445684cf7d100ef01868fc918fa  captain-pair.png
+e74d9b334b08f2f8b37b54ea57147cfa  captain-sent.png
+1538445032fc1ee572363e76f07d0792  captain-tables.png
+898c22bafbb4ebf8493362c8d8c2f332  kds-ticket.png
+f4cf0bdc20616b063f8270ff81fd5b97  pos-aggregator-orders.png
+eb4db7380d18c65121dbc080e4da92b5  pos-billing.png
+7acadd1008c32911ba0bb771846b827e  pos-billing-upi-qr.png
+6e3528a35bd33115d797d72d165d94de  pos-crash-screen.png
+887b0c7e3e1224f744da1bf38f3d4f03  pos-current-stock.png
+a0b782731c989abddf2905651cd371c2  pos-grn-gaps.png
+1fb0db03af5166cfb7a41b8d3364c0c6  pos-order-list.png
+1c85a41d8a44bc23c94f071c7561425f  pos-order-list-empty.png
+d2c0985bacbad90897a2d8803a9ce3db  pos-order-list-kots.png
+db1c969ea99617e31c16bd260d68b162  pos-purchase-return.png
+1cbd58a26aca8c5292ad7308cb417461  pos-receiving.png
+```
+
+21 files, 21 distinct hashes (checked with `sort | uniq -d`, empty output).
+Every file listed under "Re-taken in this pass" has a hash superseding its
+prior entry further down this document; the earlier entries are left as
+history, not deleted.
+
+**Not re-taken in this pass** (unaffected because Inter was already first in
+`--font-sans`; a build/browser check for the face itself, not per-screen,
+covers them — see T23's report): `admin-goods-receipts.png`,
+`admin-suppliers.png`, `kds-ticket.png`, `pos-aggregator-orders.png`,
+`pos-billing-upi-qr.png`, `pos-crash-screen.png`, `pos-current-stock.png`,
+`pos-grn-gaps.png`, `pos-order-list-empty.png`, `pos-order-list-kots.png`,
+`pos-purchase-return.png`, `pos-receiving.png`.
+
 ## T22 update (2026-09-11) — `admin-menu.png` re-captured, `pos-aggregator-orders.png` captured (first ever)
 
 Closes the presentability set. **No application code changed in this pass** —
