@@ -1372,8 +1372,11 @@ const SUPPLIER_NAME: &str = "FreshMart Wholesale Suppliers";
 const SUPPLIER_GSTIN: &str = "27BBBBB1111B2Z6";
 
 /// One `supplier_item`: a real pack size and a representative price. Also
-/// the source for the single GRN below, entered as EXACTLY this pack size —
-/// the demo's receipt converts cleanly with zero `grn_gap` rows.
+/// the source for the single GRN below, entered as EXACTLY this pack size,
+/// so every line CONVERTS cleanly — the only `grn_gap` the demo's receipt
+/// produces is the expected, by-design `NO_PURCHASE_ORDER` gap (ADR-019: a
+/// receipt with no PO is a legitimate walk-in delivery, accepted and
+/// flagged, never a conversion defect).
 struct SeedSupplierItem {
     sku: &'static str,
     purchase_unit: &'static str,
@@ -1801,7 +1804,7 @@ fn build_shared_catalogue() -> Result<Value, String> {
     .collect();
     let mut ingredient_seq = 0u32;
 
-    let mut push_ingredients = |recipe_id_for_row: &str,
+    let push_ingredients = |recipe_id_for_row: &str,
                                  ingredients: &[Comp],
                                  ingredient_seq: &mut u32,
                                  recipe_ingredients: &mut Vec<Value>|
@@ -2206,7 +2209,7 @@ fn run() -> Result<PathBuf, String> {
 fn seed(
     db: &mut Db,
     password_hash: &str,
-    _catalogue: &Value,
+    catalogue: &Value,
 ) -> Result<(), holler_edge_database::DbError> {
     let conn = db.connection();
 
@@ -2301,124 +2304,12 @@ fn seed(
         )?;
     }
 
-    repo::upsert_station(
-        conn,
-        &Station {
-            id: STATION_ID.to_string(),
-            outlet_id: OUTLET_ID.to_string(),
-            code: STATION_CODE.to_string(),
-            name: "Main Kitchen".to_string(),
-            sort_order: 1,
-            is_active: true,
-            config_version: CONFIG_VERSION,
-        },
-    )?;
-
-    repo::upsert_menu_category(
-        conn,
-        &MenuCategory {
-            id: CATEGORY_ID.to_string(),
-            outlet_id: OUTLET_ID.to_string(),
-            name: "Beverages".to_string(),
-            sort_order: 1,
-            config_version: CONFIG_VERSION,
-        },
-    )?;
-
-    for (id, name, price) in [
-        (ITEM_CHAI_ID, "Masala Chai", 4000),
-        (ITEM_THALI_ID, "Veg Thali", 22000),
-    ] {
-        repo::upsert_menu_item(
-            conn,
-            &MenuItem {
-                id: id.to_string(),
-                outlet_id: OUTLET_ID.to_string(),
-                category_id: CATEGORY_ID.to_string(),
-                name: name.to_string(),
-                base_price_paise: price,
-                is_available: true,
-                config_version: CONFIG_VERSION,
-                tax_profile_id: None,
-                // SAC 9963: restaurant/catering services — both items here
-                // are prepared food/beverage, not packaged goods (ADR-016
-                // 0.4.5 §3). Without this an invoice can never issue against
-                // the dev-seeded catalogue.
-                hsn_sac: Some("9963".to_string()),
-            },
-        )?;
-        repo::replace_menu_item_stations(conn, id, &[STATION_ID.to_string()], CONFIG_VERSION)?;
-    }
-
-    repo::upsert_menu_item_variant(
-        conn,
-        &MenuItemVariant {
-            id: VARIANT_ID.to_string(),
-            menu_item_id: ITEM_CHAI_ID.to_string(),
-            name: "Large".to_string(),
-            price_delta_paise: 1500,
-            // The only variant this item has — default by construction.
-            is_default: true,
-            config_version: CONFIG_VERSION,
-        },
-    )?;
-
-    // One modifier group ("Sugar") with two options.
-    for (id, option, delta) in [
-        (MOD_LESS_SUGAR_ID, "Less Sugar", 0),
-        (MOD_EXTRA_SUGAR_ID, "Extra Sugar", 500),
-    ] {
-        repo::upsert_menu_item_modifier(
-            conn,
-            &MenuItemModifier {
-                id: id.to_string(),
-                menu_item_id: ITEM_CHAI_ID.to_string(),
-                group_name: "Sugar".to_string(),
-                option_name: option.to_string(),
-                price_delta_paise: delta,
-                min_selection: 0,
-                max_selection: 1,
-                config_version: CONFIG_VERSION,
-            },
-        )?;
-    }
-
-    let menu_ids = seed_menu(conn)?;
-    let inventory_ids = seed_inventory(conn)?;
-    seed_recipes(conn, &menu_ids, &inventory_ids)?;
-    seed_modifier_deltas(conn, &menu_ids, &inventory_ids)?;
-
-    if env::var("HOLLER_SEED_BILLING").is_ok_and(|v| v == "1") {
-        seed_billing(conn)?;
-    }
-
-    // Without a sync_state row the outbox has no cursor to advance against
-    // once the sync worker is eventually wired up.
-    repo::init_sync_state(conn, OUTLET_ID)?;
-
-    Ok(())
-}
-
-/// Seeds the real dev menu from `HOLLER_DEV_MENU_SPEC.md`: 5 stations, 3
-/// (rule-less — see `TAX_PROFILE_FOOD5_ID` doc comment) tax profiles, 8
-/// categories and 39 items with their variants, modifier groups and
-/// station routing. Unconditional (not gated by `HOLLER_SEED_BILLING`):
-/// menu display, ordering and KOT routing need none of the billing
-/// fixtures, and gating the catalogue itself behind that flag would leave
-/// the default `devseed` run back at the 2-item placeholder this task
-/// exists to retire.
-/// Ids `seed_menu` minted, keyed by the spec's own names — how `seed_recipes`
-/// and `seed_modifier_deltas` (T1b) address a specific variant/modifier
-/// without re-deriving the sequence-based id scheme themselves. No
-/// `item_id` map: nothing downstream needs to address a bare menu item by
-/// name, only a specific (item, variant) or (item, group, option).
-struct MenuIds {
-    variant_id: std::collections::HashMap<(&'static str, &'static str), String>,
-    modifier_id: std::collections::HashMap<(&'static str, &'static str, &'static str), String>,
-}
-
-fn seed_menu(conn: &rusqlite::Connection) -> Result<MenuIds, holler_edge_database::DbError> {
+    // Stations are EDGE ONLY (seed/README.md) -- never in the shared
+    // catalogue. The legacy STATION_ID/"MAIN_KITCHEN" fixture first (fixed
+    // id, pinned by tests/e2e-scenario/harness), then the five the spec
+    // menu's `station_code` values route through.
     for (id, code, name, sort_order) in [
+        (STATION_ID, STATION_CODE, "Main Kitchen", 1),
         (STATION_TANDOOR_ID, STATION_TANDOOR_CODE, "Tandoor", 2),
         (
             STATION_MAIN_ID,
@@ -2444,177 +2335,160 @@ fn seed_menu(conn: &rusqlite::Connection) -> Result<MenuIds, holler_edge_databas
         )?;
     }
 
-    // GST 2.0 (post-Sept-2025) profiles. INCLUSIVE pricing_mode: the spec's
-    // menu prices already include tax, per Indian restaurant convention —
-    // this exercises the engine's inclusive-mode back-computation path,
-    // which the legacy EXCLUSIVE GST_5 profile in `seed_billing` never did.
-    for (id, code, name) in [
-        (TAX_PROFILE_FOOD5_ID, "GST_FOOD_5", "GST 5% (food)"),
-        (
-            TAX_PROFILE_PACKAGED18_ID,
-            "GST_PACKAGED_18",
-            "GST 18% (packaged, non-aerated)",
-        ),
-        (
-            TAX_PROFILE_AERATED40_ID,
-            "GST_AERATED_40",
-            "GST 40% (aerated/sweetened)",
-        ),
-    ] {
-        repo::upsert_tax_profile(
-            conn,
-            &TaxProfile {
-                id: id.to_string(),
-                outlet_id: OUTLET_ID.to_string(),
-                code: code.to_string(),
-                name: name.to_string(),
-                pricing_mode: "INCLUSIVE".to_string(),
-                is_default: false,
-                is_active: true,
-                config_version: CONFIG_VERSION,
-            },
-        )?;
+    // The menu (categories/items/variants/modifiers, including the legacy
+    // T0b chai/thali fixture and the two internal sub-recipe carrier items),
+    // inventory, recipes, modifier deltas and the shared tax config all come
+    // from the committed catalogue now — never from a hand-written literal
+    // here — so the edge and the cloud stay fed by the same bytes
+    // (seed/README.md). `write_tax` is unconditional (not gated by
+    // `HOLLER_SEED_BILLING`): every spec menu item's `tax_profile_id` points
+    // at one of these three profiles, so the catalogue carries them
+    // regardless of whether the legacy GST_5 billing fixture below is on.
+    write_tax(conn, catalogue)?;
+    write_inventory(conn, catalogue)?;
+    write_menu(conn, catalogue)?;
+    write_recipes(conn, catalogue)?;
+    write_modifier_deltas(conn, catalogue)?;
+    write_suppliers(conn, catalogue)?;
+    write_goods_receipt(db, catalogue)?;
+    write_opening_stock(db, catalogue)?;
+    let conn = db.connection();
+
+    if env::var("HOLLER_SEED_BILLING").is_ok_and(|v| v == "1") {
+        seed_billing(conn)?;
     }
 
-    let mut category_seq = 0u32;
-    let mut item_seq = 0u32;
-    let mut variant_seq = 0u32;
-    let mut modifier_seq = 0u32;
+    // Without a sync_state row the outbox has no cursor to advance against
+    // once the sync worker is eventually wired up.
+    repo::init_sync_state(conn, OUTLET_ID)?;
 
-    let mut variant_id_by_name = std::collections::HashMap::new();
-    let mut modifier_id_by_name = std::collections::HashMap::new();
+    Ok(())
+}
 
-    for (category_name, sort_order, items) in SEED_CATEGORIES {
-        category_seq += 1;
-        let category_id = menu_category_id(category_seq);
-        repo::upsert_menu_category(
-            conn,
-            &MenuCategory {
-                id: category_id.clone(),
-                outlet_id: OUTLET_ID.to_string(),
-                name: category_name.to_string(),
-                sort_order: *sort_order,
-                config_version: CONFIG_VERSION,
-            },
-        )?;
+// ---- JSON extraction helpers for the committed catalogue ----
+// Every seeding function below reads `Value` rows out of the catalogue
+// loaded from `seed/demo-outlet.json` -- never the SEED_* consts directly
+// (those feed [`build_shared_catalogue`] only). A missing/mistyped field is
+// a typed `DbError::InvalidInput`, the same discipline this file already
+// applies to a dangling sku/variant-name lookup.
 
-        for item in *items {
-            item_seq += 1;
-            let item_id = menu_item_id(item_seq);
-            let station_id = match item.station_code {
-                s if s == STATION_TANDOOR_CODE => STATION_TANDOOR_ID,
-                s if s == STATION_MAIN_CODE => STATION_MAIN_ID,
-                s if s == STATION_CHAT_CODE => STATION_CHAT_ID,
-                s if s == STATION_BAR_CODE => STATION_BAR_ID,
-                s if s == STATION_DESSERT_CODE => STATION_DESSERT_ID,
-                other => {
-                    return Err(holler_edge_database::DbError::InvalidInput(format!(
-                        "devseed: unknown station code {other} for item {}",
-                        item.name
-                    )))
-                }
-            };
+fn jarr<'a>(v: &'a Value, key: &str) -> Result<&'a Vec<Value>, DbError> {
+    v.get(key)
+        .and_then(|x| x.as_array())
+        .ok_or_else(|| DbError::InvalidInput(format!("devseed: catalogue missing array field {key}")))
+}
 
-            repo::upsert_menu_item(
-                conn,
-                &MenuItem {
-                    id: item_id.clone(),
-                    outlet_id: OUTLET_ID.to_string(),
-                    category_id: category_id.clone(),
-                    name: item.name.to_string(),
-                    base_price_paise: item.price_paise,
-                    is_available: true,
-                    config_version: CONFIG_VERSION,
-                    tax_profile_id: Some(item.tax_profile_id.to_string()),
-                    hsn_sac: Some(item.hsn_sac.to_string()),
-                },
-            )?;
-            repo::replace_menu_item_stations(
-                conn,
-                &item_id,
-                &[station_id.to_string()],
-                CONFIG_VERSION,
-            )?;
+fn jstr(v: &Value, key: &str) -> Result<String, DbError> {
+    v.get(key)
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| {
+            DbError::InvalidInput(format!("devseed: catalogue row missing string field {key}: {v}"))
+        })
+}
 
-            for (variant_index, variant_name) in item.variants.iter().enumerate() {
-                variant_seq += 1;
-                let variant_id = menu_variant_id(variant_seq);
-                repo::upsert_menu_item_variant(
-                    conn,
-                    &MenuItemVariant {
-                        id: variant_id.clone(),
-                        menu_item_id: item_id.clone(),
-                        name: variant_name.to_string(),
-                        // The spec names variant options but gives no price
-                        // deltas for any of them (unlike modifiers, which
-                        // always carry an explicit figure) — 0 is the
-                        // representative dev value, not a claim that e.g.
-                        // Half and Full cost the same at a real outlet.
-                        // is_default: the first listed variant, so every
-                        // seeded multi-variant item satisfies ADR-018 §2.1's
-                        // "every menu item has at least one variant" via an
-                        // explicit default rather than relying on the
-                        // auto-created-Regular fallback this loop never hits.
-                        price_delta_paise: 0,
-                        is_default: variant_index == 0,
-                        config_version: CONFIG_VERSION,
-                    },
-                )?;
-                variant_id_by_name.insert((item.name, *variant_name), variant_id);
-            }
+fn jstr_opt(v: &Value, key: &str) -> Option<String> {
+    v.get(key).and_then(|x| x.as_str()).map(|s| s.to_string())
+}
 
-            for (group_name, options) in item.modifier_groups {
-                for (option_name, delta) in *options {
-                    modifier_seq += 1;
-                    let modifier_id = menu_modifier_id(modifier_seq);
-                    repo::upsert_menu_item_modifier(
-                        conn,
-                        &MenuItemModifier {
-                            id: modifier_id.clone(),
-                            menu_item_id: item_id.clone(),
-                            group_name: group_name.to_string(),
-                            option_name: option_name.to_string(),
-                            price_delta_paise: *delta,
-                            min_selection: 0,
-                            max_selection: 1,
-                            config_version: CONFIG_VERSION,
-                        },
-                    )?;
-                    modifier_id_by_name.insert((item.name, *group_name, *option_name), modifier_id);
-                }
-            }
-        }
-    }
-
-    println!("devseed: seed menu — {item_seq} items across {category_seq} categories, 5 stations, 3 tax profiles (GST_FOOD_5/GST_PACKAGED_18/GST_AERATED_40)");
-    Ok(MenuIds {
-        variant_id: variant_id_by_name,
-        modifier_id: modifier_id_by_name,
+fn ji64(v: &Value, key: &str) -> Result<i64, DbError> {
+    v.get(key).and_then(|x| x.as_i64()).ok_or_else(|| {
+        DbError::InvalidInput(format!("devseed: catalogue row missing integer field {key}: {v}"))
     })
 }
 
-/// Seeds `SEED_INVENTORY_ITEMS` and `SEED_ITEM_UNIT_CONVERSIONS` (T1b, ADR-018).
-/// Unconditional, same rationale as `seed_menu`: the larder is config a
-/// recipe needs to resolve against regardless of whether billing fixtures
-/// are turned on. Returns the sku -> id map `seed_recipes`/
-/// `seed_modifier_deltas` need to build their own foreign keys.
-fn seed_inventory(
-    conn: &rusqlite::Connection,
-) -> Result<std::collections::HashMap<&'static str, String>, holler_edge_database::DbError> {
-    let mut item_id_by_sku = std::collections::HashMap::new();
+fn ji64_opt(v: &Value, key: &str) -> Option<i64> {
+    v.get(key).and_then(|x| x.as_i64())
+}
 
-    for (seq, item) in SEED_INVENTORY_ITEMS.iter().enumerate() {
-        let id = inventory_item_id(seq as u32 + 1);
+fn jbool(v: &Value, key: &str) -> Result<bool, DbError> {
+    v.get(key).and_then(|x| x.as_bool()).ok_or_else(|| {
+        DbError::InvalidInput(format!("devseed: catalogue row missing bool field {key}: {v}"))
+    })
+}
+
+/// The fixed station code -> station id map. Stations are EDGE ONLY
+/// (seed/README.md) so `menu_item.station_code` -- the one field the shared
+/// catalogue carries purely for this side -- is resolved against this fixed
+/// map rather than anything in the JSON.
+fn station_id_for_code(code: &str) -> Result<&'static str, DbError> {
+    match code {
+        STATION_CODE => Ok(STATION_ID),
+        STATION_TANDOOR_CODE => Ok(STATION_TANDOOR_ID),
+        STATION_MAIN_CODE => Ok(STATION_MAIN_ID),
+        STATION_CHAT_CODE => Ok(STATION_CHAT_ID),
+        STATION_BAR_CODE => Ok(STATION_BAR_ID),
+        STATION_DESSERT_CODE => Ok(STATION_DESSERT_ID),
+        other => Err(DbError::InvalidInput(format!(
+            "devseed: menu_item.station_code {other} is not a known station"
+        ))),
+    }
+}
+
+/// Shared tax config: `compliance_versions`, `tax_profiles`, `tax_rules`.
+/// Unconditional -- see `seed`'s own comment on why this is no longer
+/// gated by `HOLLER_SEED_BILLING`.
+fn write_tax(conn: &rusqlite::Connection, catalogue: &Value) -> Result<(), DbError> {
+    for cv in jarr(catalogue, "compliance_versions")? {
+        repo::upsert_compliance_version(
+            conn,
+            &ComplianceVersion {
+                id: jstr(cv, "id")?,
+                outlet_id: jstr(cv, "outlet_id")?,
+                label: jstr(cv, "label")?,
+                effective_from: jstr(cv, "effective_from")?,
+                notes: jstr_opt(cv, "notes"),
+                config_version: CONFIG_VERSION,
+            },
+        )?;
+    }
+    for tp in jarr(catalogue, "tax_profiles")? {
+        repo::upsert_tax_profile(
+            conn,
+            &TaxProfile {
+                id: jstr(tp, "id")?,
+                outlet_id: jstr(tp, "outlet_id")?,
+                code: jstr(tp, "code")?,
+                name: jstr(tp, "name")?,
+                pricing_mode: jstr(tp, "pricing_mode")?,
+                is_default: jbool(tp, "is_default")?,
+                is_active: jbool(tp, "is_active")?,
+                config_version: CONFIG_VERSION,
+            },
+        )?;
+    }
+    for tr in jarr(catalogue, "tax_rules")? {
+        repo::upsert_tax_rule(
+            conn,
+            &TaxRule {
+                id: jstr(tr, "id")?,
+                tax_profile_id: jstr(tr, "tax_profile_id")?,
+                compliance_version_id: jstr(tr, "compliance_version_id")?,
+                component: jstr(tr, "component")?,
+                rate_bps: ji64(tr, "rate_bps")?,
+                effective_from: jstr(tr, "effective_from")?,
+                effective_to: jstr_opt(tr, "effective_to"),
+                config_version: CONFIG_VERSION,
+            },
+        )?;
+    }
+    Ok(())
+}
+
+/// `inventory_items`, `item_unit_conversions`.
+fn write_inventory(conn: &rusqlite::Connection, catalogue: &Value) -> Result<(), DbError> {
+    let items = jarr(catalogue, "inventory_items")?;
+    for item in items {
         repo::upsert_inventory_item(
             conn,
             &InventoryItem {
-                id: id.clone(),
-                outlet_id: OUTLET_ID.to_string(),
-                sku: item.sku.to_string(),
-                name: item.name.to_string(),
-                category: Some(item.category.to_string()),
-                dimension: item.dimension.to_string(),
-                reorder_level_micro: item.reorder_level_micro,
+                id: jstr(item, "id")?,
+                outlet_id: jstr(item, "outlet_id")?,
+                sku: jstr(item, "sku")?,
+                name: jstr(item, "name")?,
+                category: jstr_opt(item, "category"),
+                dimension: jstr(item, "dimension")?,
+                reorder_level_micro: ji64_opt(item, "reorder_level_micro"),
                 par_level_micro: None,
                 storage_location: None,
                 is_active: true,
@@ -2622,307 +2496,342 @@ fn seed_inventory(
                 config_version: CONFIG_VERSION,
             },
         )?;
-        item_id_by_sku.insert(item.sku, id);
     }
-
-    for (seq, conv) in SEED_ITEM_UNIT_CONVERSIONS.iter().enumerate() {
-        let inventory_item_id_for_sku = item_id_by_sku.get(conv.sku).ok_or_else(|| {
-            holler_edge_database::DbError::InvalidInput(format!(
-                "devseed: item_unit_conversion for unknown sku {}",
-                conv.sku
-            ))
-        })?;
+    for conv in jarr(catalogue, "item_unit_conversions")? {
         repo::upsert_item_unit_conversion(
             conn,
             &ItemUnitConversion {
-                id: item_unit_conversion_id(seq as u32 + 1),
-                inventory_item_id: inventory_item_id_for_sku.clone(),
-                pack_unit_label: conv.pack_unit_label.to_string(),
-                source_dimension: conv.source_dimension.to_string(),
-                numerator: conv.numerator,
-                denominator: conv.denominator,
+                id: jstr(conv, "id")?,
+                inventory_item_id: jstr(conv, "inventory_item_id")?,
+                pack_unit_label: jstr(conv, "pack_unit_label")?,
+                source_dimension: jstr(conv, "source_dimension")?,
+                numerator: ji64(conv, "numerator")?,
+                denominator: ji64(conv, "denominator")?,
                 config_version: CONFIG_VERSION,
             },
         )?;
     }
-
     println!(
         "devseed: seed inventory — {} items, {} unit conversions",
-        SEED_INVENTORY_ITEMS.len(),
-        SEED_ITEM_UNIT_CONVERSIONS.len()
-    );
-    Ok(item_id_by_sku)
-}
-
-/// Seeds the two internal sub-recipes, `SEED_RECIPES` (22 of the 39 menu
-/// items — see that const's own doc comment for exactly which, and why the
-/// other 17 are deliberately left without one), and every
-/// `recipe_ingredient` row underneath them. Unconditional, same rationale
-/// as `seed_menu`/`seed_inventory`.
-fn seed_recipes(
-    conn: &rusqlite::Connection,
-    menu: &MenuIds,
-    inventory: &std::collections::HashMap<&'static str, String>,
-) -> Result<(), holler_edge_database::DbError> {
-    // The hidden category + two carrier items/variants a sub-recipe binds
-    // to (see ITEM_MAKHANI_GRAVY_ID's doc comment above). `is_available:
-    // false` keeps them off any ordering UI that filters on it.
-    repo::upsert_menu_category(
-        conn,
-        &MenuCategory {
-            id: INTERNAL_CATEGORY_ID.to_string(),
-            outlet_id: OUTLET_ID.to_string(),
-            name: "Kitchen Prep (internal — not sold)".to_string(),
-            sort_order: 99,
-            config_version: CONFIG_VERSION,
-        },
-    )?;
-    for (item_id, variant_id, name) in [
-        (
-            ITEM_MAKHANI_GRAVY_ID,
-            VARIANT_MAKHANI_GRAVY_ID,
-            "Makhani Gravy (internal batch)",
-        ),
-        (
-            ITEM_ONION_TOMATO_BASE_ID,
-            VARIANT_ONION_TOMATO_BASE_ID,
-            "Onion-Tomato Masala Base (internal batch)",
-        ),
-    ] {
-        repo::upsert_menu_item(
-            conn,
-            &MenuItem {
-                id: item_id.to_string(),
-                outlet_id: OUTLET_ID.to_string(),
-                category_id: INTERNAL_CATEGORY_ID.to_string(),
-                name: name.to_string(),
-                base_price_paise: 0,
-                is_available: false,
-                config_version: CONFIG_VERSION,
-                tax_profile_id: None,
-                hsn_sac: None,
-            },
-        )?;
-        repo::upsert_menu_item_variant(
-            conn,
-            &MenuItemVariant {
-                id: variant_id.to_string(),
-                menu_item_id: item_id.to_string(),
-                name: "Batch".to_string(),
-                price_delta_paise: 0,
-                // Sole variant for this internal sub-recipe item.
-                is_default: true,
-                config_version: CONFIG_VERSION,
-            },
-        )?;
-    }
-
-    let sub_recipe_ids: std::collections::HashMap<&'static str, &'static str> = [
-        ("MAKHANI_GRAVY", RECIPE_MAKHANI_GRAVY_ID),
-        ("ONION_TOMATO_BASE", RECIPE_ONION_TOMATO_BASE_ID),
-    ]
-    .into_iter()
-    .collect();
-
-    let mut ingredient_seq = 0u32;
-    let mut sub_recipe_ref_count = 0u32;
-
-    let insert_ingredients = |conn: &rusqlite::Connection,
-                              recipe_id_for_row: &str,
-                              ingredients: &[Comp],
-                              ingredient_seq: &mut u32,
-                              sub_recipe_ref_count: &mut u32|
-     -> Result<(), holler_edge_database::DbError> {
-        for (sort_order, comp) in ingredients.iter().enumerate() {
-            *ingredient_seq += 1;
-            let (
-                component_kind,
-                inventory_item_id_val,
-                sub_recipe_id_val,
-                quantity_micro,
-                quantity_dimension,
-            ) = match comp {
-                Comp::Item(sku, qty, dim) => {
-                    let item_id = inventory.get(sku).ok_or_else(|| {
-                        holler_edge_database::DbError::InvalidInput(format!(
-                            "devseed: recipe_ingredient references unknown inventory sku {sku}"
-                        ))
-                    })?;
-                    (
-                        "ITEM".to_string(),
-                        Some(item_id.clone()),
-                        None,
-                        *qty,
-                        dim.to_string(),
-                    )
-                }
-                Comp::Sub(key, qty, dim) => {
-                    *sub_recipe_ref_count += 1;
-                    let sub_id = sub_recipe_ids.get(key).ok_or_else(|| {
-                        holler_edge_database::DbError::InvalidInput(format!(
-                            "devseed: recipe_ingredient references unknown sub-recipe key {key}"
-                        ))
-                    })?;
-                    (
-                        "SUB_RECIPE".to_string(),
-                        None,
-                        Some((*sub_id).to_string()),
-                        *qty,
-                        dim.to_string(),
-                    )
-                }
-            };
-            repo::upsert_recipe_ingredient(
-                conn,
-                &RecipeIngredient {
-                    id: recipe_ingredient_id(*ingredient_seq),
-                    recipe_id: recipe_id_for_row.to_string(),
-                    component_kind,
-                    inventory_item_id: inventory_item_id_val,
-                    sub_recipe_id: sub_recipe_id_val,
-                    quantity_micro,
-                    quantity_dimension,
-                    yield_factor_ppm: 1_000_000, // identity; DEFERRED to M5 (0015)
-                    sort_order: sort_order as i64,
-                    config_version: CONFIG_VERSION,
-                },
-            )?;
-        }
-        Ok(())
-    };
-
-    // The two sub-recipes themselves.
-    repo::upsert_recipe(
-        conn,
-        &Recipe {
-            id: RECIPE_MAKHANI_GRAVY_ID.to_string(),
-            menu_item_variant_id: VARIANT_MAKHANI_GRAVY_ID.to_string(),
-            name: "Makhani Gravy".to_string(),
-            recipe_version: 1,
-            output_dimension: MAKHANI_GRAVY_OUTPUT_DIMENSION.to_string(),
-            output_quantity_micro: MAKHANI_GRAVY_OUTPUT_MICRO,
-            config_version: CONFIG_VERSION,
-        },
-    )?;
-    insert_ingredients(
-        conn,
-        RECIPE_MAKHANI_GRAVY_ID,
-        MAKHANI_GRAVY_INGREDIENTS,
-        &mut ingredient_seq,
-        &mut sub_recipe_ref_count,
-    )?;
-
-    repo::upsert_recipe(
-        conn,
-        &Recipe {
-            id: RECIPE_ONION_TOMATO_BASE_ID.to_string(),
-            menu_item_variant_id: VARIANT_ONION_TOMATO_BASE_ID.to_string(),
-            name: "Onion-Tomato Masala Base".to_string(),
-            recipe_version: 1,
-            output_dimension: ONION_TOMATO_BASE_OUTPUT_DIMENSION.to_string(),
-            output_quantity_micro: ONION_TOMATO_BASE_OUTPUT_MICRO,
-            config_version: CONFIG_VERSION,
-        },
-    )?;
-    insert_ingredients(
-        conn,
-        RECIPE_ONION_TOMATO_BASE_ID,
-        ONION_TOMATO_BASE_INGREDIENTS,
-        &mut ingredient_seq,
-        &mut sub_recipe_ref_count,
-    )?;
-
-    // The 22 real dish recipes.
-    let mut recipe_seq = 0u32;
-    for r in SEED_RECIPES {
-        recipe_seq += 1;
-        let this_recipe_id = recipe_id(recipe_seq);
-        let variant_id = menu
-            .variant_id
-            .get(&(r.item_name, r.variant_name))
-            .ok_or_else(|| {
-                holler_edge_database::DbError::InvalidInput(format!(
-                    "devseed: recipe for {} ({}) references a variant that was never seeded",
-                    r.item_name, r.variant_name
-                ))
-            })?;
-        repo::upsert_recipe(
-            conn,
-            &Recipe {
-                id: this_recipe_id.clone(),
-                menu_item_variant_id: variant_id.clone(),
-                name: r.item_name.to_string(),
-                recipe_version: 1,
-                output_dimension: "COUNT".to_string(),
-                output_quantity_micro: pieces(1), // one serving
-                config_version: CONFIG_VERSION,
-            },
-        )?;
-        insert_ingredients(
-            conn,
-            &this_recipe_id,
-            r.ingredients,
-            &mut ingredient_seq,
-            &mut sub_recipe_ref_count,
-        )?;
-    }
-
-    println!(
-        "devseed: seed recipes — {} recipes ({} dish + 2 internal sub-recipes), {} sub-recipe references, {} recipe_ingredient rows",
-        SEED_RECIPES.len() + 2,
-        SEED_RECIPES.len(),
-        sub_recipe_ref_count,
-        ingredient_seq
+        items.len(),
+        jarr(catalogue, "item_unit_conversions")?.len()
     );
     Ok(())
 }
 
-/// Seeds `SEED_MODIFIER_DELTAS` (T1b). Unconditional, same rationale as
-/// the other T1b seed functions.
-fn seed_modifier_deltas(
-    conn: &rusqlite::Connection,
-    menu: &MenuIds,
-    inventory: &std::collections::HashMap<&'static str, String>,
-) -> Result<(), holler_edge_database::DbError> {
-    let mut seq = 0u32;
-    for d in SEED_MODIFIER_DELTAS {
-        seq += 1;
-        let modifier_id = match d.lookup {
-            ModifierLookup::LegacyExtraSugar => MOD_EXTRA_SUGAR_ID.to_string(),
-            ModifierLookup::LegacyLessSugar => MOD_LESS_SUGAR_ID.to_string(),
-            ModifierLookup::Named(item_name, group_name, option_name) => menu
-                .modifier_id
-                .get(&(item_name, group_name, option_name))
-                .cloned()
-                .ok_or_else(|| {
-                    holler_edge_database::DbError::InvalidInput(format!(
-                        "devseed: modifier_ingredient_delta references a modifier that was never seeded: {item_name}/{group_name}/{option_name}"
-                    ))
-                })?,
-        };
-        let inventory_item_id_val = inventory.get(d.sku).cloned().ok_or_else(|| {
-            holler_edge_database::DbError::InvalidInput(format!(
-                "devseed: modifier_ingredient_delta references unknown inventory sku {}",
-                d.sku
-            ))
-        })?;
-        repo::upsert_modifier_ingredient_delta(
+/// `menu_categories`, `menu_items` (+ `menu_item_station` from
+/// `station_code`, edge-only), `menu_item_variants`, `menu_item_modifiers`.
+/// Covers the legacy T0b chai/thali fixture and the two internal sub-recipe
+/// carrier items too -- both are rows in these same catalogue arrays now,
+/// never a second hand-written path.
+fn write_menu(conn: &rusqlite::Connection, catalogue: &Value) -> Result<(), DbError> {
+    for cat in jarr(catalogue, "menu_categories")? {
+        repo::upsert_menu_category(
             conn,
-            &ModifierIngredientDelta {
-                id: modifier_ingredient_delta_id(seq),
-                menu_item_modifier_id: modifier_id,
-                inventory_item_id: inventory_item_id_val,
-                quantity_micro: d.quantity_micro,
+            &MenuCategory {
+                id: jstr(cat, "id")?,
+                outlet_id: jstr(cat, "outlet_id")?,
+                name: jstr(cat, "name")?,
+                sort_order: ji64(cat, "sort_order")?,
+                config_version: CONFIG_VERSION,
+            },
+        )?;
+    }
+
+    let items = jarr(catalogue, "menu_items")?;
+    for item in items {
+        let id = jstr(item, "id")?;
+        repo::upsert_menu_item(
+            conn,
+            &MenuItem {
+                id: id.clone(),
+                outlet_id: jstr(item, "outlet_id")?,
+                category_id: jstr(item, "category_id")?,
+                name: jstr(item, "name")?,
+                base_price_paise: ji64(item, "base_price_paise")?,
+                is_available: jbool(item, "is_available")?,
+                config_version: CONFIG_VERSION,
+                tax_profile_id: jstr_opt(item, "tax_profile_id"),
+                hsn_sac: Some(jstr(item, "hsn_sac")?),
+            },
+        )?;
+        let station_code = jstr(item, "station_code")?;
+        let station_id = station_id_for_code(&station_code)?;
+        repo::replace_menu_item_stations(conn, &id, &[station_id.to_string()], CONFIG_VERSION)?;
+    }
+
+    for variant in jarr(catalogue, "menu_item_variants")? {
+        repo::upsert_menu_item_variant(
+            conn,
+            &MenuItemVariant {
+                id: jstr(variant, "id")?,
+                menu_item_id: jstr(variant, "menu_item_id")?,
+                name: jstr(variant, "name")?,
+                price_delta_paise: ji64(variant, "price_delta_paise")?,
+                is_default: jbool(variant, "is_default")?,
+                config_version: CONFIG_VERSION,
+            },
+        )?;
+    }
+
+    for modifier in jarr(catalogue, "menu_item_modifiers")? {
+        repo::upsert_menu_item_modifier(
+            conn,
+            &MenuItemModifier {
+                id: jstr(modifier, "id")?,
+                menu_item_id: jstr(modifier, "menu_item_id")?,
+                group_name: jstr(modifier, "group_name")?,
+                option_name: jstr(modifier, "option_name")?,
+                price_delta_paise: ji64(modifier, "price_delta_paise")?,
+                min_selection: ji64(modifier, "min_selection")?,
+                max_selection: ji64(modifier, "max_selection")?,
                 config_version: CONFIG_VERSION,
             },
         )?;
     }
 
     println!(
-        "devseed: seed modifier ingredient deltas — {} rows ({} costed modifiers; most modifiers deliberately carry none)",
-        SEED_MODIFIER_DELTAS.len(),
-        SEED_MODIFIER_DELTAS.len()
+        "devseed: seed menu — {} items across {} categories",
+        items.len(),
+        jarr(catalogue, "menu_categories")?.len()
     );
+    Ok(())
+}
+
+/// `recipes`, then `recipe_ingredients` (recipes first: `recipe_ingredient.
+/// recipe_id` is a real FK). `component_kind`/`yield_factor_ppm`/
+/// `sort_order` are not wire fields -- derived/fixed here, exactly as
+/// `backend/cmd/devseed/seedfile.go`'s comment on `seedRecipeIngredient`
+/// describes for its own (mirrored) insert.
+fn write_recipes(conn: &rusqlite::Connection, catalogue: &Value) -> Result<(), DbError> {
+    let recipes = jarr(catalogue, "recipes")?;
+    for r in recipes {
+        repo::upsert_recipe(
+            conn,
+            &Recipe {
+                id: jstr(r, "id")?,
+                menu_item_variant_id: jstr(r, "menu_item_variant_id")?,
+                name: jstr(r, "name")?,
+                recipe_version: 1,
+                output_dimension: jstr(r, "output_dimension")?,
+                output_quantity_micro: ji64(r, "output_quantity_micro")?,
+                config_version: CONFIG_VERSION,
+            },
+        )?;
+    }
+
+    let ingredients = jarr(catalogue, "recipe_ingredients")?;
+    let mut sort_order_by_recipe: std::collections::HashMap<String, i64> =
+        std::collections::HashMap::new();
+    for ri in ingredients {
+        let recipe_id_val = jstr(ri, "recipe_id")?;
+        let inventory_item_id_val = jstr_opt(ri, "inventory_item_id");
+        let sub_recipe_id_val = jstr_opt(ri, "sub_recipe_id");
+        let component_kind = match (&inventory_item_id_val, &sub_recipe_id_val) {
+            (Some(_), None) => "ITEM",
+            (None, Some(_)) => "SUB_RECIPE",
+            _ => {
+                return Err(DbError::InvalidInput(format!(
+                    "devseed: recipe_ingredient {} must set exactly one of inventory_item_id/sub_recipe_id",
+                    jstr(ri, "id")?
+                )))
+            }
+        };
+        let sort_order = sort_order_by_recipe.entry(recipe_id_val.clone()).or_insert(0);
+        repo::upsert_recipe_ingredient(
+            conn,
+            &RecipeIngredient {
+                id: jstr(ri, "id")?,
+                recipe_id: recipe_id_val,
+                component_kind: component_kind.to_string(),
+                inventory_item_id: inventory_item_id_val,
+                sub_recipe_id: sub_recipe_id_val,
+                quantity_micro: ji64(ri, "quantity_micro")?,
+                quantity_dimension: jstr(ri, "quantity_dimension")?,
+                yield_factor_ppm: 1_000_000, // identity; DEFERRED to M5 (0015)
+                sort_order: *sort_order,
+                config_version: CONFIG_VERSION,
+            },
+        )?;
+        *sort_order += 1;
+    }
+
+    println!(
+        "devseed: seed recipes — {} recipes, {} recipe_ingredient rows",
+        recipes.len(),
+        ingredients.len()
+    );
+    Ok(())
+}
+
+/// `modifier_ingredient_deltas`.
+fn write_modifier_deltas(conn: &rusqlite::Connection, catalogue: &Value) -> Result<(), DbError> {
+    let deltas = jarr(catalogue, "modifier_ingredient_deltas")?;
+    for d in deltas {
+        repo::upsert_modifier_ingredient_delta(
+            conn,
+            &ModifierIngredientDelta {
+                id: jstr(d, "id")?,
+                menu_item_modifier_id: jstr(d, "menu_item_modifier_id")?,
+                inventory_item_id: jstr(d, "inventory_item_id")?,
+                quantity_micro: ji64(d, "quantity_micro")?,
+                config_version: CONFIG_VERSION,
+            },
+        )?;
+    }
+    println!(
+        "devseed: seed modifier ingredient deltas — {} rows",
+        deltas.len()
+    );
+    Ok(())
+}
+
+/// `suppliers`, `supplier_items` (demo build work item 2). `SupplierConfig`/
+/// `SupplierItemConfig` are the CLOUD-OWNED config shapes (contracts 0.6.0)
+/// -- exactly right here too, since a supplier and its pack sizes are
+/// management config, cloud->edge, like every other row this function
+/// writes (ADR-019).
+fn write_suppliers(conn: &rusqlite::Connection, catalogue: &Value) -> Result<(), DbError> {
+    for s in jarr(catalogue, "suppliers")? {
+        repo::upsert_supplier(
+            conn,
+            &SupplierConfig {
+                id: jstr(s, "id")?,
+                outlet_id: jstr(s, "outlet_id")?,
+                code: jstr(s, "code")?,
+                name: jstr(s, "name")?,
+                gstin: jstr_opt(s, "gstin"),
+                phone: jstr_opt(s, "phone"),
+                email: jstr_opt(s, "email"),
+                address: jstr_opt(s, "address"),
+                payment_terms_days: ji64(s, "payment_terms_days")?,
+                is_active: jbool(s, "is_active")?,
+                config_version: CONFIG_VERSION,
+            },
+        )?;
+    }
+    for si in jarr(catalogue, "supplier_items")? {
+        repo::upsert_supplier_item(
+            conn,
+            &SupplierItemConfig {
+                id: jstr(si, "id")?,
+                supplier_id: jstr(si, "supplier_id")?,
+                inventory_item_id: jstr(si, "inventory_item_id")?,
+                purchase_unit: jstr(si, "purchase_unit")?,
+                pack_size_micro: ji64(si, "pack_size_micro")?,
+                quantity_dimension: jstr(si, "quantity_dimension")?,
+                last_price_paise: ji64_opt(si, "last_price_paise"),
+                is_preferred: jbool(si, "is_preferred")?,
+            },
+        )?;
+    }
+    Ok(())
+}
+
+/// The single received GRN (seed/README.md's deliberate exception).
+/// **Does NOT read `goods_receipt.lines[]`'s precomputed conversion
+/// fields.** Those exist for the cloud reader, which has no conversion
+/// engine of its own; the edge re-derives the same numbers through
+/// `Db::record_goods_receipt` -- the real, tested conversion path -- from
+/// the entered quantities and the `supplier_item` rows [`write_suppliers`]
+/// already wrote. `GRN_NUMBER`/`GRN_BUSINESS_DATE` are chosen (see their own
+/// doc comments) to equal what that call mints on a clean bootstrap, so the
+/// edge's own stored number still matches the JSON's without either side
+/// reading the other.
+fn write_goods_receipt(db: &mut Db, catalogue: &Value) -> Result<(), DbError> {
+    let Some(receipt) = catalogue.get("goods_receipt").filter(|v| !v.is_null()) else {
+        return Ok(());
+    };
+    let lines = jarr(receipt, "lines")?;
+    let mut new_lines = Vec::with_capacity(lines.len());
+    for l in lines {
+        new_lines.push(NewGrnLine {
+            inventory_item_id: jstr(l, "inventory_item_id")?,
+            entered_purchase_unit: jstr(l, "entered_purchase_unit")?,
+            entered_quantity_micro: ji64(l, "entered_quantity_micro")?,
+            quantity_dimension: jstr(l, "quantity_dimension")?,
+            purchase_price_paise: {
+                // The JSON's `line_total_paise` / `entered_quantity_micro` at
+                // full precision recovers the per-purchase-unit price this
+                // struct wants -- `entered_quantity_micro` is always a whole
+                // number of purchase units (x 1_000_000) in this fixture, so
+                // the division is exact.
+                let entered = ji64(l, "entered_quantity_micro")?;
+                let total = ji64(l, "line_total_paise")?;
+                if entered == 0 {
+                    0
+                } else {
+                    i64::try_from(
+                        i128::from(total) * 1_000_000 / i128::from(entered),
+                    )
+                    .unwrap_or(0)
+                }
+            },
+            batch_code: jstr_opt(l, "batch_code"),
+            expiry_date: jstr_opt(l, "expiry_date"),
+            purchase_order_line_id: jstr_opt(l, "purchase_order_line_id"),
+        });
+    }
+
+    let req = NewGoodsReceiptNote {
+        id: jstr(receipt, "id")?,
+        outlet_id: jstr(receipt, "outlet_id")?,
+        purchase_order_id: jstr_opt(receipt, "purchase_order_id"),
+        supplier_id: jstr_opt(receipt, "supplier_id"),
+        delivery_note_ref: jstr_opt(receipt, "delivery_note_ref"),
+        received_at: jstr(receipt, "received_at")?,
+        received_by_user_id: jstr(receipt, "received_by_user_id")?,
+        notes: jstr_opt(receipt, "notes"),
+        lines: new_lines,
+    };
+    let stored = db
+        .record_goods_receipt(req)
+        .map_err(|e| DbError::InvalidInput(format!("devseed: recording seeded GRN: {e}")))?;
+    println!(
+        "devseed: seed goods receipt — {} ({} lines, {} gaps)",
+        stored.grn_number,
+        stored.lines.len(),
+        stored.gaps.len()
+    );
+    Ok(())
+}
+
+/// Opening stock: one `COUNT_ADJUSTMENT` `stock_ledger_entry` per
+/// inventory item, through a real stock count (`Db::open_stock_count` /
+/// `add_or_update_stock_count_line` / `Db::complete_stock_count`) -- the
+/// same sanctioned public entry point CLAUDE.md's "enumerate the sinks"
+/// rule requires, never a raw ledger insert.
+fn write_opening_stock(db: &mut Db, catalogue: &Value) -> Result<(), DbError> {
+    let rows = jarr(catalogue, "opening_stock")?;
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let outlet_id = jstr(&rows[0], "outlet_id")?;
+    db.open_stock_count(NewStockCount {
+        id: OPENING_STOCK_ID.to_string(),
+        outlet_id: outlet_id.clone(),
+        started_at: OPENING_STOCK_STARTED_AT.to_string(),
+        counted_by_user_id: Some(CASHIER_ID.to_string()),
+        note: Some("Opening stock for the demo build".to_string()),
+    })
+    .map_err(|e| DbError::InvalidInput(format!("devseed: opening stock count: {e}")))?;
+
+    for row in rows {
+        db.add_or_update_stock_count_line(
+            OPENING_STOCK_ID,
+            &outlet_id,
+            NewStockCountLine {
+                inventory_item_id: jstr(row, "inventory_item_id")?,
+                counted_quantity_micro: ji64(row, "quantity_micro")?,
+                note: None,
+            },
+        )
+        .map_err(|e| DbError::InvalidInput(format!("devseed: opening stock count line: {e}")))?;
+    }
+
+    db.complete_stock_count(OPENING_STOCK_ID, &outlet_id, OPENING_STOCK_COMPLETED_AT)
+        .map_err(|e| DbError::InvalidInput(format!("devseed: completing opening stock count: {e}")))?;
+    println!("devseed: seed opening stock — {} inventory items", rows.len());
     Ok(())
 }
 
