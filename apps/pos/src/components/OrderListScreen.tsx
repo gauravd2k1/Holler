@@ -106,12 +106,17 @@ export function OrderListScreen() {
       <PrintFailureBanner />
       <SyncBlockedBanner />
       <LowStockBanner />
-      <header>
-        <h1>Orders</h1>
-        <button type="button" onClick={() => void navigate({ to: "/" })}>
+      <header className="holler-header">
+        <div className="holler-header__brand">
+          <img src="/holler_no_bg.png" alt="Holler" className="holler-logo" />
+          <h1>Orders</h1>
+        </div>
+        <div className="holler-header__spacer" />
+        <button type="button" className="btn" onClick={() => void navigate({ to: "/" })}>
           Back to POS
         </button>
       </header>
+      <div className="screen-body">
       {ordersQuery.isLoading && <p>Loading orders…</p>}
       {ordersQuery.isError && <p role="alert">Could not load orders.</p>}
       {confirmError && (
@@ -124,6 +129,7 @@ export function OrderListScreen() {
           {sendError}
         </p>
       )}
+      <div className="card">
       <table>
         <thead>
           <tr>
@@ -162,6 +168,7 @@ export function OrderListScreen() {
                   {canOfferConfirm(order.status, principal) && (
                     <button
                       type="button"
+                      className="btn btn--primary"
                       disabled={confirmingId === order.holler_order_id}
                       onClick={() => void handleConfirm(order.holler_order_id)}
                     >
@@ -171,6 +178,7 @@ export function OrderListScreen() {
                   {canOfferSendToKitchen(order.status, principal) && (
                     <button
                       type="button"
+                      className="btn btn--primary"
                       disabled={sendingId === order.holler_order_id}
                       onClick={() => void handleSendToKitchen(order.holler_order_id)}
                     >
@@ -180,6 +188,7 @@ export function OrderListScreen() {
                   {order.status !== "DRAFT" && (
                     <button
                       type="button"
+                      className="btn"
                       onClick={() =>
                         setExpandedOrderId(
                           expandedOrderId === order.holler_order_id ? null : order.holler_order_id,
@@ -192,6 +201,7 @@ export function OrderListScreen() {
                   {order.status !== "DRAFT" && order.status !== "CANCELLED" && (
                     <button
                       type="button"
+                      className="btn"
                       onClick={() =>
                         void navigate({
                           to: "/orders/$orderId/billing",
@@ -219,6 +229,8 @@ export function OrderListScreen() {
           ))}
         </tbody>
       </table>
+      </div>
+      </div>
     </main>
   );
 }
@@ -300,6 +312,7 @@ function KotsPanel({
                     <button
                       key={next}
                       type="button"
+                      className="btn"
                       disabled={transitioningId === kot.id}
                       onClick={() => void handleTransition(kot, next)}
                     >

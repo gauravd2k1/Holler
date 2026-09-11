@@ -261,8 +261,8 @@ export function ReceivingScreen() {
                         ? formatMicroQuantity(line.base_quantity_micro, item.dimension)
                         : `${line.base_quantity_micro} micro-units`}
                     </td>
-                    <td>{formatPaiseAsRupees(line.unit_cost_paise)}</td>
-                    <td>{formatPaiseAsRupees(line.line_total_paise)}</td>
+                    <td className="money">{formatPaiseAsRupees(line.unit_cost_paise)}</td>
+                    <td className="money">{formatPaiseAsRupees(line.line_total_paise)}</td>
                   </tr>
                 );
               })}
@@ -454,8 +454,8 @@ export function ReceivingScreen() {
             <strong>{entryIntentEcho(echo)}</strong>
             <div>{entryIntentRate(echo)}</div>
             <div>
-              Cost {formatPaiseAsRupees(echo.unit_cost_paise)} per base unit · line total{" "}
-              {formatPaiseAsRupees(echo.line_total_paise)}
+              Cost <span className="money">{formatPaiseAsRupees(echo.unit_cost_paise)}</span> per base
+              unit · line total <span className="money">{formatPaiseAsRupees(echo.line_total_paise)}</span>
             </div>
             {echoHasDimensionDisagreement(echo) && (
               <div className="receiving-echo-warning">
@@ -498,7 +498,7 @@ export function ReceivingScreen() {
                   committed. */}
               <strong>{entryIntentEcho(line.echo)}</strong>
               <span> · {entryIntentRate(line.echo)}</span>
-              <span> · {formatPaiseAsRupees(line.echo.line_total_paise)}</span>
+              <span> · <span className="money">{formatPaiseAsRupees(line.echo.line_total_paise)}</span></span>
               <button type="button" onClick={() => removeLine(line.key)} disabled={submitting}>
                 Remove
               </button>

@@ -441,17 +441,23 @@ export function BillingScreen() {
 
   return (
     <main className="billing-screen">
-      <header>
-        {/* The order's human-facing number only — never its UUID
-            (CLAUDE.md §Money/time/identifiers). display_number is nullable
-            only for pre-0.4.0 legacy rows. */}
-        <h1>Billing — {orderQuery.data?.display_number ?? "order pending"}</h1>
-        <button type="button" onClick={() => void navigate({ to: "/orders" })}>
+      <header className="holler-header">
+        <div className="holler-header__brand">
+          <img src="/holler_no_bg.png" alt="Holler" className="holler-logo" />
+          {/* The order's human-facing number only — never its UUID
+              (CLAUDE.md §Money/time/identifiers). display_number is nullable
+              only for pre-0.4.0 legacy rows. */}
+          <h1>Billing — {orderQuery.data?.display_number ?? "order pending"}</h1>
+        </div>
+        <div className="holler-header__spacer" />
+        <button type="button" className="btn" onClick={() => void navigate({ to: "/orders" })}>
           Back to Orders
         </button>
       </header>
 
-      <section className="cash-shift-panel">
+      <div className="screen-body">
+
+      <section className="cash-shift-panel card">
         <h2>Cash Shift</h2>
         {!openShiftId && (
           <div>
@@ -461,7 +467,7 @@ export function BillingScreen() {
               value={openingCashRupees}
               onChange={(e) => setOpeningCashRupees(e.target.value)}
             />
-            <button type="button" disabled={!canBill} onClick={() => void handleOpenShift()}>
+            <button type="button" className="btn" disabled={!canBill} onClick={() => void handleOpenShift()}>
               Open Shift
             </button>
           </div>
@@ -492,6 +498,7 @@ export function BillingScreen() {
                 )}
                 <button
                   type="button"
+                  className="btn"
                   disabled={!canBill || closingShift}
                   onClick={() => void handleCloseShift()}
                 >
@@ -509,7 +516,7 @@ export function BillingScreen() {
       </section>
 
       {!hasInvoices && !invoicesQuery.isLoading && orderItems.length > 0 && (
-        <section className="discount-panel">
+        <section className="discount-panel card">
           <h2>Discounts</h2>
           {/* LINE scope only — a discount naming BILL scope is not offered
               here at all (§28, this track's disclosed limitation). Applies
@@ -558,7 +565,7 @@ export function BillingScreen() {
         </section>
       )}
 
-      <section className="invoice-panel">
+      <section className="invoice-panel card">
         <h2>Bill</h2>
         {invoicesQuery.isLoading && <p>Loading bill…</p>}
         {!hasInvoices && !invoicesQuery.isLoading && (
@@ -567,6 +574,7 @@ export function BillingScreen() {
               <div>
                 <button
                   type="button"
+                  className="btn btn--primary"
                   disabled={!canBill || issuing || !discountsReady}
                   onClick={() => void handleIssueInvoice()}
                 >
@@ -574,6 +582,7 @@ export function BillingScreen() {
                 </button>
                 <button
                   type="button"
+                  className="btn"
                   disabled={!canBill || orderItems.length === 0}
                   onClick={() => setSplitMode(true)}
                 >
@@ -596,7 +605,7 @@ export function BillingScreen() {
                         <th key={i}>
                           Part {i + 1}{" "}
                           {splitParts.length > 2 && (
-                            <button type="button" onClick={() => removeSplitPart(i)}>
+                            <button type="button" className="btn" onClick={() => removeSplitPart(i)}>
                               Remove
                             </button>
                           )}
@@ -633,11 +642,12 @@ export function BillingScreen() {
                     })}
                   </tbody>
                 </table>
-                <button type="button" onClick={addSplitPart}>
+                <button type="button" className="btn" onClick={addSplitPart}>
                   + Add Part
                 </button>
                 <button
                   type="button"
+                  className="btn btn--primary"
                   disabled={
                     !canBill ||
                     splitting ||
@@ -649,7 +659,7 @@ export function BillingScreen() {
                 >
                   {splitting ? "Issuing…" : `Issue ${splitParts.length}-Way Split`}
                 </button>
-                <button type="button" onClick={() => setSplitMode(false)}>
+                <button type="button" className="btn" onClick={() => setSplitMode(false)}>
                   Cancel Split
                 </button>
                 {splitError && (
@@ -686,7 +696,7 @@ export function BillingScreen() {
           const submittingTender = submittingTenderInvoiceId === inv.id;
 
           return (
-            <section key={inv.id} className="invoice-detail-panel">
+            <section key={inv.id} className="invoice-detail-panel card">
               <h2>
                 Invoice {inv.invoice_number} — {inv.status}
                 {inv.split_group_id !== null &&
@@ -739,6 +749,7 @@ export function BillingScreen() {
               <p className="print-bill">
                 <button
                   type="button"
+                  className="btn"
                   onClick={() => void printBill(inv.id)}
                   disabled={printingInvoiceId === inv.id}
                 >
@@ -779,6 +790,7 @@ export function BillingScreen() {
                         {canVoid && p.reverses_payment_id === null && p.status === "CAPTURED" && (
                           <button
                             type="button"
+                            className="btn btn--danger"
                             onClick={() => void handleVoid(inv.id, p.id, p.amount_paise)}
                           >
                             Void / Refund
@@ -790,7 +802,7 @@ export function BillingScreen() {
                 </tbody>
               </table>
 
-              <h4>Take Payment</h4>
+              <h3>Take Payment</h3>
               {pendingTenders.map((t, i) => (
                 <div key={i} className="pending-tender-row">
                   <select
@@ -824,13 +836,14 @@ export function BillingScreen() {
                       }
                     />
                   )}
-                  <button type="button" onClick={() => removePendingTender(inv.id, i)}>
+                  <button type="button" className="btn" onClick={() => removePendingTender(inv.id, i)}>
                     Remove
                   </button>
                 </div>
               ))}
               <button
                 type="button"
+                className="btn"
                 disabled={!canBill || billFullySettled}
                 onClick={() => addPendingTender(inv.id)}
               >
@@ -846,6 +859,7 @@ export function BillingScreen() {
               )}
               <button
                 type="button"
+                className="btn btn--primary"
                 disabled={!canBill || billFullySettled || pendingTenders.length === 0 || submittingTender}
                 onClick={() => void handleSubmitTenders(inv.id)}
               >
@@ -854,6 +868,7 @@ export function BillingScreen() {
             </section>
           );
         })}
+      </div>
     </main>
   );
 }

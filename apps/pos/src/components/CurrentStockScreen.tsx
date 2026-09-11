@@ -15,37 +15,43 @@ export function CurrentStockScreen() {
 
   return (
     <main className="current-stock-screen">
-      <header>
-        <h1>Current Stock</h1>
+      <header className="holler-header">
+        <div className="holler-header__brand">
+          <img src="/holler_no_bg.png" alt="Holler" className="holler-logo" />
+          <h1>Current Stock</h1>
+        </div>
         <nav className="inventory-nav">
-          <button type="button" onClick={() => void navigate({ to: "/inventory/wastage" })}>
+          <button type="button" className="btn" onClick={() => void navigate({ to: "/inventory/wastage" })}>
             Record Wastage
           </button>
-          <button type="button" onClick={() => void navigate({ to: "/inventory/counts" })}>
+          <button type="button" className="btn" onClick={() => void navigate({ to: "/inventory/counts" })}>
             Stock Counts
           </button>
-          <button type="button" onClick={() => void navigate({ to: "/inventory/gaps" })}>
+          <button type="button" className="btn" onClick={() => void navigate({ to: "/inventory/gaps" })}>
             Items Sold With No Recipe
           </button>
           {/* Procurement (M5, ADR-019). Reachable from here because stock is
               where a receiver already is: receiving is the inbound half of the
               same ledger this screen reads. */}
-          <button type="button" onClick={() => void navigate({ to: "/procurement/receive" })}>
+          <button type="button" className="btn" onClick={() => void navigate({ to: "/procurement/receive" })}>
             Receive Delivery
           </button>
-          <button type="button" onClick={() => void navigate({ to: "/procurement/returns" })}>
+          <button type="button" className="btn" onClick={() => void navigate({ to: "/procurement/returns" })}>
             Return to Supplier
           </button>
-          <button type="button" onClick={() => void navigate({ to: "/procurement/gaps" })}>
+          <button type="button" className="btn" onClick={() => void navigate({ to: "/procurement/gaps" })}>
             Delivery Problems
           </button>
         </nav>
-        <button type="button" onClick={() => void navigate({ to: "/" })}>
+        <div className="holler-header__spacer" />
+        <button type="button" className="btn" onClick={() => void navigate({ to: "/" })}>
           Back to POS
         </button>
       </header>
+      <div className="screen-body">
       {stockQuery.isLoading && <p>Loading stock…</p>}
       {stockQuery.isError && <p role="alert">Could not load current stock.</p>}
+      <div className="card">
       <table>
         <thead>
           <tr>
@@ -99,6 +105,8 @@ export function CurrentStockScreen() {
           })}
         </tbody>
       </table>
+      </div>
+      </div>
     </main>
   );
 }

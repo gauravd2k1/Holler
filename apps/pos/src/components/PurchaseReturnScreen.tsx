@@ -246,7 +246,7 @@ export function PurchaseReturnScreen() {
                         ? formatMicroQuantity(line.base_quantity_micro, item.dimension)
                         : `${line.base_quantity_micro} micro-units`}
                     </td>
-                    <td>{formatPaiseAsRupees(line.unit_cost_paise)}</td>
+                    <td className="money">{formatPaiseAsRupees(line.unit_cost_paise)}</td>
                   </tr>
                 );
               })}

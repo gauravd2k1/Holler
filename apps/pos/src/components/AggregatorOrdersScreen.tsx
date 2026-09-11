@@ -142,9 +142,11 @@ export function AggregatorOrdersScreen() {
                   both figures, not a reconciled one. */}
               <p>
                 Platform states{" "}
-                {doc.stated_total_paise === null
-                  ? "no total"
-                  : formatPaiseAsRupees(doc.stated_total_paise)}
+                <span className="money">
+                  {doc.stated_total_paise === null
+                    ? "no total"
+                    : formatPaiseAsRupees(doc.stated_total_paise)}
+                </span>
               </p>
               <table>
                 <thead>
@@ -164,7 +166,7 @@ export function AggregatorOrdersScreen() {
                         {line.external_item_name} ({line.external_item_id})
                       </td>
                       <td>{line.quantity}</td>
-                      <td>
+                      <td className="money">
                         {line.stated_unit_price_paise === null
                           ? "—"
                           : formatPaiseAsRupees(line.stated_unit_price_paise)}

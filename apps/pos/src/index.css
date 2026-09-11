@@ -238,10 +238,26 @@
   color: var(--color-danger-bg);
 }
 
-/* --------------------------------------------------------- order list -- */
-.order-list-screen {
+/* -------------------------------------------------------- sub-screens -- */
+/* Shared body rhythm for every sub-screen that carries a `.holler-header`:
+   the header itself is edge-to-edge (see `.holler-header` in base.css), the
+   content below it is padded and its direct children (each a `.card`) are
+   separated by `--space-5` so the screen reads as distinct groups rather
+   than one flat column. */
+.screen-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
   padding: var(--space-4);
 }
+/* A screen title sitting beside the logo inherits `h1`'s block margin from
+   base.css, which is meant for a heading stacked above body text, not one
+   centred in a flex row next to a 28px mark. */
+.holler-header h1 {
+  margin: 0;
+}
+
+/* --------------------------------------------------------- order list -- */
 .order-list-screen table {
   width: 100%;
   border-collapse: collapse;
@@ -303,7 +319,74 @@
   text-decoration: underline;
 }
 
+/* ------------------------------------------------------------ billing -- */
+.billing-screen table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: var(--space-3) 0;
+}
+.billing-screen th,
+.billing-screen td {
+  border-bottom: 1px solid var(--color-border);
+  padding: var(--space-2);
+  text-align: left;
+}
+.cash-shift-panel > div,
+.discount-panel,
+.invoice-panel,
+.invoice-detail-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.cash-shift-panel input,
+.split-bill-builder input,
+.pending-tender-row select,
+.pending-tender-row input {
+  max-width: 220px;
+}
+.discount-line-row,
+.pending-tender-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  padding: var(--space-2) 0;
+}
+.grand-total {
+  font-size: var(--text-lg);
+  font-weight: var(--weight-semibold);
+}
+.amount-due {
+  font-size: var(--text-lg);
+}
+.split-mismatch {
+  color: var(--color-danger);
+  font-weight: var(--weight-semibold);
+}
+.billing-error {
+  color: var(--color-danger);
+}
+.print-bill {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
 /* -------------------------------------------------------- current stock -- */
+.inventory-nav {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+/* The stock header carries a brand mark, six nav actions and a back button
+   in one row -- more than `.holler-header`'s single-row layout assumes on a
+   narrower viewport. Wrapping here is layout only; every other surface's
+   header stays the shared single-row shape. */
+.current-stock-screen .holler-header {
+  flex-wrap: wrap;
+  row-gap: var(--space-2);
+}
 .current-stock-screen table,
 .wastage-screen table,
 .stock-count-screen table,
