@@ -1,0 +1,22 @@
+[package]
+name = "holler-demo-assert"
+version = "0.1.0"
+edition = "2021"
+description = "Dev-only tool for scripts/demo-reset.ps1: opens the sealed edge SQLite database and asserts the known-clean-state invariants the demo build's reset depends on (sync_replay_block, stock_deduction_gap, sync_outbox_block). Never runs at an outlet (ADR-013) and ships nowhere."
+
+# NOT a cargo workspace member of edge/database -- this repository's Rust
+# crates deliberately do not share one (CLAUDE.md, 'contract-shaped changes
+# cascade across crates that do not share a cargo workspace'). This is a
+# standalone crate with a path dependency on the edge database library, the
+# same shape scripts/dev-bootstrap.ps1 already uses via `cargo run --bin
+# devseed` in edge/database -- it just lives beside the script that drives it
+# instead of inside edge/database, because this task's owned paths are
+# scripts/demo-reset.ps1 and docs/, and editing edge/database/src/bin/ was
+# explicitly out of scope (a parallel track is mid-fix in devseed.rs there).
+
+[[bin]]
+name = "demo-assert"
+path = "src/main.rs"
+
+[dependencies]
+holler-edge-database = { path = "../../edge/database" }
