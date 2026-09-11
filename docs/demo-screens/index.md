@@ -1,5 +1,52 @@
 # Demo screens — presentability check (T14 follow-up, T19 controls/header pass)
 
+## T20 update (2026-09-11) — billing screen fixes, re-taken `pos-billing.png`
+
+T19's `pos-billing.png` was captured without `VITE_HOLLER_DEMO_UPI_VPA` set,
+so the customer-facing UPI QR — the single most important thing on that
+screen for the demo — was absent. `UpiPaymentQr` (`components/UpiPaymentQr.tsx`,
+`domain/upi.ts`) renders **nothing at all** when no demo payee VPA is
+configured — deliberately: a QR aimed at an empty payee would open a real
+payment app on a customer's phone pointed at nobody. **The QR only ever
+appears when `VITE_HOLLER_DEMO_UPI_VPA` (and optionally
+`VITE_HOLLER_DEMO_UPI_PAYEE_NAME`) is set at build/dev-server time** — set
+them in `apps/pos/.env.local` (untracked) or in the environment before
+`pnpm dev`/`pnpm build`. The re-take below used `demo@upi` /
+`Holler Demo Kitchen`, an obviously-fake payee.
+
+Two further `BillingScreen.tsx`/`index.css` fixes are in this same
+screenshot:
+
+- The "Bill" card used to render as a bare `<h2>Bill</h2>` with an empty
+  body once an invoice existed (everything it would show is already
+  rendered per-invoice below in `.invoice-detail-panel`) — the card is now
+  dropped once `hasInvoices` is true, and shows a real one-line empty state
+  ("No unbilled order — send an order to the kitchen first.") when there is
+  nothing yet to bill, instead of a bordered box with nothing in it.
+- "Open Shift", "+ Add Tender" and "Record Payment(s)" were stretching to
+  the full card width — their flex-column parent containers defaulted
+  `align-items` to `stretch`, pulling every `inline-flex` `.btn` along with
+  them. Fixed with `align-items: flex-start` on those containers;
+  "Record Payment(s)" opts into full width explicitly via `.btn--block`,
+  since it is the screen's one genuinely terminal action.
+
+`pos-billing.png` was re-captured with a throwaway Playwright script
+(scratch directory, not part of this repository) driving the real
+`pnpm dev` server with `VITE_HOLLER_DEMO_UPI_VPA=demo@upi` and
+`VITE_HOLLER_DEMO_UPI_PAYEE_NAME="Holler Demo Kitchen"` set,
+`window.__TAURI_INTERNALS__.invoke` mocked with contract-shaped fixtures
+(login → orders list → Bill → invoice detail), navigated entirely by
+clicking in-app (never a `page.goto` reload after login), and asserted on
+the invoice number and "Scan to pay via UPI" text being on screen before
+capture. No other file in this set changed in this pass.
+
+`pos-billing-upi-qr.png` (the standalone QR crop from the T14 pass) is
+unchanged and kept for its own MD5 below.
+
+**`pos-billing.png` MD5, this pass:** `92f4fd83078de61f1294d0205e92a560`
+(supersedes the T19-pass hash `f69af7491d769204905582bb38c62088` recorded
+below). Confirmed distinct from every other file in this directory.
+
 ## T19 update (2026-09-11)
 
 T14 adopted the colour tokens (`.money`, status colours, the logo on
