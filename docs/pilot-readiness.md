@@ -82,6 +82,51 @@ disk indefinitely.
 
 ---
 
+## A-bis. Key management — where the edge database key lives, and who can change it
+
+**Blocks pilot: YES. Size: M.** Added 2026-09-11, after the dev machine's key
+was found to be 32 repeated bytes.
+
+`HOLLER_DB_KEY_HEX` is the AES key for the edge SQLite database at rest
+(ADR-011). It protects the cached Argon2id password and PIN hashes that let
+staff log in with the uplink down, the `device_credential_cache` verifiers the
+KDS and captain page authenticate against, and every order, invoice and payment
+the till has taken.
+
+**Today it lives in `apps/pos/.env.dev`: a plaintext file that
+`scripts/dev-bootstrap.ps1` rewrites in full on every run.** That is a
+development arrangement standing in for a production one, and nothing about it
+is suitable for an outlet.
+
+Five questions, none of which has an answer yet:
+
+- **Generation.** Who mints the key for an outlet, on what machine, and how is
+  it proved random? The interim guards added on 2026-09-11 reject a key that
+  fails an entropy heuristic, which catches a hand-typed placeholder and nothing
+  subtler.
+- **Storage.** A plaintext `.env` beside the binary is the key sitting next to
+  the lock. Windows DPAPI, the Credential Manager, or a TPM-sealed blob are the
+  obvious candidates on ADR-013's hardware; each needs a decision and a fallback
+  for a machine that has none.
+- **Rotation.** **A different key does not error — it silently opens a
+  different, empty database.** So a mistaken rotation presents as a working till
+  with no history, indistinguishable from a fresh install. Rotation therefore
+  needs a re-encrypt path, not a key swap, and the interim `-RotateKey` flag is
+  a guard against accident, not a rotation mechanism.
+- **Backup and recovery.** ADR-011 forbids the database ever being copied
+  anywhere unencrypted, so a backup is useless without its key and the key
+  cannot live with the backup. **Losing the key loses the outlet's trading
+  history** — and gap A6 already means the sealed file is only as current as the
+  last successful seal.
+- **Machine replacement.** A till dies mid-service and is swapped. What does the
+  new machine need, who holds it, and how long does the outlet wait?
+
+**Trigger: before the first pilot.** Related: the 2026-09-11 retro entry on a
+deny rule protecting a file rather than a secret, and gap A6 (no exit path
+seals the database).
+
+---
+
 ## B. Carried by a pilot trigger, from `docs/backlog.md`
 
 Grouped by what they threaten. Titles are abbreviated; the backlog row is the
