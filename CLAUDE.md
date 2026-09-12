@@ -60,7 +60,7 @@ The split that matters: WSL2 hosts the **cloud** dependencies for local developm
 - POS: `pnpm test` / `pnpm tauri dev` inside `apps/pos/`.
 - CI: lint, format, unit, integration, contract-drift check, build, security scan.
 
-## Contracts status: FROZEN at v0.8.1 (M6 Phase C aggregator shapes ADR-022, `order.source` widening ADR-026; migrations through sqlite 0035 / postgres 0035)
+## Contracts status: FROZEN at v0.8.2 (M6 Phase C aggregator shapes ADR-022, `order.source` widening ADR-026, `GET /orders` documented ADR-027; migrations through sqlite 0035 / postgres 0035)
 <!-- The version and migration numbers on the heading above are checked by
      scripts/check-milestone-marker.mjs against packages/contracts/package.json
      and the migration files on disk. Third staleness of this line (0.4.7,
@@ -172,6 +172,35 @@ see; and **a word-boundary match on `ondc` cannot match `AGGREGATOR_ONDC`**, bec
 character, so an enum member named for a platform passed cleanly. Platform names
 now match with separator-aware lookarounds; protocol tokens keep the word-boundary match, so a
 trigger named `..._on_update` is not read as a Beckn callback.
+
+**0.8.2** (ADR-027) is DOCUMENTATION ONLY -- no `.sql`, no `.ts`, no `.go`
+shape moved. `GET /orders` gained its OpenAPI entry, having been **routed and
+served since Milestone 1** (`backend/internal/ordering/http.go:32`) and absent
+from the spec the whole time, which is why a survey of `openapi.yaml` read
+`/orders` as POST-only. Three rules bind every builder:
+- **A ROUTE ABSENT FROM THE SPEC READS AS A ROUTE THAT DOES NOT EXIST.** That
+  mis-reading was about to buy a day of work and a contracts bump for something
+  already shipping. Documenting it changed nothing about its behaviour: it
+  returns a bare array of `CanonicalOrder`, unwrapped, **unbounded** (no limit,
+  no cursor) and **oldest-first**. Both properties are written into the spec
+  rather than fixed, because adding pagination while claiming to document
+  existing behaviour is a behaviour change wearing a documentation label.
+- **THE CLOUD WAS NOT HONOURING THE WIRE TYPE IT CLAIMED, IN TWO PLACES.**
+  `display_number` was in neither the INSERT nor the SELECT -- the edge mints
+  it, `CanonicalOrder` carries it, both stores have the column, and the cloud
+  discarded it on ingest and served NULL forever after, so the back office
+  could not name a single order. And timestamps were serialised with the
+  connection's `+05:30` offset, which `z.string().datetime()` REJECTS, so every
+  order failed validation in every TypeScript client. Neither is a contract
+  change; both are the cloud failing to serve shapes that already existed.
+- **A FIDELITY TEST PROVES FIDELITY ONLY FOR THE FIELDS ITS FIXTURE POPULATES
+  AND ONLY FOR THE SPELLINGS ITS FIXTURE USES.** 0.5.9 was a field the fixture
+  left null; this is a field the fixture formatted differently from the server.
+  Both stayed green throughout, because **nothing had ever read an order back
+  from the cloud in TypeScript** -- the till reads the edge, and the drift test
+  reads a fixture authored with a `Z`. The guard added here asserts the
+  MARSHALLED BYTES, never the `time.Time`, which compares equal under both
+  spellings.
 
 Two cross-cutting rules the 0.4.x line established the hard way: contract-shaped changes cascade across crates that do not share a cargo workspace (see `docs/retro.md` 2026-08-15), so run `make check-seams` after changing any `pub` signature in `edge/` or `apps/pos/src-tauri`; and a migration that exists on disk but is absent from `edge/database/src/migrations.rs`'s `MIGRATIONS` list **never applies** — 0009–0011 sat dead for exactly that reason, and 0005 before them.
 
