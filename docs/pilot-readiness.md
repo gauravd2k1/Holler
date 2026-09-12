@@ -314,15 +314,49 @@ replaced by the client's own card. All three are contract shapes, not bugs.
 
 ---
 
+## C3. The ESC/POS stream has no codepage handling
+
+Found 2026-09-13, while confirming the first correct demo bill. **Belongs with
+the parked ESC/POS-on-paper gate** (ADR-013) — it can only be observed on paper,
+and no printer exists in this environment.
+
+`render_invoice` writes Rust strings straight into the byte stream as **UTF-8**,
+and nothing anywhere selects or translates a codepage. A thermal printer decodes
+those bytes in its default codepage (CP437 or CP1252), so **every non-ASCII
+character prints as two or three garbage characters**.
+
+Observed, not reasoned: the footer's em dash was the only non-ASCII content in a
+real 818-byte receipt, sitting at offset 786 as `e2 80 94`.
+
+**Why it stayed invisible, which is the part worth carrying.** Three
+representations of one bill, and the fault shows in none of them: the HTML and
+the PDF render UTF-8 correctly, and the `.txt` companion **strips every byte
+above 0x7F** (`to_readable_text`), so the damaged line simply reads with a gap.
+The equivalence test binds the HTML to the bytes by *content*, which agrees
+either way. Only a printer disagrees.
+
+| Item | Blocks pilot | Size | Note |
+|---|---|---|---|
+| **No codepage selection or transliteration in the ESC/POS path** | **YES** | M | Needs a codepage command (`ESC t n`) plus a transliteration or a character map at the boundary. Today's seed is pure ASCII — the shared catalogue was scanned and is clean — so nothing is currently garbled, and that is luck rather than design: a real outlet's legal name, address, or a menu carrying `é`, `'`, `—` or `₹` garbles the moment it is seeded |
+| **`to_readable_text` hides the fault it should expose** | NO | S | The `.txt` companion drops non-ASCII silently. It is the artefact a human reads to check a bill without a printer, so it should render an unprintable byte visibly (`\xNN`) rather than vanish it |
+
+The demo's own footer was fixed at the source rather than filed —
+`INVOICE_FOOTER_TEXT` is ASCII now — because it was one character and it was on
+the bill the client sees. That fix does not close this row.
+
+---
+
 ## D. Summary
 
-**Blocks a pilot — 14 items:** A6, A7, the rebuild/backup pair, the four
+**Blocks a pilot — 15 items:** A6, A7, the rebuild/backup pair, the four
 cloud-copy and config-push rows (`variant_id` check, order copy, inventory push,
 menu seed), the cloud `hsn_sac` seed, the plaintext database on shutdown, device
 enrollment, the `outlet.manage` split, the admin staff surface, the two menu
 shapes added on 2026-09-12 (**VAT is inexpressible, so alcohol bills at a zero
 rate**, and **`menu_item` has no `is_veg`** where FSSAI requires the marker),
-and **A6b, the non-atomic seal**.
+**A6b, the non-atomic seal**, and **C3, no codepage handling in the ESC/POS
+stream** (added 2026-09-13 — every non-ASCII character garbles on paper, and
+none of the three rendered representations can show it).
 
 They are not thirteen independent pieces of work. **Three roots account for eight
 of them:**

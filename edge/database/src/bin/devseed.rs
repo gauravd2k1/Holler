@@ -1160,7 +1160,22 @@ const OUTLET_FSSAI: Option<&str> = Some("11522998000123");
 /// Prints at the foot of every bill. Kept free of "dev", "fixture" and "test":
 /// demo work item 6 is that no internal label reaches a screen the client sees,
 /// and the receipt footer is a screen the client reads closely.
-const INVOICE_FOOTER_TEXT: Option<&str> = Some("Thank you — please visit again");
+/// ASCII ONLY, AND THE DASH IS A HYPHEN ON PURPOSE. This string is the only
+/// seeded text that reaches the raw ESC/POS byte stream, and that stream is
+/// emitted as UTF-8 with no codepage translation. An em dash left here ships as
+/// `e2 80 94`, which a thermal printer in its default codepage (CP437/CP1252)
+/// renders as three garbage characters. It is invisible everywhere anyone
+/// looks: the HTML and PDF render it correctly, and the `.txt` companion strips
+/// bytes above 0x7F, so the only place the damage appears is on paper --
+/// observed as the sole non-ASCII bytes in a real bill on 2026-09-13
+/// (offset 786 of an 818-byte receipt).
+///
+/// The general problem -- no codepage handling anywhere in the ESC/POS path, so
+/// a real outlet's name, address or menu text will garble the same way -- is
+/// filed in `docs/pilot-readiness.md` and belongs with the parked
+/// ESC/POS-on-paper gate. THIS constant is fixed rather than filed because it
+/// is one character and it is on the demo bill.
+const INVOICE_FOOTER_TEXT: Option<&str> = Some("Thank you - please visit again");
 
 // ---- Billing / acceptance fixtures (opt-in, HOLLER_SEED_BILLING=1) ----
 //
