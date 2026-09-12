@@ -105,10 +105,38 @@ if you prefer reading it that way — look for the adapter whose IPv4 address is
 `192.168.137.1` and note it.
 
 If more than one non-loopback IPv4 address is listed, **write down which one is
-the hotspot**. `scripts/dev-bootstrap.ps1`'s `Get-LanIPv4` picks the *first*
-non-loopback, non-link-local address it finds, which on a multi-NIC machine may
-not be the hotspot one — its own comment says to double-check against
-`ipconfig`. You will be correcting that value by hand in step 5.
+the hotspot** — and pass it to the bootstrap explicitly:
+
+```powershell
+.\scripts\dev-bootstrap.ps1 -LanHost 192.168.137.1   # ...plus your usual arguments
+```
+
+**`-LanHost` is the demo-day setting, and it beats every rule below.** On a
+phone hotspot the hub's address changes when it reconnects, and an address
+baked into `apps\kds\.env.dev` from a previous network produces a KDS that
+loads, looks fine, and never connects.
+
+**What the bootstrap does when you do not pass it:** it takes the IPv4 address
+of the interface that owns the **default route**, because that is the interface
+another device on the same network can actually reach. It prints which adapter
+it chose:
+
+```
+       LAN address 192.168.0.106 on 'Wi-Fi' (the default-route interface)
+```
+
+**Read that line.** It used to pick the *first* non-loopback address instead,
+and on a developer machine with WSL installed that was
+`172.28.176.1` — the Hyper-V virtual switch, which no phone and no second PC
+can route to. It looks like a perfectly good LAN address and answers only on
+the machine that printed it. If the adapter named on that line is not the one
+you are demoing over, re-run with `-LanHost`.
+
+With **no default route at all** (an offline outlet — the normal case per
+ADR-013) the bootstrap falls back to the first address that is *not* on an
+obviously virtual adapter (`vEthernet`, `WSL`, `Hyper-V`, `VirtualBox`,
+`VMware`, Bluetooth, TAP) and says so in yellow. If only virtual adapters
+exist it warns in red and tells you to pass `-LanHost`.
 
 ### 1b. If you are using a physical router instead
 
@@ -334,6 +362,21 @@ expected result here).
 ---
 
 ## 5. Enrolling a second PC as the KDS
+
+> **A `[3c/4]` failure that says 404 is a MISSING DEVICE, not a missing route.**
+> `POST /devices/{id}/credentials/rotate` exists and is served
+> (`backend/internal/outlet/device_http.go:29`). The bootstrap remembers
+> `(cloud, outlet, kind, name) -> device id` in
+> `%LOCALAPPDATA%\Holler\dev-bootstrap-state.json` so it can rotate a
+> credential instead of enrolling a second device — and
+> `scripts\demo-reset.ps1` drops the whole schema, which deletes every device
+> row while those remembered ids survive. Rotating one then 404s.
+>
+> Fixed on 2026-09-12 in three places, so this should no longer reach you: on a
+> local cloud the database is authoritative even when it says "no such device";
+> a rotate that 404s falls back to enrolling; and the reset prunes the state
+> entries it just invalidated. If you hit it on an older build, delete that
+> state file and re-run the bootstrap.
 
 The KDS needs **four** things in `apps/kds/.env.dev`. **As of T15,
 `scripts/dev-bootstrap.ps1` writes all four** — `VITE_KDS_LAN_URL`,

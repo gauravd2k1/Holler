@@ -68,6 +68,68 @@ Everything here is blocked on something no agent in this project can do.
 
 ## Item 1 and 2 — seed parity
 
+### The `[3c/4]` 404 was a missing DEVICE, not a missing route (2026-09-12)
+
+The operator's post-reset bootstrap failed KDS enrolment with a 404, which
+reads as an unserved route. It is not: `POST /devices/{deviceId}/credentials/rotate`
+is registered at `backend/internal/outlet/device_http.go:29` and answers.
+
+**What actually happened.** `dev-bootstrap.ps1` remembers
+`(cloud, outlet, kind, name) -> device id` in
+`%LOCALAPPDATA%\Holler\dev-bootstrap-state.json`, so it can ROTATE a
+credential rather than enrol a second device — there is deliberately no device
+LIST route, so that memory is the only way to answer "does this device already
+exist?" against a remote cloud. `demo-reset.ps1` then drops the entire public
+schema. **Measured after the operator's reset: 281 menu items, 0 devices, 0
+credentials — and the state file still naming two device ids.** The bootstrap
+rotated one of them and the backend correctly said 404.
+
+**Proven, not inferred**, against the live backend on 8080: a rotate on the
+exact stale id the state file names returns **HTTP 404**, and an enrol against
+the same cloud returns **HTTP 201 with an 80-character token**. The probe
+device was deleted afterwards; the cloud is back to 0 devices.
+
+**Three fixes, each closing a different door:**
+
+1. **On a local cloud, Postgres is authoritative — including when it says "no
+   such device".** The old order consulted the state file whenever the lookup
+   came back empty, which is exactly how a stale id outlives its own database.
+   The state file exists for a REMOTE cloud, where the lookup cannot run at
+   all. A stale entry found this way is now pruned as it is discovered.
+2. **A rotate that 404s falls back to enrolling**, for every cloud — the same
+   recovery a human would do by hand, and it covers a restored database or a
+   device deleted by hand. Every other status still throws: a 401 means the
+   caller lacks `outlet.manage`, and silently enrolling a second device would
+   hide that.
+3. **The reset prunes the state entries it just invalidated.** The script that
+   destroyed the rows is the one that knows they are gone.
+
+### The bootstrap's LAN address was the WSL virtual switch
+
+`Get-LanIPv4` took the FIRST non-loopback IPv4 address. On this machine that is
+**`172.28.176.1` — the Hyper-V vEthernet adapter WSL uses** — while the real LAN
+is `192.168.0.106` on Wi-Fi. A phone on the hotspot cannot route to a WSL
+virtual switch, so `VITE_KDS_LAN_URL` and the captain URL would have pointed at
+an address that answers **only on the machine that printed it**, and the failure
+appears on the phone, at the demo, and nowhere earlier.
+
+**The rule is now the interface that owns the default route**, which is what
+"reachable from another device on this network" means and is a fact Windows
+already knows. It prints the adapter it chose, so the line can be read rather
+than trusted. With no default route at all — an offline outlet, the normal case
+per ADR-013 — it falls back to the first non-virtual adapter (skipping
+vEthernet/WSL/Hyper-V/VirtualBox/VMware/Bluetooth/TAP) and says so; with only
+virtual adapters it warns in red.
+
+**`-LanHost` overrides it outright, and that is the demo-day setting**, because
+a hotspot's address changes on every reconnect and a stale address baked into
+`apps\kds\.env.dev` produces a KDS that loads, looks fine and never connects.
+Documented in `docs/lan-setup.md` §1a.
+
+**Watched, old rule against new, on this machine:** old picks `172.28.176.1`;
+new prints `LAN address 192.168.0.106 on 'Wi-Fi' (the default-route interface)`;
+`-LanHost 192.168.43.12` returns exactly that.
+
 ### The reset half-ran, and left the one state nothing else can detect (2026-09-12)
 
 **What happened on the operator's run:** `demo-reset.ps1 -Force` destroyed

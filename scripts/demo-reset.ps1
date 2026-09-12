@@ -472,6 +472,39 @@ if ($WhatIf) {
             "Check the psql output above; confirm '$PostgresContainer' is the right container and '$PostgresUser' can DROP SCHEMA."
     }
     Write-Note "schema dropped and recreated"
+
+    # THE DEVICE IDS IN THE BOOTSTRAP STATE FILE JUST STOPPED EXISTING.
+    # scripts\dev-bootstrap.ps1 remembers (cloud, outlet, kind, name) -> device
+    # id so it can ROTATE a credential instead of enrolling a second device.
+    # Dropping the schema deletes every one of those rows, so each remembered
+    # id now names nothing -- and the next bootstrap rotated one and got a 404
+    # from the backend, which reads as a missing route rather than a missing
+    # row. The script that destroyed the rows is the one that knows, so it
+    # prunes them here.
+    $bootstrapState = Join-Path $env:LOCALAPPDATA "Holler\dev-bootstrap-state.json"
+    if (Test-Path $bootstrapState) {
+        try {
+            $raw = Get-Content $bootstrapState -Raw -ErrorAction Stop
+            $parsed = $raw | ConvertFrom-Json
+            $kept = @{}
+            $dropped = 0
+            foreach ($entry in $parsed.PSObject.Properties) {
+                # Keys are "cloud|outlet|kind|name"; only this cloud's entries
+                # were invalidated by this drop.
+                if ($entry.Name -like "$CloudBaseUrl|*") { $dropped++ } else { $kept[$entry.Name] = $entry.Value }
+            }
+            if ($dropped -gt 0) {
+                ($kept | ConvertTo-Json) | Out-File -FilePath $bootstrapState -Encoding ascii
+                Write-Note "pruned $dropped stale device id(s) for $CloudBaseUrl from $bootstrapState"
+            } else {
+                Write-Note "bootstrap state file holds no entries for $CloudBaseUrl -- nothing to prune"
+            }
+        } catch {
+            # Never fatal: a malformed state file is dev-bootstrap's problem to
+            # report, and this reset has already done its destructive work.
+            Write-Note "could not prune $bootstrapState ($($_.Exception.Message)) -- dev-bootstrap will enroll fresh anyway"
+        }
+    }
 }
 
 # `go run ./cmd/devseed` applies every contract migration (postgres.Migrate)

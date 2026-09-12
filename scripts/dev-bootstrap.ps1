@@ -42,6 +42,17 @@ param(
     # standalone (edge/device/src/bin/kds_lan_server.rs). Pinned to 9310.
     [int]$LanPort = 9310,
 
+    # The LAN IPv4 address a SECOND MACHINE (the KDS screen, the waiter's
+    # phone) must use to reach this till. Empty means "work it out", which
+    # picks the interface owning the default route -- see Get-LanIPv4 for why
+    # that rule and not "the first adapter".
+    #
+    # SET THIS ON DEMO DAY. On a phone hotspot the till's address changes
+    # every time it reconnects, and an address baked into apps\kds\.env.dev
+    # from a previous network is a KDS that loads and never connects. Check it
+    # with `ipconfig` and pass it explicitly: -LanHost 192.168.43.12
+    [string]$LanHost = "",
+
     # Skip "docker compose up" if the containers are already running.
     [switch]$SkipInfra,
 
@@ -98,17 +109,60 @@ param(
 # operator with the command this script prints below -- never typed into a
 # brief, a command line or a script by an agent on the operator's behalf.
 
-# Best-effort LAN IPv4 address for this machine, used to build
-# apps/kds/.env.dev's VITE_KDS_LAN_URL -- a second machine must reach this
-# over the LAN, so localhost/127.0.0.1 is never right here. Picks the first
-# non-loopback, non-link-local (169.254.x.x) IPv4 address; on a machine with
-# several NICs this may not be the one a KDS device is actually on, so
-# DEV_SETUP.md tells the reader to double-check it against `ipconfig`.
+# The LAN IPv4 address a SECOND MACHINE must be able to reach, used to build
+# apps/kds/.env.dev's VITE_KDS_LAN_URL and printed for the captain page.
+# localhost/127.0.0.1 is never right here.
+#
+# THE OLD VERSION TOOK THE FIRST NON-LOOPBACK ADDRESS AND WAS WRONG ON THIS
+# DEVELOPER MACHINE, WHICH IS THE ORDINARY CASE RATHER THAN AN EDGE ONE: it
+# picked 172.28.176.1, the WSL Hyper-V vEthernet adapter, while the real LAN
+# was 192.168.0.106 on Wi-Fi. A phone on the hotspot cannot route to a WSL
+# virtual switch, so the KDS and the captain page would have pointed at an
+# address that answers only on this machine -- and the failure appears at the
+# demo, on the phone, and nowhere earlier.
+#
+# The rule now: THE INTERFACE THAT OWNS THE DEFAULT ROUTE is the one another
+# device on the same network can reach. That is what "on the LAN" means, and
+# it is a fact Windows already knows, rather than a guess from an adapter
+# ordering nobody controls. -LanHost overrides it outright, which is what the
+# demo uses when the till is on a phone hotspot whose address changes.
 function Get-LanIPv4 {
-    $candidates = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-        Where-Object { $_.IPAddress -ne "127.0.0.1" -and $_.IPAddress -notlike "169.254.*" }
-    if ($candidates) { return ($candidates | Select-Object -First 1).IPAddress }
-    return "127.0.0.1"
+    param([string]$Explicit = "")
+
+    if ($Explicit -ne "") {
+        return $Explicit
+    }
+
+    $candidates = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+        Where-Object { $_.IPAddress -ne "127.0.0.1" -and $_.IPAddress -notlike "169.254.*" })
+    if ($candidates.Count -eq 0) { return "127.0.0.1" }
+
+    # 1. The default-route interface, lowest metric first.
+    $defaultRoutes = @(Get-NetRoute -DestinationPrefix "0.0.0.0/0" -ErrorAction SilentlyContinue |
+        Sort-Object -Property RouteMetric, ifMetric)
+    foreach ($route in $defaultRoutes) {
+        $match = $candidates | Where-Object { $_.InterfaceIndex -eq $route.ifIndex } | Select-Object -First 1
+        if ($match) {
+            Write-Host "       LAN address $($match.IPAddress) on '$($match.InterfaceAlias)' (the default-route interface)" -ForegroundColor DarkGray
+            return $match.IPAddress
+        }
+    }
+
+    # 2. No default route (an offline outlet is the NORMAL case -- ADR-013).
+    #    Fall back to the first address that is not on an obviously virtual
+    #    adapter, so a machine with WSL, Docker or a hypervisor installed does
+    #    not hand out a switch address no phone can reach.
+    $virtual = "vEthernet|WSL|Hyper-V|VirtualBox|VMware|Loopback|Bluetooth|Npcap|TAP-"
+    $physical = $candidates | Where-Object { $_.InterfaceAlias -notmatch $virtual } | Select-Object -First 1
+    if ($physical) {
+        Write-Host "       LAN address $($physical.IPAddress) on '$($physical.InterfaceAlias)' (no default route; first non-virtual adapter)" -ForegroundColor Yellow
+        return $physical.IPAddress
+    }
+
+    $fallback = $candidates | Select-Object -First 1
+    Write-Host "       WARNING: only virtual adapters found; using $($fallback.IPAddress) on '$($fallback.InterfaceAlias)'." -ForegroundColor Red
+    Write-Host "       A phone or a second machine will NOT reach this address. Re-run with -LanHost <ip> (see docs\lan-setup.md)." -ForegroundColor Red
+    return $fallback.IPAddress
 }
 
 # --- device enrollment helpers (T15) -----------------------------------------
@@ -197,22 +251,60 @@ function Resolve-DeviceEnrollment {
     $stateKey = "$CloudBaseUrl|$OutletId|$Kind|$Name"
     $existingId = $null
 
+    # ON A LOCAL CLOUD, POSTGRES IS AUTHORITATIVE -- INCLUDING WHEN IT SAYS
+    # "NO SUCH DEVICE". The state file below exists for a REMOTE cloud, where
+    # this lookup cannot run at all; consulting it after a successful local
+    # lookup found nothing is how a stale id survives its own database.
+    #
+    # That is not hypothetical: demo-reset.ps1 drops the entire public schema,
+    # so every `device` row goes with it while the state file keeps naming the
+    # ids. The next bootstrap then rotated a device that no longer existed and
+    # the backend answered 404 -- which reads as a missing ROUTE rather than a
+    # missing ROW, and sends you looking in the router.
+    $localLookupRan = $false
     if ($IsLocalCloud) {
         $existingId = (docker exec holler-postgres-1 psql -U holler -d holler -t -A -c `
             "SELECT d.id FROM device d JOIN device_credential c ON c.device_id = d.id AND c.revoked_at IS NULL WHERE d.outlet_id = '$OutletId' AND d.name = '$Name' LIMIT 1;" 2>$null)
+        if ($LASTEXITCODE -eq 0) { $localLookupRan = $true }
         if ($existingId) { $existingId = $existingId.Trim() }
+        if ($localLookupRan -and -not $existingId) {
+            # The database has spoken. Drop any stale entry so the next run
+            # does not have to rediscover this.
+            $map = Get-BootstrapStateMap
+            if ($map.ContainsKey($stateKey)) {
+                Write-Host "       state file named device $($map[$stateKey]) for '$Name', but this cloud's database has no such device -- enrolling fresh" -ForegroundColor DarkGray
+                $map.Remove($stateKey)
+                ($map | ConvertTo-Json) | Out-File -FilePath $script:BootstrapStateFile -Encoding ascii
+            }
+        }
     }
-    if (-not $existingId) {
+    if (-not $existingId -and -not $localLookupRan) {
         $map = Get-BootstrapStateMap
         if ($map.ContainsKey($stateKey)) { $existingId = $map[$stateKey] }
     }
 
     if ($existingId) {
         $rotateBody = @{ label = "dev-bootstrap" } | ConvertTo-Json
-        $enrolled = Invoke-RestMethod -Uri "$CloudBaseUrl/devices/$existingId/credentials/rotate" `
-            -Method Post -Body $rotateBody -ContentType 'application/json' -Headers $Headers
-        Set-BootstrapStateEntry -Key $stateKey -Value $existingId
-        return @{ Token = $enrolled.token; DeviceId = $existingId; Status = "rotated" }
+        try {
+            $enrolled = Invoke-RestMethod -Uri "$CloudBaseUrl/devices/$existingId/credentials/rotate" `
+                -Method Post -Body $rotateBody -ContentType 'application/json' -Headers $Headers
+            Set-BootstrapStateEntry -Key $stateKey -Value $existingId
+            return @{ Token = $enrolled.token; DeviceId = $existingId; Status = "rotated" }
+        } catch {
+            # 404 = THE DEVICE IS GONE, NOT THE ROUTE. The route exists
+            # (backend/internal/outlet/device_http.go:29); what does not exist
+            # is the row this id names -- a schema drop, a restored database,
+            # or a device deleted by hand. Enrolling is the correct recovery
+            # and the only one that leaves a usable credential behind.
+            # Every other status still throws: a 401 means the caller lacks
+            # outlet.manage and silently enrolling a second device would hide
+            # that.
+            $status = $null
+            if ($_.Exception.Response) { $status = [int]$_.Exception.Response.StatusCode }
+            if ($status -ne 404) { throw }
+            Write-Host "       device $existingId is gone from $CloudBaseUrl (404 on rotate) -- enrolling a new one" -ForegroundColor DarkGray
+            $existingId = $null
+        }
     }
 
     try {
@@ -701,7 +793,7 @@ if ($PrinterFileSinkDir -ne "") {
 # only with `--mode dev`, which every documented KDS launch command below
 # passes; see apps/kds/.env.dev.example for why the name does not change
 # Vite's default-mode behaviour.
-$lanIp = Get-LanIPv4
+$lanIp = Get-LanIPv4 -Explicit $LanHost
 $kdsEnvFile = Join-Path $repoRoot "apps\kds\.env.dev"
 $kdsEnvLines = @(
     "# Generated by scripts/dev-bootstrap.ps1. DO NOT COMMIT.",
