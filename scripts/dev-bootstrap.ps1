@@ -907,6 +907,37 @@ if ([string]::IsNullOrWhiteSpace($resolvedUpiPayee) -and $upiState.ContainsKey("
 if (-not [string]::IsNullOrWhiteSpace($UpiVpa)) { Set-BootstrapStateEntry -Key "$upiStateKey|vpa" -Value $UpiVpa }
 if (-not [string]::IsNullOrWhiteSpace($UpiPayeeName)) { Set-BootstrapStateEntry -Key "$upiStateKey|payee" -Value $UpiPayeeName }
 
+# --- the printer file sink, remembered for exactly the UPI payee's reason ----
+# THIS SCRIPT REWRITES apps\pos\.env.dev WHOLESALE, so a line it does not emit
+# is a line it DELETES. Before this block, a re-run without -PrinterFileSinkDir
+# silently removed the sink, after which "Print Bill" was sent to a thermal
+# printer that does not exist and NO .escpos, NO .txt, NO .html and NO .pdf
+# appeared anywhere -- with nothing on screen saying why, because a file sink
+# that was never constructed logs nothing at all.
+#
+# THAT IS NOT HYPOTHETICAL. It happened on 2026-09-13: the key-repair re-run on
+# the 12th dropped the line, and the next bill printed produced no artefact of
+# any kind. A full search of %APPDATA%\com.holler.pos, %LOCALAPPDATA%, %TEMP%
+# and the repository found zero files written.
+#
+# Same treatment as -UpiVpa above and for the same reason: an explicit
+# parameter wins, otherwise the value this script remembered last time, and only
+# a NEW value is written back -- so a re-run with no -PrinterFileSinkDir keeps
+# what the demo was set up with instead of wiping it. Clearing it deliberately
+# is `-PrinterFileSinkDir none`, which is a decision someone typed rather than
+# one made by omission.
+$sinkStateKey = "$CloudBaseUrl|printer-file-sink"
+$sinkState = Get-BootstrapStateMap
+$resolvedSinkDirInput = $PrinterFileSinkDir
+if ([string]::IsNullOrWhiteSpace($resolvedSinkDirInput) -and $sinkState.ContainsKey($sinkStateKey)) {
+    $resolvedSinkDirInput = $sinkState[$sinkStateKey]
+    Write-Host "       printer FILE SINK $resolvedSinkDirInput (remembered from a previous run; pass -PrinterFileSinkDir to change it, or 'none' to clear)" -ForegroundColor DarkGray
+}
+if ($resolvedSinkDirInput -eq "none") { $resolvedSinkDirInput = "" }
+if (-not [string]::IsNullOrWhiteSpace($PrinterFileSinkDir)) {
+    Set-BootstrapStateEntry -Key $sinkStateKey -Value $PrinterFileSinkDir
+}
+
 # --- 4. env files for the launchers ------------------------------------------
 # apps/pos/run-dev.ps1 reads this instead of hardcoding device identity and the
 # encryption key. Gitignored: it carries the edge database key.
@@ -929,8 +960,8 @@ $envLines = @(
 $envLines += $syncEnvLines
 # run-dev.ps1 exports every KEY=VALUE it finds here into the POS process, so
 # naming the sink in this file is all it takes to route prints to disk.
-if ($PrinterFileSinkDir -ne "") {
-    $resolvedSink = [System.IO.Path]::GetFullPath($PrinterFileSinkDir)
+if ($resolvedSinkDirInput -ne "") {
+    $resolvedSink = [System.IO.Path]::GetFullPath($resolvedSinkDirInput)
     New-Item -ItemType Directory -Force -Path $resolvedSink | Out-Null
     $envLines += "HOLLER_PRINTER_FILE_SINK_DIR=$resolvedSink"
 }
@@ -1002,10 +1033,19 @@ if (-not [string]::IsNullOrWhiteSpace($resolvedUpiVpa)) {
 if ($WithBilling) {
     Write-Host "billing config seeded: bills can be issued, discounted and split on this machine." -ForegroundColor Cyan
 }
-if ($PrinterFileSinkDir -ne "") {
+if ($resolvedSinkDirInput -ne "") {
     Write-Host "printer FILE SINK: every print will be written to $resolvedSink" -ForegroundColor Yellow
-    Write-Host "  .escpos = the real byte stream sent to the transport; .txt = the same bill with escapes stripped, for reading." -ForegroundColor Yellow
+    Write-Host "  .escpos = the real byte stream sent to the transport; .txt = the same bill with escapes stripped, for reading;" -ForegroundColor Yellow
+    Write-Host "  .html + .pdf = the rendered bill for an invoice, and the PDF is what opens on screen." -ForegroundColor Yellow
     Write-Host "  This proves the render and the spool. It proves NOTHING about a real 58/80mm printer." -ForegroundColor Yellow
+} else {
+    # SAID OUT LOUD, because the failure it precedes is completely silent: with
+    # no sink, a print goes to a thermal printer that does not exist and NOT ONE
+    # FILE is written anywhere, with nothing on any screen explaining it.
+    Write-Host "printer FILE SINK: DISABLED -- prints go to a real device." -ForegroundColor Red
+    Write-Host "  No .escpos, .txt, .html or .pdf will be written by a print, and no screen will say so." -ForegroundColor Red
+    Write-Host "  On a machine with no thermal printer attached, pass -PrinterFileSinkDir .dev-prints" -ForegroundColor Red
+    Write-Host "  (it is remembered afterwards, so later runs need not repeat it)." -ForegroundColor Red
 }
 
 # apps/kds/.env.dev (T12). Vite does NOT load this by itself -- it is read

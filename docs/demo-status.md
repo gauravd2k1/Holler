@@ -937,9 +937,34 @@ that does not exist, with no `.escpos`, no `.html` and no `.pdf` appearing at
 all. That is the same failure mode the UPI payee had before the bootstrap
 started remembering it, and it would have landed on demo step 2. `demo-up` now
 always passes it, defaulting to `<repo>\.dev-prints`, and prints where prints go.
-**The bootstrap's own wipe-on-omit behaviour is unchanged and is worth fixing
-the way the UPI pair was fixed — by remembering it — but that is the
-bootstrap's, not this change's.**
+
+**And then it happened for real, which is why the bootstrap was fixed too
+(2026-09-13).** The key-repair re-run on the 12th dropped the line; the operator
+printed a bill on the 13th and **no artefact of any kind appeared** — a search of
+`%APPDATA%\com.holler.pos`, `%LOCALAPPDATA%`, `%TEMP%` and the repository found
+zero `.escpos` and zero `.pdf` written in three hours, and the operator confirmed
+no `HOLLER_PRINTER_FILE_SINK_DIR` in `.env.dev`. **The PDF was never the
+problem — nothing reached the transport at all**, which the empty `.escpos` said
+plainly once it was looked for.
+
+`dev-bootstrap.ps1` now **remembers the sink directory**, in the same state file
+and by the same rule as the UPI payee: an explicit parameter wins, otherwise the
+remembered value, and only a new value is written back. Clearing it is
+`-PrinterFileSinkDir none` — **a decision someone types, never one made by
+omission.** The run also says which way it went: the enabled branch names the
+directory and the four file types, and **the disabled branch prints in red that
+no file will be written and that no screen will say so** — because the failure it
+precedes is completely silent. A file sink that is never constructed logs
+nothing at all, which is exactly why this cost an evening.
+
+**Not verified by execution, said here rather than implied away:** the bootstrap
+needs the operator's key and refuses under a Claude Code shell, so it cannot be
+run from a session. What was checked is that it parses, that the state-file key
+scheme it mirrors is real (`…|upi|vpa` and `…|upi|payee` are present in the live
+state file, so `…|printer-file-sink` shares that namespace without colliding),
+and that the one remaining reader of the raw parameter — the closing summary —
+now reads the resolved value instead. **The operator's next bootstrap run is the
+test, and it prints its own evidence.**
 
 ### The UPI QR
 
