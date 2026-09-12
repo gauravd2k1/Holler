@@ -556,6 +556,89 @@ apps\pos\.env.dev (fingerprint $existingFp above) and re-run.
 Write-Host "Holler dev bootstrap" -ForegroundColor Cyan
 Write-Host "repo: $repoRoot"
 
+# --- preflight: NOTHING MAY HOLD THE EDGE DATABASE ---------------------------
+# Step 3 seeds the edge database, which means opening and rewriting
+# edge.db/edge.db.enc. With the POS running that fails with
+# "os error 32: The process cannot access the file because it is being used by
+# another process" -- AFTER steps 1 and 2 have already brought up
+# infrastructure and reseeded the cloud, so the run is half-applied and the
+# error names a file rather than the reason.
+#
+# Identical in intent and wording to scripts\demo-reset.ps1's preflight, and
+# deliberately a SECOND COPY rather than a shared module: these two scripts
+# already keep duplicate copies of the key-quality helpers for the same reason
+# (no module boundary exists between them), and a preflight that only one of
+# the two destructive scripts runs is the one a tired operator meets.
+#
+# Two independent checks, because they fail in different situations: a POS
+# process existing at all, and the files actually being locked by anything
+# else.
+function Get-HollerPosProcess {
+    $byName = @(Get-Process -Name "holler-pos", "holler_pos" -ErrorAction SilentlyContinue)
+    # The Tauri BUILD OUTPUT directory specifically. Matching all of apps\pos
+    # sweeps in esbuild and Vite from node_modules, which cannot hold the edge
+    # database and whose pids are the wrong thing to name (demo-reset.ps1 hit
+    # exactly that).
+    $posBuildDir = (Join-Path $repoRoot "apps\pos\src-tauri\target")
+    $byPath = @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
+        $path = $null
+        try { $path = $_.Path } catch { $path = $null }   # Access denied on system processes
+        $path -and $path.StartsWith($posBuildDir, [System.StringComparison]::OrdinalIgnoreCase)
+    })
+    return @(@($byName) + @($byPath) | Sort-Object -Property Id -Unique |
+             Sort-Object -Property @{ Expression = { $_.ProcessName -notlike "holler*" } })
+}
+
+# Opening for WRITE with NO sharing is exactly what the seeder needs and will
+# fail on, so this cannot report "free" for a file that then refuses to open.
+function Test-FileIsLocked($path) {
+    if (-not (Test-Path $path)) { return $false }
+    try {
+        $stream = [System.IO.File]::Open($path, 'Open', 'ReadWrite', 'None')
+        $stream.Close()
+        $stream.Dispose()
+        return $false
+    } catch [System.IO.IOException] {
+        return $true
+    } catch [System.UnauthorizedAccessException] {
+        return $true
+    }
+}
+
+$edgeSealed = Join-Path $EdgeDataDir "edge.db.enc"
+$edgePlaintext = Join-Path $EdgeDataDir "edge.db"
+
+$posProcesses = Get-HollerPosProcess
+if ($posProcesses.Count -gt 0) {
+    $named = ($posProcesses | ForEach-Object { "$($_.ProcessName) pid $($_.Id)" }) -join ", "
+    Write-Host ""
+    Write-Host "FAILED: a Holler POS process is running ($named). NOTHING HAS BEEN CHANGED." -ForegroundColor Red
+    Write-Host "NEXT ACTION: close the POS window (or Stop-Process -Id $($posProcesses[0].Id)) and re-run." -ForegroundColor Yellow
+    Write-Host "  Step [3/4] seeds the edge database, which a running POS holds open -- it fails" -ForegroundColor Yellow
+    Write-Host "  with 'os error 32' AFTER steps 1 and 2 have already reseeded the cloud, leaving" -ForegroundColor Yellow
+    Write-Host "  a half-applied run. Refusing here costs you nothing; refusing there costs a reseed." -ForegroundColor Yellow
+    exit 1
+}
+
+$lockedFiles = @(
+    $edgePlaintext, "$edgePlaintext-wal", "$edgePlaintext-shm", $edgeSealed
+) | Where-Object { Test-FileIsLocked $_ }
+if ($lockedFiles.Count -gt 0) {
+    # Names only, never a path match on "holler": the repo path contains it, so
+    # a path match names every process running from this checkout and is a
+    # guess dressed as a finding (demo-reset.ps1 learned this the same way).
+    $candidates = @(Get-Process -Name "holler-pos", "holler_pos", "sqlite3", "devseed" -ErrorAction SilentlyContinue |
+        ForEach-Object { "$($_.ProcessName) pid $($_.Id)" })
+    $who = if ($candidates.Count -gt 0) { "Processes that could plausibly hold it: $($candidates -join ', ')." }
+           else { "No process this script can name accounts for it." }
+    Write-Host ""
+    Write-Host "FAILED: another process is holding $($lockedFiles -join ', '). NOTHING HAS BEEN CHANGED." -ForegroundColor Red
+    Write-Host "NEXT ACTION: close whatever has the edge database open and re-run. $who" -ForegroundColor Yellow
+    Write-Host "  If you cannot find it, 'handle64.exe $edgePlaintext' (Sysinternals) names the owner." -ForegroundColor Yellow
+    exit 1
+}
+Write-Host "preflight: no Holler POS process, and nothing holds the edge database" -ForegroundColor DarkGray
+
 # --- 1. infrastructure -------------------------------------------------------
 # Only postgres/redis/nats. The `backend` compose service is deliberately NOT
 # started: its Dockerfile build is broken (see docs/DEV_SETUP.md, Known gaps),

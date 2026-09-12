@@ -43,6 +43,19 @@ bootstrap now picks the default-route interface instead and prints which adapter
 it chose — but on a hotspot you pass the address explicitly anyway, because a
 hotspot's address changes every time it reconnects.
 
+### 2b. Close the POS
+
+**Before the bootstrap, not during it.** Step `[3/4]` seeds the edge database,
+which a running POS holds open: it fails with `os error 32` **after** steps 1
+and 2 have already reseeded the cloud, leaving a half-applied run.
+
+Both `dev-bootstrap.ps1` and `demo-reset.ps1` now refuse at the top and name
+the pid, so the cost of forgetting is a refusal rather than a reseed — but the
+refusal still costs you a restart of the run, and the till takes a minute to
+come back up.
+
+**Check:** `Get-Process holler-pos` returns nothing.
+
 ### 3. Bootstrap
 
 ```powershell
