@@ -11,6 +11,10 @@ Story to demo, in order:
 6. Optional, only if clean three times: fake ONDC order arrives, accepted on the till, billed.
 
 Work, in order:
+
+0. Go/no-go by Friday: apps/captain — a LAN web page served by the till, same enrolment and transport as the KDS. Scope: pick table → menu with availability → add items → send (append-only). Show the bill read-only once billed. Payment stays on the till. First answer: does the edge LAN server expose order create/append today? If yes, estimate; if no, estimate the route. Report before building. Security gate review stays filed for pilot; demo runs on our own hotspot.
+0b. UPI QR for the bill amount on the invoice screen and the PDF receipt.
+
 1. Seed parity. One seed source loads identical menu, variants, recipes, inventory, supplier into BOTH cloud and edge. Ruling: P2/P3/P5 are fixed, so the M5 prohibition on seeding the cloud is lifted. Bootstrap the edge from this clean seed (0035 applies here). Assert after seeding: zero blocked rows, zero deduction gaps, banner empty.
 2. Demo seed content: outlet with a real name and GSTIN-shaped placeholder, ~40 items with real prices, ≥10 recipes, opening stock for every ingredient, one supplier, one GRN received. One command resets cloud + edge to this state.
 3. Receipt: report what the file-sink emits today. If raw ESC/POS, add a rendered receipt (HTML→PDF or plain text) written beside it and opened on print. Same content as the bytes.
@@ -21,3 +25,18 @@ Work, in order:
 8. Three full rehearsals from a clean reset, each timed; each failure fixed or the step cut. Record one clean run.
 
 Report demo blockers only.
+
+## Standing rule, added 2026-09-12: HANDS OFF THE LIVE PORTS
+
+**No test or probe starts, stops or binds anything on 8080, 9310 or the captain
+port. Scratch ports and scratch databases only.** In force until the demo.
+
+A test displaced the operator's running backend three times in one day. The
+third was `demo-reset.ps1 -BackendPort 8099`, which does not reach the backend
+it launches — the API reads `PORT`, which the script never sets — so it bound
+8080 regardless. **Every one of those runs was already aimed at a scratch
+directory and a scratch database and still took down the live stack**, because
+the port was never part of what "scratch" covered.
+
+A run that needs a backend starts its own, on a scratch port, with `PORT` set
+explicitly, against a scratch database, and stops it afterwards.

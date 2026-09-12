@@ -23,7 +23,7 @@ Read `CLAUDE.md`'s `## Current milestone:` block for scope and EXCLUDES.
 | **5** | Offline tick | **NOT STARTED** — conditional on observing sluggishness with the cloud down |  |
 | **B** | Admin Orders screen (conditional, ruled 2026-09-12) | **BUILT and observed in a browser**; the route already existed and was undocumented | below |
 | **6** | Presentability | **DONE for POS and admin; KDS unreachable** | below |
-| **7** | `docs/demo-script.md` | **NOT STARTED** — Tuesday |  |
+| **7** | `docs/demo-script.md` | **DAY-OF CHECKLIST WRITTEN; the six steps are NOT** — Tuesday | the file itself |
 | **8** | Three timed rehearsals | **NOT STARTED** — Tuesday, needs item 2's reset to run first |  |
 
 ---
