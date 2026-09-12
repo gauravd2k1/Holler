@@ -253,8 +253,9 @@ Write-Host ""
 Write-Host "THIS RUN WILL DESTROY, IRREVERSIBLY:" -ForegroundColor Yellow
 Write-Host "  - the ENTIRE 'public' schema in Postgres database '$PostgresDb'" -ForegroundColor Yellow
 Write-Host "    (container '$PostgresContainer', user '$PostgresUser') -- every table, every row" -ForegroundColor Yellow
-Write-Host "  - $edgeSealedPath (the encrypted edge database)" -ForegroundColor Yellow
-Write-Host "  - $edgePlaintextPath, if present (gap A6's leftover plaintext copy)" -ForegroundColor Yellow
+Write-Host "  - $edgePlaintextPath, if present (gap A6's leftover plaintext copy) -- DELETED FIRST" -ForegroundColor Yellow
+Write-Host "  - $edgeSealedPath (the encrypted edge database) -- DELETED LAST, so a failure" -ForegroundColor Yellow
+Write-Host "    part-way through leaves the sealed database intact rather than a bare leftover" -ForegroundColor Yellow
 Write-Host "  - the current backend API process listening on port $BackendPort (killed and restarted)" -ForegroundColor Yellow
 Write-Host ""
 Write-Host "NO BACKUP IS TAKEN. The edge database is encrypted at rest and is never" -ForegroundColor Yellow
@@ -280,6 +281,102 @@ if ($pgUp -ne "true") {
         "Run 'docker compose up -d postgres redis nats' from $repoRoot, then re-run this script."
 }
 Write-Note "preflight: Postgres container '$PostgresContainer' is running"
+
+# --- preflight: NOTHING MAY HOLD THE EDGE DATABASE --------------------------
+# This exists because of a real reset that half-ran: it destroyed
+# edge.db.enc, then FAILED to delete the plaintext edge.db because a running
+# POS held the handle. That leaves the worst of the three possible states --
+# no sealed file and a stale plaintext leftover -- and the edge's own
+# crash-recovery path would then have RESEALED that leftover into a brand new
+# edge.db.enc at the next POS start, silently promoting a pre-reset database
+# to the current one.
+#
+# WHY THE CRASH-RECOVERY PATH CANNOT BE THE GUARD HERE:
+# `recover_crash_leftovers` deliberately reseals a leftover when NO sealed
+# file exists -- that is a genuine first-run crash and the committed rows in
+# it must not be thrown away (docs/spec/sync.md: local transactions are never
+# deleted). The T25 key check is a no-op in exactly that case, because there
+# is no sealed file to verify the key against. So the edge is right to
+# reseal, and the only place that can tell "first-run crash" from "a reset
+# was interrupted" is HERE, before anything is destroyed.
+#
+# Two independent checks, because they fail in different situations:
+#   - a POS process existing at all, whether or not it currently holds a
+#     handle (it will take one the moment it opens the database), and
+#   - the files actually being locked, which catches every other holder:
+#     a sqlite3 shell, an editor, a backup agent, a previous cargo run.
+function Get-HollerPosProcess {
+    # Name-based, plus a path check for anything running out of this repo's
+    # POS build directory -- a `cargo run`-launched binary and an installed
+    # holler-pos.exe are the same risk under different process names.
+    $byName = @(Get-Process -Name "holler-pos", "holler_pos" -ErrorAction SilentlyContinue)
+    # The TAURI BUILD OUTPUT directory specifically, not all of apps\pos: the
+    # first version of this check used apps\pos and swept in esbuild running
+    # out of the POS's node_modules, so the refusal named a bundler's pid
+    # ahead of the actual till. Vite, esbuild and their friends cannot hold
+    # the edge database; the compiled POS binary is the only thing under this
+    # tree that opens it.
+    $posBuildDir = (Join-Path $repoRoot "apps\pos\src-tauri	arget")
+    $byPath = @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
+        $path = $null
+        try { $path = $_.Path } catch { $path = $null }   # Access denied on system processes
+        $path -and $path.StartsWith($posBuildDir, [System.StringComparison]::OrdinalIgnoreCase)
+    })
+    # Name-matched processes first, so the message leads with the till rather
+    # than with whatever else happens to sort lower by pid.
+    return @(@($byName) + @($byPath) | Sort-Object -Property Id -Unique |
+             Sort-Object -Property @{ Expression = { $_.ProcessName -notlike "holler*" } })
+}
+
+# Opening for WRITE with NO sharing is the check that matters: it is exactly
+# what Remove-Item needs and will fail on, so this cannot report "free" for a
+# file that then refuses to delete.
+function Test-FileIsLocked($path) {
+    if (-not (Test-Path $path)) { return $false }
+    try {
+        $stream = [System.IO.File]::Open($path, 'Open', 'ReadWrite', 'None')
+        $stream.Close()
+        $stream.Dispose()
+        return $false
+    } catch [System.IO.IOException] {
+        return $true
+    } catch [System.UnauthorizedAccessException] {
+        # A read-only or ACL-denied file will not delete either, so it is a
+        # refusal for this script's purposes.
+        return $true
+    }
+}
+
+$posProcesses = Get-HollerPosProcess
+if ($posProcesses.Count -gt 0) {
+    $named = ($posProcesses | ForEach-Object { "$($_.ProcessName) pid $($_.Id)" }) -join ", "
+    Fail-WithAction `
+        "a Holler POS process is running ($named). NOTHING HAS BEEN DESTROYED." `
+        "Close the POS window (or Stop-Process -Id $($posProcesses[0].Id)) and re-run. A running POS holds the edge database open, and a reset that deletes the sealed file and then cannot delete the plaintext leaves NO sealed database and a stale leftover -- which the next POS start would reseal as the live database."
+}
+Write-Note "preflight: no Holler POS process is running"
+
+$lockedFiles = @(
+    $edgePlaintextPath, "$edgePlaintextPath-wal", "$edgePlaintextPath-shm", $edgeSealedPath
+) | Where-Object { Test-FileIsLocked $_ }
+
+if ($lockedFiles.Count -gt 0) {
+    # No POS process explains it, so name what CAN be named: the files, and
+    # every process this script can see holding a handle. Windows exposes no
+    # handle-to-pid mapping without an external tool, so this reports the
+    # candidates it can enumerate rather than inventing a pid.
+    # NAMES, not paths. A path match on 'holler' hits every process running
+    # from this repository -- the first version of this named esbuild as a
+    # candidate holder of the edge database, which is a guess dressed as a
+    # finding. Naming nothing is better than naming the wrong process.
+    $candidates = @(Get-Process -Name "holler-pos", "holler_pos", "sqlite3", "devseed" -ErrorAction SilentlyContinue |
+        ForEach-Object { "$($_.ProcessName) pid $($_.Id)" })
+    $who = if ($candidates.Count -gt 0) { " Processes that could plausibly hold it: $($candidates -join ', ')." } else { " No process this script can name accounts for it -- the holder is something it cannot see." }
+    Fail-WithAction `
+        "another process is holding $($lockedFiles -join ', '). NOTHING HAS BEEN DESTROYED.$who" `
+        "Close whatever has the edge database open -- a POS, a sqlite shell, an editor previewing the file, or a backup agent -- and re-run. If you cannot find it, 'handle64.exe $edgePlaintextPath' (Sysinternals) names the owner."
+}
+Write-Note "preflight: nothing holds $edgeSealedPath or $edgePlaintextPath"
 
 # =====================================================================
 # 1/4 -- verify the backend by PID, never by the port answering
@@ -424,12 +521,26 @@ if ($WhatIf) {
 Write-Step 3 "resetting the edge database..."
 
 if ($WhatIf) {
-    Write-Note "-WhatIf: would delete $edgeSealedPath and $edgePlaintextPath (and any -wal/-shm siblings), then run edge devseed"
+    Write-Note "-WhatIf: would delete $edgePlaintextPath and its -wal/-shm siblings FIRST, then $edgeSealedPath, then run edge devseed and assert no plaintext leftover remains"
 } else {
-    foreach ($f in @($edgeSealedPath, $edgePlaintextPath, "$edgePlaintextPath-wal", "$edgePlaintextPath-shm")) {
+    # ORDER IS LOAD-BEARING: THE PLAINTEXT LEFTOVER GOES FIRST, THE SEALED
+    # FILE LAST. A reset that deleted the .enc first and then failed on the
+    # plaintext left no sealed database and a stale leftover behind -- and the
+    # edge's crash-recovery path reseals a leftover when no sealed file exists,
+    # so the next POS start would have promoted a pre-reset database to the
+    # live one. Deleting in this order means a failure at ANY point leaves the
+    # sealed file intact and the outlet still openable.
+    foreach ($f in @("$edgePlaintextPath-wal", "$edgePlaintextPath-shm", $edgePlaintextPath, $edgeSealedPath)) {
         if (Test-Path $f) {
             Write-Note "deleting $f"
-            Remove-Item -Path $f -Force
+            try {
+                Remove-Item -Path $f -Force
+            } catch {
+                $stillSealed = if (Test-Path $edgeSealedPath) { "$edgeSealedPath is STILL PRESENT and the outlet can still be opened." } else { "$edgeSealedPath is already gone." }
+                Fail-WithAction `
+                    "could not delete $f -- $($_.Exception.Message). $stillSealed" `
+                    "Something took a handle on the edge database after this script's preflight passed (a POS started mid-run is the likely one). Close it and re-run the whole script from the start."
+            }
         }
     }
     if ((Test-Path $edgeSealedPath) -or (Test-Path $edgePlaintextPath)) {
@@ -466,7 +577,23 @@ if ($WhatIf) {
             "edge devseed reported success but $edgeSealedPath does not exist." `
             "HOLLER_EDGE_DATA_DIR may not match this script's -EdgeDataDir; inspect the cargo output above for the path it actually wrote."
     }
-    Write-Note "edge database seeded and sealed at $edgeSealedPath"
+    # AFTER A RESET, A PLAINTEXT LEFTOVER MUST NOT EXIST -- and nothing else
+    # in the system will ever say so. `recover_crash_leftovers` reseals a
+    # leftover UNCONDITIONALLY when no sealed file is present (correctly: that
+    # is a first-run crash whose committed rows must not be discarded, and the
+    # T25 key check has no sealed file to verify against). That is exactly the
+    # shape a half-finished reset leaves behind, so the reset is the only
+    # place that can tell the two apart, and the only honest moment to check
+    # is here -- immediately after a seed that is supposed to have sealed and
+    # wiped.
+    $strayLeftovers = @($edgePlaintextPath, "$edgePlaintextPath-wal", "$edgePlaintextPath-shm") |
+        Where-Object { Test-Path $_ }
+    if ($strayLeftovers.Count -gt 0) {
+        Fail-WithAction `
+            "the edge devseed sealed $edgeSealedPath but left a PLAINTEXT leftover behind: $($strayLeftovers -join ', ')." `
+            "Do not start the POS until this is resolved: the crash-recovery path reseals a leftover when it finds one, so starting the till would reseal THAT file as the live database. Delete the leftover(s) by hand, confirm $edgeSealedPath is still present, and re-run this script."
+    }
+    Write-Note "edge database seeded and sealed at $edgeSealedPath, with no plaintext leftover"
 }
 
 # =====================================================================

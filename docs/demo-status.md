@@ -68,6 +68,84 @@ Everything here is blocked on something no agent in this project can do.
 
 ## Item 1 and 2 — seed parity
 
+### The reset half-ran, and left the one state nothing else can detect (2026-09-12)
+
+**What happened on the operator's run:** `demo-reset.ps1 -Force` destroyed
+`edge.db.enc`, then **failed to delete the plaintext `edge.db` because the POS
+was running and held it**. That leaves no sealed database and a stale
+plaintext — and `recover_crash_leftovers` **reseals a leftover when no sealed
+file exists**, so the next POS start would have promoted a pre-reset database
+to the live one, silently and with no error anywhere.
+
+**The T25 guard cannot cover this, and should not be changed to.** Its key
+check (`verify_key_opens_sealed`) is deliberately a no-op when there is no
+sealed file, because a leftover with no `.enc` is a genuine first-run crash
+whose committed rows must not be discarded — `docs/spec/sync.md` is explicit
+that local transactions are never deleted. The edge is right to reseal. The
+only place that can tell *"first-run crash"* from *"a reset was interrupted"*
+is **the reset itself**, which is why all three fixes below live there.
+
+**1. Preflight refuses before anything is destroyed.** Two independent checks,
+because they fail in different situations: any Holler POS process existing at
+all (by name, and by running out of `apps\pos\src-tauri\target`), and the
+files actually being locked (an exclusive open — precisely what `Remove-Item`
+needs, so it cannot report "free" for a file that then refuses to delete). The
+POS branch **names the pid**; the lock branch names the files and any process
+it can plausibly attribute.
+
+**2. Deletion order is reversed: plaintext first, sealed last**, with a
+`try/catch` that reports whether the sealed file survived. A failure at any
+point now leaves the outlet openable rather than leaving a bare leftover.
+
+**3. The reset asserts no leftover exists after seeding.** This is the
+assertion the T25 hole makes necessary: after a reset a plaintext file must
+never exist, and nothing else in the system will ever say so.
+
+### Watched firing, each one
+
+- **POS preflight** — refused on the operator's actual machine and named the
+  real process: `a Holler POS process is running (holler-pos pid 47296).
+  NOTHING HAS BEEN DESTROYED.` Both files still on disk afterwards.
+- **That check caught its own false positive first.** The initial version
+  matched anything under `apps\pos` and named **`esbuild pid 41572` ahead of
+  the till**, because the bundler runs out of `apps\pos\node_modules`.
+  Narrowed to the Tauri build output directory, where the only thing that can
+  open the edge database lives. The candidate-holder list in the lock branch
+  had the same disease — a path match on `holler` hits every process running
+  from this repository — and now matches process NAMES only, saying plainly
+  when it cannot name the holder rather than guessing.
+- **Lock preflight** — a POS is running on this machine, so the lock branch is
+  unreachable behind it; proved on a **planted copy** with the POS branch
+  disabled (the C8 planted-branch precedent, stated as such). With a real
+  exclusive handle held on `edge.db`: `another process is holding …edge.db.
+  NOTHING HAS BEEN DESTROYED.` Files intact.
+- **Deletion order** — observed twice. In the clean run the log reads
+  `deleting …edge.db` then `deleting …edge.db.enc`, in that order. In the
+  failure run (handle held, preflight planted off so the delete is reached):
+  `could not delete …edge.db … edge.db.enc is STILL PRESENT and the outlet can
+  still be opened`, with both files on disk — **the operator's exact failure,
+  now arriving with the sealed database intact.**
+- **The leftover assertion** — planted a seed that seals and leaves a
+  plaintext behind: `the edge devseed sealed …edge.db.enc but left a PLAINTEXT
+  leftover behind: …edge.db`, with the next action saying not to start the POS.
+- **And the positive case**, because a guard only ever seen going red proves
+  only that it can fire: a REAL `devseed` run through the same path reports
+  `seeded and sealed …, with no plaintext leftover`, all four demo-assert
+  invariants OK, exit 0, and `edge.db.enc` alone in the directory.
+
+One deliberate non-fix found while testing: a file with a **deny-delete ACL**
+trips the lock preflight rather than the deletion step, because an exclusive
+open fails on it too. That is the correct outcome — an undeletable file should
+stop the run before anything is destroyed — so it was left alone.
+
+**Two things this cost the operator's stack, stated rather than tidied away.**
+The test runs used a scratch data directory and a scratch database throughout,
+but `-BackendPort 8099` does not reach the backend it starts (the API reads
+`PORT`, which the script never sets), so step 1 launched a backend that bound
+**8080** and the original dev-up backend (pid 9360) is gone. 8080 is now served
+by **pid 23052**, healthy, against the same database as before. The
+`-BackendPort` parameter being half-wired is filed.
+
 ### Conditional B -- the admin Orders screen, and what it found (2026-09-12)
 
 **THE ROUTE WAS NEVER MISSING, AND THE BOARD SAYS OTHERWISE.** S-ADM-08 records
