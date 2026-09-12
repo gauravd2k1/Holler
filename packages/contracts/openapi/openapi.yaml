@@ -51,6 +51,50 @@ paths:
                 $ref: "#/components/schemas/CanonicalOrder"
         "422":
           $ref: "#/components/responses/EnvelopeRouteMismatch"
+    get:
+      summary: >
+        List every order for one outlet, scoped to the caller's tenant.
+        DOCUMENTED at 0.8.2; the route itself has existed and been served
+        since Milestone 1 (backend/internal/ordering/http.go) and was simply
+        absent from this spec, which is why a survey of this file read
+        /orders as POST-only.
+
+        Returns the SAME CanonicalOrder shape as GET /orders/{id}, unchanged
+        and unwrapped: a bare JSON array, not a page envelope. Documenting it
+        as it behaves was the point; giving it the GoodsReceiptPage treatment
+        would have been a behaviour change wearing a documentation label.
+
+        THE CLOUD HOLDS A REPLICA. An order is edge-authoritative (§50.1) and
+        reaches the cloud by replay, so this list is what HAS REPLAYED, not
+        what the outlet has taken. An order rung while the uplink was down is
+        absent until its outbox row lands, and every surface must say so
+        rather than implying the outlet sold nothing.
+
+        Two properties a caller must plan around, both filed for pilot rather
+        than changed here: the result is UNBOUNDED (no limit, no cursor --
+        every order this outlet has ever replayed, in one response), and it is
+        ordered by created_at ASCENDING, so the newest order is last.
+      parameters:
+        - name: outlet_id
+          in: query
+          required: true
+          description: Required. Absent or blank is 400 invalid_input.
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: >
+            Every replayed order for the outlet, oldest first. An outlet with
+            no replayed orders returns [], never null.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CanonicalOrder"
+        "400":
+          description: outlet_id is missing or blank.
+        "401":
+          description: No authenticated principal.
 
   /orders/{id}:
     get:

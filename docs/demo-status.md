@@ -16,11 +16,12 @@ Read `CLAUDE.md`'s `## Current milestone:` block for scope and EXCLUDES.
 |---|---|---|---|
 | **0** | `apps/captain` | **BUILT, NOT PASSED** — the cut-off condition needs a human | below |
 | **0b** | UPI QR, screen + receipt | **DONE** | below |
-| **1** | Seed parity | **BUILT; row-for-row comparison UNRESOLVED** | below |
+| **1** | Seed parity | **BUILT; cloud half compared row for row, edge half is a CI test; the operator's reset is the last step** | below |
 | **2** | Demo seed content + reset command | **BUILT; never run with `-Force`** | below |
 | **3** | Rendered receipt | **DONE** | below |
 | **4** | Sync banner legibility | **DONE, observed in Chromium** | below |
 | **5** | Offline tick | **NOT STARTED** — conditional on observing sluggishness with the cloud down |  |
+| **B** | Admin Orders screen (conditional, ruled 2026-09-12) | **BUILT and observed in a browser**; the route already existed and was undocumented | below |
 | **6** | Presentability | **DONE for POS and admin; KDS unreachable** | below |
 | **7** | `docs/demo-script.md` | **NOT STARTED** — Tuesday |  |
 | **8** | Three timed rehearsals | **NOT STARTED** — Tuesday, needs item 2's reset to run first |  |
@@ -66,6 +67,99 @@ Everything here is blocked on something no agent in this project can do.
 ---
 
 ## Item 1 and 2 — seed parity
+
+### Conditional B -- the admin Orders screen, and what it found (2026-09-12)
+
+**THE ROUTE WAS NEVER MISSING, AND THE BOARD SAYS OTHERWISE.** S-ADM-08 records
+"no cloud read route to build them on". The repo disagrees and the repo wins:
+`backend/internal/ordering/http.go:32` has routed `GET /orders` since Milestone
+1 -- `listOrders` to `svc.ListOrders` to `PostgresRepository.ListByOutlet`. What
+was missing was its entry in `packages/contracts/openapi/openapi.yaml`, which is
+what the earlier survey read. The conditional's own test -- "returns the EXISTING
+order wire type unchanged" -- is met exactly: `CanonicalOrder`, unwrapped, no new
+schema at all.
+
+The route is now DOCUMENTED as it behaves, including the two properties a caller
+must plan around and which were deliberately NOT changed here: the result is
+**unbounded** (no limit, no cursor) and ordered **created_at ASCENDING**. The
+newest-first ordering the screen wants is applied in the admin client, over the
+response, rather than by editing a Milestone 1 query during a demo build. Both
+are filed for pilot.
+
+### Two cloud defects the screen exposed, neither visible from Go
+
+**1. The cloud dropped `display_number` entirely.** Not in the INSERT, not in
+the SELECT -- `grep display_number backend/internal/` returned nothing at all.
+The edge mints it, the wire type carries it, both stores have the column, and
+every replayed order in Postgres held NULL while every read served null. "Order
+#A184" is the only name a human has for an order, so **the back office could not
+name a single one**, and demo step 4 is "the order appears in admin". This is
+contracts 0.5.9's `source_stock_count_id` again, one layer out: a column
+something upstream writes, that nothing downstream reads.
+
+**2. Timestamps were served with a `+05:30` offset.** pgx returns a `timestamptz`
+in the connection's session timezone and Go then marshals RFC3339 with that
+offset. The instant is correct; the shape is not. `CanonicalOrderSchema` types
+these as `z.string().datetime()`, which accepts a `Z` and **rejects an offset**,
+so every order the cloud served failed validation in the browser -- the screen
+rendered a wall of Zod errors and no rows.
+
+Why neither was caught: **nothing had ever read an order back from the cloud in
+TypeScript.** The till reads the edge; the admin had no orders screen; and the
+contract's own round-trip fixtures are authored with a `Z`, so the Go/TS drift
+tests passed against a spelling the server never produces. Green on data the
+real path does not generate.
+
+Both are fixed in `PostgresRepository` and pinned by
+`TestPostgresRepository_DisplayNumberAndUtcTimestampsSurviveTheRoundTrip`, which
+asserts **the marshalled bytes** rather than the `time.Time` -- a `time.Time`
+comparison is equal under both spellings and would have proved nothing. Each
+half was **falsified separately**: removing the UTC normalisation produced
+`got "2026-09-11T19:00:00+05:30"`, and passing `nil` for the display number
+produced `got <nil>, want "A184"`.
+
+### The screen itself
+
+`OrdersScreen.tsx`: order number, IST time, type, status, items, payment, total.
+It labels itself a **replica** in as many words, exactly as `GoodsReceiptsScreen`
+does, because an order is edge-authoritative and one rung while the uplink was
+down is real and complete at the till while absent here.
+
+**The Items column counts lines rather than naming dishes**, because `OrderItem`
+carries `menu_item_id` and no `name` -- the THIRD surface hit by the same
+missing contract shape as `GoodsReceiptLineReadSchema` and `SupplierItemSchema`.
+A name could be joined from the live menu, but that would print today's name
+against a line sold under the old one, which is precisely what
+`unit_price_paise` being a snapshot exists to prevent. Reported, not worked
+around. An order whose item rows never replayed reads **"no lines synced"**
+rather than an empty cell, which would look like a rendering fault.
+
+**Observed in a real browser, not on a green build.** Chromium at 1440x900
+against the real admin dev server and a real backend: signed in by clicking (no
+`page.goto` after login, which would drop the in-memory session), clicked the
+Orders tab, and asserted before capturing -- heading visible, 3 rows, the
+replica note present, **zero UUIDs anywhere in the rendered text**, zero console
+errors. Screenshot: `docs/demo-screens/scenarios/admin-08-orders.png`. The first
+attempt at this is what produced the Zod wall above, which is the whole argument
+for looking.
+
+The backend for that run was a SECOND backend on 8081 against a SCRATCH database
+seeded from the committed file, with three fixture orders inserted into it -- a
+normal billed order with lines, a partly-replayed one with none, and a cancelled
+takeaway. **Nothing touched the operator's data directory or their dev
+database**, and both scratch processes and the scratch database were stopped and
+dropped afterwards.
+
+### A live-stack finding worth more than the screen
+
+**The dev `holler` database cannot log anyone in right now**, and the reason is
+not a credential: `owner@holler.test` and `cashier@holler.test` carry
+`$argon2id$fixture-hash-not-a-r...`. Running the Go suite with
+`HOLLER_TEST_DATABASE_URL` pointed at the shared dev database -- which is what
+`docs/RESUME.md` tells you to do -- overwrites those rows with test fixtures. A
+401 from the till or the console after a test run is THAT, not a typo and not
+the rate limiter. It is the same misread CLAUDE.md already records costing a
+debugging detour, arriving by a new route. The operator's reset fixes it.
 
 ### S-BE-09 -- the login budget is widened for the demo build (2026-09-12)
 

@@ -1,4 +1,5 @@
 import {
+  CanonicalOrderSchema,
   MenuItemSchema,
   MenuCategorySchema,
   ListSuppliersResponseSchema,
@@ -168,4 +169,37 @@ export function listGoodsReceipts(cursor?: string): Promise<GoodsReceiptPage> {
   const query = new URLSearchParams({ outlet_id: OUTLET_ID });
   if (cursor !== undefined && cursor !== "") query.set("cursor", cursor);
   return request(`/procurement/goods-receipts?${query.toString()}`, GoodsReceiptPageSchema);
+}
+
+// ---------------------------------------------------------------- orders --
+
+/**
+ * GET /orders — served since Milestone 1, documented in the OpenAPI spec at
+ * contracts 0.8.2. The route was never missing; only its entry in the spec
+ * was, which is why a survey of the spec read `/orders` as POST-only.
+ *
+ * THIS IS THE CLOUD'S REPLICA, exactly as the goods-receipt list is. An order
+ * is EDGE-AUTHORITATIVE (§50.1): the till takes it, the cloud replays it, and
+ * an order rung while the uplink was down is real and complete at the outlet
+ * and simply absent here until its outbox row lands. The screen says so.
+ *
+ * UNBOUNDED AND OLDEST-FIRST at the route. There is no limit and no cursor —
+ * every order this outlet has ever replayed arrives in one response — and the
+ * backend orders by created_at ascending. The newest-first ordering the screen
+ * wants is applied HERE, over the response, rather than by changing a
+ * Milestone 1 query during a demo build; both properties are filed for pilot.
+ */
+// The return type is INFERRED rather than annotated `CanonicalOrder[]`. Several
+// fields on the contract carry `.default()`, so Zod's input and output types
+// differ, and `request`'s generic binds to the input side; annotating the
+// output type here produces a mismatch on exactly those optional-in/required-out
+// fields. The parsed value is the output shape either way.
+export async function listOrders() {
+  const orders = await request(
+    `/orders?outlet_id=${OUTLET_ID}`,
+    z.array(CanonicalOrderSchema),
+  );
+  return [...orders].sort((a, b) =>
+    b.timestamps.created_at.localeCompare(a.timestamps.created_at),
+  );
 }

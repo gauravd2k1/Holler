@@ -2,7 +2,9 @@ package ordering_test
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -332,5 +334,87 @@ func TestPostgresRepository_CrossTenantOrderLookupIsNotFound(t *testing.T) {
 
 	if _, err := svc.GetOrder(context.Background(), fxA.tenantID, orderID); err == nil {
 		t.Fatal("expected tenant A's lookup of tenant B's order to fail")
+	}
+}
+
+// TestPostgresRepository_DisplayNumberAndUtcTimestampsSurviveTheRoundTrip
+// covers two defects found the first time a TypeScript client read an order
+// back from the cloud (the admin Orders screen, demo build 2026-09-12). Both
+// were invisible from Go: the values are correct as Go values and wrong only
+// once they are JSON on a wire a Zod schema is parsing.
+//
+//  1. display_number was in NEITHER the INSERT nor the SELECT. The edge mints
+//     it, the wire type carries it, both stores have the column -- and the
+//     cloud dropped it on ingest and served null forever after. "Order #A184"
+//     is the only name a human has for an order, so the back office could not
+//     name a single one. Same shape as contracts 0.5.9's source_stock_count_id,
+//     one layer out.
+//
+//  2. Timestamps came back in the CONNECTION's timezone, so Go marshalled
+//     RFC3339 with a +05:30 offset. The instant is right; the shape is not.
+//     CanonicalOrderSchema types them as z.string().datetime(), which accepts
+//     Z and REJECTS an offset, so every order failed validation in the browser.
+//     This asserts the MARSHALLED BYTES, not the time.Time -- a time.Time
+//     comparison passes under both spellings and would have proved nothing.
+func TestPostgresRepository_DisplayNumberAndUtcTimestampsSurviveTheRoundTrip(t *testing.T) {
+	pool := setupPool(t)
+	fx := newFixture(t, pool)
+	svc := ordering.NewService(ordering.NewPostgresRepository(pool))
+
+	orderID := id.New()
+	env := envelopeFor(orderID, fx.tenantID, fx.outletID, 1)
+	order := orderFor(orderID, fx.outletID)
+	displayNumber := "A184"
+	order.DisplayNumber = &displayNumber
+	// A deliberately non-UTC instant on the way IN: the fix must normalise on
+	// the way out rather than depend on the caller having sent a Z.
+	ist := time.FixedZone("IST", 5*60*60+30*60)
+	order.Timestamps.CreatedAt = time.Date(2026, 9, 11, 19, 0, 0, 0, ist)
+	order.Timestamps.UpdatedAt = time.Date(2026, 9, 11, 19, 25, 0, 0, ist)
+
+	if _, err := svc.IngestOrder(context.Background(), fx.tenantID, env, order); err != nil {
+		t.Fatalf("IngestOrder: %v", err)
+	}
+
+	stored, err := svc.GetOrder(context.Background(), fx.tenantID, orderID)
+	if err != nil {
+		t.Fatalf("GetOrder: %v", err)
+	}
+
+	if stored.Order.DisplayNumber == nil || *stored.Order.DisplayNumber != displayNumber {
+		t.Fatalf("display_number must survive ingest and be served: got %v, want %q",
+			stored.Order.DisplayNumber, displayNumber)
+	}
+
+	// The bytes, not the value.
+	encoded, err := json.Marshal(stored.Order)
+	if err != nil {
+		t.Fatalf("marshalling the served order: %v", err)
+	}
+	var wire struct {
+		DisplayNumber *string `json:"display_number"`
+		Timestamps    struct {
+			CreatedAt string `json:"created_at"`
+			UpdatedAt string `json:"updated_at"`
+		} `json:"timestamps"`
+	}
+	if err := json.Unmarshal(encoded, &wire); err != nil {
+		t.Fatalf("decoding the served order: %v", err)
+	}
+	if wire.DisplayNumber == nil || *wire.DisplayNumber != displayNumber {
+		t.Fatalf("display_number missing from the JSON the cloud serves: %s", encoded)
+	}
+	for field, value := range map[string]string{
+		"created_at": wire.Timestamps.CreatedAt,
+		"updated_at": wire.Timestamps.UpdatedAt,
+	} {
+		if !strings.HasSuffix(value, "Z") {
+			t.Fatalf("timestamps.%s must be UTC with a Z suffix for z.string().datetime(); got %q",
+				field, value)
+		}
+	}
+	// And the instant itself is unchanged by the normalisation.
+	if got := wire.Timestamps.CreatedAt; got != "2026-09-11T13:30:00Z" {
+		t.Fatalf("created_at should be the same instant expressed in UTC; got %q", got)
 	}
 }

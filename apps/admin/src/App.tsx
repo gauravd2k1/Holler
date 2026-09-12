@@ -2,11 +2,13 @@ import { useState } from "react";
 import { MenuScreen } from "./components/MenuScreen";
 import { SuppliersScreen } from "./components/SuppliersScreen";
 import { GoodsReceiptsScreen } from "./components/GoodsReceiptsScreen";
+import { OrdersScreen } from "./components/OrdersScreen";
 import { configError } from "./lib/api";
 import { SignIn } from "./components/SignIn";
 import { currentPrincipal, signOut, type Principal } from "./lib/session";
 
 const TABS = [
+  { id: "orders", label: "Orders" },
   { id: "menu", label: "Menu and pricing" },
   { id: "suppliers", label: "Suppliers" },
   { id: "receipts", label: "Goods receipts" },
@@ -28,6 +30,11 @@ function Brand() {
 }
 
 export function App() {
+  // Menu stays the landing tab. Orders is FIRST in the bar because demo steps
+  // 4 and 5 go there, but the landing tab is deliberately unchanged: the
+  // scenario harness asserts the Menu screen is what replaces the sign-in
+  // form, and reshaping the product to keep a test string true -- or silently
+  // breaking that assertion -- are both worse than leaving it alone.
   const [tab, setTab] = useState<TabId>("menu");
   const [principal, setPrincipal] = useState<Principal | null>(currentPrincipal());
 
@@ -101,6 +108,7 @@ export function App() {
             </button>
           ))}
         </nav>
+        {tab === "orders" && <OrdersScreen />}
         {tab === "menu" && <MenuScreen />}
         {tab === "suppliers" && <SuppliersScreen />}
         {tab === "receipts" && <GoodsReceiptsScreen />}

@@ -1,4 +1,109 @@
-# Resume state — 2026-09-11
+# Resume state — 2026-09-12
+
+> ## DEMO BUILD — WHERE THIS SESSION GOT TO (2026-09-12, pushed through `c9195f5` + the orders work)
+>
+> Written so an accidental restart picks up here instead of reconstructing a
+> verdict from git history. **The repo is the authority; this block is a
+> pointer, not a second source of truth.** Full narrative, with what was
+> falsified and how, is `docs/demo-status.md`.
+>
+> ### Landed and pushed, in order
+>
+> 1. **`4f98b06` — every menu item carries a variant.** Twelve of forty-three
+>    seeded items had none, which made them un-orderable from `apps/captain`
+>    and impossible to give a recipe (a recipe binds to a variant), so selling
+>    one deducted no stock. Closes S-CAP-06 and S-SYNC-08 at the source.
+> 2. **`f7d9c8f` — the demo menu is the CLIENT'S OWN CARD.** The invented
+>    Indian dev menu is gone. `menu_imgs_gong/gong_menu.xlsx` is the authoring
+>    source, `scripts/gong-menu-to-seed.py` generates
+>    `edge/database/src/bin/devseed/gong_menu.rs`, and devseed emits
+>    `seed/demo-outlet.json` from it. **277 items, 46 categories, 343 variants,
+>    21 modifier options, 38 inventory items, 16 root recipes + 2 sub-recipe
+>    batches, 7 supplier items.** Outlet is `Gong — Modern Asian`.
+> 3. **`c9195f5` — the login budget is configurable and the demo build widens
+>    it to 50** (`HOLLER_LOGIN_RATE_LIMIT_ATTEMPTS`, set in
+>    `scripts/dev-up.ps1`). Closes S-BE-09. The identical-401 behaviour ADR-012
+>    requires is unchanged; only the count moved.
+> 4. **The admin Orders screen** (`apps/admin/src/components/OrdersScreen.tsx`)
+>    plus two cloud defects it exposed — see the next section.
+>
+> ### THE RULING THAT CHANGED: `GET /orders` WAS NEVER MISSING
+>
+> The scenario board's S-ADM-08 says no orders screen exists and no cloud read
+> route exists. **The second half was wrong, and the repo says so:**
+> `backend/internal/ordering/http.go:32` has routed `GET /orders` since
+> Milestone 1 (`listOrders` → `svc.ListOrders` → `ListByOutlet`). It was absent
+> from `packages/contracts/openapi/openapi.yaml`, which is what an earlier
+> survey read. Conditional B therefore cost hours, not a day, and needed no new
+> wire type: the route is now DOCUMENTED in the spec as it behaves.
+>
+> **Two real defects came out of pointing a browser at it, both invisible from
+> Go and from every existing test:**
+>
+> - **The cloud dropped `display_number` entirely.** It was in neither the
+>   INSERT nor the SELECT (`backend/internal/ordering/repository.go`), so every
+>   replayed order carried NULL and the back office could not name a single
+>   order. Same shape as contracts 0.5.9's `source_stock_count_id`.
+> - **Timestamps were served with a `+05:30` offset**, because pgx returns
+>   timestamptz in the session timezone. `CanonicalOrderSchema` types them as
+>   `z.string().datetime()`, which REJECTS an offset, so every TypeScript client
+>   failed to parse an order the cloud served. Nothing had read an order back
+>   from the cloud in TypeScript until this screen existed.
+>
+> Both fixed and pinned by
+> `TestPostgresRepository_DisplayNumberAndUtcTimestampsSurviveTheRoundTrip`,
+> which asserts the MARSHALLED BYTES (a `time.Time` comparison passes under
+> both spellings). Each half was falsified separately by planting the old
+> behaviour and watching it fail.
+>
+> ### What the operator still has to do
+>
+> 1. **Run `scripts/demo-reset.ps1 -Force` once.** It covers three things at
+>    once: the variant renumbering (see the warning below), the edge half of
+>    seed parity, and the new Gong menu. `apps/pos/.env.dev` is deny-ruled to
+>    agents, so this is the operator's.
+> 2. **Re-enrol the demo phone.** The T29 device-row fix has NO BACKFILL
+>    (S-CAP-20): a WAITER paired before 2026-09-11 20:28 stays broken and
+>    re-pairing does not help.
+> 3. Then the phone runs, then items 7 and 8 (demo script, three timed
+>    rehearsals).
+>
+> ### Live-stack warnings that will otherwise waste an hour
+>
+> - **A SEED CHANGE THAT RENUMBERS IDS IS ONLY SAFE THROUGH `demo-reset.ps1
+>   -Force`.** Running `backend/cmd/devseed` against an ALREADY-seeded database
+>   fails loudly on `idx_menu_item_variant_one_default`: the seeder upserts
+>   without pruning, so the previous seed's default variant survives beside the
+>   new one. The live dev `holler` database is in exactly that state.
+> - **THE DEV `holler` DATABASE CANNOT LOG ANYONE IN RIGHT NOW.**
+>   `owner@holler.test` and `cashier@holler.test` carry
+>   `$argon2id$fixture-hash-not-a-r…` — a TEST FIXTURE hash. Running the Go
+>   suite with `HOLLER_TEST_DATABASE_URL` pointed at the shared dev database
+>   (which is what `docs/RESUME.md` §6 tells you to do) overwrites those rows.
+>   A 401 from the admin console or the till right now is THAT, not a
+>   credential you mistyped and not the rate limiter. The reset fixes it.
+> - **Backend on 8080 is running in its own window as pid 9360** (started by
+>   `scripts/dev-up.ps1 -SkipInfra -SkipSeed -NoKds -NoPos` on 2026-09-12).
+>   Docker Desktop was started this session; `postgres`, `redis` and `nats` are
+>   up. Verify any restart by NEW PID, never by the port answering.
+> - Contracts stay FROZEN at **v0.8.1**. The OpenAPI `info.version` field still
+>   reads `0.6.2` and has been stale for several bumps — noted, not touched.
+>
+> ### Still open on the demo brief
+>
+> - **Item 5 (offline tick)** — not started; conditional on observing the till
+>   sluggish with the cloud down.
+> - **Item 7 (`docs/demo-script.md`)** and **item 8 (three timed rehearsals)** —
+>   not started, and both need the operator's reset first.
+> - **S-ADM-09 (stock variance screen)** — ruled OUT by the operator: demo step
+>   5 is GRN + stock variance, and with A ruled the orders screen was the
+>   conditional. No cloud read route exists for inventory (`/inventory/*` are
+>   all POST-only), so a variance screen would need new OpenAPI paths.
+> - **Known and carried, DO NOT FIX:** S-SYNC-04 (gap A7), S-SYNC-13,
+>   S-SYNC-06, S-CUI-06, gaps A4 and A6.
+>
+> ---
+
 
 > ## READ THIS BLOCK FIRST. THE REST OF THIS FILE IS M5 AND M6 HISTORY.
 >

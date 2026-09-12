@@ -94,17 +94,18 @@ func (r *PostgresRepository) InsertOrder(ctx context.Context, tenantID, deviceID
 		`INSERT INTO "order" (id, outlet_id, device_id, order_type, status, table_id,
 			subtotal_paise, discount_paise, taxes_paise, total_paise, version,
 			source_payload, created_at, updated_at,
-			source, external_order_id, payment_status, payment_source, confirmed_at, schema_version)
+			source, external_order_id, payment_status, payment_source, confirmed_at, schema_version,
+			display_number)
 		 SELECT $1, $2, $3, $4, $5, $6,
 			$7, $8, $9, $10, $11, $12, $13, $14,
-			$16, $17, $18, $19, $20, $21
+			$16, $17, $18, $19, $20, $21, $22
 		 WHERE EXISTS (SELECT 1 FROM outlet o JOIN brand b ON b.id = o.brand_id WHERE o.id = $2 AND b.tenant_id = $15)
 		 ON CONFLICT (id) DO NOTHING`,
 		order.HollerOrderID, order.OutletID, deviceID, string(order.OrderType), string(order.Status), order.TableID,
 		order.SubtotalPaise, order.DiscountPaise, order.TaxesPaise, order.TotalPaise, version,
 		sourcePayload, order.Timestamps.CreatedAt, order.Timestamps.UpdatedAt, tenantID,
 		string(order.Source), order.ExternalOrderID, string(order.PaymentStatus), order.PaymentSource,
-		order.Timestamps.ConfirmedAt, order.SchemaVersion,
+		order.Timestamps.ConfirmedAt, order.SchemaVersion, order.DisplayNumber,
 	)
 	if err != nil {
 		return StoredOrder{}, false, storage.Wrap("ordering: inserting order", err)
@@ -132,7 +133,7 @@ func (r *PostgresRepository) GetByID(ctx context.Context, tenantID, orderID stri
 			ord.subtotal_paise, ord.discount_paise, ord.taxes_paise, ord.total_paise,
 			ord.version, ord.source_payload, ord.created_at, ord.updated_at,
 			ord.source, ord.external_order_id, ord.payment_status, ord.payment_source,
-			ord.confirmed_at, ord.schema_version
+			ord.confirmed_at, ord.schema_version, ord.display_number
 		 FROM "order" ord
 		 JOIN outlet ot ON ot.id = ord.outlet_id
 		 JOIN brand b ON b.id = ot.brand_id
@@ -142,13 +143,33 @@ func (r *PostgresRepository) GetByID(ctx context.Context, tenantID, orderID stri
 		&o.SubtotalPaise, &o.DiscountPaise, &o.TaxesPaise, &o.TotalPaise,
 		&so.Version, &sourcePayload, &o.Timestamps.CreatedAt, &o.Timestamps.UpdatedAt,
 		&source, &o.ExternalOrderID, &paymentStatus, &o.PaymentSource,
-		&o.Timestamps.ConfirmedAt, &o.SchemaVersion)
+		&o.Timestamps.ConfirmedAt, &o.SchemaVersion, &o.DisplayNumber)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return StoredOrder{}, httpx.ErrNotFound
 		}
 		return StoredOrder{}, fmt.Errorf("ordering: querying order: %w", err)
 	}
+	// UTC ON THE WIRE, ALWAYS. pgx returns a timestamptz in the connection's
+	// session timezone, which on a developer machine is +05:30, and Go then
+	// marshals RFC3339 WITH THAT OFFSET. The instant is correct either way, but
+	// the shape is not: CanonicalOrderSchema types these as
+	// `z.string().datetime()`, which accepts a Z suffix and REJECTS an offset,
+	// so every TypeScript client fails to parse an order the cloud serves.
+	//
+	// It went unseen because nothing had ever read an order back from the cloud
+	// in TypeScript -- the till reads the edge, and the contract's own
+	// round-trip fixtures are authored with a Z. Found the first time a browser
+	// asked for one (the admin Orders screen), which is the same shape as
+	// contracts 0.5.9: a test can only prove fidelity for the data its fixture
+	// produces.
+	o.Timestamps.CreatedAt = o.Timestamps.CreatedAt.UTC()
+	o.Timestamps.UpdatedAt = o.Timestamps.UpdatedAt.UTC()
+	if o.Timestamps.ConfirmedAt != nil {
+		utc := o.Timestamps.ConfirmedAt.UTC()
+		o.Timestamps.ConfirmedAt = &utc
+	}
+
 	o.OrderType = contracts.OrderType(orderType)
 	o.Status = contracts.OrderStatus(status)
 	o.Source = contracts.OrderSource(source)
