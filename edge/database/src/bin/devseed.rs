@@ -2708,7 +2708,20 @@ fn seed_billing(conn: &rusqlite::Connection) -> Result<(), holler_edge_database:
             id: INVOICE_SERIES_ID.to_string(),
             outlet_id: OUTLET_ID.to_string(),
             code: "SALES".to_string(),
-            prefix_template: "DEV/".to_string(),
+            // "SY/" — the outlet's initials, NOT "DEV/". The invoice number is
+            // the most closely read line on the document a customer is handed,
+            // and demo work item 6 is that no internal label reaches a screen
+            // the client sees. "DEV/000008" printed on a GST invoice reads as
+            // an unfinished product in the one place that must not.
+            //
+            // NOTE FOR ANY RE-SEED ON A LIVE DATABASE: the series id is
+            // unchanged, so `invoice_sequence` — which is edge-local and keyed
+            // by series, never by prefix — does NOT reset. The next bill
+            // continues the existing count under the new prefix (…/000009, not
+            // …/000001). That is correct: a counter that restarted on a
+            // cosmetic edit would mint numbers the UNIQUE index has already
+            // seen. A clean `demo-reset.ps1 -Force` starts it at 1.
+            prefix_template: "SY/".to_string(),
             reset_policy: "NEVER".to_string(),
             padding_width: 6,
             is_active: true,

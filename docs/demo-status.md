@@ -10,6 +10,68 @@ Read `CLAUDE.md`'s `## Current milestone:` block for scope and EXCLUDES.
 
 ---
 
+## The verification list, in order — agreed 2026-09-13
+
+Ordered by what would end the demo, not by effort. **The chat is not the record,
+so it lives here.** Nothing on this list is a new feature; every line is proof
+that something already built actually works.
+
+### Tonight
+
+- [ ] **Bill header** on a NEW bill: `Shinjuku Yakitori Hospitality Pvt Ltd`,
+      `Camp`, `Pune 411001`, footer `Thank you — please visit again`, and the
+      invoice number now reads **`SY/…`** rather than `DEV/…`. This also proves
+      `seed_billing` ran.
+- [ ] **Three things on that same bill, one look:** the UPI QR is present; the
+      **PDF opens by itself** (nobody has yet observed the open-on-print half —
+      the tests deliberately suppress it); four files land in `.dev-prints\`.
+
+### Monday
+
+- [ ] **The captain chain, and it is the least-exercised path in the build.** No
+      browser has ever talked to the real captain listener — the seam was
+      confirmed by static comparison and a hand-rolled HTTP client, not a phone.
+      Enrol the WAITER, pair a real phone, place an order, watch it reach the KDS
+      **and** the hub. Three times from a clean reset. **Cut-off Monday 18:00**;
+      a fail cuts step 1a.
+- [ ] **On the HOTSPOT, not home WiFi, with `-LanHost` re-run for the hotspot's
+      own address.** A hotspot's address changes on every reconnect, and the
+      address is baked into `apps\kds\.env.dev` as a literal string — so a chain
+      that works on home WiFi proves nothing about the network the demo runs on.
+      This is the single most demo-specific line on the list.
+- [ ] **Two phones, two tables, concurrently.** Two `table_session` rows and two
+      orders open at once is the first real test of the captain's table handling,
+      and the demo may well be shown that way.
+- [ ] **One phone: WiFi off and on mid-cart — and NO DUPLICATE ORDER.** The
+      captain creates the order on first send; a retry across a dropped
+      connection must not create a second. Check the KDS shows one ticket and the
+      hub one order, not two.
+- [ ] **The KDS actually CONNECTED.** Never observed this session. `demo-up` can
+      only check the port and the env URL; the indicator is the observation.
+- [ ] **`demo-up.ps1` end to end.** Steps 2–10 have never executed — only the
+      preflight and a `-WhatIf` walkthrough. Better discovered Monday than
+      Wednesday morning.
+- [ ] **The offline step.** Stop the cloud, take and bill an order, restart,
+      banner clears, order appears in admin. Not rehearsed against this build.
+- [ ] **Admin Orders tab and the received GRN** against the FRESH seed. Both were
+      observed on a scratch database with fixture rows, never on the demo seed.
+- [ ] **The two perf numbers** from the `HOLLER-PERF` lines — captain send → KDS
+      render, till tap → bill open. **Over 1s is a demo blocker.**
+- [ ] **Draft the six steps** in `docs/demo-script.md`, Monday evening, from the
+      runs above rather than from memory.
+
+### Tuesday
+
+- [ ] Items 7 and 8 only: three timed rehearsals from a clean reset, then the
+      recording.
+
+### Explicitly NOT on this list
+
+A4, A6, A7 and everything in `docs/pilot-readiness.md`, including the flat
+SAC `9963` and the placeholder GSTIN and address. None is on the six-step path.
+
+---
+
 ## Scenario board triage against the six-step path (2026-09-12)
 
 Every non-passing row, with a verdict. **Only rows on the six-step path get

@@ -17,7 +17,26 @@ that passed.
 Every line has a check you can see. A step whose result you did not look at has
 not been done.
 
-1. **Hotspot up**, and note its IP (section 0.1 below).
+### 0.0 The machine, before the software
+
+Five settings, none of which is about Holler and every one of which can end the
+demo in front of the client. Do them first, because three of them cannot be
+fixed while someone is watching.
+
+| Do | Check |
+|---|---|
+| **Plug the laptop in.** | Charging, not on battery. |
+| **Disable sleep and screen-off** — Settings ▸ System ▸ Power, both "Screen" and "Sleep" to **Never** while plugged in. | Both read `Never`. **A laptop that sleeps drops the hotspot, and the phone and KDS lose the till mid-demo.** |
+| **Notifications off** — Focus assist / Do not disturb **on**. | No banner can appear over the till, the KDS or the captain page. Teams, Outlook and update prompts all land centre-screen. |
+| **Recording running on the laptop** (item 8's clean run). | It is capturing, and you can see it is. |
+| **Recording running on the phone** — screen record before you pick up a table. | The phone is the half no laptop capture can see, and step 1a is the part of the story the client came for. |
+
+The first three also protect the hotspot specifically: Windows Mobile Hotspot
+turns itself off when the machine sleeps, and it does not come back on its own.
+
+### 0.1 Then the three lines
+
+1. **Hotspot up**, and note its IP (section 0.2 below).
 2. ```powershell
    .\scripts\demo-up.ps1 -DbKeyHex <64-hex-key> -LanHost <hotspot-ip> -Fresh
    ```
@@ -48,13 +67,13 @@ Three things it does that are easy to undo by hand and expensive to get wrong:
 **`-DbKeyHex` is yours** — `apps\pos\.env.dev` is deny-ruled to agents and no
 agent supplies a literal key.
 
-Sections 0.1 to 0.6 below are the **manual sequence**, which is both the
+Section 0.2 below is the **manual sequence**, which is both the
 fallback when `demo-up` fails at a step and the explanation of what each step is
 checking.
 
 ---
 
-## 0.1 Manual sequence — in this order
+## 0.2 Manual sequence — in this order
 
 ### 1. Hotspot up
 
@@ -98,13 +117,27 @@ come back up.
 ### 3. Bootstrap
 
 ```powershell
-.\scripts\dev-bootstrap.ps1 -RotateKey -LanHost <hotspot-ip> -DbKeyHex <64-hex-key> `
-    -UpiVpa <vpa> -UpiPayeeName "Gong"
+.\scripts\dev-bootstrap.ps1 -LanHost <hotspot-ip> -DbKeyHex <64-hex-key> `
+    -WithBilling -PrinterFileSinkDir .dev-prints `
+    -UpiVpa <vpa> -UpiPayeeName "Shinjuku Yakitori"
 ```
 
-**`-UpiVpa` only has to be passed ONCE per machine** — the bootstrap remembers
-it in the same state file as the device ids and reuses it on every later run.
-Pass it again only to change it.
+**`-WithBilling` IS NOT OPTIONAL, and leaving it off is silent.** It is the only
+thing that sets `HOLLER_SEED_BILLING=1`, and `seed_billing` is the only writer of
+`outlet_fiscal_profile` — the legal name, address, GSTIN, FSSAI and footer
+printed on every bill. A run without it seeds the menu happily and leaves the
+bill header at whatever generation it was last written in. That cost an evening
+on 2026-09-13: the header kept printing a previous name, from a database that
+had just been re-seeded and re-sealed, because only this flag was missing.
+
+**`-UpiVpa` and `-PrinterFileSinkDir` only have to be passed ONCE per machine** —
+the bootstrap remembers both in the same state file as the device ids and reuses
+them on every later run. Pass either again only to change it. Before the sink was
+remembered, a re-run without it **deleted** the line, and a print then produced
+no `.escpos`, no `.html` and no `.pdf` at all, with nothing on screen saying why.
+
+`-RotateKey` is deliberately **not** here: it is only for changing the encryption
+key, and the existing sealed database was encrypted under the current one.
 
 `-DbKeyHex` is the key from `apps\pos\.env.dev`. It is **yours** — that file is
 deny-ruled to agents, and no agent may supply a literal key.
@@ -123,6 +156,12 @@ deny-ruled to agents, and no agent may supply a literal key.
   invoice screen and the printed receipt will show **no QR at all** — there is
   no empty-QR state and nothing on screen says why, so this line is the only
   warning you get before demo step 2.
+- **`billing config seeded: bills can be issued, discounted and split on this
+  machine.`** Its absence means `-WithBilling` was missing and **the bill header
+  is stale** — the name, address and GSTIN on the invoice will be whatever they
+  were at the last run that carried the flag.
+- **`printer FILE SINK: every print will be written to <dir>`** in yellow. A red
+  `printer FILE SINK: DISABLED` means a print will write no file of any kind.
 
 > **If `[3c/4]` reports 404:** that is a missing DEVICE, not a missing route.
 > A reset drops every `device` row while
