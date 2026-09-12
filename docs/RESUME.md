@@ -19,7 +19,7 @@
 >    `edge/database/src/bin/devseed/client_menu.rs`, and devseed emits
 >    `seed/demo-outlet.json` from it. **277 items, 46 categories, 343 variants,
 >    21 modifier options, 38 inventory items, 16 root recipes + 2 sub-recipe
->    batches, 7 supplier items.** Outlet is `Gong — Modern Asian`.
+>    batches, 7 supplier items.** Outlet is `Shinjuku Yakitori`, seeded from ONE constant (`RESTAURANT_NAME` in devseed.rs) that every panel reads rather than copies.
 > 3. **`c9195f5` — the login budget is configurable and the demo build widens
 >    it to 50** (`HOLLER_LOGIN_RATE_LIMIT_ATTEMPTS`, set in
 >    `scripts/dev-up.ps1`). Closes S-BE-09. The identical-401 behaviour ADR-012

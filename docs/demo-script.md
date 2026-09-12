@@ -132,9 +132,10 @@ Join the hotspot, open the captain page, pair with the WAITER token.
 
 ## Rules that bind anyone touching this stack before the demo
 
-- **No test or probe starts, stops or binds anything on 8080, 9310 or the
-  captain port.** Scratch ports and scratch databases only. A test displaced the
-  running backend three times on 2026-09-12.
+- **No test or probe starts, stops or binds anything on 8080, 9310, 9320, the
+  admin port (5175) or the POS dev port (5173).** Scratch ports and scratch
+  databases only. A test displaced the running backend three times on
+  2026-09-12, and a leftover dev server held 5175 until the operator met it.
 - **`demo-reset.ps1` refuses to run while the POS is open**, by design, and
   names the pid. Close the till first.
 - **Verify any restart by NEW PID, never by the port answering.** The old

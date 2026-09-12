@@ -62,6 +62,49 @@ row in §B, and it is why no trustworthy backup can be taken before a risky
 migration (§B, rebuild-class migrations). It is also why M6 C4's falsifier could
 not isolate an "abnormal" exit — there is no normal one.
 
+### A6b — `seal_file` writes IN PLACE, so an interrupted seal can lose the outlet's day · **Blocks pilot: YES** · **Size: S**
+
+**Grouped with A6 and not filed as a footnote, because it is the same family:
+the outlet's own data, lost on a path nobody watches.** A6 is "the exit never
+seals". This is "the seal itself is not atomic". Together they are the two ways
+a trading day reaches the end of service and is not in the sealed file.
+
+`crypto::seal_file` encrypts and writes the result **directly over
+`edge.db.enc`**. There is no temp file and no rename, so the window between the
+first byte and the last is a window in which the sealed database is neither the
+old one nor the new one. A crash, a power cut, a kill, or a full disk inside
+that window leaves a **truncated or half-written sealed file** — and the key
+verification that guards the other direction (T25) cannot help, because a
+corrupt ciphertext fails to authenticate and the operator is left with a
+database that opens under no key at all.
+
+**This is not hypothetical.** On 2026-09-12 the operator's `edge.db` held
+1,392,640 bytes of ciphertext — exactly `edge.db.enc` minus AES-GCM's 12-byte
+nonce and 16-byte tag — a sealed payload sitting at the plaintext path. Crash
+recovery now quarantines such a file rather than dying on it (`10a6e22`), so
+the symptom is handled. **How the bytes got there is still unexplained**, and
+an in-place writer that can mislabel a file in one direction can truncate one
+in the other.
+
+**The fix, named:**
+
+1. Encrypt to `edge.db.enc.tmp` in the same directory (same volume, so the
+   rename is atomic).
+2. **`fsync` the temp file**, then `fsync` the directory. Without both, a
+   rename can reach the disk before the bytes it names — the classic
+   crash-consistency hole, and the reason "write then rename" alone is not
+   enough.
+3. `fs::rename` over the target. On Windows and on POSIX this replaces
+   atomically: a reader sees either the whole old file or the whole new one,
+   never a mixture.
+4. Only then wipe the plaintext.
+
+Add a test that kills the process between steps 1 and 3 — or, if that is
+impractical in-process, one that leaves a stale `.tmp` behind and proves the
+next open ignores it and still reads the sealed file. **A seal that cannot be
+half-applied is the property; a test that only checks the happy path proves
+nothing about it.**
+
 ### A7 — 78 outbox rows have no edge route and can never be sent · **Blocks pilot: YES** · **Size: M**
 
 `edge/sync/src/route.rs` maps only `order` and `table_session`. Every other
@@ -266,18 +309,21 @@ replaced by the client's own card. All three are contract shapes, not bugs.
 
 ## D. Summary
 
-**Blocks a pilot — 13 items:** A6, A7, the rebuild/backup pair, the four
+**Blocks a pilot — 14 items:** A6, A7, the rebuild/backup pair, the four
 cloud-copy and config-push rows (`variant_id` check, order copy, inventory push,
 menu seed), the cloud `hsn_sac` seed, the plaintext database on shutdown, device
-enrollment, the `outlet.manage` split, the admin staff surface, and the two menu
+enrollment, the `outlet.manage` split, the admin staff surface, the two menu
 shapes added on 2026-09-12 (**VAT is inexpressible, so alcohol bills at a zero
-rate**, and **`menu_item` has no `is_veg`** where FSSAI requires the marker).
+rate**, and **`menu_item` has no `is_veg`** where FSSAI requires the marker),
+and **A6b, the non-atomic seal**.
 
 They are not thirteen independent pieces of work. **Three roots account for eight
 of them:**
 
-1. **No exit path drains or seals** — A6, the plaintext database, and the
-   untrustworthy backup that blocks safe migrations.
+1. **No exit path drains or seals, and the seal is not atomic** — A6, A6b, the
+   plaintext database, and the untrustworthy backup that blocks safe
+   migrations. A6 loses the day by never sealing; A6b can lose it by sealing
+   halfway.
 2. **The config push has never moved a row for any catalogue** — inventory, menu,
    `hsn_sac`, the `variant_id` check, and the divergent cloud copy.
 3. **Enrollment has no operator-facing flow** — the flow itself, the missing

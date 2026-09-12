@@ -426,9 +426,15 @@ Established by inspection, not recall — cite the file, not this summary:
 - **The backend runs in its OWN WINDOW** via `scripts/dev-up.ps1`, never as a
   session-owned background process. **Step 0 of any run verifies it by PID, not
   by the port answering.**
-- **NO TEST OR PROBE MAY START, STOP OR BIND ANYTHING ON 8080, 9310 OR THE
-  CAPTAIN PORT. Scratch ports and scratch databases only.** In force from
-  2026-09-12 until the demo. A test displaced the operator's running backend
+- **NO TEST OR PROBE MAY START, STOP OR BIND ANYTHING ON 8080, 9310, 9320, THE
+  ADMIN PORT (5175) OR THE POS DEV PORT (5173). Scratch ports and scratch
+  databases only.** In force from 2026-09-12 until the demo. **The rule is not
+  a fixed list — it is every port the operator's own stack uses**; 5175 was
+  added after a dev server left running from a screenshot pass was still
+  holding it hours later, and the operator met it instead of their own.
+  **Before killing anything, check the process START TIME**: on the sweep that
+  found that one, three of the four listeners were the operator's, started
+  minutes earlier. A test displaced the operator's running backend
   THREE TIMES in one day — the third time through `demo-reset.ps1
   -BackendPort 8099`, which does not reach the backend it launches (the API
   reads `PORT`, which the script never sets), so it bound 8080 regardless.

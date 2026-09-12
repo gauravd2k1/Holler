@@ -28,8 +28,11 @@ Report demo blockers only.
 
 ## Standing rule, added 2026-09-12: HANDS OFF THE LIVE PORTS
 
-**No test or probe starts, stops or binds anything on 8080, 9310 or the captain
-port. Scratch ports and scratch databases only.** In force until the demo.
+**No test or probe starts, stops or binds anything on 8080, 9310, 9320, the
+admin port (5175) or the POS dev port (5173). Scratch ports and scratch
+databases only.** In force until the demo. The list is shorthand for *every
+port the operator's own stack uses*, and a leftover dev server counts: 5175
+was added after one from a screenshot pass was still holding it hours later.
 
 A test displaced the operator's running backend three times in one day. The
 third was `demo-reset.ps1 -BackendPort 8099`, which does not reach the backend
