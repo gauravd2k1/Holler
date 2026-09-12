@@ -1039,9 +1039,12 @@ if ($kdsEnvExtraLines.Count -eq 0) {
 }
 
 Write-Host "`nready." -ForegroundColor Green
-Write-Host "`nLaunch the POS with:" -ForegroundColor Cyan
-Write-Host "  cd apps\pos; pnpm dev        # terminal 1 (Vite)"
-Write-Host "  .\apps\pos\run-dev.ps1       # terminal 2 (reads .env.dev, also starts the KDS LAN server)"
+Write-Host "`nLaunch the POS with ONE command, in a terminal you own:" -ForegroundColor Cyan
+Write-Host "  .\apps\pos\run-dev.ps1"
+Write-Host "  It reads .env.dev, starts Vite ITSELF (tauri beforeDevCommand) and binds the" -ForegroundColor DarkGray
+Write-Host "  KDS LAN server. Do NOT start 'pnpm dev' separately: vite.config.ts sets" -ForegroundColor DarkGray
+Write-Host "  strictPort, so the second one fails on 5173 and run-dev refuses to launch" -ForegroundColor DarkGray
+Write-Host "  against a server it did not start." -ForegroundColor DarkGray
 Write-Host "`nLaunch the KDS (on this machine or a second one on the same LAN):" -ForegroundColor Cyan
 Write-Host "  cd apps\kds; pnpm install; pnpm dev --host 0.0.0.0 --mode dev"
 Write-Host "  then open http://${lanIp}:5174 from the KDS device"

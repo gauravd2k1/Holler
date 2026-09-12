@@ -81,25 +81,44 @@ if ($loaded["HOLLER_DB_KEY_HEX"].Length -ne 64) {
     throw "HOLLER_DB_KEY_HEX must be exactly 64 hex characters (32 bytes); got $($loaded['HOLLER_DB_KEY_HEX'].Length)."
 }
 
-# tauri.conf.json's beforeDevCommand is now `pnpm dev`, so `tauri dev` starts
-# Vite itself and this check no longer gates anything -- it is informational.
+# THIS SCRIPT IS THE ONLY WAY TO START THE POS, AND IT STARTS VITE ITSELF.
+# tauri.conf.json's beforeDevCommand is `pnpm dev`, so `tauri dev` ALWAYS runs
+# Vite. There is no second terminal, and starting one by hand first is what
+# breaks the launch.
 #
-# It still earns its place: if Vite is ALREADY answering on 5173, `tauri dev`
-# will start a second one, Vite will fall back to 5174 (or fail under
-# strictPort), and the window then loads whatever the FIRST server is serving --
-# possibly a stale build from another branch. That is confusing enough to be
-# worth a line of output, but not worth refusing to launch over.
+# THE OLD NOTE HERE WAS FALSE IN BOTH DIRECTIONS, and cost an evening. It said
+# `tauri dev` would "not start its own" Vite when one was already serving 5173
+# -- it always starts one -- and it treated the situation as a warning worth
+# printing rather than a problem worth stopping for. What actually happens with
+# `strictPort: true` (apps/pos/vite.config.ts) is that the second Vite FAILS on
+# the taken port. And when a stale Vite does end up serving the window, it
+# serves a bundle built in a different environment: on 2026-09-12 that is
+# exactly why the UPI QR was missing from the bill screen while .env.dev
+# carried the payee -- the serving Vite had no VITE_ variables in it at all.
+#
+# So: refuse, name the pid, and say what to do. -SkipViteCheck still forces a
+# launch, for the case where the operator knows the running server is the right
+# one; the warning it prints says what they are accepting.
 if (-not $SkipViteCheck) {
-    $viteAlreadyUp = $false
-    try {
-        $null = Invoke-WebRequest -Uri "http://localhost:5173" -UseBasicParsing -TimeoutSec 3
-        $viteAlreadyUp = $true
-    } catch {
-        $viteAlreadyUp = $false
-    }
-    if ($viteAlreadyUp) {
-        Write-Host "note   : Vite is already serving http://localhost:5173 -- tauri dev will not start its own." -ForegroundColor Yellow
-        Write-Host "         The window loads THAT server. Stop it first if you want a clean one." -ForegroundColor Yellow
+    $viteHolder = $null
+    $conn = Get-NetTCPConnection -LocalPort 5173 -State Listen -ErrorAction SilentlyContinue
+    if ($conn) { $viteHolder = $conn.OwningProcess | Select-Object -First 1 }
+
+    if ($viteHolder) {
+        $proc = Get-Process -Id $viteHolder -ErrorAction SilentlyContinue
+        $desc = if ($proc) { "$($proc.ProcessName) pid $viteHolder, started $($proc.StartTime)" } else { "pid $viteHolder" }
+        Write-Host ""
+        Write-Host "REFUSED: something is already serving http://localhost:5173 ($desc)." -ForegroundColor Red
+        Write-Host "  This script starts Vite itself (tauri.conf.json beforeDevCommand), and" -ForegroundColor Red
+        Write-Host "  vite.config.ts sets strictPort, so a second one cannot start." -ForegroundColor Red
+        Write-Host "  NOTHING WAS STARTED." -ForegroundColor Red
+        Write-Host ""
+        Write-Host "  Stop it and re-run:" -ForegroundColor Yellow
+        Write-Host "    Stop-Process -Id $viteHolder" -ForegroundColor Yellow
+        Write-Host "  A Vite left from an earlier shell serves a bundle built WITHOUT the" -ForegroundColor Yellow
+        Write-Host "  current .env.local -- that is how the UPI QR went missing on 2026-09-12." -ForegroundColor Yellow
+        Write-Host "  -SkipViteCheck forces a launch against the running server if you are sure." -ForegroundColor DarkGray
+        exit 1
     }
 }
 

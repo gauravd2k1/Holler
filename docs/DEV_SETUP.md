@@ -286,11 +286,18 @@ two are fixed in the product (4, 6), and two remain open (1, 7).
    Verified by running `pnpm exec tauri dev` and observing
    `Running BeforeDevCommand ('pnpm dev')` followed by Vite ready on 5173;
    Vite also shuts down with Tauri, leaving no orphan.
-   `run-dev.ps1`'s pre-flight check is now **informational**: it no longer
-   refuses to launch, but it does warn when Vite is *already* serving 5173,
-   because in that case `tauri dev` will not start its own and the window
-   loads whatever that other server is serving — possibly a stale build from
-   another branch.
+   `run-dev.ps1`'s pre-flight check **REFUSES** when Vite is already serving
+   5173, and names the pid. Corrected 2026-09-12: it previously only warned,
+   and said `tauri dev` "will not start its own" Vite in that case — which is
+   false in both directions. `tauri dev` ALWAYS runs `beforeDevCommand`, and
+   `vite.config.ts` sets `strictPort: true`, so the second Vite fails on the
+   taken port. Worse, when a stale Vite does end up serving the window it
+   serves a bundle built in a different environment: that is exactly why the
+   UPI QR was absent from the bill screen on 2026-09-12 while `.env.dev`
+   carried the payee.
+
+   **There is one way to start the POS: `.\apps\pos\run-dev.ps1`.** Never
+   `pnpm dev` in a separate terminal first.
 5. **Nothing seeded the databases.** Postgres had no migrations applied
    (`cmd/api` is still the Milestone 0 health-only entrypoint and never calls
    `postgres.Migrate`), and the edge database had no rows. This document and

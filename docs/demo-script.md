@@ -91,14 +91,28 @@ deny-ruled to agents, and no agent may supply a literal key.
 > 2026-09-12 the bootstrap detects this and enrols fresh; on an older build,
 > delete that state file and re-run. See `docs/lan-setup.md` §5.
 
-### 4. Start the POS
+### 4. Start the POS — ONE command, and only this one
 
 ```powershell
+Get-NetTCPConnection -LocalPort 5173 -State Listen -ErrorAction SilentlyContinue   # must return nothing
 .\apps\pos\run-dev.ps1
 ```
 
 From a terminal **you** own: a Tauri window launched from a tool with redirected
 stdio never appears.
+
+**Do not start `pnpm dev` first.** `run-dev.ps1` starts Vite itself
+(`tauri.conf.json`'s `beforeDevCommand`), and `vite.config.ts` sets
+`strictPort`, so a Vite started by hand makes the launch fail on 5173.
+Corrected 2026-09-12: the bootstrap used to print a two-terminal sequence and
+`run-dev.ps1` used to claim it would reuse a running Vite — both wrong, in the
+same direction.
+
+**If 5173 is already held**, `run-dev.ps1` refuses and names the pid. Stop that
+process and re-run. This matters beyond the port clash: a Vite left from an
+earlier shell serves a bundle built without the current `.env.local`, which is
+exactly how the UPI QR went missing from the bill screen.
+
 
 **Check:** the till window opens, sign in as `cashier@holler.test` /
 `holler123`, the client menu renders with real categories, and **the sync banner
