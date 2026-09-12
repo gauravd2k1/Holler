@@ -225,6 +225,64 @@ pub fn wipe_plaintext_and_wal_shm(db_path: &Path) -> DbResult<()> {
     Ok(())
 }
 
+
+/// Every SQLite database begins with this exact 16-byte header, including the
+/// trailing NUL (SQLite file-format spec §1.3).
+const SQLITE_MAGIC: &[u8; 16] = b"SQLite format 3\0";
+
+/// Is this file a SQLite database at all?
+///
+/// Asked BEFORE crash recovery opens a leftover, because the answer decides
+/// between two completely different situations and the open itself cannot
+/// tell them apart: SQLite reports `file is not a database` for an empty
+/// file, a text file, a half-written file and a block of ciphertext alike.
+///
+/// A file shorter than the header is NOT a database — a zero-length leftover
+/// is what an interrupted create leaves behind.
+fn looks_like_sqlite(path: &Path) -> DbResult<bool> {
+    let mut file = match fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(DbError::Io(e)),
+    };
+    let mut header = [0u8; 16];
+    match std::io::Read::read_exact(&mut file, &mut header) {
+        Ok(()) => Ok(&header == SQLITE_MAGIC),
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Ok(false),
+        Err(e) => Err(DbError::Io(e)),
+    }
+}
+
+/// Moves an unrecoverable leftover aside, keeping its bytes.
+///
+/// NOT A DELETE. `docs/spec/sync.md` is explicit that local transactions are
+/// never deleted, and a file nobody can read today may still be forensically
+/// useful tomorrow — a truncated database can often be salvaged by hand, and
+/// the bytes are the only copy of whatever they are. The name carries the
+/// reason and a timestamp so two quarantines never collide.
+fn quarantine_unreadable_leftover(plaintext_path: &Path) -> DbResult<PathBuf> {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mut name = OsString::from(plaintext_path.as_os_str());
+    name.push(format!(".unreadable-{stamp}"));
+    let target = PathBuf::from(name);
+    fs::rename(plaintext_path, &target).map_err(DbError::Io)?;
+    // The -wal/-shm of an unreadable main file are meaningless on their own
+    // and actively harmful: SQLite would try to replay them against the fresh
+    // copy decrypted from the sealed file. Same treatment, same reason.
+    let (wal, shm) = wal_shm_paths(plaintext_path);
+    for sibling in [wal, shm] {
+        if sibling.exists() {
+            let mut sibling_name = OsString::from(sibling.as_os_str());
+            sibling_name.push(format!(".unreadable-{stamp}"));
+            fs::rename(&sibling, PathBuf::from(sibling_name)).map_err(DbError::Io)?;
+        }
+    }
+    Ok(target)
+}
+
 /// Detects and deterministically resolves crash leftovers from an unclean
 /// prior shutdown (requirement #1), before `Db::open` decrypts a fresh
 /// working copy for the new session.
@@ -262,6 +320,49 @@ pub fn recover_crash_leftovers(
 
     if !marker.exists() && !leftover_exists {
         // Clean prior state (or first-ever run): nothing to recover or wipe.
+        return Ok(());
+    }
+
+    // AN UNREADABLE LEFTOVER IS NOT A CRASH LEFTOVER, AND OPENING IT IS NOT
+    // RECOVERY. Observed on a real machine 2026-09-12: `edge.db` was
+    // 1,392,640 bytes of ciphertext -- exactly the sealed file minus AES-GCM's
+    // 12-byte nonce and 16-byte tag -- so it was never a database at all.
+    // Recovery opened it anyway, SQLite said `file is not a database`, and the
+    // error took down the whole bootstrap at step 3 with nothing naming the
+    // file or suggesting an action.
+    //
+    // What the two cases deserve is different:
+    //   - A SEALED FILE EXISTS: it is the truth and this session can proceed
+    //     from it. The leftover is moved aside with its bytes intact -- never
+    //     deleted (docs/spec/sync.md: local transactions are never deleted),
+    //     and a truncated database can often be salvaged by hand later.
+    //   - NO SEALED FILE: there is nothing to fall back to, so refusing is the
+    //     only honest answer. Deleting the one copy of whatever those bytes
+    //     are is the operator's decision, not this function's.
+    let leftover_is_readable = if leftover_exists {
+        looks_like_sqlite(plaintext_path)?
+    } else {
+        false
+    };
+    if leftover_exists && !leftover_is_readable {
+        if !sealed_path.exists() {
+            return Err(DbError::Encryption(
+                "the plaintext file beside this database is not a SQLite database and there is \
+                 no sealed database to fall back to; nothing was modified. Inspect it by hand \
+                 (it may be ciphertext, or a truncated copy), move it aside, and re-run",
+            ));
+        }
+        let moved = quarantine_unreadable_leftover(plaintext_path)?;
+        eprintln!(
+            "edge database: the plaintext leftover was not a SQLite database; moved it to {} \
+             and continued from the sealed file. Its bytes are intact; nothing was deleted.",
+            moved.display()
+        );
+        // Fall through to the tail below, which clears the stale marker. The
+        // sealed file is untouched and `Db::open` decrypts a fresh copy.
+        if marker.exists() {
+            fs::remove_file(&marker).map_err(DbError::Io)?;
+        }
         return Ok(());
     }
 
@@ -592,5 +693,109 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM t", [], |row| row.get(0))
             .expect("query recovered row");
         assert_eq!(count, 1, "committed pre-crash row must survive recovery");
+    }
+}
+
+#[cfg(test)]
+mod unreadable_leftover_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    /// A real sealed database plus a leftover that is NOT SQLite -- the exact
+    /// shape found on a real machine on 2026-09-12, where `edge.db` held
+    /// ciphertext (the sealed file minus AES-GCM's 28 bytes of nonce and tag)
+    /// and recovery died with "file is not a database", taking the bootstrap
+    /// with it.
+    #[test]
+    fn an_unreadable_leftover_is_quarantined_and_the_sealed_file_survives() {
+        let dir = tempdir().expect("tempdir");
+        let plain = dir.path().join("edge.db");
+        let sealed = dir.path().join("edge.db.enc");
+        let key = EncryptionKey::new([3u8; 32]);
+
+        // A genuine sealed database.
+        fs::write(&plain, b"SQLite format 3\0the rest of a database").expect("write");
+        seal_file(&plain, &sealed, &key).expect("seal");
+        let sealed_bytes = fs::read(&sealed).expect("read sealed");
+
+        // A leftover that is not a database: ciphertext, as observed.
+        fs::write(&plain, &sealed_bytes).expect("write ciphertext as the leftover");
+        fs::write(marker_path(&plain), b"").expect("marker");
+
+        recover_crash_leftovers(&sealed, &plain, &key).expect("recovery must not fail");
+
+        // The sealed file is BYTE-IDENTICAL: recovery must never reseal over
+        // the real database with bytes it could not read.
+        assert_eq!(fs::read(&sealed).expect("sealed still there"), sealed_bytes);
+        assert!(!plain.exists(), "the unreadable leftover must be moved aside");
+        assert!(!marker_path(&plain).exists(), "the stale marker must be cleared");
+
+        // NOTHING WAS DELETED. The bytes are still on disk under a new name.
+        let quarantined: Vec<_> = fs::read_dir(dir.path())
+            .expect("read dir")
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.contains(".unreadable-"))
+            .collect();
+        assert_eq!(quarantined.len(), 1, "expected one quarantined file, got {quarantined:?}");
+        let kept = fs::read(dir.path().join(&quarantined[0])).expect("quarantined file readable");
+        assert_eq!(kept, sealed_bytes, "the quarantined bytes must be preserved exactly");
+    }
+
+    /// With no sealed file there is nothing to fall back to, so refusing is
+    /// the only honest answer -- deleting the one copy of whatever those bytes
+    /// are is the operator's call.
+    #[test]
+    fn an_unreadable_leftover_with_no_sealed_file_refuses_and_touches_nothing() {
+        let dir = tempdir().expect("tempdir");
+        let plain = dir.path().join("edge.db");
+        let sealed = dir.path().join("edge.db.enc");
+        fs::write(&plain, b"not a database, and no sealed file either").expect("write");
+
+        let err = recover_crash_leftovers(&sealed, &plain, &EncryptionKey::new([4u8; 32]))
+            .expect_err("must refuse");
+        assert!(
+            format!("{err:?}").contains("not a SQLite database"),
+            "the error must name the actual problem, got {err:?}"
+        );
+        assert!(plain.exists(), "nothing may be moved or deleted on this path");
+    }
+
+    /// The ordinary crash leftover still recovers. A guard that only ever goes
+    /// red proves it can fire; this is the case it must not break.
+    #[test]
+    fn a_genuine_sqlite_leftover_is_still_recovered_and_resealed() {
+        let dir = tempdir().expect("tempdir");
+        let plain = dir.path().join("edge.db");
+        let sealed = dir.path().join("edge.db.enc");
+        let key = EncryptionKey::new([5u8; 32]);
+
+        // A REAL SQLite file, not a string with the right first sixteen bytes:
+        // my first version of this fixture wrote b"SQLite format 3 newer..."
+        // and SQLite rejected it with the very error this change is about. The
+        // magic check is necessary and not sufficient, and a fixture that only
+        // satisfied the check would have tested the check rather than the
+        // recovery it guards.
+        {
+            let conn = Connection::open(&plain).expect("open");
+            pragma::configure_connection(&conn).expect("pragmas");
+            conn.execute_batch("CREATE TABLE t (id INTEGER PRIMARY KEY); INSERT INTO t VALUES (1);")
+                .expect("seed");
+        }
+        seal_file(&plain, &sealed, &key).expect("seal");
+        let old_sealed = fs::read(&sealed).expect("read");
+        // A newer committed row that never reached the seal -- what a crash
+        // between the commit and the close leaves behind.
+        {
+            let conn = Connection::open(&plain).expect("reopen");
+            pragma::configure_connection(&conn).expect("pragmas");
+            conn.execute_batch("INSERT INTO t VALUES (2);").expect("second row");
+        }
+
+        recover_crash_leftovers(&sealed, &plain, &key).expect("recovery");
+
+        let resealed = fs::read(&sealed).expect("read");
+        assert_ne!(resealed, old_sealed, "the newer committed state must be folded in");
+        assert!(!plain.exists(), "the leftover is wiped once its data is safely sealed");
     }
 }
