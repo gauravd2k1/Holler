@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { fetchTables, type CaptainTable } from "../lib/api";
+import { Empty, Waiting, errorText } from "./Waiting";
 
 interface Props {
   token: string;
@@ -16,11 +17,9 @@ export function TablesScreen({ token, onSelectTable }: Props) {
     queryFn: () => fetchTables(token),
   });
 
-  if (query.isLoading) return <p className="screen">Loading tables…</p>;
+  if (query.isLoading) return <Waiting label="Loading tables…" />;
   if (query.isError) {
-    return (
-      <p className="screen error">Could not load tables: {String(query.error)}</p>
-    );
+    return <p className="screen error">Could not load tables. {errorText(query.error)}</p>;
   }
 
   const tables = query.data ?? [];
@@ -28,6 +27,12 @@ export function TablesScreen({ token, onSelectTable }: Props) {
   return (
     <div className="screen">
       <h2>Tables</h2>
+      {tables.length === 0 && (
+        <Empty
+          title="No tables are set up for this outlet."
+          detail="Tables come from the till's configuration. Ask the till to add them, then pull to refresh."
+        />
+      )}
       <div className="table-grid">
         {tables.map((t) => {
           const occupied = t.open_session_id !== null;

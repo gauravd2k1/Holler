@@ -273,3 +273,60 @@ main {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
 }
+
+/* --- waits and empties (polish pass, 2026-09-12) -------------------------
+   A waiter reads motion before text across a room, and a bare "Loading…"
+   line is indistinguishable from a screen that finished loading with nothing
+   on it. Both states are now explicit. */
+
+.waiting {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--color-text-muted, #5b6471);
+}
+
+.spinner {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: captain-spin 0.7s linear infinite;
+}
+
+/* On the primary Send button the spinner sits on a dark fill. */
+.spinner--on-dark {
+  border-color: rgba(255, 255, 255, 0.55);
+  border-top-color: transparent;
+  margin-right: 8px;
+  vertical-align: -3px;
+}
+
+@keyframes captain-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Motion is a preference, not a given. The spinner still reads as a wait
+   when it is not turning, because it is paired with its label. */
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation-duration: 2.4s; }
+}
+
+.empty-state {
+  padding: 20px 4px;
+  text-align: center;
+}
+
+.empty-state__title {
+  margin: 0 0 6px;
+  font-weight: 600;
+}
+
+.empty-state__detail {
+  margin: 0;
+  color: var(--color-text-muted, #5b6471);
+  font-size: 0.92rem;
+  line-height: 1.45;
+}

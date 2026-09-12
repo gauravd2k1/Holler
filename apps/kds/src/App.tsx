@@ -29,6 +29,24 @@ function createBrowserSocketFactory() {
   };
 }
 
+/**
+ * The connection indicator used to print the raw state -- "● connecting",
+ * "● disconnected" -- which is a variable name on a kitchen screen. A cook
+ * reads this from across a hot line and needs a fact, not an enum member.
+ */
+function connectionLabel(status: string): string {
+  switch (status) {
+    case "connecting":
+      return "Connecting…";
+    case "reconnecting":
+      return "Reconnecting…";
+    case "disconnected":
+      return "Offline";
+    default:
+      return status.charAt(0).toUpperCase() + status.slice(1);
+  }
+}
+
 export function App() {
   const kots = useKdsStore((s) => s.kots);
   const connectionStatus = useKdsStore((s) => s.connectionStatus);
@@ -102,7 +120,7 @@ export function App() {
         data-status={connectionStatus}
         role="status"
       >
-        {connectionStatus === "connected" ? "● Connected" : `● ${connectionStatus}`}
+        {connectionStatus === "connected" ? "● Connected" : `● ${connectionLabel(connectionStatus)}`}
       </div>
       <ConnectionBanner status={connectionStatus} />
       <div className="kds-board">
@@ -117,6 +135,18 @@ export function App() {
         ))}
         {tickets.length === 0 && connectionStatus === "connected" && (
           <p className="kds-board__empty">No active tickets</p>
+        )}
+        {/* AN EMPTY BOARD MUST SAY WHICH EMPTY IT IS. Until now the board
+            said "No active tickets" only when CONNECTED and showed nothing at
+            all otherwise -- so a kitchen screen that had not connected yet,
+            or had dropped, was a blank rectangle indistinguishable from a
+            quiet service. The two are opposite facts for a cook. */}
+        {tickets.length === 0 && connectionStatus !== "connected" && (
+          <p className="kds-board__empty">
+            {connectionStatus === "connecting"
+              ? "Connecting to the till…"
+              : "Not connected to the till — tickets will appear when the connection returns."}
+          </p>
         )}
       </div>
     </main>

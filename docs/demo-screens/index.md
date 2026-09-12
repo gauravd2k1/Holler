@@ -515,3 +515,22 @@ session's scratch directory and is not part of this repository.
 - `AggregatorOrdersScreen`, `StockCountScreen`, `WastageScreen`,
   `StockDeductionGapsScreen` — token-converted in the earlier commit but not
   individually screenshotted in either pass.
+
+## Captain polish pass — 2026-09-12 (`docs/demo-screens/captain/`)
+
+Phone viewport **390x844**, `deviceScaleFactor: 2`, `isMobile`, captured against
+the captain's own Vite dev server on a **scratch port (5177)** with a
+contract-shaped stub API on **9410**. Nothing in this capture touched 8080,
+9310 or the real captain port.
+
+| File | Screen | What it shows |
+|---|---|---|
+| `captain-01-pair.png` | Pair | The token field, before any device is paired. |
+| `captain-02-tables.png` | Tables | Free/occupied by colour **and** a word, six tables. |
+| `captain-03-menu.png` | Menu | Gong categories and prices; an unavailable item greyed with a "Not available" tag. |
+| `captain-04-empty-category.png` | Menu, empty category | **The new empty state** — a category with no items now says so instead of rendering a blank region. |
+| `captain-05-cart.png` | Cart bar | One line added, count and total in the bar. |
+
+Every file was asserted on its own unique content **before** being
+photographed, and the set was hashed afterwards: five files, five distinct
+hashes, zero console errors.

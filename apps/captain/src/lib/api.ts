@@ -179,7 +179,28 @@ async function request<T>(
     );
   }
 
-  return parse(await response.json());
+  const body = await response.json();
+  try {
+    return parse(body);
+  } catch (error) {
+    // A SCHEMA FAILURE MUST NOT REACH THE WAITER AS ZOD'S ISSUE ARRAY. Zod
+    // puts its whole issue list in `error.message`, so any screen rendering
+    // an error message renders a wall of JSON -- observed on the phone
+    // viewport during the polish pass, filling the screen with
+    // `{"code":"invalid_type","expected":"string","path":[...]}`.
+    //
+    // The detail still goes to the console, where a developer looks; the
+    // phone gets a sentence. The distinction is the point: this is a
+    // TILL-SIDE defect (the till sent a shape this build does not know), and
+    // the person holding the phone can act on "ask the till", not on a path
+    // expression.
+    console.error(`captain: ${path} returned a shape this app does not understand`, error);
+    throw new ApiError(
+      response.status,
+      "invalid_response",
+      "The till sent something this app does not understand. Ask the till to check its version.",
+    );
+  }
 }
 
 export function fetchSession(token: string): Promise<Session> {

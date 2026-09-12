@@ -4,6 +4,7 @@ import { fetchMenu, type CaptainMenuItem, type CaptainModifier } from "../lib/ap
 import { addToCart, cartTotalPaise, defaultVariant, freeModifierGroups, type CartLine } from "../lib/cart";
 import { formatPaise } from "../lib/money";
 import { ModifierSheet } from "./ModifierSheet";
+import { Empty, Waiting, errorText } from "./Waiting";
 
 interface Props {
   token: string;
@@ -82,9 +83,9 @@ export function MenuCartScreen({
     setPending(null);
   }
 
-  if (query.isLoading) return <p className="screen">Loading menu…</p>;
+  if (query.isLoading) return <Waiting label="Loading menu…" />;
   if (query.isError) {
-    return <p className="screen error">Could not load the menu: {String(query.error)}</p>;
+    return <p className="screen error">Could not load the menu. {errorText(query.error)}</p>;
   }
 
   return (
@@ -104,6 +105,12 @@ export function MenuCartScreen({
           ))}
         </div>
         <div className="menu-list">
+          {visibleItems.length === 0 && (
+            <Empty
+              title="Nothing in this category."
+              detail="Pick another category above, or ask the till whether these items are switched off."
+            />
+          )}
           {visibleItems.map((item) => (
             <button
               key={item.id}
@@ -131,7 +138,14 @@ export function MenuCartScreen({
           disabled={cart.length === 0 || sending}
           onClick={onSend}
         >
-          {sending ? "Sending…" : "Send"}
+          {sending ? (
+            <>
+              <span className="spinner spinner--on-dark" aria-hidden="true" />
+              Sending…
+            </>
+          ) : (
+            "Send"
+          )}
         </button>
       </div>
       {pending !== null && (
