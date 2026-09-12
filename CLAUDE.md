@@ -426,6 +426,23 @@ Established by inspection, not recall — cite the file, not this summary:
 - **The backend runs in its OWN WINDOW** via `scripts/dev-up.ps1`, never as a
   session-owned background process. **Step 0 of any run verifies it by PID, not
   by the port answering.**
+- **INSTRUCTIONS ARE NOT A CONTROL. `scripts/agent-guard.ps1` IS.** Three
+  times in one day an agent wrote to the operator's live stack despite this
+  exact instruction, in writing, repeated: the backend was displaced twice, and
+  a test "pointed at a scratch file" overwrote `apps\pos\.env.dev` and zeroed
+  the edge database key, because the code it invoked recomputed its own paths
+  and ignored the scratch path it was handed. **Passing a scratch path to code
+  that derives its own paths is not isolation.**
+  Claude Code sets `CLAUDECODE=1` in every shell it spawns. Under one:
+  `dev-bootstrap.ps1` and `demo-reset.ps1` REFUSE unless **both** `-RepoRoot`
+  and `-EdgeDataDir` are given explicitly AND both resolve outside
+  `C:\Code\Holler` / `%APPDATA%\com.holler.pos` (a default is forbidden -- the
+  whole failure mode is a default quietly resolving to the real path, and
+  `..\Holler\x` is caught by canonicalising before comparing).
+  `dev-up.ps1` and `apps\pos\run-dev.ps1` refuse outright: they exist to start
+  the operator's stack on live ports and have no scratch mode. The guard is
+  dot-sourced, so a missing guard file stops the script rather than silently
+  disabling it. A human shell has no `CLAUDECODE` and is unaffected.
 - **NO TEST OR PROBE MAY START, STOP OR BIND ANYTHING ON 8080, 9310, 9320, THE
   ADMIN PORT (5175) OR THE POS DEV PORT (5173). Scratch ports and scratch
   databases only.** In force from 2026-09-12 until the demo. **The rule is not

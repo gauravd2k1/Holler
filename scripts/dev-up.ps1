@@ -83,6 +83,12 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# STRUCTURAL GUARD. This script starts the backend, the KDS, the POS and the
+# admin console on the operator's own ports; there is no scratch equivalent, so
+# an agent shell is refused outright. See scripts\agent-guard.ps1.
+. (Join-Path $PSScriptRoot "agent-guard.ps1")
+Assert-NotAgentShell -ScriptName "dev-up.ps1" -Ports "8080, 9310, 5173, 5174, 5175"
 $repo = Split-Path -Parent $PSScriptRoot
 $spawned = @()
 

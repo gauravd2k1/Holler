@@ -36,6 +36,13 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# STRUCTURAL GUARD. Starting the POS binds the LAN server (9310), the captain
+# listener (9320) and Vite (5173), and it opens the operator's edge database
+# with the real key from .env.dev. No scratch equivalent, so an agent shell is
+# refused outright. See scripts\agent-guard.ps1.
+. (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) "scripts\agent-guard.ps1")
+Assert-NotAgentShell -ScriptName "apps\pos\run-dev.ps1" -Ports "9310, 9320, 5173"
+
 if (-not (Test-Path $EnvFile)) {
     throw @"
 No env file at $EnvFile.

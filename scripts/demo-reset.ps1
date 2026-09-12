@@ -51,9 +51,15 @@ param(
     # the key against the sealed file first and refuses instead.
     [string]$DbKeyHex = "",
 
+    # The repository this run operates on. A parameter because
+    # scripts\agent-guard.ps1 requires an agent shell to name a scratch tree
+    # EXPLICITLY rather than inherit the real one.
+    [string]$RepoRoot = "",
+
     # Must match Tauri's app_data_dir() for com.holler.pos -- same default
     # dev-bootstrap.ps1 uses, and it must agree with whatever apps\pos\.env.dev
     # was provisioned against.
+    [Alias('DataDir')]
     [string]$EdgeDataDir = (Join-Path $env:APPDATA "com.holler.pos"),
 
     [string]$CloudBaseUrl = "http://localhost:8080",
@@ -86,7 +92,24 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$repoRoot = Split-Path -Parent $PSScriptRoot
+
+# STRUCTURAL GUARD, FIRST THING -- before the destructive banner, before the
+# preflight, before anything. Dot-sourced so a missing guard file stops the
+# script rather than silently disabling the control.
+. (Join-Path $PSScriptRoot "agent-guard.ps1")
+
+$repoRoot = if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
+    Split-Path -Parent $PSScriptRoot
+} else {
+    $RepoRoot
+}
+
+Assert-AgentSafePaths -ScriptName "demo-reset.ps1" `
+    -BoundParameters $PSBoundParameters `
+    -RepoRootValue $repoRoot `
+    -DataDirValue $EdgeDataDir `
+    -DataDirParameterName "EdgeDataDir"
+
 $startedAt = Get-Date
 
 function Write-Step($n, $msg) { Write-Host ""; Write-Host "[$n/4] $msg" -ForegroundColor Cyan }

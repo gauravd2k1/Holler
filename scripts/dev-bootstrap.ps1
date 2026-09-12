@@ -27,9 +27,16 @@ param(
     # one, and keep it out of the repository.
     [string]$DbKeyHex = "",
 
+    # The repository this run operates on. Normally computed from the script's
+    # own location; a parameter because scripts\agent-guard.ps1 requires an
+    # agent shell to name a scratch tree EXPLICITLY rather than inherit the
+    # real one.
+    [string]$RepoRoot = "",
+
     # Where the POS keeps its edge database. Must match Tauri's app_data_dir()
     # for identifier com.holler.pos, or the POS will open a different (empty)
     # database than the one this script seeds.
+    [Alias('DataDir')]
     [string]$EdgeDataDir = (Join-Path $env:APPDATA "com.holler.pos"),
 
     # Seeded KDS device row (edge/database/src/bin/devseed.rs KDS_DEVICE_ID).
@@ -345,7 +352,24 @@ function Resolve-DeviceEnrollment {
 }
 
 $ErrorActionPreference = "Stop"
-$repoRoot = Split-Path -Parent $PSScriptRoot
+
+# STRUCTURAL GUARD, FIRST THING. Dot-sourced rather than copied: if the file is
+# missing this throws and the script does not run, which is the correct
+# direction for a control to fail. See scripts\agent-guard.ps1 for why it
+# exists.
+. (Join-Path $PSScriptRoot "agent-guard.ps1")
+
+$repoRoot = if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
+    Split-Path -Parent $PSScriptRoot
+} else {
+    $RepoRoot
+}
+
+Assert-AgentSafePaths -ScriptName "dev-bootstrap.ps1" `
+    -BoundParameters $PSBoundParameters `
+    -RepoRootValue $repoRoot `
+    -DataDirValue $EdgeDataDir `
+    -DataDirParameterName "EdgeDataDir"
 
 # --- T24: key-quality helpers -------------------------------------------------
 # Shared shape with scripts\demo-reset.ps1's copy of the same two functions

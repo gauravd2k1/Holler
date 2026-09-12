@@ -57,6 +57,13 @@ app *opened* while an evening's trading sat in the plaintext file beside it.
 Observed once more while writing this report: a plaintext `edge.db` and its
 `-wal` sitting alongside the `.enc` at an identical mtime.
 
+**THE PLAINTEXT LEFTOVER IS NOT A RECOVERY ROUTE, and must never be offered as
+one** (operator's ruling, 2026-09-12, after an agent suggested reading it back
+when a key was feared lost). It is readable with no key — that is the
+data-loss/credential-exposure bug itself, not a feature to lean on. **If the key
+is lost, the answer is a reset.** Treating the leftover as a fallback is how a
+bug becomes a workflow and then stops being fixed.
+
 **Why this blocks a pilot:** it is the mechanism behind the credential-exposure
 row in §B, and it is why no trustworthy backup can be taken before a risky
 migration (§B, rebuild-class migrations). It is also why M6 C4's falsifier could
