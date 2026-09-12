@@ -12,10 +12,49 @@ that passed.
 
 ---
 
-## 0. Day-of checklist — in this order, before anything else
+## 0. Day-of checklist — three lines
 
 Every line has a check you can see. A step whose result you did not look at has
 not been done.
+
+1. **Hotspot up**, and note its IP (section 0.1 below).
+2. ```powershell
+   .\scripts\demo-up.ps1 -DbKeyHex <64-hex-key> -LanHost <hotspot-ip> -Fresh
+   ```
+3. **The phone**: join the hotspot, open the captain URL `demo-up` printed, paste
+   the pair token it printed.
+
+`scripts\demo-up.ps1` is the one command. It runs the preflight, the reset
+(`-Fresh`), the backend, the bootstrap, the captain build, the WAITER
+enrolment, the POS and the KDS — one checkpoint per step, **stopping at the
+first failure with the reason and the next action** — and finishes by printing
+the captain URL, the pair token and the four checks to make on screen. Stop all
+of it with `.\scripts\demo-down.ps1`.
+
+Three things it does that are easy to undo by hand and expensive to get wrong:
+
+- **It starts the POS itself, and that is the ONLY Vite.** Never run `pnpm dev`
+  for the POS in another terminal first — `tauri.conf.json`'s `beforeDevCommand`
+  starts Vite already, `vite.config.ts` sets `strictPort`, and a stale Vite
+  serves a bundle built in a different environment (that is how the UPI QR went
+  missing from the bill screen on 2026-09-12).
+- **It rotates the WAITER credential on every run**, so the phone needs the new
+  token each time. That is deliberate: it is what makes S-CAP-20 — a device
+  paired before the fix staying permanently broken — structurally impossible.
+- **It starts the backend with `PORT` set and the login budget widened to 50.**
+  A throttled login is indistinguishable from a wrong password by design
+  (ADR-012), and the demo signs in from three surfaces on one laptop.
+
+**`-DbKeyHex` is yours** — `apps\pos\.env.dev` is deny-ruled to agents and no
+agent supplies a literal key.
+
+Sections 0.1 to 0.6 below are the **manual sequence**, which is both the
+fallback when `demo-up` fails at a step and the explanation of what each step is
+checking.
+
+---
+
+## 0.1 Manual sequence — in this order
 
 ### 1. Hotspot up
 

@@ -339,7 +339,7 @@ function Get-HollerPosProcess {
     # ahead of the actual till. Vite, esbuild and their friends cannot hold
     # the edge database; the compiled POS binary is the only thing under this
     # tree that opens it.
-    $posBuildDir = (Join-Path $repoRoot "apps\pos\src-tauri	arget")
+    $posBuildDir = (Join-Path $repoRoot "apps\pos\src-tauri\target")
     $byPath = @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
         $path = $null
         try { $path = $_.Path } catch { $path = $null }   # Access denied on system processes

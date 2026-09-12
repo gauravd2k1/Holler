@@ -795,7 +795,22 @@ decision has since been taken.
 
 ## 8. Pre-flight checklist — the morning, in order
 
-Run top to bottom. Do not skip a check.
+**On a single-machine demo (the laptop is the hub and the cloud), steps 3 to 9
+and 13 to 15 are what `scripts\demo-up.ps1` does for you**, with one checkpoint
+per step and a stop at the first failure:
+
+```powershell
+.\scripts\demo-up.ps1 -DbKeyHex <64-hex-key> -LanHost <hotspot-ip> -Fresh
+```
+
+It prints the captain URL, the WAITER pair token and the on-screen checks at the
+end; `scripts\demo-down.ps1` stops what it started, by pid **and start time**.
+Steps 1, 2, 10, 11 and 12 stay yours — a firewall rule needs elevation, and
+nothing on this laptop can observe a phone or a second screen.
+
+**Use the full table below when the cloud runs on a second PC (§7)**, or as the
+fallback when `demo-up` stops at a step: every row here is a check `demo-up`
+makes, written out.
 
 | # | Do | Check |
 |---|---|---|

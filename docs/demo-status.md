@@ -675,6 +675,125 @@ backup is how that rule gets broken.
 
 ---
 
+## The one command — `scripts/demo-up.ps1` and `scripts/demo-down.ps1` (2026-09-13)
+
+The day-of checklist is now three lines: hotspot → `demo-up -LanHost <ip>` →
+phone. `demo-up` runs ten steps with one checkpoint each and stops at the first
+failure with the reason and the next action; `demo-down` stops what it started,
+by pid **and start time**.
+
+### Four ordering decisions, each made against a known failure
+
+Each is argued at length in the script's own header; the short form:
+
+1. **The WAITER is enrolled BEFORE the POS starts.** The captain listener
+   verifies against the edge's local `device_credential_cache`, and
+   `edge/sync/src/config.rs:814` is the **only** non-test caller of
+   `repo::replace_device_credential_cache` — so the cache is written by the
+   config pull and by nothing else. Enrolling first means the credential is in
+   the cloud when the till's **startup** pull runs. Enrolling afterwards also
+   works — in up to a minute, silently, with the phone showing *"That device
+   token was rejected"*, which is the same message a mistyped token gives.
+2. **The WAITER credential is ROTATED on every run**, even when the device
+   exists. This makes S-CAP-20 structurally impossible instead of something the
+   operator has to remember. **The repo contradicts the board here and the repo
+   wins:** the board says the device must be *re-ENROLLED*, but
+   `RotateCredential` bumps the outlet `config_version` and issues the new
+   credential **at** that version (`backend/internal/outlet/device_service.go:139-167`),
+   so a rotated credential is above the edge's `since_version` cursor exactly as
+   an enrolled one is, arrives in the next bundle, and gets its `device` row
+   minted by `apply_bundle`'s `insert_device_if_absent` loop. What S-CAP-20
+   actually requires is *a credential above the cursor*; both routes produce
+   one. **The cost is stated in the script:** the phone must be paired again on
+   every run.
+3. **`demo-up` starts the backend itself, even after `-Fresh` already started
+   one.** `demo-reset.ps1`'s backend carries neither `PORT` nor
+   `HOLLER_LOGIN_RATE_LIMIT_ATTEMPTS`, and the second is not cosmetic (S-BE-09).
+   `PORT` is set explicitly, which is the half-wiring that let a run aimed at
+   8099 bind 8080 and take down the operator's backend.
+4. **`apps/captain/dist` is rebuilt BEFORE the POS starts**, because
+   `captain.rs` serves it from disk and building afterwards needs a POS restart.
+
+### What it deliberately does NOT claim
+
+- **It cannot prove the KDS is connected.** It checks that the dev server
+  answers, that `apps\kds\.env.dev` names the `-LanHost` it was given (a
+  mismatch is fatal, because a stale address is a KDS that loads, looks fine and
+  never connects), and that the LAN port accepts TCP. "Connected" is a WebSocket
+  the browser opens and the indicator is the only observation; step 10 asks for
+  it by name.
+- **It cannot prove the phone will create an order.** `GET /api/session`
+  authenticates against the credential cache but never touches the `device` row
+  whose foreign key S-CAP-20 breaks — **a probe passing there would pass on a
+  broken device too**, so no such probe was added. The proof is demo step 1a.
+- It reports the firewall rules rather than creating them (elevation), and
+  reports a plaintext `edge.db` leftover rather than deleting it (gap A6; the
+  leftover is never offered as a recovery route).
+
+### Observed, in a scratch tree under the guard
+
+The operator's stack was up throughout (`api` 23052 on 8080, `holler-pos` 66284
+on 9310/9320, node on 5173 and 5174) and **was still up, same pids, after every
+run below**. Nothing bound or stopped a live port.
+
+- **A real run under an agent shell is REFUSED** by `Assert-NotAgentShell`,
+  naming the ports. `-WhatIf` is exempt because it starts and writes nothing —
+  that exemption is what makes the preflight testable at all, and it is written
+  into the script beside the guard.
+- **The POS-process preflight fired unplanned, on the first run**, naming the
+  operator's real till: `a Holler POS process is already running (holler-pos pid
+  66284). NOTHING WAS STARTED.`
+- The two checks behind it were reached on a **planted copy** with that branch
+  disabled (the C8 planted-branch precedent, stated as such; the shipped script
+  is untouched) and each was **watched failing on scratch state**: a listener
+  bound on scratch port 49320 produced `port 49320: powershell pid 48356,
+  started 2026-09-13 00:19:05`, and an exclusive handle held on the scratch
+  `edge.db` produced `another process is holding …edge.db. NOTHING WAS STARTED.`
+- **And the positive case**, because a guard only ever seen going red proves
+  only that it can fire: a coherent scratch run walked all ten steps and exited
+  0, reporting what each would do.
+
+### A hole this testing opened, and the refusal that closed it
+
+`-PreflightPorts` exists so the busy-port refusal can be falsified somewhere
+harmless — the standing rule is that nothing binds 8080, 9310, 9320, 5173, 5174
+or 5175 before the demo. **The first version of it reintroduced the exact defect
+the rule exists for**: pointed at scratch ports, the run checked 48080 free and
+then reported it would stop `api pid 23052` — the operator's backend on **8080**
+— because `-BackendPort` had not moved with it. *The port was never part of what
+"scratch" covered*, again, one layer out. The script now **refuses** an override
+that does not cover every port the run will take, naming the uncovered ones.
+Watched refusing.
+
+### `demo-down` refuses more than it stops
+
+Verified against one record carrying four entries and a real scratch process:
+the scratch process was **stopped**; a **recycled pid** (same pid, start time
+moved three hours) was kept; a **renamed pid** was kept; and the operator's live
+till was kept with `pid 66284 owns LIVE port 9320 and this is an agent shell —
+refused whatever the record says`. All five live ports were still held by their
+original pids afterwards.
+
+That last refusal is structural rather than advisory: **a record is a file an
+agent could write**, so refusing on the state file's path alone would leave a
+hole you could drive the till through. Under a Claude Code shell `demo-down`
+requires an explicit scratch `-StateFile` **and** refuses any pid owning a live
+demo port, whatever the record claims about it.
+
+### A dead branch found in `demo-reset.ps1`, fixed
+
+`scripts/demo-reset.ps1:342` built its POS build-output path with a **literal
+tab**: `"apps\pos\src-tauri<TAB>arget"`. `\t` is not an escape in PowerShell
+(the escape character is a backtick), so the tab was really in the file, the
+path never existed, and the **by-path half of the POS preflight matched
+nothing** — it exists to catch a `cargo run`-launched binary running under a
+different process name, and it caught none. The name-based half still fired,
+which is why the guard was observed working on the operator's machine and this
+stayed invisible. One character; fixed here because `demo-up` depends on that
+preflight.
+
+---
+
 ## Item 0 — `apps/captain`
 
 **Approved reduced scope**: pair, tables, menu+cart, send. No bill screen, no
