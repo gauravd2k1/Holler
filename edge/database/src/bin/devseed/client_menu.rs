@@ -1401,7 +1401,7 @@ pub const CLIENT_CATEGORIES: &[(&str, i64, &[SeedItem])] = &[
                 modifier_groups: &[],
             },
             SeedItem {
-                name: "The Gong",
+                name: "House Signature",
                 price_paise: 69500,
                 tax_profile_id: TAX_PROFILE_ALCOHOL_VAT_ID,
                 hsn_sac: "9963",

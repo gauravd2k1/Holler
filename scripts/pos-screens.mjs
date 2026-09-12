@@ -130,10 +130,14 @@ const invoice = {
   tax_snapshot: {},
   fiscal_profile: ({
     legal_name: seed.tenant.name, trade_name: seed.outlet.name,
-    address_line1: "123 MG Road", address_line2: "Camp", city: "Pune",
+    // Equal to devseed.rs's OUTLET_* constants, mirrored for the same reason
+    // receipt_preview mirrors them: the fiscal profile is opt-in billing config
+    // and `devseed --emit-json` does not write it, so it cannot be read out of
+    // seed/demo-outlet.json the way the names above are.
+    address_line1: "Camp", address_line2: null, city: "Pune",
     state_code: "27", state_name: "Maharashtra", pincode: "411001",
     gstin: "27AAAAA0000A1Z5", fssai_number: "11522998000123",
-    invoice_footer_text: "Thank you",
+    invoice_footer_text: "Thank you — please visit again",
   }),
   channel: "POS",
   tax_liability_party: "RESTAURANT",

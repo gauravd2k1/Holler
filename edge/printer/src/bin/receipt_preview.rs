@@ -47,15 +47,20 @@ fn fiscal_profile_json() -> String {
     serde_json::json!({
         "legal_name": legal_name,
         "trade_name": trade_name,
-        "address_line1": "123 MG Road",
-        "address_line2": "Camp",
+        // KEEP THESE EQUAL TO devseed.rs's OUTLET_* constants. The names above
+        // come from the seed file; the fiscal profile is billing config, which
+        // `--emit-json` does not write (billing seeding is opt-in), so the
+        // address cannot be read from the same place and is mirrored instead.
+        // A preview showing an address the printer never prints is a preview of
+        // a receipt nobody gets.
+        "address_line1": "Camp",
         "city": "Pune",
         "state_code": "27",
         "state_name": "Maharashtra",
         "pincode": "411001",
         "gstin": "27AAAAA0000A1Z5",
         "fssai_number": "11522998000123",
-        "invoice_footer_text": "Thank you — dev fixture, not a real bill"
+        "invoice_footer_text": "Thank you — please visit again"
     })
     .to_string()
 }

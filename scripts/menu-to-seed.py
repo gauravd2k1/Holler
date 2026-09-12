@@ -105,6 +105,25 @@ ADDON_SECTION = "Staple"
 ADDON_GROUP_NAME = "Add-on"
 ADDON_ROWS = ("Add Chicken", "Add Prawns", "Add Mixed Meat")
 
+# CLIENT RENAMES, applied to the workbook rows before anything else reads them.
+#
+# The card we were given is the source restaurant's, and a few of its names name
+# THAT restaurant. The client is Shinjuku Yakitori, so a cocktail called "The
+# Gong" on his bill is the source leaking onto the client's menu. The workbook
+# is the supplier's file and is left byte-for-byte alone -- its sha256 is in the
+# manifest -- so the rename lives here, in the one step between the sheet and
+# every consumer.
+#
+# Keyed by (section, item_name), the ADDON_ROWS precedent: the same item name in
+# a different section is a different item and must not be swept up.
+#
+# A key that matches nothing is a HARD FAILURE, not a silent no-op. A rename
+# table that quietly stops applying when the sheet changes is how the old name
+# comes back with the build green.
+ITEM_RENAMES = {
+    ("Signature Cocktails", "The Gong"): "House Signature",
+}
+
 
 # ---------------------------------------------------------------------------
 # xlsx reading. Deliberately dependency-free: this repository installs no
@@ -210,6 +229,25 @@ def main() -> int:
             rejected.append((where, "price_paise is not an integer", row["price_paise"]))
             continue
         included.append(row)
+
+    # Apply the client renames here, before grouping, the manifest projection
+    # and the Rust emit -- so every downstream consumer sees one name and there
+    # is no second place holding the old one.
+    renames_applied: set[tuple[str, str]] = set()
+    for row in included:
+        key = (row["section"], row["item_name"])
+        if key in ITEM_RENAMES:
+            row["item_name"] = ITEM_RENAMES[key]
+            renames_applied.add(key)
+    unmatched = set(ITEM_RENAMES) - renames_applied
+    if unmatched:
+        print(
+            f"menu-to-seed: ITEM_RENAMES names rows that are not in the sheet: "
+            f"{sorted(unmatched)}. Fix or remove the entry -- a rename that "
+            f"silently stops applying restores the old name.",
+            file=sys.stderr,
+        )
+        return 1
 
     # Add-on rows leave the item stream and become one modifier group, applied
     # to every other item in their section.

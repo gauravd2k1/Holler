@@ -1131,6 +1131,37 @@ const RESTAURANT_LEGAL_NAME: &str = "Shinjuku Yakitori Hospitality Pvt Ltd";
 /// ("Shinjuku Yakitori — Koregaon Park") and nowhere else.
 const OUTLET_NAME: &str = RESTAURANT_NAME;
 
+// ---- Bill header, the other half of the single source ----------------------
+//
+// These print on the GST invoice and the receipt PDF, so they live beside the
+// names rather than inline at the fiscal-profile upsert 1500 lines below.
+// Changing a line here and re-seeding changes every bill.
+//
+// ADDRESS: Pune, Camp, 411001 -- the locality and pincode agree, and nothing
+// here is invented. The street line the fixture used to carry ("123 MG Road")
+// is GONE: a made-up street number on a client's bill reads as a fake document,
+// which is worse than a shorter address. THE REAL REGISTERED ADDRESS REPLACES
+// THESE THREE CONSTANTS AND NOTHING ELSE.
+const OUTLET_ADDRESS_LINE1: &str = "Camp";
+const OUTLET_ADDRESS_LINE2: Option<&str> = None;
+const OUTLET_CITY: &str = "Pune";
+const OUTLET_PINCODE: &str = "411001";
+// Maharashtra. state_code is the GST state code and must be the first two
+// digits of the GSTIN, or place-of-supply on the invoice is wrong.
+const OUTLET_STATE_CODE: &str = "27";
+const OUTLET_STATE_NAME: &str = "Maharashtra";
+/// PLACEHOLDER, registered to nobody: contracts-correct FORMAT (2-digit state
+/// code + PAN + entity digit + Z + checksum char) so the renderer and every
+/// validation exercise a real shape. Never put a real business's registration
+/// in a fixture, and never ship a demo with someone else's.
+const OUTLET_GSTIN: &str = "27AAAAA0000A1Z5";
+/// Placeholder in the same posture as the GSTIN.
+const OUTLET_FSSAI: Option<&str> = Some("11522998000123");
+/// Prints at the foot of every bill. Kept free of "dev", "fixture" and "test":
+/// demo work item 6 is that no internal label reaches a screen the client sees,
+/// and the receipt footer is a screen the client reads closely.
+const INVOICE_FOOTER_TEXT: Option<&str> = Some("Thank you — please visit again");
+
 // ---- Billing / acceptance fixtures (opt-in, HOLLER_SEED_BILLING=1) ----
 //
 // OPT-IN ON PURPOSE. `tests/e2e-scenario/harness` invokes this binary and
@@ -2657,15 +2688,15 @@ fn seed_billing(conn: &rusqlite::Connection) -> Result<(), holler_edge_database:
             outlet_id: OUTLET_ID.to_string(),
             legal_name: RESTAURANT_LEGAL_NAME.to_string(),
             trade_name: OUTLET_NAME.to_string(),
-            address_line1: "123 MG Road".to_string(),
-            address_line2: Some("Camp".to_string()),
-            city: "Pune".to_string(),
-            state_code: "27".to_string(),
-            state_name: "Maharashtra".to_string(),
-            pincode: "411001".to_string(),
-            gstin: "27AAAAA0000A1Z5".to_string(),
-            fssai_number: Some("11522998000123".to_string()),
-            invoice_footer_text: Some("Thank you — dev fixture, not a real bill".to_string()),
+            address_line1: OUTLET_ADDRESS_LINE1.to_string(),
+            address_line2: OUTLET_ADDRESS_LINE2.map(str::to_string),
+            city: OUTLET_CITY.to_string(),
+            state_code: OUTLET_STATE_CODE.to_string(),
+            state_name: OUTLET_STATE_NAME.to_string(),
+            pincode: OUTLET_PINCODE.to_string(),
+            gstin: OUTLET_GSTIN.to_string(),
+            fssai_number: OUTLET_FSSAI.map(str::to_string),
+            invoice_footer_text: INVOICE_FOOTER_TEXT.map(str::to_string),
             effective_from: "2020-01-01T00:00:00Z".to_string(),
             config_version: CONFIG_VERSION,
         },
@@ -2789,7 +2820,10 @@ fn seed_billing(conn: &rusqlite::Connection) -> Result<(), holler_edge_database:
     )?;
 
     println!("devseed: billing config seeded (HOLLER_SEED_BILLING=1)");
-    println!("devseed:   tax GST 5% (CGST 2.5 + SGST 2.5), series DEV/, GSTIN 27AAAAA0000A1Z5");
+    println!(
+        "devseed:   tax GST 5% (CGST 2.5 + SGST 2.5), series DEV/, GSTIN {}",
+        OUTLET_GSTIN
+    );
     println!("devseed:   discounts STAFF_10 (applies), SPOILAGE (needs a reason), MANAGER_50 (needs order.void — the cashier lacks it)");
     println!("devseed:   printers: Dev Bill Printer [BILL], Dev Kitchen Printer [KITCHEN]");
     Ok(())
