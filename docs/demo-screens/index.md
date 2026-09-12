@@ -530,7 +530,19 @@ contract-shaped stub API on **9410**. Nothing in this capture touched 8080,
 | `captain-03-menu.png` | Menu | Gong categories and prices; an unavailable item greyed with a "Not available" tag. |
 | `captain-04-empty-category.png` | Menu, empty category | **The new empty state** — a category with no items now says so instead of rendering a blank region. |
 | `captain-05-cart.png` | Cart bar | One line added, count and total in the bar. |
+| `captain-06-cart-sheet.png` | **Cart sheet** | The line list the bar now opens: dish, variant, stepper, line total, Remove. |
+| `captain-07-cart-qty-2.png` | Cart sheet, qty 2 | Stepped up from the sheet; bar and total follow. |
+| `captain-08-cart-emptied.png` | Cart sheet, emptied | Removing the last line keeps the sheet open on its empty state — see the note below. |
 
 Every file was asserted on its own unique content **before** being
-photographed, and the set was hashed afterwards: five files, five distinct
+photographed, and the set was hashed afterwards: eight files, eight distinct
 hashes, zero console errors.
+
+**The hash guard paid for itself here.** The first cart sheet closed itself
+when the last line was removed, and the resulting screenshot came back
+**byte-identical to `captain-03-menu`** — which is exactly what the waiter
+would have seen: no confirmation that the removal happened, on the screen built
+to remove that uncertainty. The sheet now stays open on its own empty state and
+closes when the waiter says Done. A layout defect went the same way: the line
+row put name, stepper and total on one line and the total clipped off the right
+edge at 390px.

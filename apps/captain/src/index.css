@@ -330,3 +330,104 @@ main {
   font-size: 0.92rem;
   line-height: 1.45;
 }
+
+/* --- the cart sheet (2026-09-12) -----------------------------------------
+   The cart bar was a count and a total with no way in: a waiter who
+   mis-tapped could see that something was added and never what. */
+
+.cart-sheet__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.cart-sheet__head h3 { margin: 0; }
+
+.cart-lines {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 46vh;
+  overflow-y: auto;
+}
+
+/* 390px is the design width, so the money column must not compete with the
+   dish name for space: name and detail get the row above, the stepper, total
+   and Remove share the row below. The first version put all three on one row
+   and the total clipped off the right edge of the phone. */
+.cart-line {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  grid-template-areas:
+    "text text text"
+    "qty money remove";
+  align-items: center;
+  gap: 8px 10px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--color-border, #e4e0d8);
+}
+
+.cart-line__text { grid-area: text; display: flex; flex-direction: column; }
+.cart-line__name { font-weight: 600; }
+.cart-line__detail { font-size: 0.85rem; color: var(--color-text-muted, #5b6471); }
+.cart-line__money { grid-area: money; font-weight: 600; text-align: right; }
+
+.cart-line__qty {
+  grid-area: qty;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* 44px: the smallest target reliably hit one-handed while holding a tray,
+   and a mis-hit here changes an order. */
+.qty-btn {
+  width: 44px;
+  height: 44px;
+  font-size: 1.25rem;
+  line-height: 1;
+  border: 1px solid var(--color-border, #cfc9bd);
+  border-radius: 10px;
+  background: #fff;
+}
+
+.qty-value { min-width: 2ch; text-align: center; font-weight: 600; }
+
+.cart-line__remove {
+  grid-area: remove;
+  justify-self: end;
+  min-height: 44px;
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  color: var(--color-danger, #b3261e);
+  font-size: 0.9rem;
+}
+
+.cart-sheet__total {
+  display: flex;
+  justify-content: space-between;
+  padding-top: 12px;
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.count--button {
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  min-height: 44px;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.count--button:disabled { opacity: 1; }
+
+.count__hint {
+  font-size: 0.78rem;
+  text-decoration: underline;
+  color: var(--color-text-muted, #5b6471);
+}

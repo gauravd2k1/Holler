@@ -372,6 +372,7 @@ fn reject_missing_variant(items: &[NewOrderItemRequest]) -> Result<(), (u16, App
 }
 
 fn handle_create_order(state: &AppState, cred: &DeviceCredentialCache, body: &[u8]) -> ApiResult {
+    perf_mark("captain_order_received", "-");
     let req: CreateOrderRequest = serde_json::from_slice(body).map_err(|e| {
         (
             400,
@@ -437,7 +438,25 @@ struct SendResponse {
 /// call is what puts the ticket on the hub, and the hub is what the KDS is
 /// watching." Sending an order with no lines is `400`, checked BEFORE
 /// confirming so a doomed send never leaves the order half-transitioned.
+/// One line, one format, four places (this file, `edge/device/src/hub.rs`,
+/// `apps/kds`, `apps/pos`). Grep `HOLLER-PERF` out of the logs and the
+/// intervals are subtractions.
+///
+/// DELIBERATELY NOT A TIMER IN THE CODE. The two intervals that matter cross
+/// a process boundary and a WebSocket -- captain POST to KDS render, and till
+/// tap to bill open -- so no single process can measure either one. Stamped
+/// lines from each side, correlated by order id, can be read from the
+/// operator's own demo runs without anything of ours attaching to the live
+/// ports.
+pub fn perf_mark(event: &str, id: &str) {
+    println!(
+        "HOLLER-PERF ts={} event={event} id={id}",
+        chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+    );
+}
+
 fn handle_send(state: &AppState, order_id: &str) -> ApiResult {
+    perf_mark("captain_send_received", order_id);
     let existing = get_order_impl(state, order_id).map_err(|e| (500, e))?;
     let Some(existing) = existing else {
         return Err((

@@ -79,6 +79,17 @@ export function BillingScreen() {
   const recoverOpenShift = useCashShiftStore((s) => s.recoverOpenShift);
 
   const orderQuery = useOrderQuery(orderId);
+
+  // Perf marker: the far end of "till tap -> bill open". Stamped once on
+  // mount, because this component being mounted IS the bill being on the
+  // glass. Same `HOLLER-PERF` format as the Rust side.
+  useEffect(() => {
+    console.log(
+      `HOLLER-PERF ts=${new Date().toISOString()} event=till_bill_screen_opened id=${orderId}`,
+    );
+    // Mount only: re-running this on every orderId change is correct, but it
+    // must not re-run on unrelated re-renders.
+  }, [orderId]);
   const invoicesQuery = useInvoicesForOrderQuery(orderId);
   const paymentsQuery = usePaymentsForOrderQuery(orderId);
   const shiftQuery = useCashShiftQuery(openShiftId);

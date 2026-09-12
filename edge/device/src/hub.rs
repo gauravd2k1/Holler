@@ -125,6 +125,15 @@ impl Hub {
     /// A KOT was created or changed. Broadcast to every subscriber at the
     /// outlet watching that KOT's station (or watching every station).
     pub fn notify_kot_upserted(&self, outlet_id: &str, kot: &Kot, sent_at: &str) {
+        // Perf marker -- see `apps/pos/src-tauri/src/captain.rs::perf_mark`.
+        // Stamped HERE rather than at the send handler: this is the instant
+        // the frame leaves for the KDS, which is the half of "captain send ->
+        // KDS render" this process can actually witness.
+        println!(
+            "HOLLER-PERF ts={} event=kot_upserted_emitted id={}",
+            chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            kot.order_id
+        );
         let station = kot.station.clone();
         let message = KdsLanMessage::KotUpserted {
             outlet_id: outlet_id.to_string(),

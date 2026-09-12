@@ -1,9 +1,17 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { fetchMenu, type CaptainMenuItem, type CaptainModifier } from "../lib/api";
-import { addToCart, cartTotalPaise, defaultVariant, freeModifierGroups, type CartLine } from "../lib/cart";
+import {
+  addToCart,
+  cartTotalPaise,
+  cartUnitCount,
+  defaultVariant,
+  freeModifierGroups,
+  type CartLine,
+} from "../lib/cart";
 import { formatPaise } from "../lib/money";
 import { ModifierSheet } from "./ModifierSheet";
+import { CartSheet } from "./CartSheet";
 import { Empty, Waiting, errorText } from "./Waiting";
 
 interface Props {
@@ -35,6 +43,7 @@ export function MenuCartScreen({
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
   // The item currently awaiting a free-modifier choice, plus the resolved
   // variant it will be added with once the sheet confirms.
+  const [cartOpen, setCartOpen] = useState(false);
   const [pending, setPending] = useState<{ item: CaptainMenuItem; variantId: string } | null>(
     null,
   );
@@ -50,7 +59,7 @@ export function MenuCartScreen({
   const visibleItems = items.filter((i) => i.category_id === currentCategoryId);
 
   const total = cartTotalPaise(cart);
-  const count = cart.reduce((n, l) => n + l.quantity, 0);
+  const count = cartUnitCount(cart);
 
   function handleAdd(item: CaptainMenuItem) {
     if (!item.is_available) return; // a snoozed item must not be orderable
@@ -130,8 +139,19 @@ export function MenuCartScreen({
       </div>
       {sendError !== null && <p className="error menu-cart-send-error">{sendError}</p>}
       <div className="cart-bar">
-        <span className="count">{count} item{count === 1 ? "" : "s"}</span>
-        <span className="total">{formatPaise(total)}</span>
+        {/* The count OPENS THE CART. It was a dead label, which is why a
+            mis-tap had no way back: the waiter could see that something was in
+            the cart and never what. */}
+        <button
+          type="button"
+          className="count count--button"
+          disabled={cart.length === 0}
+          onClick={() => setCartOpen(true)}
+        >
+          {count} item{count === 1 ? "" : "s"}
+          {cart.length > 0 && <span className="count__hint">View</span>}
+        </button>
+        <span className="total money">{formatPaise(total)}</span>
         <button
           type="button"
           className="btn btn--primary btn--lg"
@@ -148,6 +168,20 @@ export function MenuCartScreen({
           )}
         </button>
       </div>
+      {cartOpen && (
+        <CartSheet
+          cart={cart}
+          /* The sheet STAYS OPEN when the last line is removed. Closing it
+             automatically was the first version, and the screenshot guard
+             caught what that costs: the resulting screen is byte-identical to
+             the menu before anything was added, so the waiter gets no
+             confirmation that the removal happened at all -- exactly the
+             uncertainty this sheet exists to remove. It shows its own empty
+             state instead, and closes when the waiter says Done. */
+          onCartChange={onCartChange}
+          onClose={() => setCartOpen(false)}
+        />
+      )}
       {pending !== null && (
         <ModifierSheet
           item={pending.item}

@@ -8,6 +8,9 @@ import {
   freeModifiers,
   groupRequiresSelection,
   modifierSelectionSatisfied,
+  setLineQuantity,
+  cartUnitCount,
+  type CartLine,
 } from "./cart";
 import type { CaptainMenuItem } from "./api";
 
@@ -211,5 +214,49 @@ describe("cartToOrderItems", () => {
     let lines = addToCart([], item, variant, [mild]);
     lines = addToCart(lines, item, variant, [hot]);
     expect(lines).toHaveLength(2);
+  });
+});
+
+describe("setLineQuantity", () => {
+  const line = (key: string, quantity: number): CartLine => ({
+    key,
+    menuItemId: "01a09500-0000-7000-8000-000000000001",
+    itemName: `item-${key}`,
+    variantId: "01a09500-0000-7000-8000-000000000002",
+    variantName: "Regular",
+    unitPricePaise: 10000,
+    modifiers: [],
+    quantity,
+    notes: null,
+  });
+
+  it("changes one line and leaves its neighbours alone", () => {
+    const before = [line("a", 1), line("b", 2)];
+    const after = setLineQuantity(before, "b", 5);
+    expect(after.map((l) => [l.key, l.quantity])).toEqual([
+      ["a", 1],
+      ["b", 5],
+    ]);
+  });
+
+  it("removes the line at zero, rather than keeping a zero-quantity line", () => {
+    // A zero-quantity line would serialise into the order as quantity 0, which
+    // OrderItemSchema refuses (positive int) — so the cart must not be able to
+    // hold one at all.
+    const after = setLineQuantity([line("a", 1), line("b", 1)], "a", 0);
+    expect(after.map((l) => l.key)).toEqual(["b"]);
+  });
+
+  it("removes at a negative quantity too, rather than storing it", () => {
+    expect(setLineQuantity([line("a", 1)], "a", -3)).toEqual([]);
+  });
+
+  it("is a no-op for a key that is not in the cart", () => {
+    const before = [line("a", 1)];
+    expect(setLineQuantity(before, "missing", 9)).toEqual(before);
+  });
+
+  it("counts units, not lines", () => {
+    expect(cartUnitCount([line("a", 2), line("b", 3)])).toBe(5);
   });
 });

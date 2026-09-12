@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useKdsStore } from "./store/kdsStore";
 import { ConnectionController } from "./lib/connectionController";
 import { loadLanConfigFromEnv } from "./lib/lanConfig";
@@ -88,6 +88,21 @@ export function App() {
       ),
     [kots],
   );
+
+  // Perf marker: the far end of "captain send -> KDS render". One line the
+  // FIRST time a ticket id appears on this screen -- never on a re-render,
+  // which would bury the timestamp that matters under its own repeats.
+  // Same `HOLLER-PERF` format as the Rust side, correlated by order id.
+  const seenTickets = useRef(new Set<string>());
+  useEffect(() => {
+    for (const kot of tickets) {
+      if (seenTickets.current.has(kot.id)) continue;
+      seenTickets.current.add(kot.id);
+      console.log(
+        `HOLLER-PERF ts=${new Date().toISOString()} event=kds_ticket_rendered id=${kot.order_id}`,
+      );
+    }
+  }, [tickets]);
 
   if (configError) {
     return (

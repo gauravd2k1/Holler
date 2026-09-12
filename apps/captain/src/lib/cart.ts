@@ -130,3 +130,25 @@ export function cartToOrderItems(lines: CartLine[]): NewOrderItem[] {
     modifiers: l.modifiers,
   }));
 }
+
+/**
+ * Set a line's quantity, removing the line at zero.
+ *
+ * ONE FUNCTION, NOT remove-then-add. Quantity is a single edit to a single
+ * line — the same rule contracts/src/types/order.ts states for
+ * SET_ORDER_ITEM_QUANTITY, and for the same reason: two operations with a gap
+ * between them is a state nobody meant to be in, here a half-second where the
+ * waiter's cart is missing the line he is editing.
+ *
+ * Identified by `key`, never by index: the list re-sorts on nothing today, but
+ * an index is a position, and a position is only accidentally an identity.
+ */
+export function setLineQuantity(lines: CartLine[], key: string, quantity: number): CartLine[] {
+  if (quantity <= 0) return lines.filter((l) => l.key !== key);
+  return lines.map((l) => (l.key === key ? { ...l, quantity } : l));
+}
+
+/** Total units across every line — what "3 items" on the cart bar counts. */
+export function cartUnitCount(lines: CartLine[]): number {
+  return lines.reduce((sum, l) => sum + l.quantity, 0);
+}
