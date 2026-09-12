@@ -857,6 +857,90 @@ would be worse than none.
 ESC/POS-on-paper gate (ADR-013) — no physical printer exists in this
 environment.
 
+### The PDF (2026-09-13) — because demo step 2 was promising one and nothing produced one
+
+Step 2 of the brief reads *"receipt printed to PDF and opened on screen"*, and
+until now the print path produced **HTML** and opened that. The PDF was a manual
+Ctrl+P the script never mentioned. Closed by writing a fourth file beside the
+other three:
+
+```
+<ts>-<printer>.escpos   the bytes, artefact of record
+<ts>-<printer>.txt      escapes stripped
+<ts>-<printer>.html     the independent renderer
+<ts>-<printer>.pdf      NEW -- and this is what opens
+```
+
+**It is a rendering of the HTML that was just written, not a third renderer.**
+`render_invoice_html` is untouched and remains the only HTML producer, so the
+equivalence test binding that HTML line-for-line to the ESC/POS bytes covers the
+PDF's content transitively. A separate PDF template would be a third description
+of one bill, which is the defect that equivalence test exists to prevent.
+
+**No new dependency, in either sense.** No crate is added to the edge binary,
+and nothing is installed on the machine: it shells out to the Edge that ships
+with Windows (Chrome is a fallback; `HOLLER_RECEIPT_PDF_BROWSER` overrides).
+The whole path lives inside `file_sink.rs`, which is selected by an environment
+variable and **is never constructed on a real install** — the shipped device
+transport and the outlet executable gain nothing (ADR-013).
+
+**Failure never reaches the bill.** The bytes are already out and the invoice is
+already committed by the time this runs, so a missing browser, a render failure
+or a timeout is logged and the **HTML is opened instead** — exactly the
+behaviour this path had before the PDF existed. A wedged browser is killed after
+25s rather than holding the print worker.
+
+Two details that are each a defect if omitted: the render uses a **dedicated
+`--user-data-dir`**, because headless Chromium sharing the operator's open Edge
+profile either fails the profile lock or hands the work to that instance, which
+then writes no PDF — invisible until the bill fails to appear at a demo; and
+`canonicalize`'s `\\?\` prefix is **stripped**, because Chromium rejects an
+extended-length path as a URL.
+
+#### Verified
+
+57 tests executed in `edge/printer` through `scripts/assert-tests-ran.mjs`,
+clippy clean under `-D warnings`, all three `check-seams` crates check clean.
+
+- **The positive case is real, not a skip.** `a_real_browser_renders_a_real_pdf`
+  ran against `C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe`
+  (confirmed with `--nocapture`, which printed the path it used) and produced a
+  file beginning `%PDF-` in **0.75s**. Where no browser exists — Linux CI — it
+  prints `THIS TEST ASSERTED NOTHING` and returns, rather than passing quietly.
+- **The artefact is verified, not the exit code**, and that assertion was
+  falsified: replacing `if !produced.starts_with(b"%PDF-")` with `if false`
+  turned the test **red**.
+- **A FIRST VERSION OF THAT FALSIFIER PASSED AND PROVED NOTHING.** The decoy it
+  used was a non-executable file, so the spawn failed before the verification
+  was ever reached and the assertion was green on a code path it never entered —
+  the same shape as a fidelity test passing on absent data. Replaced with
+  `C:\Windows\System32\where.exe`, a real executable that runs, exits non-zero
+  and writes nothing, which is the actual condition being asserted. Only then
+  did disabling the check go red.
+- **A failed render does not fail the print**, asserted directly:
+  `send_html_companion` returns `Ok`, the `.html` survives, and no file is left
+  behind claiming to be a PDF.
+
+`HOLLER_RECEIPT_SUPPRESS_OPEN` exists **only** so that assertion can run without
+a browser window opening on the machine running the tests. It is deliberately
+loud — every suppressed open prints a line saying so — because unset is every
+demo and every acceptance run, and a quiet version of it would remove the thing
+step 2 shows.
+
+#### A demo blocker this uncovered in `demo-up.ps1`
+
+`dev-bootstrap.ps1` rewrites `apps\pos\.env.dev` **wholesale** and emits
+`HOLLER_PRINTER_FILE_SINK_DIR` only when it is given `-PrinterFileSinkDir`. As
+first written, `demo-up.ps1` did not pass it — so a `demo-up` run would have
+**silently deleted the file sink**, sending "Print Bill" to a thermal printer
+that does not exist, with no `.escpos`, no `.html` and no `.pdf` appearing at
+all. That is the same failure mode the UPI payee had before the bootstrap
+started remembering it, and it would have landed on demo step 2. `demo-up` now
+always passes it, defaulting to `<repo>\.dev-prints`, and prints where prints go.
+**The bootstrap's own wipe-on-omit behaviour is unchanged and is worth fixing
+the way the UPI pair was fixed — by remembering it — but that is the
+bootstrap's, not this change's.**
+
 ### The UPI QR
 
 On the invoice screen and on the receipt. The screen's QR was verified by

@@ -171,16 +171,23 @@ impl PrinterTransport for FileSinkTransport {
         Ok(())
     }
 
-    /// Writes `<same-stem-as-the-preceding-send>.html` and opens it with the
-    /// OS default handler — the rendered bill a demo shows on screen
-    /// (T9). Best-effort in both halves: a write failure or a failure to
-    /// launch a viewer is logged and never propagated, matching the `.txt`
-    /// companion's own rule — the bytes are already out, and a bill is
-    /// already committed by the time this runs.
+    /// Writes `<same-stem-as-the-preceding-send>.html`, renders it to
+    /// `<same-stem>.pdf`, and opens **one** of them with the OS default
+    /// handler — the rendered bill a demo shows on screen (T9), now as the
+    /// PDF demo step 2 actually asks for.
+    ///
+    /// Best-effort in every half, and the order matters: a write failure, a
+    /// missing browser, a render failure or a failure to launch a viewer is
+    /// logged and never propagated. That is the `.txt` companion's own rule —
+    /// **the bytes are already out and the bill is already committed by the
+    /// time this runs**, so nothing here may turn a successful print into a
+    /// failed one. When the PDF cannot be produced the HTML is opened
+    /// instead, which is exactly the behaviour this method had before the PDF
+    /// existed.
     ///
     /// Requires a preceding [`PrinterTransport::send`] on this instance
-    /// (`last_stem` set); if none happened, the call is a silent no-op
-    /// rather than inventing an unrelated stem.
+    /// (`last_stem` set); if none happened, the call is a silent no-op rather
+    /// than inventing an unrelated stem.
     fn send_html_companion(&mut self, html: &str) -> PrinterResult<()> {
         let Some(stem) = self.last_stem.clone() else {
             return Ok(());
@@ -197,13 +204,217 @@ impl PrinterTransport for FileSinkTransport {
             "holler-printer: FILE SINK wrote receipt {}",
             html_path.display()
         );
-        if let Err(e) = open_with_os_default(&html_path) {
+
+        // THE PDF IS A RENDERING OF THE FILE JUST WRITTEN, NOT A THIRD
+        // RENDERER. `render_invoice_html` stays the only HTML producer and is
+        // untouched, so the equivalence test binding that HTML line-for-line to
+        // the ESC/POS bytes still covers the PDF's content transitively. A
+        // separate PDF template would be a third description of one bill, which
+        // is the defect the HTML/bytes equivalence test exists to prevent.
+        let pdf_path = self.dir.join(format!("{stem}.pdf"));
+        let opened = match render_pdf_from_html(&html_path, &pdf_path) {
+            Ok(()) => {
+                println!(
+                    "holler-printer: FILE SINK wrote receipt PDF {}",
+                    pdf_path.display()
+                );
+                &pdf_path
+            }
+            Err(e) => {
+                eprintln!(
+                    "holler-printer: FILE SINK could not render {}: {e}. Opening the HTML \
+                     instead; the bill itself is unaffected.",
+                    pdf_path.display()
+                );
+                &html_path
+            }
+        };
+
+        if std::env::var_os(SUPPRESS_OPEN_ENV).is_some() {
+            // Announced, never silent. This variable removes the thing demo
+            // step 2 actually shows -- the bill appearing on screen -- so a
+            // machine that has it set must say so every time rather than look
+            // like a build where opening quietly stopped working.
+            println!(
+                "holler-printer: FILE SINK did NOT open {} because {SUPPRESS_OPEN_ENV} is set",
+                opened.display()
+            );
+            return Ok(());
+        }
+        if let Err(e) = open_with_os_default(opened) {
             eprintln!(
                 "holler-printer: FILE SINK could not open {} in a viewer: {e}",
-                html_path.display()
+                opened.display()
             );
         }
         Ok(())
+    }
+}
+
+/// Set to anything to stop the file sink launching a viewer for the receipt it
+/// just wrote. **It exists so the fallback path can be tested without a browser
+/// window opening on the machine running the tests**, and it is deliberately
+/// loud: every suppressed open prints a line saying so. Unset -- which is every
+/// demo and every acceptance run -- changes nothing.
+pub const SUPPRESS_OPEN_ENV: &str = "HOLLER_RECEIPT_SUPPRESS_OPEN";
+
+/// Environment override naming the Chromium-family executable used to render
+/// the receipt PDF. Set it when Edge is somewhere [`find_pdf_browser`] does not
+/// look, or to pin a specific build.
+pub const PDF_BROWSER_ENV: &str = "HOLLER_RECEIPT_PDF_BROWSER";
+
+/// How long the headless render may take before it is killed. A receipt is one
+/// small local page with no network fetches, so seconds is generous — and the
+/// deadline exists because a browser that hangs must not hold a till's print
+/// worker, which is a far worse outcome than a missing PDF.
+const PDF_RENDER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(25);
+
+/// Locates a Chromium-family browser to render with, or `None`.
+///
+/// **NO NEW DEPENDENCY, IN EITHER SENSE.** No crate is added to the edge
+/// binary, and nothing is installed on the machine: this reaches for the Edge
+/// that ships with Windows, and the whole path lives behind the file-sink
+/// transport, which is selected by an environment variable and is never
+/// constructed on a real install (ADR-013 — the outlet runs one native
+/// executable and gains nothing here). A machine without a browser simply gets
+/// the HTML, as it did before.
+fn find_pdf_browser() -> Option<PathBuf> {
+    if let Ok(explicit) = std::env::var(PDF_BROWSER_ENV) {
+        let path = PathBuf::from(explicit.trim());
+        // An override that names a missing file is a CONFIGURATION ERROR and is
+        // reported as one. Falling through to the default search would hide it,
+        // and the operator would spend the difference wondering why their
+        // pinned build was ignored.
+        if path.is_file() {
+            return Some(path);
+        }
+        eprintln!(
+            "holler-printer: {PDF_BROWSER_ENV}={} does not name a file; falling back to the \
+             default search",
+            path.display()
+        );
+    }
+
+    // Edge first: it is present on every supported Windows install, so it is
+    // the one that does not depend on what the operator happens to have.
+    let candidates = [
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    ];
+    candidates.iter().map(PathBuf::from).find(|p| p.is_file())
+}
+
+/// Renders `html_path` to `pdf_path` with headless Chromium.
+///
+/// THE RESULT IS VERIFIED, NOT ASSUMED. `--print-to-pdf` can exit 0 having
+/// written nothing, so this waits for the process, then requires the file to
+/// exist, to be non-empty, and to start with `%PDF-`. "The command returned
+/// success" and "there is a PDF on disk" are different claims, and only the
+/// second one is worth opening in a viewer.
+fn render_pdf_from_html(
+    html_path: &std::path::Path,
+    pdf_path: &std::path::Path,
+) -> std::io::Result<()> {
+    use std::io::{Error, ErrorKind};
+
+    let browser = find_pdf_browser().ok_or_else(|| {
+        Error::new(
+            ErrorKind::NotFound,
+            format!(
+                "no Chromium-family browser found for PDF rendering (looked for Edge and \
+                 Chrome; set {PDF_BROWSER_ENV} to override)"
+            ),
+        )
+    })?;
+
+    // ABSOLUTE PATHS, BOTH. The sink directory is routinely relative
+    // (`.dev-prints`), and the browser is a different process with a different
+    // working directory -- a relative path here renders nothing and reports
+    // nothing useful about why.
+    let html_abs = fs::canonicalize(html_path)?;
+    let pdf_abs = if pdf_path.is_absolute() {
+        pdf_path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(pdf_path)
+    };
+    // `canonicalize` yields a \\?\ extended-length path on Windows, which
+    // Chromium's URL parser does not accept as a positional argument.
+    let html_arg = strip_extended_length_prefix(&html_abs);
+
+    // A DEDICATED PROFILE DIRECTORY IS NOT OPTIONAL. Headless Chromium sharing
+    // the default profile with the browser the operator already has open
+    // either fails to acquire the profile lock or quietly hands the work to
+    // that running instance -- which then does not write the PDF. Either way
+    // the bill does not appear, at a demo, for a reason nothing on screen
+    // explains.
+    let profile_dir = std::env::temp_dir().join("holler-receipt-pdf-profile");
+
+    let mut child = std::process::Command::new(&browser)
+        .arg("--headless=new")
+        .arg("--disable-gpu")
+        .arg("--no-first-run")
+        .arg("--no-default-browser-check")
+        .arg("--disable-extensions")
+        .arg(format!("--user-data-dir={}", profile_dir.display()))
+        .arg("--no-pdf-header-footer")
+        .arg(format!("--print-to-pdf={}", pdf_abs.display()))
+        .arg(&html_arg)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+
+    // std has no wait-with-timeout, and a bare `wait()` would let a wedged
+    // browser hold the print worker open indefinitely.
+    let deadline = std::time::Instant::now() + PDF_RENDER_TIMEOUT;
+    let status = loop {
+        match child.try_wait()? {
+            Some(status) => break status,
+            None if std::time::Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(Error::new(
+                    ErrorKind::TimedOut,
+                    format!(
+                        "{} did not finish rendering within {}s",
+                        browser.display(),
+                        PDF_RENDER_TIMEOUT.as_secs()
+                    ),
+                ));
+            }
+            None => std::thread::sleep(std::time::Duration::from_millis(100)),
+        }
+    };
+
+    let produced = fs::read(&pdf_abs).unwrap_or_default();
+    if !produced.starts_with(b"%PDF-") {
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            format!(
+                "{} exited {} but {} is {} -- no PDF was produced",
+                browser.display(),
+                status,
+                pdf_abs.display(),
+                if produced.is_empty() {
+                    "missing or empty".to_string()
+                } else {
+                    format!("{} bytes that do not begin %PDF-", produced.len())
+                }
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Drops the `\\?\` extended-length prefix `fs::canonicalize` adds on Windows.
+/// Chromium rejects such a path as a URL; every other consumer accepts the
+/// plain form equally.
+fn strip_extended_length_prefix(path: &std::path::Path) -> String {
+    let text = path.to_string_lossy().into_owned();
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) => rest.to_string(),
+        None => text,
     }
 }
 
@@ -281,6 +492,141 @@ mod tests {
             .filter(|e| e.path().extension().is_some_and(|x| x == "escpos"))
             .collect();
         assert_eq!(entries.len(), 1, "the print must stay inside the sink dir");
+    }
+
+    // ------------------------------------------------- the receipt PDF --
+
+    /// `PDF_BROWSER_ENV` and `SUPPRESS_OPEN_ENV` are process-global, so every
+    /// assertion that depends on them lives in ONE test. Two tests setting the
+    /// same variable under `cargo test`'s thread pool would pass or fail by
+    /// scheduling, which is worse than no test.
+    #[test]
+    fn pdf_rendering_verifies_the_artefact_and_never_fails_the_print() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut transport = FileSinkTransport::new(
+            dir.path().to_path_buf(),
+            "printer-1".to_string(),
+            "Front Counter".to_string(),
+        );
+
+        // An override naming something that is not a file must not be returned
+        // as if it were a browser.
+        let missing = dir.path().join("no-such-browser.exe");
+        std::env::set_var(PDF_BROWSER_ENV, &missing);
+        assert_ne!(
+            find_pdf_browser(),
+            Some(missing.clone()),
+            "an override naming a missing file must fall back, not be handed on"
+        );
+
+        // A real file IS honoured, whatever it is -- discovery's job is to find
+        // an executable, not to validate it.
+        let decoy = dir.path().join("decoy.exe");
+        fs::write(&decoy, b"not really a browser").expect("write decoy");
+        std::env::set_var(PDF_BROWSER_ENV, &decoy);
+        assert_eq!(
+            find_pdf_browser(),
+            Some(decoy.clone()),
+            "an explicit override naming a real file must win"
+        );
+
+        // THE LOAD-BEARING ASSERTION. With a "browser" that cannot produce a
+        // PDF, the companion must still write the HTML and must still return
+        // Ok -- the ESC/POS bytes are already out and the bill is already
+        // committed, so nothing here may turn a successful print into a failed
+        // one.
+        std::env::set_var(SUPPRESS_OPEN_ENV, "1");
+        transport.send(b"BILL BYTES").expect("send");
+        let result = transport.send_html_companion("<html><body>Receipt</body></html>");
+        assert!(
+            result.is_ok(),
+            "a failed PDF render must never fail the print: {result:?}"
+        );
+
+        let stem = transport.last_stem.clone().expect("stem");
+        let html_path = dir.path().join(format!("{stem}.html"));
+        assert!(
+            html_path.is_file(),
+            "the HTML companion must survive a failed PDF render"
+        );
+        let pdf_path = dir.path().join(format!("{stem}.pdf"));
+        assert!(
+            !pdf_path.is_file(),
+            "nothing may be left behind claiming to be a PDF when none was produced"
+        );
+
+        // AND THE VERIFICATION ITSELF, which needs a decoy that genuinely RUNS.
+        // The first version of this assertion used the non-executable decoy
+        // above and passed with the `%PDF-` check deleted -- the spawn failed
+        // before the verification was ever reached, so it was green on a code
+        // path it never entered. `where.exe` is a real Windows executable that,
+        // handed these arguments, exits non-zero having written nothing: the
+        // exact shape of "the command ran and produced no PDF".
+        let real_exe = PathBuf::from(r"C:\Windows\System32\where.exe");
+        if real_exe.is_file() {
+            std::env::set_var(PDF_BROWSER_ENV, &real_exe);
+            let err = render_pdf_from_html(&html_path, &pdf_path)
+                .expect_err("a command that writes no PDF must be an error");
+            let message = err.to_string();
+            assert!(
+                message.contains("no PDF was produced"),
+                "the error must name the MISSING ARTEFACT, not merely a failed command -- an \
+                 exit code is not a PDF: {message}"
+            );
+            assert!(
+                !pdf_path.is_file(),
+                "no file may be left behind claiming to be a PDF"
+            );
+        } else {
+            eprintln!(
+                "SKIPPED the artefact-verification half: {} is absent, so the '%PDF-' check was \
+                 NOT exercised by this run.",
+                real_exe.display()
+            );
+        }
+
+        std::env::remove_var(PDF_BROWSER_ENV);
+        std::env::remove_var(SUPPRESS_OPEN_ENV);
+    }
+
+    /// The positive case, because a path only ever seen failing proves only
+    /// that it can fail. Runs against whatever Chromium-family browser this
+    /// machine actually has; where there is none -- Linux CI -- it says so
+    /// LOUDLY rather than passing quietly, because a test that silently
+    /// asserts nothing is indistinguishable from one that passed.
+    #[test]
+    fn a_real_browser_renders_a_real_pdf() {
+        let Some(browser) = find_pdf_browser() else {
+            eprintln!(
+                "SKIPPED a_real_browser_renders_a_real_pdf: no Chromium-family browser on this \
+                 machine. THIS TEST ASSERTED NOTHING. Set {PDF_BROWSER_ENV} to run it."
+            );
+            return;
+        };
+        eprintln!("rendering with {}", browser.display());
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let html_path = dir.path().join("receipt.html");
+        fs::write(
+            &html_path,
+            "<html><head><style>@page { size: 80mm auto; margin: 4mm; }</style></head>\
+             <body><p>Shinjuku Yakitori</p><p>FY26/PNQ/001423</p></body></html>",
+        )
+        .expect("write html");
+
+        let pdf_path = dir.path().join("receipt.pdf");
+        render_pdf_from_html(&html_path, &pdf_path).expect("render a real pdf");
+
+        let bytes = fs::read(&pdf_path).expect("read pdf");
+        assert!(
+            bytes.starts_with(b"%PDF-"),
+            "the rendered file must actually be a PDF"
+        );
+        assert!(
+            bytes.len() > 1000,
+            "a one-page receipt PDF under 1KB is an empty page, not a bill: {} bytes",
+            bytes.len()
+        );
     }
 
     #[test]

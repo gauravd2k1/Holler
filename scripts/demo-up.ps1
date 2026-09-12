@@ -145,6 +145,18 @@ param(
     [string]$UpiVpa = "",
     [string]$UpiPayeeName = "",
 
+    # Where every print is written instead of being sent to a device
+    # (HOLLER_PRINTER_FILE_SINK_DIR). Empty resolves to <repo>\.dev-prints.
+    #
+    # ALWAYS PASSED, AND THAT IS NOT OPTIONAL. dev-bootstrap.ps1 rewrites
+    # apps\pos\.env.dev WHOLESALE and only emits this line when it is given the
+    # parameter -- so a bootstrap run without it silently DELETES the file sink,
+    # after which "Print Bill" is sent to a thermal printer that does not exist
+    # and no .escpos, no .html and no .pdf appear at all. That is the same
+    # failure the UPI payee had before the bootstrap started remembering it, and
+    # it would land squarely on demo step 2.
+    [string]$PrinterFileSinkDir = "",
+
     # Fixed, because POST /devices/enroll matches an existing device by
     # (tenant, outlet, name) -- that is what makes step [7/10] re-runnable.
     [string]$WaiterDeviceName = "Demo Captain Phone",
@@ -610,7 +622,9 @@ if ($WhatIf) {
 # =====================================================================
 Write-Step 5 "bootstrap -- edge seed, env files, POS and KDS credentials"
 # =====================================================================
-$bootstrapArgs = @{ WithBilling = $true }
+$resolvedSinkDir = if ($PrinterFileSinkDir -ne "") { $PrinterFileSinkDir } else { Join-Path $repoRoot ".dev-prints" }
+
+$bootstrapArgs = @{ WithBilling = $true; PrinterFileSinkDir = $resolvedSinkDir }
 if ($DbKeyHex -ne "")     { $bootstrapArgs["DbKeyHex"] = $DbKeyHex }
 if ($LanHost -ne "")      { $bootstrapArgs["LanHost"]  = $LanHost }
 if ($UpiVpa -ne "")       { $bootstrapArgs["UpiVpa"] = $UpiVpa }
@@ -628,6 +642,7 @@ $bootstrapArgs["SkipInfra"] = $true
 if ($WhatIf) {
     Write-Note "-WhatIf: would run scripts\dev-bootstrap.ps1 with $(($bootstrapArgs.Keys | Sort-Object) -join ', ')"
     Write-Note "         -UpiVpa/-UpiPayeeName are passed only when given; the bootstrap REMEMBERS the last value"
+    Write-Note "         prints would go to $resolvedSinkDir"
 } else {
     & (Join-Path $repoRoot "scripts\dev-bootstrap.ps1") @bootstrapArgs
     if ($LASTEXITCODE -ne 0) {
@@ -637,6 +652,7 @@ if ($WhatIf) {
     Write-Ok "bootstrap complete"
     Write-Note "READ ITS OUTPUT: '[3c/4] KDS credential ENABLED' in cyan, and 'UPI QR ENABLED: <vpa>' in cyan."
     Write-Note "A yellow 'UPI QR DISABLED' means NO QR renders at all on the bill screen or the receipt."
+    Write-Ok "prints go to $resolvedSinkDir (.escpos bytes + .txt + .html + .pdf, the PDF opens on print)"
 }
 
 # =====================================================================

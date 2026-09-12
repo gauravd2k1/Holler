@@ -32,13 +32,22 @@ const ORDER_ID: &str = "01a09600-0000-7000-8000-000000000002";
 fn seed_names() -> (String, String) {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../seed/demo-outlet.json");
     let Ok(text) = std::fs::read_to_string(path) else {
-        return ("Restaurant (seed not generated)".into(), "Restaurant".into());
+        return (
+            "Restaurant (seed not generated)".into(),
+            "Restaurant".into(),
+        );
     };
     let Ok(seed) = serde_json::from_str::<serde_json::Value>(&text) else {
         return ("Restaurant (seed unreadable)".into(), "Restaurant".into());
     };
-    let tenant = seed["tenant"]["name"].as_str().unwrap_or("Restaurant").to_string();
-    let outlet = seed["outlet"]["name"].as_str().unwrap_or("Restaurant").to_string();
+    let tenant = seed["tenant"]["name"]
+        .as_str()
+        .unwrap_or("Restaurant")
+        .to_string();
+    let outlet = seed["outlet"]["name"]
+        .as_str()
+        .unwrap_or("Restaurant")
+        .to_string();
     (tenant, outlet)
 }
 
