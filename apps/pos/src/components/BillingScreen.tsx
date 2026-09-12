@@ -69,6 +69,12 @@ interface PendingTender extends PendingTenderEntry {
  * tender, and open/close the cash shift. Every money value shown is copied
  * from what the edge returned — this component computes nothing except
  * summing already-known integers for display (`domain/billing.ts`). */
+/** CAPTURED -> Captured. A contract value is SCREAMING_SNAKE; a bill is not. */
+function humanisePaymentStatus(status: string): string {
+  const words = status.toLowerCase().replace(/_/g, " ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
 export function BillingScreen() {
   const { orderId } = useParams({ from: "/orders/$orderId/billing" });
   const navigate = useNavigate();
@@ -795,11 +801,22 @@ export function BillingScreen() {
                   </tr>
                 </thead>
                 <tbody>
+                  {/* AN EMPTY TABLE MUST SAY IT IS EMPTY. Header row, no body
+                      and no words reads as a table that failed to load, on the
+                      screen where a cashier is deciding whether a payment went
+                      through. */}
+                  {invoicePayments.length === 0 && (
+                    <tr>
+                      <td colSpan={5} className="muted">
+                        No payment recorded against this bill yet.
+                      </td>
+                    </tr>
+                  )}
                   {invoicePayments.map((p) => (
                     <tr key={p.id}>
                       <td>{p.method}</td>
                       <td className="money">{formatPaiseAsRupees(p.amount_paise)}</td>
-                      <td>{p.status}</td>
+                      <td>{humanisePaymentStatus(p.status)}</td>
                       {/* "Reversal" only — never the reversed payment's raw
                           UUID. There is no human-facing number for a payment
                           row, and the reversed tender is already listed

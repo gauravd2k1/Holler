@@ -585,3 +585,45 @@ with amounts and a rupee symbol, which the till cannot produce — it builds
 product never emits is worse than no preview, so the fixture was corrected to
 the real shape.
 
+## POS screens — 2026-09-12 (`docs/demo-screens/pos/`)
+
+**Re-runnable: `node scripts/pos-screens.mjs`** (starts its own dev server on
+scratch port 5198; `POS_UI=…` reuses one). The REAL app with
+`window.__TAURI_INTERNALS__` stubbed by contract-shaped fixtures — real
+components, real CSS, real routing and **real Zod parsing**. No backend, no
+database, no Tauri shell, and nothing on 8080/9310/the captain port.
+
+**Committed, both halves**, unlike the two earlier passes that left only PNGs.
+
+| File | Screen |
+|---|---|
+| `pos-order-list.png` | Orders list — where the Bill control lives. |
+| `pos-billing-invoice.png` | The issued invoice: lines with per-component tax, totals, the UPI QR, payments. |
+
+**What it does NOT prove:** the Rust side. These captures say nothing about
+command behaviour — only about what the till renders when handed a valid
+response.
+
+### Three fixture defects the contract caught, and one screen defect
+
+The harness parses through `packages/contracts`, so a wrong fixture fails
+instead of rendering something the till could never show. All three were mine:
+
+- **`round_off_paise: 76`** — 198500 + 4962 + 4962 = 208424 rounds DOWN to
+  208400, a delta of −24. `InvoiceSchema` refuses a round-off over half a
+  rupee (ADR-016), the query errored, and the screen quietly rendered its
+  PRE-ISSUE state. A true screen, and not the one demo step 2 shows.
+- **Lines were put behind an invented `list_invoice_lines` command.**
+  `InvoiceSchema` carries `lines` INSIDE the invoice.
+- **`tax_snapshot_json` / `fiscal_profile_json`** — the SQLite spelling. The TS
+  wire type carries parsed objects (`tax_snapshot`, `fiscal_profile`).
+
+And on the screen itself: **the Payments table rendered a header row with no
+body and no words**, which reads as a table that failed to load — on the screen
+where a cashier decides whether a payment went through. It says
+"No payment recorded against this bill yet." now, and payment status is
+humanised rather than `CAPTURED`.
+
+**The harness sets a fixture UPI VPA**, because without one no QR renders at
+all and the capture would silently be missing the thing demo item 0b added.
+
