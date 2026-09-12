@@ -48,6 +48,7 @@ import { useAuthStore } from "../store/auth";
 import { useCashShiftStore } from "../store/cashShift";
 import { formatIST } from "../lib/datetime";
 import { UpiPaymentQr } from "./UpiPaymentQr";
+import { OutletName } from "./OutletName";
 
 const PAYMENT_METHODS: PaymentMethod[] = [
   "CASH",
@@ -461,6 +462,7 @@ export function BillingScreen() {
       <header className="holler-header">
         <div className="holler-header__brand">
           <img src="/holler_no_bg.png" alt="Holler" className="holler-logo" />
+          <OutletName />
           {/* The order's human-facing number only — never its UUID
               (CLAUDE.md §Money/time/identifiers). display_number is nullable
               only for pre-0.4.0 legacy rows. */}

@@ -1,7 +1,7 @@
 {
   "brand": {
     "id": "0191a000-0000-7000-8000-000000000002",
-    "name": "Gong",
+    "name": "Shinjuku Yakitori",
     "tenant_id": "0191a000-0000-7000-8000-000000000001"
   },
   "compliance_versions": [
@@ -7860,7 +7860,7 @@
     "brand_id": "0191a000-0000-7000-8000-000000000002",
     "day_start_time": "05:00",
     "id": "0191a000-0000-7000-8000-00000000000a",
-    "name": "Gong — Modern Asian",
+    "name": "Shinjuku Yakitori",
     "timezone": "Asia/Kolkata"
   },
   "recipe_ingredients": [
@@ -8874,6 +8874,6 @@
   ],
   "tenant": {
     "id": "0191a000-0000-7000-8000-000000000001",
-    "name": "Gong Hospitality"
+    "name": "Shinjuku Yakitori Hospitality Pvt Ltd"
   }
 }

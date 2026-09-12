@@ -60,7 +60,10 @@ await page.goto(pathToFileURL(htmlPath).href, { waitUntil: "networkidle" });
 // Assert the receipt's own content BEFORE capturing it: a blank page
 // photographs just as willingly as a good one.
 const text = await page.locator("body").innerText();
-for (const required of ["Gong", "FY26/PNQ/001423", "27AAAAA0000A1Z5", "Pad Thai", "CGST"]) {
+// The restaurant's name is asserted FROM THE SEED, so this check follows a
+// rename instead of pinning the name it happened to be written with.
+const seed = JSON.parse(readFileSync(join(repoRoot, "seed", "demo-outlet.json"), "utf8"));
+for (const required of [seed.outlet.name, "FY26/PNQ/001423", "27AAAAA0000A1Z5", "Pad Thai", "CGST"]) {
   if (!text.includes(required)) {
     throw new Error(`refusing to photograph the receipt: it does not contain ${JSON.stringify(required)}`);
   }

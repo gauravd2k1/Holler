@@ -81,6 +81,7 @@ pub fn run() {
             commands::menu::list_menu_item_modifiers,
             commands::menu::list_menu_item_variants,
             commands::tables::list_tables,
+            commands::tables::get_outlet_identity,
             commands::tables::get_open_table_session,
             commands::orders::create_order,
             commands::orders::get_order,

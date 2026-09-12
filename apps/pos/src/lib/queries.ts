@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import {
+  getOutletIdentity,
   getCashShift,
   getOrder,
   getStockCount,
@@ -33,6 +34,7 @@ export const queryKeys = {
   menuCategories: ["menu-categories"] as const,
   menuItemVariants: ["menu-item-variants"] as const,
   tables: ["tables"] as const,
+  outletIdentity: ["outlet-identity"] as const,
   orders: ["orders"] as const,
   order: (orderId: string) => ["order", orderId] as const,
   stations: ["stations"] as const,
@@ -56,6 +58,19 @@ export const queryKeys = {
   purchaseOrderReceiptProgress: (purchaseOrderId: string) =>
     ["purchase-order-receipt-progress", purchaseOrderId] as const,
 };
+
+/**
+ * The restaurant's own name, for a header. Cached hard: it changes when the
+ * cloud renames the outlet and a config pull applies it, which is not
+ * something a till needs to re-ask about every few seconds.
+ */
+export function useOutletIdentityQuery() {
+  return useQuery({
+    queryKey: queryKeys.outletIdentity,
+    queryFn: getOutletIdentity,
+    staleTime: 5 * 60 * 1000,
+  });
+}
 
 export function useMenuItemsQuery() {
   return useQuery({ queryKey: queryKeys.menuItems, queryFn: listMenuItems });

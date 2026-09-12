@@ -165,6 +165,22 @@ impl From<db::MenuItemModifier> for MenuItemModifier {
     }
 }
 
+// ----------------------------------------------------------------- outlet --
+
+/// Who this till belongs to, for a header.
+///
+/// NOT A CONTRACT TYPE: there is no wire shape for "the outlet's name" and
+/// this never leaves the machine -- it is one local read of the `outlet` row
+/// the config pull already maintains. `name` is optional because a missing
+/// outlet row is a broken bootstrap rather than a reason to refuse to sell,
+/// and the header falls back to the product name alone. The id travels for
+/// diagnostics and is never rendered: it is a UUID.
+#[derive(Debug, Clone, Serialize)]
+pub struct OutletIdentity {
+    pub name: Option<String>,
+    pub outlet_id: String,
+}
+
 // ------------------------------------------------------------------ table --
 
 /// Mirrors `packages/contracts/src/types/table.ts` `RestaurantTableSchema`.

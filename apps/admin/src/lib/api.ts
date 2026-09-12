@@ -203,3 +203,34 @@ export async function listOrders() {
     b.timestamps.created_at.localeCompare(a.timestamps.created_at),
   );
 }
+
+// ---------------------------------------------------------------- outlet --
+
+/**
+ * The outlet's own name, for the header.
+ *
+ * WHITE-LABEL: HOLLER IS THE PRODUCT, THE RESTAURANT IS THE BUSINESS. The name
+ * comes from the `outlet` row — one seeded value — so renaming the restaurant
+ * is one change and a re-seed rather than a search across four frontends.
+ *
+ * `GET /outlets` is tenant-isolated and has existed since Milestone 1; this
+ * needed no contract change. It is shaped here rather than imported because
+ * `packages/contracts` carries no TS `Outlet` type — only the OpenAPI schema —
+ * and inventing one in the admin would be a second definition of a shape the
+ * spec already owns.
+ */
+const OutletSchema = z.object({
+  id: z.string().uuid(),
+  brand_id: z.string().uuid(),
+  name: z.string(),
+  timezone: z.string(),
+  config_version: z.number().int(),
+});
+
+export async function currentOutletName(): Promise<string | null> {
+  const outlets = await request(`/outlets`, z.array(OutletSchema));
+  // The console serves one outlet per environment (VITE_ADMIN_OUTLET_ID), so
+  // this picks that one rather than the first row: a tenant with two outlets
+  // would otherwise label the header with whichever sorted first.
+  return outlets.find((o) => o.id === OUTLET_ID)?.name ?? null;
+}

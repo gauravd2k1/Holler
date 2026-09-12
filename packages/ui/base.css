@@ -104,6 +104,30 @@ img {
   font-weight: var(--weight-semibold);
 }
 
+/* THE RESTAURANT'S NAME, BESIDE THE PRODUCT MARK. Holler is the product; the
+   name on the door belongs to the outlet, and every surface reads it from the
+   `outlet` row rather than holding a copy. Styled here, once, so the till, the
+   admin console and anything added later present it identically.
+
+   Quieter than the product name on purpose: the operator knows whose
+   restaurant it is, and a header that shouts it twice wastes the one line a
+   till has. A separator makes it read as a second fact rather than a longer
+   product name. */
+.outlet-name {
+  color: var(--color-text-muted);
+  font-weight: var(--weight-regular, 400);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 40ch;
+}
+
+.outlet-name::before {
+  content: "·";
+  margin-right: var(--space-3);
+  color: var(--color-border);
+}
+
 .holler-header__spacer {
   flex: 1;
 }

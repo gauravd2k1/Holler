@@ -29,6 +29,12 @@ import { createRequire } from "node:module";
 import { spawn } from "node:child_process";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+// THE RESTAURANT'S NAME COMES FROM THE SEED, NOT FROM THIS FILE.
+// `seed/demo-outlet.json` is the single source of truth; a fixture holding its
+// own copy keeps showing the old name after a rename, and the screenshot then
+// argues for a screen nobody has.
+const seed = JSON.parse(readFileSync(join(repoRoot, "seed", "demo-outlet.json"), "utf8"));
 const require = createRequire(join(repoRoot, "apps", "kds", "package.json"));
 const { chromium } = require("@playwright/test");
 
@@ -38,7 +44,7 @@ const outDir = join(repoRoot, "docs", "demo-screens", "pos");
 mkdirSync(outDir, { recursive: true });
 
 // ---------------------------------------------------------------------------
-// Fixtures. Gong data at Gong prices, shaped by packages/contracts -- the app
+// Fixtures. the client's own data at their own prices, shaped by packages/contracts -- the app
 // parses every one of these with Zod, so a wrong shape fails the capture
 // rather than rendering something the till could never show.
 // ---------------------------------------------------------------------------
@@ -123,7 +129,7 @@ const invoice = {
   // reason this harness parses through the contract instead of around it.
   tax_snapshot: {},
   fiscal_profile: ({
-    legal_name: "Gong Hospitality Pvt Ltd", trade_name: "Gong — Modern Asian",
+    legal_name: seed.tenant.name, trade_name: seed.outlet.name,
     address_line1: "123 MG Road", address_line2: "Camp", city: "Pune",
     state_code: "27", state_name: "Maharashtra", pincode: "411001",
     gstin: "27AAAAA0000A1Z5", fssai_number: "11522998000123",
@@ -198,6 +204,9 @@ const COMMANDS = {
   list_blocked_outbox_rows: [],
   list_persistently_failing_outbox_rows: [],
   list_current_stock: [],
+  // The white-label header read: the till asks who it belongs to rather than
+  // holding a copy of the name.
+  get_outlet_identity: { name: seed.outlet.name, outlet_id: OUTLET },
   get_active_draft_order: null,
   list_stations: [],
   // An OPEN shift, because billing is gated on one: without it the screen
@@ -330,6 +339,17 @@ if (process.env.POS_TRACE) {
 }
 await capture("pos-billing-invoice", async () =>
   (await page.locator("text=FY26/PNQ/001423").count()) > 0);
+
+// THE RESTAURANT'S NAME MUST BE ON THE SCREEN, and it must be the one the seed
+// carries. A header that stops reading the outlet row, or starts holding its
+// own copy, fails here rather than at a demo.
+const headerText = await page.locator("header").first().innerText();
+if (!headerText.includes(seed.outlet.name)) {
+  throw new Error(
+    `the header does not name the outlet: expected ${JSON.stringify(seed.outlet.name)}, got ${JSON.stringify(headerText)}`,
+  );
+}
+console.log(`  header names the outlet: ${JSON.stringify(seed.outlet.name)}`);
 
 // No UUID may reach this screen.
 const text = await page.locator("body").innerText();

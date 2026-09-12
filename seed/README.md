@@ -30,10 +30,10 @@ makes a hand-edit of the derived half fail the build.
 ```
 menu_imgs_gong/gong_menu.xlsx          (the CLIENT'S card -- hand-corrected)
                  |
-                 |  scripts/gong-menu-to-seed.py
+                 |  scripts/menu-to-seed.py
                  v
-edge/database/src/bin/devseed/gong_menu.rs   (COMMITTED, generated)
-       + seed/gong-menu-manifest.json        (counts + checksum)
+edge/database/src/bin/devseed/client_menu.rs   (COMMITTED, generated)
+       + seed/menu-manifest.json        (counts + checksum)
                  |
 edge/database/src/bin/devseed.rs --emit-json
                  |
@@ -51,12 +51,12 @@ edge/database/src/bin/devseed.rs --emit-json
 
 `menu_imgs_gong/gong_menu.xlsx`, sheet `Menu`, is the authoring source for the
 catalogue: 346 rows with `include = Y`, transcribed from the printed card.
-`scripts/gong-menu-to-seed.py` turns it into `devseed/gong_menu.rs`. **Neither
+`scripts/menu-to-seed.py` turns it into `devseed/client_menu.rs`. **Neither
 the generated module nor `demo-outlet.json` is ever hand-edited** -- correct the
 workbook and re-run:
 
 ```
-python scripts/gong-menu-to-seed.py
+python scripts/menu-to-seed.py
 cd edge/database && cargo run --bin devseed -- --emit-json ../../seed/demo-outlet.json
 ```
 
@@ -103,7 +103,7 @@ descriptions drift, which is the defect being fixed, one layer out.
 **`seed/demo-outlet.json` is GENERATED. Never hand-edit it.** Edit the seed data
 in `edge/database/src/bin/devseed.rs` (or, for the menu, the workbook), re-emit,
 and commit both. `scripts/check-seed-drift.mjs` regenerates and fails the build
-if the committed file differs, and `gong_menu_matches_the_generated_manifest`
+if the committed file differs, and `client_menu_matches_the_generated_manifest`
 fails if the generated menu module was hand-edited or the workbook changed
 without a regeneration.
 

@@ -527,7 +527,7 @@ contract-shaped stub API on **9410**. Nothing in this capture touched 8080,
 |---|---|---|
 | `captain-01-pair.png` | Pair | The token field, before any device is paired. |
 | `captain-02-tables.png` | Tables | Free/occupied by colour **and** a word, six tables. |
-| `captain-03-menu.png` | Menu | Gong categories and prices; an unavailable item greyed with a "Not available" tag. |
+| `captain-03-menu.png` | Menu | the client's categories and prices; an unavailable item greyed with a "Not available" tag. |
 | `captain-04-empty-category.png` | Menu, empty category | **The new empty state** — a category with no items now says so instead of rendering a blank region. |
 | `captain-05-cart.png` | Cart bar | One line added, count and total in the bar. |
 | `captain-06-cart-sheet.png` | **Cart sheet** | The line list the bar now opens: dish, variant, stepper, line total, Remove. |

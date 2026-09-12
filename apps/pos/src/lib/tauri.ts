@@ -137,6 +137,29 @@ export async function listMenuCategories(): Promise<MenuCategory[]> {
   }
 }
 
+/**
+ * Who this till belongs to.
+ *
+ * NOT A CONTRACT TYPE and deliberately so: there is no wire shape for "the
+ * outlet's name", and this never leaves the machine -- it is one local read of
+ * the `outlet` row the config pull already maintains. Parsed rather than cast,
+ * like everything else through this module.
+ */
+const OutletIdentitySchema = z.object({
+  name: z.string().nullable(),
+  outlet_id: z.string().uuid(),
+});
+export type OutletIdentity = z.infer<typeof OutletIdentitySchema>;
+
+export async function getOutletIdentity(): Promise<OutletIdentity> {
+  try {
+    const raw = await invoke("get_outlet_identity");
+    return OutletIdentitySchema.parse(raw);
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
+
 export async function listTables(): Promise<RestaurantTable[]> {
   try {
     const raw = await invoke<unknown[]>("list_tables");

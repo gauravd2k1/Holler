@@ -18,6 +18,7 @@ import { useCartStore } from "../store/cart";
 import { PrintFailureBanner } from "./PrintFailureBanner";
 import { SyncBlockedBanner } from "./SyncBlockedBanner";
 import { LowStockBanner } from "./LowStockBanner";
+import { OutletName } from "./OutletName";
 
 // docs/spec/ordering.md §POS layout: TOP search + order-type + table,
 // LEFT categories, CENTER menu grid, RIGHT cart, BOTTOM subtotal/send.
@@ -242,6 +243,7 @@ export function PosScreen() {
       <header className="pos-top-bar">
         <div className="holler-header__brand">
           <img src="/holler_no_bg.png" alt="Holler" className="holler-logo" />
+          <OutletName />
         </div>
         <input
           className="pos-search"

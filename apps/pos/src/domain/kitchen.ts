@@ -52,7 +52,16 @@ export function kotStatusLabel(status: KotStatus): string {
   }
 }
 
-export function orderStatusLabel(status: OrderStatus): string {
+/**
+ * SCREAMING_SNAKE to Title Case, for any contract enum a human reads.
+ *
+ * Takes a plain string rather than `OrderStatus`: the formatting has nothing
+ * to do with which enum it came from, and narrowing it forced a cast at the
+ * order-type column (`DINE_IN` was reaching the screen raw because the only
+ * humaniser in the app refused to accept it). A cast to satisfy a type that
+ * was too narrow is the type being wrong, not the call.
+ */
+export function orderStatusLabel(status: string): string {
   return status
     .toLowerCase()
     .split("_")

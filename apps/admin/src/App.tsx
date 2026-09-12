@@ -1,9 +1,10 @@
 import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { MenuScreen } from "./components/MenuScreen";
 import { SuppliersScreen } from "./components/SuppliersScreen";
 import { GoodsReceiptsScreen } from "./components/GoodsReceiptsScreen";
 import { OrdersScreen } from "./components/OrdersScreen";
-import { configError } from "./lib/api";
+import { configError, currentOutletName } from "./lib/api";
 import { SignIn } from "./components/SignIn";
 import { currentPrincipal, signOut, type Principal } from "./lib/session";
 
@@ -18,6 +19,28 @@ type TabId = (typeof TABS)[number]["id"];
 
 // The brand mark on every state this screen can be in, sign-in and
 // misconfigured included — not only once a principal is signed in.
+/**
+ * The restaurant's name beside the Holler mark.
+ *
+ * WHITE-LABEL: the product is Holler, the business is the restaurant. The name
+ * is read from the `outlet` row (`GET /outlets`), never hard-coded, so
+ * renaming the restaurant is one seeded value and a re-seed.
+ *
+ * Renders nothing while it loads or if the fetch fails: a header that says
+ * "Loading…" or "Unknown outlet" is worse than one that briefly says only
+ * "Holler Admin".
+ */
+function OutletName() {
+  const outlet = useQuery({
+    queryKey: ["outlet-name"],
+    queryFn: currentOutletName,
+    staleTime: 5 * 60 * 1000,
+    retry: false,
+  });
+  if (outlet.data == null || outlet.data === "") return null;
+  return <span className="outlet-name">{outlet.data}</span>;
+}
+
 function Brand() {
   return (
     <header className="holler-header">
@@ -76,6 +99,7 @@ export function App() {
         <div className="holler-header__brand">
           <img src="/holler_no_bg.png" alt="Holler" className="holler-logo" />
           <span>Holler Admin</span>
+          <OutletName />
         </div>
         <div className="holler-header__spacer" />
         {/* The signed-in person's name only — never the outlet's UUID

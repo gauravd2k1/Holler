@@ -372,8 +372,8 @@ every one of the workbook's 346 `include = Y` rows landed, and the generator
 reports rejections by reason rather than dropping rows quietly (it reported
 none).
 
-**A generator, not a transcription.** `scripts/gong-menu-to-seed.py` reads the
-workbook and writes `edge/database/src/bin/devseed/gong_menu.rs`, which
+**A generator, not a transcription.** `scripts/menu-to-seed.py` reads the
+workbook and writes `edge/database/src/bin/devseed/client_menu.rs`, which
 `devseed` consumes as its `SEED_CATEGORIES`. Hand-transcribing 346 priced rows
 into Rust is exactly the step where two descriptions of one menu drift, which
 is the defect the seed directory exists to prevent, one layer out.
@@ -434,11 +434,11 @@ a modern Asian till is a blemish; an orderable one is a wrong menu.
 **The spec/seed guard was re-pointed, not deleted.**
 `spec_and_seed_agree_on_item_and_variant_counts` parsed `HOLLER_DEV_MENU_SPEC.md`
 because that document and `SEED_CATEGORIES` were two hand-maintained copies of
-one menu. The Gong catalogue is generated, so the drift worth catching changed
+one menu. The client catalogue is generated, so the drift worth catching changed
 shape: a hand-edit of the generated file, or a workbook edit with no
-regeneration. `gong_menu_matches_the_generated_manifest` rebuilds the counts AND
+regeneration. `client_menu_matches_the_generated_manifest` rebuilds the counts AND
 a canonical projection of every item, price, station, tax class, variant delta
-and modifier delta, and compares both against `seed/gong-menu-manifest.json`.
+and modifier delta, and compares both against `seed/menu-manifest.json`.
 **Falsified** by changing one price in the generated file by a single paisa and
 watching it fail by name. The checksum is FNV-1a rather than a real digest
 because this crate carries no hashing dependency and the threat is an accidental

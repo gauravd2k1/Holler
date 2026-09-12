@@ -1,6 +1,7 @@
 import { useNavigate } from "@tanstack/react-router";
 import { useCurrentStockQuery } from "../lib/queries";
 import { formatMicroQuantity, isLowStock, isNegativeStock } from "../domain/inventory";
+import { OutletName } from "./OutletName";
 
 // The bounded current-stock read (`list_current_stock`) — what
 // `LowStockBanner` summarises. Deliberately NOT gated behind
@@ -18,6 +19,7 @@ export function CurrentStockScreen() {
       <header className="holler-header">
         <div className="holler-header__brand">
           <img src="/holler_no_bg.png" alt="Holler" className="holler-logo" />
+          <OutletName />
           <h1>Current Stock</h1>
         </div>
         <nav className="inventory-nav">

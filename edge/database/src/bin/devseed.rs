@@ -33,12 +33,12 @@ use holler_edge_database::{repo, Db, DbError};
 use rusqlite::OptionalExtension;
 use serde_json::{json, Value};
 
-/// The Gong catalogue, generated from the client's workbook. It lives in a
+/// The client menu catalogue, generated from the client's workbook. It lives in a
 /// module DIRECTORY (`src/bin/devseed/`) rather than beside this file,
 /// because a loose `.rs` under `src/bin/` is auto-discovered by cargo as its
 /// own binary target and would fail to build for want of a `main`.
-#[path = "devseed/gong_menu.rs"]
-mod gong_menu;
+#[path = "devseed/client_menu.rs"]
+mod client_menu;
 
 // Fixed development ids. MUST match the constants in
 // backend/cmd/devseed/main.go — the two seeders describe the same outlet.
@@ -232,7 +232,7 @@ const STATION_WOK_CODE: &str = "WOK";
 const STATION_SUSHI_ID: &str = "0191e500-0000-7000-8000-000000000003";
 const STATION_SUSHI_CODE: &str = "SUSHI_BAR";
 /// Pinned by `tests/e2e-scenario/harness` as STATION_2_ID/STATION_2_CODE:
-/// this id MUST keep the code "BAR". The Gong card routes its own bar to the
+/// this id MUST keep the code "BAR". The client card routes its own bar to the
 /// same station, so nothing had to move.
 const STATION_BAR_ID: &str = "0191e500-0000-7000-8000-000000000004";
 const STATION_BAR_CODE: &str = "BAR";
@@ -245,7 +245,7 @@ const STATION_BEVERAGE_CODE: &str = "BEVERAGE";
 
 /// One row per menu item. `variants` and `modifier_groups` carry
 /// `(name, price_delta_paise)` pairs, read off the client's card by
-/// `scripts/gong-menu-to-seed.py`.
+/// `scripts/menu-to-seed.py`.
 ///
 /// The card prints an ABSOLUTE price per variant while the contract stores
 /// one `base_price_paise` per item plus a delta per variant, so the
@@ -912,7 +912,7 @@ const SEED_MODIFIER_DELTAS: &[SeedModifierDelta] = &[
     // The legacy T0b "Sugar" group on the untouched ITEM_CHAI_ID fixture --
     // the SIGNED pair this table exists to prove: "Extra Sugar" consumes
     // MORE stock, "Less Sugar" consumes LESS (a negative delta), same item,
-    // same inventory SKU. Kept through the Gong menu swap because the signed
+    // same inventory SKU. Kept through the client menu swap because the signed
     // path has no other seed coverage.
     SeedModifierDelta {
         lookup: ModifierLookup::LegacyExtraSugar,
@@ -963,14 +963,14 @@ const SEED_MODIFIER_DELTAS: &[SeedModifierDelta] = &[
     }, // +70 g
 ];
 
-/// The Gong catalogue, GENERATED from the client's own workbook by
-/// `scripts/gong-menu-to-seed.py` (see `seed/README.md`). Never hand-edited:
-/// `gong_menu_matches_the_generated_manifest` fails if either side moves
+/// The client menu catalogue, GENERATED from the client's own workbook by
+/// `scripts/menu-to-seed.py` (see `seed/README.md`). Never hand-edited:
+/// `client_menu_matches_the_generated_manifest` fails if either side moves
 /// without the other.
 ///
 /// sort_order starts at 2 in the generated data, so the legacy fixture
 /// category (sort_order 1) still sorts first.
-const SEED_CATEGORIES: &[(&str, i64, &[SeedItem])] = gong_menu::GONG_CATEGORIES;
+const SEED_CATEGORIES: &[(&str, i64, &[SeedItem])] = client_menu::CLIENT_CATEGORIES;
 
 // ---- Demo build work item 2: supplier, pack sizes, opening stock, one
 // received GRN (docs/demo-kickoff.md, seed/README.md). These rows are
@@ -1109,10 +1109,27 @@ const OPENING_STOCK_COMPLETED_AT: &str = "2026-08-09T05:45:00Z";
 /// Business date `OPENING_STOCK_STARTED_AT` falls on — same computation as
 /// `GRN_BUSINESS_DATE` above.
 const OPENING_STOCK_BUSINESS_DATE: &str = "2026-08-09";
-/// A real restaurant name, GSTIN-shaped placeholder GSTIN (contracts-correct
-/// format, registered to nobody — the same posture `seed_billing`'s existing
-/// `FISCAL_PROFILE_ID` fixture already takes). Demo build work item 2.
-const OUTLET_NAME: &str = "Gong — Modern Asian";
+/// THE RESTAURANT'S NAME, IN ONE PLACE, FOR THE WHOLE PRODUCT.
+///
+/// Holler is white-label: the till, the KDS, the captain page, the admin
+/// console and the printed bill all show the RESTAURANT's name, and "Holler"
+/// appears only as the product mark beside it. Every one of those surfaces
+/// reads the name from the `outlet` (or `tenant`/`brand`) row this constant
+/// seeds -- none of them hard-codes it -- so changing this line and re-seeding
+/// renames the whole product.
+///
+/// The three names are separate constants rather than one string with
+/// suffixes because they are genuinely three different things: the legal
+/// entity that owns the GSTIN, the brand, and the trading name of this
+/// particular outlet. A chain has one tenant, one brand and many outlet names.
+const RESTAURANT_NAME: &str = "Shinjuku Yakitori";
+/// The registered entity printed on a GST invoice. GSTIN-shaped placeholder
+/// GSTIN (contracts-correct format, registered to nobody) -- the same posture
+/// `seed_billing`'s existing `FISCAL_PROFILE_ID` fixture already takes.
+const RESTAURANT_LEGAL_NAME: &str = "Shinjuku Yakitori Hospitality Pvt Ltd";
+/// This outlet's trading name. One outlet today; a second would differ here
+/// ("Shinjuku Yakitori — Koregaon Park") and nowhere else.
+const OUTLET_NAME: &str = RESTAURANT_NAME;
 
 // ---- Billing / acceptance fixtures (opt-in, HOLLER_SEED_BILLING=1) ----
 //
@@ -1260,7 +1277,7 @@ fn build_shared_catalogue() -> Result<Value, String> {
     // Legacy T0b fixture: CATEGORY_ID "Beverages", ITEM_CHAI_ID/ITEM_THALI_ID,
     // VARIANT_ID, MOD_LESS_SUGAR_ID/MOD_EXTRA_SUGAR_ID. Fixed ids, exact
     // values, never derived from a seq counter.
-    // The legacy pair survives the Gong menu swap because
+    // The legacy pair survives the client menu swap because
     // `tests/e2e-scenario/harness` pins these exact ids, that exact 4000-paise
     // price, that exact single-station routing and that exact
     // `tax_profile_id = None` fallback. They are NOT part of the client's card,
@@ -1756,8 +1773,8 @@ fn build_shared_catalogue() -> Result<Value, String> {
     Ok(json!({
         "schema_version": 1,
         "generated_by": "edge/database/src/bin/devseed.rs --emit-json",
-        "tenant": { "id": TENANT_ID, "name": "Gong Hospitality" },
-        "brand": { "id": BRAND_ID, "tenant_id": TENANT_ID, "name": "Gong" },
+        "tenant": { "id": TENANT_ID, "name": RESTAURANT_LEGAL_NAME },
+        "brand": { "id": BRAND_ID, "tenant_id": TENANT_ID, "name": RESTAURANT_NAME },
         "outlet": {
             "id": OUTLET_ID, "brand_id": BRAND_ID, "name": OUTLET_NAME,
             "timezone": "Asia/Kolkata", "day_start_time": "05:00"
@@ -2638,7 +2655,7 @@ fn seed_billing(conn: &rusqlite::Connection) -> Result<(), holler_edge_database:
         &OutletFiscalProfile {
             id: FISCAL_PROFILE_ID.to_string(),
             outlet_id: OUTLET_ID.to_string(),
-            legal_name: "Gong Hospitality Pvt Ltd".to_string(),
+            legal_name: RESTAURANT_LEGAL_NAME.to_string(),
             trade_name: OUTLET_NAME.to_string(),
             address_line1: "123 MG Road".to_string(),
             address_line2: Some("Camp".to_string()),
@@ -3189,7 +3206,7 @@ mod t1b_seed_resolves_tests {
         }
     }
 
-    /// FNV-1a, 64-bit. Reproduces `scripts/gong-menu-to-seed.py`'s own
+    /// FNV-1a, 64-bit. Reproduces `scripts/menu-to-seed.py`'s own
     /// `fnv1a64` exactly, byte for byte, over the same canonical projection.
     /// Not a cryptographic digest and not trying to be: what it guards
     /// against is an accidental hand-edit of a generated file, and this
@@ -3203,22 +3220,22 @@ mod t1b_seed_resolves_tests {
         hash
     }
 
-    /// The Gong catalogue is GENERATED from the client's workbook
-    /// (`scripts/gong-menu-to-seed.py`), so the drift this guards against is
+    /// The client menu catalogue is GENERATED from the client's workbook
+    /// (`scripts/menu-to-seed.py`), so the drift this guards against is
     /// not the old two-hand-maintained-copies kind that
     /// `HOLLER_DEV_MENU_SPEC.md` needed -- it is a hand-edit of the generated
     /// file, or a regenerated file committed without its manifest.
     ///
     /// Both sides are rebuilt here: the counts, and a canonical projection of
     /// every item, price, station, tax class, variant delta and modifier
-    /// delta. Editing `devseed/gong_menu.rs` by hand fails this; editing the
+    /// delta. Editing `devseed/client_menu.rs` by hand fails this; editing the
     /// workbook without regenerating fails it too, because the manifest
     /// carries the workbook's own digest and the generator is the only thing
     /// that writes either.
     #[test]
-    fn gong_menu_matches_the_generated_manifest() {
+    fn client_menu_matches_the_generated_manifest() {
         let manifest_path = format!(
-            "{}/../../seed/gong-menu-manifest.json",
+            "{}/../../seed/menu-manifest.json",
             env!("CARGO_MANIFEST_DIR")
         );
         let text = std::fs::read_to_string(&manifest_path)
@@ -3228,7 +3245,7 @@ mod t1b_seed_resolves_tests {
         let mut rows: Vec<String> = Vec::new();
         let mut variants = 0usize;
         let mut modifier_options = 0usize;
-        for (category, _sort_order, items) in gong_menu::GONG_CATEGORIES {
+        for (category, _sort_order, items) in client_menu::CLIENT_CATEGORIES {
             for item in *items {
                 variants += item.variants.len();
                 modifier_options += item
@@ -3267,33 +3284,33 @@ mod t1b_seed_resolves_tests {
         let items = rows.len();
         assert_eq!(
             manifest["categories"].as_u64().expect("categories"),
-            gong_menu::GONG_CATEGORIES.len() as u64,
-            "category count differs from the manifest -- re-run scripts/gong-menu-to-seed.py"
+            client_menu::CLIENT_CATEGORIES.len() as u64,
+            "category count differs from the manifest -- re-run scripts/menu-to-seed.py"
         );
         assert_eq!(
             manifest["items"].as_u64().expect("items"),
             items as u64,
-            "item count differs from the manifest -- re-run scripts/gong-menu-to-seed.py"
+            "item count differs from the manifest -- re-run scripts/menu-to-seed.py"
         );
         assert_eq!(
             manifest["variants"].as_u64().expect("variants"),
             variants as u64,
-            "variant count differs from the manifest -- re-run scripts/gong-menu-to-seed.py"
+            "variant count differs from the manifest -- re-run scripts/menu-to-seed.py"
         );
         assert_eq!(
             manifest["modifier_options"]
                 .as_u64()
                 .expect("modifier_options"),
             modifier_options as u64,
-            "modifier count differs from the manifest -- re-run scripts/gong-menu-to-seed.py"
+            "modifier count differs from the manifest -- re-run scripts/menu-to-seed.py"
         );
         assert_eq!(
             manifest["projection_fnv1a64"].as_str().expect("projection"),
             format!("{:016x}", fnv1a64(&rows.join("\n"))),
             "the generated catalogue no longer matches the manifest. Either \
-             edge/database/src/bin/devseed/gong_menu.rs was hand-edited (it is \
+             edge/database/src/bin/devseed/client_menu.rs was hand-edited (it is \
              GENERATED -- edit menu_imgs_gong/gong_menu.xlsx instead), or the \
-             workbook changed and scripts/gong-menu-to-seed.py was not re-run."
+             workbook changed and scripts/menu-to-seed.py was not re-run."
         );
     }
 }

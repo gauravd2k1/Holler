@@ -101,7 +101,7 @@ From a terminal **you** own: a Tauri window launched from a tool with redirected
 stdio never appears.
 
 **Check:** the till window opens, sign in as `cashier@holler.test` /
-`holler123`, the Gong menu renders with real categories, and **the sync banner
+`holler123`, the client menu renders with real categories, and **the sync banner
 is absent** — not empty, absent.
 
 **Check the QR before the rehearsal, not during it.** Ring up anything, open

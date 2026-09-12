@@ -7,7 +7,7 @@
 //!
 //! It renders through `render_invoice_html`, the SAME function the print path
 //! calls, so what you see here is what a customer gets — not a mock-up of it.
-//! The fixture is Gong data at Gong prices, because a receipt reviewed with
+//! The fixture is the client's own data at their own prices, because a receipt reviewed with
 //! "Butter Chicken ₹250" on it is a receipt reviewed against the wrong menu.
 //!
 //! DEV-ONLY. Nothing in the shipped print path calls this, and it writes
@@ -22,10 +22,31 @@ const ORDER_ID: &str = "01a09600-0000-7000-8000-000000000002";
 
 /// The seller identity as `outlet_fiscal_profile` stores it. Fictional in
 /// FORMAT-VALID shapes: a real registration never belongs in a fixture.
+///
+/// THE NAMES COME FROM THE SEED, NOT FROM HERE. `seed/demo-outlet.json` is the
+/// single source of truth for who this restaurant is, and a preview that
+/// carried its own copy would keep showing the old name after a rename -- a
+/// preview of a receipt nobody prints. Falls back to the id-free strings below
+/// only if the seed file cannot be read, which on a dev machine means it has
+/// not been generated yet.
+fn seed_names() -> (String, String) {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../seed/demo-outlet.json");
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return ("Restaurant (seed not generated)".into(), "Restaurant".into());
+    };
+    let Ok(seed) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return ("Restaurant (seed unreadable)".into(), "Restaurant".into());
+    };
+    let tenant = seed["tenant"]["name"].as_str().unwrap_or("Restaurant").to_string();
+    let outlet = seed["outlet"]["name"].as_str().unwrap_or("Restaurant").to_string();
+    (tenant, outlet)
+}
+
 fn fiscal_profile_json() -> String {
+    let (legal_name, trade_name) = seed_names();
     serde_json::json!({
-        "legal_name": "Gong Hospitality Pvt Ltd",
-        "trade_name": "Gong — Modern Asian",
+        "legal_name": legal_name,
+        "trade_name": trade_name,
         "address_line1": "123 MG Road",
         "address_line2": "Camp",
         "city": "Pune",

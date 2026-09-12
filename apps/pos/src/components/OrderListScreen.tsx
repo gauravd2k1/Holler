@@ -26,6 +26,7 @@ import { formatIST } from "../lib/datetime";
 import { PrintFailureBanner } from "./PrintFailureBanner";
 import { SyncBlockedBanner } from "./SyncBlockedBanner";
 import { LowStockBanner } from "./LowStockBanner";
+import { OutletName } from "./OutletName";
 
 // The only reporting permitted in Milestone 1 (CLAUDE.md EXCLUDES: "reporting
 // beyond a basic order list"). No filtering, totals-by-day, or exports.
@@ -109,6 +110,7 @@ export function OrderListScreen() {
       <header className="holler-header">
         <div className="holler-header__brand">
           <img src="/holler_no_bg.png" alt="Holler" className="holler-logo" />
+          <OutletName />
           <h1>Orders</h1>
         </div>
         <div className="holler-header__spacer" />
@@ -156,7 +158,11 @@ export function OrderListScreen() {
                     nullable only for pre-0.4.0 legacy rows; "unnumbered" is
                     shown rather than falling back to the id. */}
                 <td>{order.display_number !== null ? `#${order.display_number}` : "unnumbered"}</td>
-                <td>{order.order_type}</td>
+                {/* NOT the raw enum. DINE_IN on a screen is a variable name;
+                    the status column beside it has read as plain language
+                    since M2 and this column was still shouting. Same helper,
+                    so the two cannot drift apart. */}
+                <td>{orderStatusLabel(order.order_type)}</td>
                 {/* Never colour-only (docs/spec/kitchen.md §KDS, applies
                     wherever status is rendered): plain-language text, not a
                     coloured dot. */}

@@ -15,8 +15,8 @@
 >    one deducted no stock. Closes S-CAP-06 and S-SYNC-08 at the source.
 > 2. **`f7d9c8f` — the demo menu is the CLIENT'S OWN CARD.** The invented
 >    Indian dev menu is gone. `menu_imgs_gong/gong_menu.xlsx` is the authoring
->    source, `scripts/gong-menu-to-seed.py` generates
->    `edge/database/src/bin/devseed/gong_menu.rs`, and devseed emits
+>    source, `scripts/menu-to-seed.py` generates
+>    `edge/database/src/bin/devseed/client_menu.rs`, and devseed emits
 >    `seed/demo-outlet.json` from it. **277 items, 46 categories, 343 variants,
 >    21 modifier options, 38 inventory items, 16 root recipes + 2 sub-recipe
 >    batches, 7 supplier items.** Outlet is `Gong — Modern Asian`.
@@ -60,7 +60,7 @@
 >
 > 1. **Run `scripts/demo-reset.ps1 -Force` once.** It covers three things at
 >    once: the variant renumbering (see the warning below), the edge half of
->    seed parity, and the new Gong menu. `apps/pos/.env.dev` is deny-ruled to
+>    seed parity, and the new client menu. `apps/pos/.env.dev` is deny-ruled to
 >    agents, so this is the operator's.
 > 2. **Re-enrol the demo phone.** The T29 device-row fix has NO BACKFILL
 >    (S-CAP-20): a WAITER paired before 2026-09-11 20:28 stays broken and
