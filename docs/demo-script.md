@@ -4,10 +4,11 @@
 followed click by click on the day.
 
 **STATUS: the day-of checklist below is written and current. THE SIX STEPS ARE
-NOT WRITTEN YET** — they are Tuesday's work, together with item 8's three timed
-rehearsals, and each step needs its exact clicks, its expected screen and its
-fallback written from a real run rather than from memory. Do not read the
-absence of a step as a step that passed.
+NOT WRITTEN YET** — they are drafted **Monday evening, from the operator's phone
+runs**, because each needs its exact clicks, its expected screen and its
+fallback written from an observed run rather than from memory. **Tuesday is
+rehearsals and the recording only.** Do not read the absence of a step as a step
+that passed.
 
 ---
 
@@ -126,12 +127,15 @@ Join the hotspot, open the captain page, pair with the WAITER token.
    warning visible.
 4. Stop the cloud. Take and bill another order. Restart the cloud. Banner
    clears, order appears in admin.
-5. Admin: the received GRN, and orders (the Orders tab landed 2026-09-12).
-   **Stock variance was ruled out** — no cloud read route exists for inventory.
+5. Admin: **the Orders tab (contracts 0.8.2) and the received GRN — those two,
+   and nothing else.** Stock variance is CUT, ruled 2026-09-12: no cloud read
+   route exists for inventory (`/inventory/*` are all POST-only), so a variance
+   screen would need new OpenAPI paths.
 6. Optional, only if clean three times: a fake ONDC order arrives, is accepted
    on the till, and is billed.
 
 Each one needs, written from an observed run: the exact clicks, the screen to
-expect, and the fallback if it does not appear. **Do not bill a bar item** —
+expect, and the fallback if it does not appear. **Drafted MONDAY EVENING from
+the operator's phone runs** — Tuesday is rehearsals and the recording only. **Do not bill a bar item** —
 alcohol sits on a zero-rate tax profile (VAT is inexpressible under contracts
 0.8.2), so a bar line would print a tax figure that is deliberately 0.

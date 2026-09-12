@@ -399,6 +399,22 @@ Established by inspection, not recall — cite the file, not this summary:
   supplier accounts posting, credit application and payment settlement (M7); **a
   live channel on any aggregator platform**.
 
+### Scope until Wednesday — BINDING, set 2026-09-12
+
+- **No new features.** Nothing lands that is not on the six-step path or on the
+  captain / KDS / bill screens.
+- **Scenario board: fix only FAILs that sit on the six-step path.** Every other
+  FAIL is listed with a fix-or-cut verdict and left alone.
+- **Polish pass is PHONE-FIRST**, in this order: captain page, KDS ticket,
+  invoice screen, receipt PDF. Every empty state has words, every wait has a
+  spinner, no raw ids, no dev labels. Screenshot each.
+- **Any interaction over 1s on the phone or the till is a DEMO BLOCKER.**
+  Measure captain send -> KDS render, and till -> bill open, and report the
+  numbers rather than an impression.
+- **The six steps are drafted MONDAY EVENING from the operator's phone runs.**
+  Tuesday is rehearsals and the recording only.
+- **Report demo blockers only.**
+
 ### Standing rules that still bind
 
 - **A milestone does not close until its acceptance evidence is committed to the

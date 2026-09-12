@@ -10,6 +10,31 @@ Read `CLAUDE.md`'s `## Current milestone:` block for scope and EXCLUDES.
 
 ---
 
+## Scenario board triage against the six-step path (2026-09-12)
+
+Every non-passing row, with a verdict. **Only rows on the six-step path get
+fixed**; the rest are listed and left, per the operator's Wednesday scope.
+
+| Row | Step | Verdict | Why |
+|---|---|---|---|
+| **S-CAP-06** | 1a | **FIXED** (`4f98b06`) | 12 items had no variant, so the captain refused to cart them. Every item now carries one; guarded by a test. |
+| **S-SYNC-08** | 1a | **FIXED** (`4f98b06` + `f7d9c8f`) | Same root: cloud variant coverage now matches the edge row for row, proven on a clean seed. |
+| **S-SYNC-10** | 6 | **FIXED at the cause** (`4f98b06`) | Orders with a total and no lines were the variant-FK refusal seen from the cloud. Re-verify after the reset; it is a consequence, not its own defect. |
+| **S-ADM-08** | 4 | **FIXED** (`7e94837`) | The Orders screen exists. The route had existed since M1 and was only missing from the spec. |
+| **S-BE-09** | pre | **FIXED** (`c9195f5`) | Login budget configurable; the demo build runs 50 attempts. The identical-401 behaviour is unchanged by design. |
+| **S-CAP-20** | 1a | **OPERATOR ACTION, not a code fix** | The T29 fix has no backfill. The demo WAITER must be re-ENROLLED (re-pairing does not help). On the day-of checklist. |
+| **S-ADM-09** | 5 | **CUT** — operator ruling 2026-09-12 | No cloud read route exists for inventory; a variance screen needs new OpenAPI paths. Step 5 is Orders + GRN. |
+| **S-SYNC-04** | 4/5/6 | **CARRIED (A7), do not fix** | Only `order` and `table_session` are routed. The demo story depends on `order` replaying, which it does. Pilot work. |
+| **S-SYNC-13** | 1a/6 | **CARRIED, do not fix** | The till's devseed device has no cloud row, so till-authored orders replay unattributable. Cosmetic in the back office; nothing on the six steps reads it. |
+| **S-SYNC-11** | 1a/2 | **NOT A DEFECT** — operator ruling | `restaurant_table`/`station`/`printer` stay edge-only. No admin screen renders them; removed from the brief. |
+| **S-API-02** | 2 | **OFF-PATH, leave** | `PATCH /menu/items` answers 400 where the contract says 422. The load-bearing half — that it refuses rather than silently ignores — is correct. Nothing in the demo touches it. |
+| **S-SYNC-06** | 6 | NOT TESTABLE | Unchanged. |
+| **S-CUI-06** | 1a | NOT TESTABLE | Unchanged. |
+
+**Nothing on the six-step path is left failing in code.** What remains between
+here and Wednesday is the operator's re-enrolment (S-CAP-20), a post-reset
+re-verification of S-SYNC-10, and the polish/perf work below.
+
 ## Work items
 
 | # | Item | State | Evidence |
