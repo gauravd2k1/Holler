@@ -180,9 +180,17 @@ struct FiscalProfileSnapshot {
     address_line1: String,
     address_line2: Option<String>,
     city: String,
-    state_code: String,
+    /// The SELLER's state. Parsed for snapshot completeness and deliberately
+    /// not printed: the line on the bill is the PLACE OF SUPPLY, which is the
+    /// invoice's own `place_of_supply_state_code` and is not always the
+    /// seller's state.
     #[allow(dead_code)]
-    // parsed for completeness of the snapshot shape; state_name is printed instead
+    state_code: String,
+    /// Printed as "Maharashtra (27)". Until 2026-09-12 this field was
+    /// `#[allow(dead_code)]` under a comment claiming it was "printed
+    /// instead", while both renderers printed `state_code` twice and every
+    /// bill read "27 (27)". Nullable because a snapshot written before the
+    /// column existed has none, and a bill from then must still print.
     state_name: Option<String>,
     pincode: String,
     gstin: String,
@@ -243,6 +251,41 @@ fn money(paise: i64) -> String {
     let sign = if paise < 0 { "-" } else { "" };
     let abs = paise.unsigned_abs();
     format!("{sign}Rs {}.{:02}", abs / 100, abs % 100)
+}
+
+/// "Maharashtra (27)", or just "(27)" collapsed to "27" when the snapshot has
+/// no state name. ONE function, used by BOTH renderers: the ESC/POS bytes and
+/// the HTML are held line-for-line equal by an equivalence test, so a change
+/// made in one place only would fail it -- which is the test doing its job,
+/// and the reason this is not two format! calls.
+fn place_of_supply(profile_state_name: Option<&str>, state_code: &str) -> String {
+    match profile_state_name {
+        Some(name) if !name.trim().is_empty() => format!("{name} ({state_code})"),
+        _ => state_code.to_string(),
+    }
+}
+
+/// A bill is read by a customer standing at a counter, so the date on it is
+/// the outlet's local time, never the stored UTC instant. Until 2026-09-12
+/// both renderers printed `invoice.invoice_date` raw and every receipt carried
+/// "2026-09-12T08:30:00Z" -- an ISO timestamp in a customer's hand.
+///
+/// IST is hard-coded (+05:30) rather than read from `outlet.timezone`: the
+/// invoice snapshot does not carry the outlet's zone, inventing a lookup here
+/// would put a second source of truth on the print path, and every outlet this
+/// product serves is in one zone (CLAUDE.md: UTC storage, outlet timezone
+/// rendered local). An unparseable timestamp falls back to the raw string --
+/// a receipt that prints something odd beats a receipt that fails to print.
+fn format_bill_datetime(iso_utc: &str) -> String {
+    use chrono::{DateTime, FixedOffset, Utc};
+    let Ok(parsed) = iso_utc.parse::<DateTime<Utc>>() else {
+        return iso_utc.to_string();
+    };
+    let ist = FixedOffset::east_opt(5 * 3600 + 30 * 60).expect("IST offset is valid");
+    parsed
+        .with_timezone(&ist)
+        .format("%d %b %Y, %I:%M %p IST")
+        .to_string()
 }
 
 fn kv_line(b: &mut EscPosBuilder, width: usize, label: &str, value: &str) {
@@ -337,7 +380,12 @@ pub fn render_invoice(
         );
     }
     kv_line(&mut b, width, "Invoice No", &invoice.invoice_number);
-    kv_line(&mut b, width, "Date", &invoice.invoice_date);
+    kv_line(
+        &mut b,
+        width,
+        "Date",
+        &format_bill_datetime(&invoice.invoice_date),
+    );
     // The one line the T10 brief pins: the short order number, never
     // `invoice.order_id`/`invoice.id`.
     kv_line(&mut b, width, "Order", ctx.order_display_number);
@@ -348,9 +396,9 @@ pub fn render_invoice(
         &mut b,
         width,
         "Place of Supply",
-        &format!(
-            "{} ({})",
-            profile.state_code, invoice.place_of_supply_state_code
+        &place_of_supply(
+            profile.state_name.as_deref(),
+            &invoice.place_of_supply_state_code,
         ),
     );
     if let Some(name) = invoice
@@ -680,7 +728,11 @@ pub fn render_invoice_html(
         );
     }
     html_kv_line(&mut body, "Invoice No", &invoice.invoice_number);
-    html_kv_line(&mut body, "Date", &invoice.invoice_date);
+    html_kv_line(
+        &mut body,
+        "Date",
+        &format_bill_datetime(&invoice.invoice_date),
+    );
     // The one line the T10 brief pins: the short order number, never
     // `invoice.order_id`/`invoice.id`.
     html_kv_line(&mut body, "Order", ctx.order_display_number);
@@ -690,9 +742,9 @@ pub fn render_invoice_html(
     html_kv_line(
         &mut body,
         "Place of Supply",
-        &format!(
-            "{} ({})",
-            profile.state_code, invoice.place_of_supply_state_code
+        &place_of_supply(
+            profile.state_name.as_deref(),
+            &invoice.place_of_supply_state_code,
         ),
     );
     if let Some(name) = invoice
@@ -787,7 +839,9 @@ pub fn render_invoice_html(
         "<!DOCTYPE html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\n\
          <title>{title}</title>\n\
          <style>\n\
-         body {{ font-family: 'Courier New', monospace; max-width: 420px; margin: 2rem auto; }}\n\
+         @page {{ size: 80mm auto; margin: 4mm; }}\n\
+         body {{ font-family: 'Courier New', monospace; width: 42ch; max-width: 100%; \
+margin: 2rem auto; font-size: 13px; line-height: 1.35; }}\n\
          .line {{ white-space: pre-wrap; }}\n\
          .brand-logo {{ text-align: center; margin-bottom: 0.5rem; }}\n\
          .brand-logo img {{ width: 120px; height: auto; }}\n\
@@ -1062,7 +1116,18 @@ mod tests {
 
         // Invoice identity.
         assert!(text.contains("FY26/PNQ/001423"));
-        assert!(text.contains("2026-08-14T12:30:00Z"));
+        // THE DATE IS THE OUTLET'S LOCAL TIME, NOT THE STORED UTC INSTANT.
+        // 2026-08-14T12:30:00Z is 18:00 IST the same day. This assertion used
+        // to require the raw ISO string, which is what a customer was being
+        // handed until 2026-09-12.
+        assert!(
+            text.contains("14 Aug 2026, 06:00 PM IST"),
+            "the bill must carry an IST date a customer can read, got: {text}"
+        );
+        assert!(
+            !text.contains("2026-08-14T12:30:00Z"),
+            "the raw UTC timestamp must not appear on a bill"
+        );
 
         // Line item: description, HSN/SAC, quantity, rate, taxable value.
         assert!(text.contains("Butter Chicken"));

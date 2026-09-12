@@ -546,3 +546,42 @@ to remove that uncertainty. The sheet now stays open on its own empty state and
 closes when the waiter says Done. A layout defect went the same way: the line
 row put name, stepper and total on one line and the total clipped off the right
 edge at 390px.
+
+## Receipt — 2026-09-12 (`docs/demo-screens/receipt/`)
+
+**Re-runnable: `node scripts/receipt-preview.mjs`.** Two halves, both real:
+`edge/printer/src/bin/receipt_preview.rs` renders through
+`render_invoice_html` — the SAME function the print path calls — and Chromium
+photographs it at 80mm thermal width and prints the PDF. No POS, no database,
+nothing bound. **Both halves are committed**, unlike the earlier harnesses that
+left only their PNGs behind.
+
+| File | What it is |
+|---|---|
+| `receipt-80mm.png` | The rendered bill at 80mm width, three lines, split tender. |
+| `receipt-80mm.pdf` | The same bill through `page.pdf({ width: "80mm" })` — what demo step 2 opens. |
+
+The harness asserts the receipt's own content before photographing it, and
+fails outright if a raw UUID appears anywhere on it.
+
+**Three defects it found, all on the bill a customer is handed:**
+
+- **The date was the raw UTC instant** — `Date: 2026-09-12T08:30:00Z`. Now
+  `12 Sep 2026, 02:00 PM IST`, through one helper both renderers call so the
+  ESC/POS bytes and the HTML stay equal.
+- **Place of supply printed the state CODE TWICE** — `27 (27)` — while the
+  struct comment said the name was printed instead and the field carried
+  `#[allow(dead_code)]`. A claim in a comment the code did not honour. Now
+  `Maharashtra (27)`.
+- **The HTML was sized in pixels while the paper is sized in columns.** At
+  420px the lines happened to fit; printed to an 80mm page they wrapped
+  mid-amount — `Taxable Rs` on one line and `795.00` on the next. The ESC/POS
+  side is 42 columns by construction, so the HTML is `42ch` by construction
+  now.
+
+**And one the preview found in itself:** the fixture invented a payment line
+with amounts and a rupee symbol, which the till cannot produce — it builds
+`Cash + UPI` from the recorded tenders. A preview that renders something the
+product never emits is worse than no preview, so the fixture was corrected to
+the real shape.
+

@@ -202,12 +202,21 @@ export function OrderListScreen() {
                     <button
                       type="button"
                       className="btn"
-                      onClick={() =>
+                      onClick={() => {
+                        // Perf marker, the NEAR end of "till tap -> bill
+                        // open". Stamped on the tap itself rather than after
+                        // navigation, because the interval starts when the
+                        // cashier's finger lands, not when the router agrees
+                        // to move. Far end: `till_bill_screen_opened` in
+                        // BillingScreen.
+                        console.log(
+                          `HOLLER-PERF ts=${new Date().toISOString()} event=till_bill_tapped id=${order.holler_order_id}`,
+                        );
                         void navigate({
                           to: "/orders/$orderId/billing",
                           params: { orderId: order.holler_order_id },
-                        })
-                      }
+                        });
+                      }}
                     >
                       Bill
                     </button>
