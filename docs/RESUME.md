@@ -1,4 +1,161 @@
-# Resume state — 2026-09-12
+# Resume state — 2026-09-13
+
+> ## RESTART HERE — SESSION ENDED 2026-09-13, HEAD `8aa46dd`, WORKING TREE CLEAN AND PUSHED
+>
+> The block below this one is the 2026-09-12 record and is still accurate
+> except where this block corrects it. **The repo is the authority; this is a
+> pointer, not a second source of truth.**
+>
+> ### HEAD and what landed since the last restart block
+>
+> `8aa46dd feat(demo): the client's name reaches the menu and the bill header`,
+> pushed; `origin/main` and `HEAD` are level and no tracked file is modified.
+> The untracked entries in `git status` (`menu_imgs_gong/`, `pitch-deck/`,
+> `.dev-prints/`, `.vscode/`, `~/`, `=ro`, a `~$` Excel lock file and similar)
+> are the operator's and predate this session — none of them is pending work.
+>
+> Landed since `eda25dd`, newest last:
+>
+> - **The agent guard** (`scripts/agent-guard.ps1`), described below.
+> - **`run-dev.ps1` and the bootstrap now print ONE launch sequence**, described
+>   below.
+> - **UPI plumbing**: `-UpiVpa` / `-UpiPayeeName` on `dev-bootstrap.ps1`,
+>   remembered in the bootstrap state file, written into **both**
+>   `apps/pos/.env.dev` and `apps/pos/.env.local`, and the invoice screen now
+>   renders a **"UPI QR not configured"** panel instead of returning `null`.
+> - **`8aa46dd`**: the cocktail "The Gong" is renamed **"House Signature"**
+>   through a new `ITEM_RENAMES` table in `scripts/menu-to-seed.py`, applied to
+>   the workbook rows before grouping, before the manifest projection and before
+>   the Rust emit. The bill header's address, GSTIN, FSSAI and footer are now
+>   constants beside `RESTAURANT_NAME` in `devseed.rs`: the invented street
+>   "123 MG Road" is gone (the header is now Camp / Pune 411001), and the footer
+>   no longer reads "dev fixture, not a real bill". **Monday's reset picks all
+>   of this up.** 9 devseed tests executed and passed through
+>   `scripts/assert-tests-ran.mjs`, including the manifest guard and the
+>   cloud/edge row-for-row parity test.
+>
+> ### Stack state as this session ended — VERIFIED BY PID, NOT BY THE PORT
+>
+> | Port | Process | pid | Started |
+> |---|---|---|---|
+> | 8080 | `api` (backend, own window) | **23052** | 2026-09-12 09:08:57 |
+> | 9310 + 9320 | `holler-pos` (LAN + captain listeners) | **66284** | 2026-09-12 23:45:56 |
+> | 5173 | `node` (POS Vite) | **69892** | 2026-09-12 23:45:48 |
+> | 5174 | `node` (KDS) | **77240** | 2026-09-12 23:41:29 |
+> | 5175 | admin console | — | down |
+>
+> **All of it was left running deliberately, at the operator's instruction.**
+> This supersedes the "pid 9360" and "pid 58148" lines further down this file.
+> Postgres, Redis and NATS are up; Postgres carries migration 0035.
+>
+> ### The `.env.dev` repair — what happened and what the file now holds
+>
+> **An agent overwrote `apps/pos/.env.dev` and zeroed `HOLLER_DB_KEY_HEX`.** The
+> test that did it was pointed at a scratch path, but the region of
+> `dev-bootstrap.ps1` it executed recomputes `$envFile` from `$repoRoot`
+> internally and ignored the scratch path it was handed. **Passing a scratch
+> path to code that derives its own paths is not isolation.** The operator
+> re-ran the bootstrap with `-RotateKey` and the file was rebuilt; a later
+> bootstrap run then hit `file is not a database` on the plaintext leftover,
+> which is now handled (see the quarantine note below).
+>
+> `.env.dev` and `.env.local` now both carry the UPI pair, and the **serving
+> Vite has the payee baked into its bundle** — confirmed by fetching the
+> transformed `src/domain/upi.ts` from the running dev server, the same probe
+> that had shown it ABSENT before, so it is a real change and not a hopeful one.
+> The file stays deny-ruled to agents: **the operator runs anything that needs
+> it.**
+>
+> Related and already landed: `edge/database/src/crypto.rs` now **quarantines an
+> unreadable plaintext leftover** as `edge.db.unreadable-<unix-ts>` when a sealed
+> file exists, and refuses when none does. Three such files sit inertly in the
+> edge data directory from when it fired on the operator's machine. **The
+> plaintext leftover is NOT a recovery route and must never be offered as one**
+> (operator's ruling): it is the data-loss bug itself. If the key is lost, the
+> answer is a reset.
+>
+> ### The agent guard — `scripts/agent-guard.ps1`
+>
+> **INSTRUCTIONS ARE NOT A CONTROL.** Three times in one day an agent wrote to
+> the operator's live stack despite an explicit, repeated, written instruction.
+> The guard replaces the instruction with a refusal. Claude Code sets
+> `CLAUDECODE=1` in every shell it spawns; under one:
+>
+> - `dev-bootstrap.ps1` and `demo-reset.ps1` **refuse unless BOTH `-RepoRoot`
+>   and `-EdgeDataDir` are given explicitly AND both resolve outside**
+>   `C:\Code\Holler` and `%APPDATA%\com.holler.pos`. A default is forbidden —
+>   the whole failure mode is a default quietly resolving to the real path — and
+>   `..\Holler\x` is caught by canonicalising before comparing.
+> - `dev-up.ps1` and `apps\pos\run-dev.ps1` **refuse outright**: they exist to
+>   start the operator's stack on live ports and have no scratch mode.
+>
+> It is **dot-sourced**, so a missing guard file stops the script rather than
+> silently disabling the control. A human shell has no `CLAUDECODE` and is
+> unaffected. Both halves were watched: the refusal fired from an agent shell,
+> and a scratch path passed.
+>
+> ### There is ONE way to start the POS
+>
+> ```
+> .\apps\pos\run-dev.ps1
+> ```
+>
+> **Never `pnpm dev` in a separate terminal first.** `tauri.conf.json`'s
+> `beforeDevCommand` is `pnpm dev`, so `tauri dev` always starts Vite itself,
+> and `vite.config.ts` sets `strictPort: true`, so a second one fails on 5173.
+> The old note claiming `tauri dev` "will not start its own" Vite was false in
+> both directions and cost an evening — and a stale Vite serving the window
+> serves a bundle built in a different environment, which is exactly why the UPI
+> QR was missing from the bill screen while `.env.dev` carried the payee.
+> `run-dev.ps1` now **refuses when 5173 is held and names the pid**;
+> `-SkipViteCheck` forces past it. The bootstrap prints this one sequence, and it
+> is in `docs/demo-script.md`'s day-of checklist.
+>
+> ### NEXT STEPS — in order, recorded verbatim as given to the operator
+>
+> 1. **Confirm the QR on screen (30 seconds).** Ring up anything on the till,
+>    open the bill, and look for **"Scan to pay via UPI"** with a QR, the amount,
+>    and `ShinjukuYakitori` beneath it. If instead you see **"UPI QR not
+>    configured"**, that means the window is on a different bundle than the
+>    server probed at the end of this session.
+> 2. **KDS.** It is on 5174 already. Check the indicator reads **connected**
+>    against `ws://192.168.0.106:9310/kds`. Load-but-never-connect means a stale
+>    `VITE_KDS_LAN_URL`.
+> 3. **Enrol the WAITER device and pair the phone.** Must be enrolled **after
+>    2026-09-11 20:28** — the T29 fix has no backfill (S-CAP-20), so re-pairing
+>    an older device will not work; it needs re-enrolling.
+> 4. **Then the phone run, which produces the perf logs.** Perf is LOG-BASED,
+>    not scripted, by the operator's ruling: no process of the agent's touches
+>    the live ports. Grep `HOLLER-PERF` from each of these and paste them:
+>    - POS terminal — `captain_order_received`, `captain_send_received`,
+>      `kot_upserted_emitted`
+>    - KDS console — `kds_ticket_rendered`
+>    - Till console (DevTools) — `till_bill_tapped`, `till_bill_screen_opened`
+>
+>    The two intervals to compute are **captain send to KDS render** and **till
+>    tap to bill open**. **Anything over 1s is a demo blocker.**
+>
+> ### Two decisions still open before Monday
+>
+> - **The menu is still the Gong card** — 277 items under the Shinjuku Yakitori
+>   name. Only the one self-naming cocktail was renamed. If a Shinjuku sheet
+>   arrives: `python scripts/menu-to-seed.py --workbook <path>`, re-emit
+>   `seed/demo-outlet.json`, re-run the 9 devseed tests.
+> - **The bill header address and GSTIN are placeholders.** Camp / Pune 411001
+>   and `27AAAAA0000A1Z5`, registered to nobody. The real registered address
+>   replaces three constants in `devseed.rs` and nothing else.
+>
+> ### Still not started
+>
+> - **Item 7** — the six demo steps in `docs/demo-script.md`, drafted Monday
+>   evening from the operator's phone runs.
+> - **Item 8** — three timed rehearsals from a clean reset, Tuesday.
+> - **KDS ticket and spinner polish** — the CSS change still owes a screenshot;
+>   no socket-stub harness exists for it.
+> - **Item 5 (offline tick)** — conditional on observing the till sluggish with
+>   the cloud down.
+>
+> ---
 
 > ## DEMO BUILD — WHERE THIS SESSION GOT TO (2026-09-12, pushed through `c9195f5` + the orders work)
 >
@@ -84,6 +241,8 @@
 >   credential you mistyped and not the rate limiter. The reset fixes it.
 > - **Backend on 8080 is running in its own window as pid 9360** (started by
 >   `scripts/dev-up.ps1 -SkipInfra -SkipSeed -NoKds -NoPos` on 2026-09-12).
+>   **SUPERSEDED 2026-09-13: the backend on 8080 is now pid 23052** — see
+>   the stack table in the block at the top of this file.
 >   Docker Desktop was started this session; `postgres`, `redis` and `nats` are
 >   up. Verify any restart by NEW PID, never by the port answering.
 > - Contracts are at **v0.8.2** (ADR-027) — a DOCUMENTATION-ONLY bump: `GET
