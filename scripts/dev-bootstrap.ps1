@@ -53,6 +53,22 @@ param(
     # with `ipconfig` and pass it explicitly: -LanHost 192.168.43.12
     [string]$LanHost = "",
 
+    # The UPI payee the invoice screen's QR and the printed receipt encode.
+    #
+    # WRITTEN INTO apps\pos\.env.dev BY THIS SCRIPT, and REMEMBERED between
+    # runs in the same state file that holds device ids. Before that it was
+    # hand-added to .env.dev, and every bootstrap re-run silently wiped it --
+    # after which NO QR RENDERS AT ALL (there is no empty-QR state; an unset
+    # VPA produces nothing, with nothing on screen to say why). A day-of
+    # re-run would have removed the QR from demo step 2 and nobody would have
+    # known until the bill was on the screen.
+    #
+    # Empty and never previously set means no QR, which stays the correct
+    # default: a QR aimed at nobody opens a payment app on a customer's phone
+    # pointed at no payee.
+    [string]$UpiVpa = "",
+    [string]$UpiPayeeName = "",
+
     # Skip "docker compose up" if the containers are already running.
     [switch]$SkipInfra,
 
@@ -777,9 +793,32 @@ if ($PrinterFileSinkDir -ne "") {
     New-Item -ItemType Directory -Force -Path $resolvedSink | Out-Null
     $envLines += "HOLLER_PRINTER_FILE_SINK_DIR=$resolvedSink"
 }
+# BOTH SPELLINGS, FROM ONE VALUE. Vite only exposes a variable to the client
+# bundle when it is prefixed `VITE_`, so the invoice SCREEN reads
+# VITE_HOLLER_DEMO_UPI_VPA while the native receipt renderer reads the
+# unprefixed name -- two variables that must agree and nothing that detects a
+# mismatch (docs/demo-status.md). Writing them from one parameter here is what
+# makes a mismatch unrepresentable rather than merely unlikely.
+if ($resolvedUpiVpa -ne "") {
+    $envLines += "HOLLER_DEMO_UPI_VPA=$resolvedUpiVpa"
+    $envLines += "VITE_HOLLER_DEMO_UPI_VPA=$resolvedUpiVpa"
+    if ($resolvedUpiPayee -ne "") {
+        $envLines += "HOLLER_DEMO_UPI_PAYEE_NAME=$resolvedUpiPayee"
+        $envLines += "VITE_HOLLER_DEMO_UPI_PAYEE_NAME=$resolvedUpiPayee"
+    }
+}
+
 # ASCII so Windows PowerShell 5.1 reads it back without a BOM surprise.
 $envLines | Out-File -FilePath $envFile -Encoding ascii
 Write-Host "`n[4/4] wrote $envFile" -ForegroundColor Cyan
+if ($resolvedUpiVpa -ne "") {
+    Write-Host "UPI QR ENABLED: $resolvedUpiVpa$(if ($resolvedUpiPayee -ne '') { " ($resolvedUpiPayee)" })" -ForegroundColor Cyan
+} else {
+    Write-Host "UPI QR DISABLED: no -UpiVpa given and none remembered." -ForegroundColor Yellow
+    Write-Host "  The invoice screen and the printed receipt will show NO QR AT ALL -- there is" -ForegroundColor Yellow
+    Write-Host "  no empty-QR state, and nothing on screen says why. Demo step 2 shows the QR," -ForegroundColor Yellow
+    Write-Host "  so pass -UpiVpa <vpa> -UpiPayeeName <name> and re-run before the demo." -ForegroundColor Yellow
+}
 if ($WithBilling) {
     Write-Host "billing config seeded: bills can be issued, discounted and split on this machine." -ForegroundColor Cyan
 }
@@ -793,6 +832,24 @@ if ($PrinterFileSinkDir -ne "") {
 # only with `--mode dev`, which every documented KDS launch command below
 # passes; see apps/kds/.env.dev.example for why the name does not change
 # Vite's default-mode behaviour.
+# The UPI payee, resolved the same way the LAN host is: an explicit
+# parameter wins, otherwise the value this script remembered last time. Only a
+# NEW value is written back, so a re-run with no -UpiVpa keeps what the demo
+# was set up with instead of wiping it.
+$upiStateKey = "$CloudBaseUrl|upi"
+$upiState = Get-BootstrapStateMap
+$resolvedUpiVpa = $UpiVpa
+$resolvedUpiPayee = $UpiPayeeName
+if ($resolvedUpiVpa -eq "" -and $upiState.ContainsKey("$upiStateKey|vpa")) {
+    $resolvedUpiVpa = $upiState["$upiStateKey|vpa"]
+    Write-Host "       UPI payee $resolvedUpiVpa (remembered from a previous run; pass -UpiVpa to change it)" -ForegroundColor DarkGray
+}
+if ($resolvedUpiPayee -eq "" -and $upiState.ContainsKey("$upiStateKey|payee")) {
+    $resolvedUpiPayee = $upiState["$upiStateKey|payee"]
+}
+if ($UpiVpa -ne "") { Set-BootstrapStateEntry -Key "$upiStateKey|vpa" -Value $UpiVpa }
+if ($UpiPayeeName -ne "") { Set-BootstrapStateEntry -Key "$upiStateKey|payee" -Value $UpiPayeeName }
+
 $lanIp = Get-LanIPv4 -Explicit $LanHost
 $kdsEnvFile = Join-Path $repoRoot "apps\kds\.env.dev"
 $kdsEnvLines = @(

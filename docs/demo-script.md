@@ -46,8 +46,13 @@ hotspot's address changes every time it reconnects.
 ### 3. Bootstrap
 
 ```powershell
-.\scripts\dev-bootstrap.ps1 -RotateKey -LanHost <hotspot-ip> -DbKeyHex <64-hex-key>
+.\scripts\dev-bootstrap.ps1 -RotateKey -LanHost <hotspot-ip> -DbKeyHex <64-hex-key> `
+    -UpiVpa <vpa> -UpiPayeeName "Gong"
 ```
+
+**`-UpiVpa` only has to be passed ONCE per machine** — the bootstrap remembers
+it in the same state file as the device ids and reuses it on every later run.
+Pass it again only to change it.
 
 `-DbKeyHex` is the key from `apps\pos\.env.dev`. It is **yours** — that file is
 deny-ruled to agents, and no agent may supply a literal key.
@@ -62,6 +67,10 @@ deny-ruled to agents, and no agent may supply a literal key.
   and must be fixed before step 5.
 - `VITE_KDS_LAN_URL=ws://<hotspot-ip>:9310/kds` in the written env file — the
   hotspot IP, never `localhost` and never the WSL address.
+- **`UPI QR ENABLED: <vpa>`** in cyan. A yellow `UPI QR DISABLED` means the
+  invoice screen and the printed receipt will show **no QR at all** — there is
+  no empty-QR state and nothing on screen says why, so this line is the only
+  warning you get before demo step 2.
 
 > **If `[3c/4]` reports 404:** that is a missing DEVICE, not a missing route.
 > A reset drops every `device` row while
@@ -81,6 +90,12 @@ stdio never appears.
 **Check:** the till window opens, sign in as `cashier@holler.test` /
 `holler123`, the Gong menu renders with real categories, and **the sync banner
 is absent** — not empty, absent.
+
+**Check the QR before the rehearsal, not during it.** Ring up anything, open
+the bill, and confirm **"Scan to pay via UPI"** with a QR under it and the
+amount and payee beneath. No QR means the VPA did not reach
+`apps\pos\.env.dev` — go back to step 3. This is worth thirty seconds
+because the failure is silent: the screen looks finished without it.
 
 ### 5. Start the KDS
 

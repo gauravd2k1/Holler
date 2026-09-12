@@ -277,16 +277,31 @@ fn place_of_supply(profile_state_name: Option<&str>, state_code: &str) -> String
 /// rendered local). An unparseable timestamp falls back to the raw string --
 /// a receipt that prints something odd beats a receipt that fails to print.
 fn format_bill_datetime(iso_utc: &str) -> String {
-    use chrono::{DateTime, FixedOffset, Utc};
+    use chrono::{DateTime, Datelike, FixedOffset, Utc};
     let Ok(parsed) = iso_utc.parse::<DateTime<Utc>>() else {
         return iso_utc.to_string();
     };
     let ist = FixedOffset::east_opt(5 * 3600 + 30 * 60).expect("IST offset is valid");
-    parsed
-        .with_timezone(&ist)
-        .format("%d %b %Y, %I:%M %p IST")
-        .to_string()
+    let local = parsed.with_timezone(&ist);
+    format!(
+        "{} {} {}, {} IST",
+        local.format("%d"),
+        EN_IN_SHORT_MONTHS[local.month0() as usize],
+        local.format("%Y"),
+        local.format("%I:%M %p"),
+    )
 }
+
+/// ONE CONVENTION ACROSS TILL, RECEIPT AND ADMIN. Both web apps render this
+/// through `Intl.DateTimeFormat("en-IN", { month: "short" })`, whose ICU data
+/// spells September **"Sept"** and every other month in three letters --
+/// chrono's `%b` says "Sep", so a bill and the screen beside it disagreed on
+/// one month of the year. Mirrored here rather than changed there: the screens
+/// are what a customer and a cashier see most, and ICU is not ours to
+/// override.
+const EN_IN_SHORT_MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sept", "Oct", "Nov", "Dec",
+];
 
 fn kv_line(b: &mut EscPosBuilder, width: usize, label: &str, value: &str) {
     let head = format!("{label}: {value}");
@@ -1044,6 +1059,36 @@ mod tests {
             table_label: Some("T-04"),
             payment_summary: Some("Cash"),
         }
+    }
+
+    /// ONE CONVENTION ACROSS TILL, RECEIPT AND ADMIN. Both web apps format
+    /// through `Intl.DateTimeFormat("en-IN", …)`, which renders
+    /// "12 Sept 2026, 02:00 PM" -- note SEPT, which chrono's %b spells "Sep".
+    /// These are the exact strings those screens produce for the same
+    /// instants; if this test is ever changed, the two `datetime.ts` helpers
+    /// must change with it or a bill and the screen beside it disagree again.
+    #[test]
+    fn bill_datetime_matches_what_the_screens_render() {
+        // September, the one month en-IN spells with four letters.
+        assert_eq!(
+            format_bill_datetime("2026-09-12T08:30:00Z"),
+            "12 Sept 2026, 02:00 PM IST"
+        );
+        // A three-letter month, and a morning time, so the zero-padded hour
+        // and the uppercase day period are both pinned.
+        assert_eq!(
+            format_bill_datetime("2026-08-14T03:05:00Z"),
+            "14 Aug 2026, 08:35 AM IST"
+        );
+        // Midnight IST is the case a naive offset gets wrong: 18:30Z is the
+        // NEXT day in Kolkata.
+        assert_eq!(
+            format_bill_datetime("2026-08-14T18:30:00Z"),
+            "15 Aug 2026, 12:00 AM IST"
+        );
+        // A receipt that cannot parse its own timestamp still prints: the raw
+        // value beats a failed print.
+        assert_eq!(format_bill_datetime("not-a-timestamp"), "not-a-timestamp");
     }
 
     #[test]
