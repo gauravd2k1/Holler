@@ -13,9 +13,10 @@ interface UpiPaymentQrProps {
 /**
  * Customer-facing UPI QR for the bill amount (T8, demo build).
  *
- * Renders nothing at all — not even a placeholder — when no demo payee VPA
- * is configured (`domain/upi.ts`): a QR aimed at nobody is worse than no QR
- * at a client demo. The QR library (`qrcode`) is a bundled dependency, not
+ * Renders NO QR when no demo payee VPA is configured (`domain/upi.ts`) — a QR
+ * aimed at nobody is worse than no QR at a client demo — but SAYS SO on the
+ * screen rather than disappearing. Silence is indistinguishable from a
+ * finished bill, which is exactly how a missing QR reached a rehearsal. The QR library (`qrcode`) is a bundled dependency, not
  * a CDN script, so this still renders with no internet reachable.
  *
  * NOT a payment integration: nothing here reconciles a scan against a
@@ -48,7 +49,29 @@ export function UpiPaymentQr({ amountPaise, note }: UpiPaymentQrProps) {
     };
   }, [link]);
 
-  if (payee === null) return null;
+  // AN ABSENT QR NOW SAYS IT IS ABSENT. It used to return null, so a bill with
+  // no configured payee looked exactly like a finished bill -- and the one
+  // thing nobody could tell from the screen was whether the QR was missing or
+  // simply not switched on. Observed 2026-09-12: .env.dev carried both lines,
+  // the dev server serving the window had no VITE_ variables in it at all, and
+  // the screen said nothing.
+  //
+  // Deliberately QUIET, not an error: no red, no alert role. A missing demo QR
+  // is a configuration fact for the operator, not a failure a cashier caused,
+  // and this panel sits on a screen a customer can see. The rule that matters
+  // is unchanged -- NO QR IS RENDERED without a payee, because a QR aimed at
+  // nobody opens a real payment app pointed at no one.
+  if (payee === null) {
+    return (
+      <div className="upi-payment-qr card upi-payment-qr--unconfigured">
+        <h4>UPI QR not configured</h4>
+        <p className="muted">
+          No payee is set for this build, so no QR is shown. Run the bootstrap with{" "}
+          <code>-UpiVpa</code>, then restart the Vite dev server — not just the POS window.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="upi-payment-qr card">

@@ -101,3 +101,33 @@ describe("buildUpiPaymentLink", () => {
     ).toThrow();
   });
 });
+
+describe("the unconfigured case is a state, not a silence", () => {
+  // THE DEFECT THIS PINS, observed 2026-09-12: `apps/pos/.env.dev` carried both
+  // UPI lines and the invoice screen still showed no QR — because the Vite
+  // serving the window had been started from a shell without them, and its
+  // `import.meta.env` contained no VITE_ keys at all. Nothing on the screen
+  // said so, so a missing QR and a bill that simply had none looked identical.
+  //
+  // `readUpiDemoPayee` returning null is correct and stays correct. What
+  // changed is that `UpiPaymentQr` now renders a stated absence instead of
+  // returning null, and these assert the exact inputs that produce it.
+  it("is null when the env has no VITE_ keys at all — the real failure shape", () => {
+    // Exactly what the running dev server reported: base keys only.
+    const env = { BASE_URL: "/", DEV: true, MODE: "development", PROD: false, SSR: false };
+    expect(readUpiDemoPayee(env)).toBeNull();
+  });
+
+  it("is null for a blank or whitespace VPA, not a QR aimed at an empty payee", () => {
+    expect(readUpiDemoPayee({ VITE_HOLLER_DEMO_UPI_VPA: "" })).toBeNull();
+    expect(readUpiDemoPayee({ VITE_HOLLER_DEMO_UPI_VPA: "   " })).toBeNull();
+  });
+
+  it("reads the payee when Vite DID substitute it", () => {
+    const payee = readUpiDemoPayee({
+      VITE_HOLLER_DEMO_UPI_VPA: "someone@okicici",
+      VITE_HOLLER_DEMO_UPI_PAYEE_NAME: "Shinjuku Yakitori",
+    });
+    expect(payee).toEqual({ vpa: "someone@okicici", payeeName: "Shinjuku Yakitori" });
+  });
+});

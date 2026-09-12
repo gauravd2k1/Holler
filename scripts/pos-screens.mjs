@@ -270,8 +270,15 @@ if (!process.env.POS_UI) {
       // taken without these would show an invoice screen missing the thing
       // demo item 0b added, and nothing would say why. Fixture values: this
       // harness must never carry a real payee.
-      VITE_HOLLER_DEMO_UPI_VPA: process.env.VITE_HOLLER_DEMO_UPI_VPA ?? "gong@fixturebank",
-      VITE_HOLLER_DEMO_UPI_PAYEE_NAME: process.env.VITE_HOLLER_DEMO_UPI_PAYEE_NAME ?? "Gong (fixture)",
+      // POS_NO_UPI=1 captures the UNCONFIGURED state instead -- the one the
+      // operator met on 2026-09-12, where the screen said nothing at all.
+      ...(process.env.POS_NO_UPI === "1"
+        ? {}
+        : {
+            VITE_HOLLER_DEMO_UPI_VPA: process.env.VITE_HOLLER_DEMO_UPI_VPA ?? "payee@fixturebank",
+            VITE_HOLLER_DEMO_UPI_PAYEE_NAME:
+              process.env.VITE_HOLLER_DEMO_UPI_PAYEE_NAME ?? "Shinjuku Yakitori (fixture)",
+          }),
     },
   });
   const deadline = Date.now() + 90_000;
