@@ -55,6 +55,66 @@ Every field is validated when `demo-up` runs and a failure names the field, so
 a typo stops the run before anything is reset rather than surfacing on a bill
 in front of the client.
 
+### 0.0b The release binary and the firewall rule
+
+**The demo runs the RELEASE binary, and the firewall rule names its exact
+path.** A rule bound to the dev-build path, or to `cargo`, or to a path that
+moves, is a phone that loads nothing with no error anywhere — Windows drops the
+inbound SYN silently.
+
+```
+C:\Code\Hollerpps\pos\src-tauri	argetelease\holler-pos.exe
+```
+
+Built 2026-09-14 from commit `78c87f5`.
+SHA-256 `76481393712c004adeebea314ad0e08acc2f71081d0ac9eb04bdb078625481d8`.
+
+**The POS process listens on exactly two ports**, both enumerated from the
+source rather than from memory — there is no third:
+
+| Port | What | Where |
+|---|---|---|
+| **9310** | KDS LAN WebSocket | `edge/device/src/server.rs:188`, started at `state.rs:231` (`HOLLER_LAN_BIND_ADDR`) |
+| **9320** | Captain HTTP (page + `/api/`) | `captain.rs:81`, started at `state.rs:264` (`HOLLER_CAPTAIN_BIND_ADDR`) |
+
+5173 and 5175 are **dev servers** and are not part of a release run: the release
+binary serves its own embedded UI.
+
+**One elevated PowerShell command** (Run as administrator), idempotent — it
+removes any rule of the same name first, so re-running after a rebuild is safe:
+
+```powershell
+Remove-NetFirewallRule -DisplayName "Holler POS (demo)" -ErrorAction SilentlyContinue
+New-NetFirewallRule -DisplayName "Holler POS (demo)" `
+  -Direction Inbound -Action Allow -Protocol TCP -LocalPort 9310,9320 `
+  -Program "C:\Code\Hollerpps\pos\src-tauri	argetelease\holler-pos.exe" `
+  -Profile Any
+```
+
+`-Profile Any` is deliberate: Windows classifies a Mobile Hotspot adapter as
+**Public**, and a rule left on Private only is a chain that works on home WiFi
+and fails on the hotspot — the single most demo-specific failure on this list.
+
+**Check, and it is not "the rule exists":**
+
+```powershell
+Get-NetFirewallRule -DisplayName "Holler POS (demo)" |
+  Get-NetFirewallApplicationFilter | Select-Object Program
+```
+
+The path it prints must be **character for character** the path above. Then,
+with the POS running, confirm the binary answering is the one in the rule:
+
+```powershell
+Get-Process holler-pos | Select-Object Id, Path, StartTime
+```
+
+A `Path` under `target\debug` means the dev build is running and the rule does
+not cover it.
+
+**Rebuild = re-check.** A new release binary at the same path keeps the rule
+valid; a binary anywhere else does not, and the failure is silent.
+
 ### 0.1 Then the three lines
 
 1. **Hotspot up**, and note its IP (section 0.2 below).
