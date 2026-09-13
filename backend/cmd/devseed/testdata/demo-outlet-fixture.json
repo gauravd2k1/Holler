@@ -1,6 +1,7 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "generated_by": "backend/cmd/devseed test fixture -- NOT the real seed/demo-outlet.json",
+  "outlet_source_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
 
   "tenant": { "id": "0191a000-0000-7000-8000-000000000001", "name": "Holler Dev Restaurant" },
   "brand": { "id": "0191a000-0000-7000-8000-000000000002", "tenant_id": "0191a000-0000-7000-8000-000000000001", "name": "Holler Dev Brand" },
@@ -10,6 +11,21 @@
     "name": "Pune Test Outlet",
     "timezone": "Asia/Kolkata",
     "day_start_time": "05:00"
+  },
+  "outlet_identity": {
+    "restaurant_name": "Holler Dev Brand",
+    "legal_name": "Holler Dev Restaurant",
+    "outlet_name": "Pune Test Outlet",
+    "address_line1": "Camp",
+    "address_line2": null,
+    "city": "Pune",
+    "state_code": "27",
+    "state_name": "Maharashtra",
+    "pincode": "411001",
+    "gstin": "27AAAAA0000A1Z5",
+    "fssai": "11522998000123",
+    "invoice_prefix": "HD/",
+    "invoice_footer_text": "Thank you - please visit again"
   },
 
   "tax_profiles": [

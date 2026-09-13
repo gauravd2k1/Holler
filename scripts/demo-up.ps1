@@ -138,10 +138,21 @@ param(
     # it somewhere else.
     [int[]]$PreflightPorts = @(),
 
-    # Passed through to dev-bootstrap.ps1, which REMEMBERS them between runs in
-    # %LOCALAPPDATA%\Holler\dev-bootstrap-state.json. Leave both empty on a
-    # machine that has been given them once. An unset VPA means NO QR RENDERS AT
-    # ALL on the bill screen and on the printed receipt.
+    # WHO THIS RESTAURANT IS -- seed/outlet.toml, the single source for the
+    # name, legal entity, address, GSTIN, FSSAI, invoice prefix, bill footer,
+    # timezone, business-day start, UPI payee and logo. Onboarding a
+    # restaurant is writing that file; it is never editing code. Empty means
+    # <repo>\seed\outlet.toml. There is no fallback to the committed example:
+    # a missing file stops the run rather than seeding a placeholder
+    # restaurant nobody asked for.
+    [string]$OutletFile = "",
+
+    # OVERRIDES for the UPI payee in the outlet file, not the source of it.
+    # Passing either prints a warning and is NOT written back, so the next run
+    # without the flag uses what the file says. To change the payee
+    # permanently, edit upi_vpa / upi_payee_name in the outlet file.
+    # An unset VPA -- there and here -- means NO QR RENDERS AT ALL on the bill
+    # screen and on the printed receipt.
     [string]$UpiVpa = "",
     [string]$UpiPayeeName = "",
 
@@ -627,6 +638,7 @@ $resolvedSinkDir = if ($PrinterFileSinkDir -ne "") { $PrinterFileSinkDir } else 
 $bootstrapArgs = @{ WithBilling = $true; PrinterFileSinkDir = $resolvedSinkDir }
 if ($DbKeyHex -ne "")     { $bootstrapArgs["DbKeyHex"] = $DbKeyHex }
 if ($LanHost -ne "")      { $bootstrapArgs["LanHost"]  = $LanHost }
+if ($OutletFile -ne "")   { $bootstrapArgs["OutletFile"] = $OutletFile }
 if ($UpiVpa -ne "")       { $bootstrapArgs["UpiVpa"] = $UpiVpa }
 if ($UpiPayeeName -ne "") { $bootstrapArgs["UpiPayeeName"] = $UpiPayeeName }
 if ($PSBoundParameters.ContainsKey("RepoRoot"))    { $bootstrapArgs["RepoRoot"] = $RepoRoot }

@@ -40,6 +40,14 @@ use serde_json::{json, Value};
 #[path = "devseed/client_menu.rs"]
 mod client_menu;
 
+/// The outlet's identity, read at run time from `seed/outlet.toml`. Same
+/// module-directory reason as `client_menu` above: a loose `.rs` under
+/// `src/bin/` is auto-discovered by cargo as its own binary target.
+#[path = "devseed/outlet_identity.rs"]
+mod outlet_identity;
+
+use outlet_identity::OutletIdentity;
+
 // Fixed development ids. MUST match the constants in
 // backend/cmd/devseed/main.go — the two seeders describe the same outlet.
 const TENANT_ID: &str = "0191a000-0000-7000-8000-000000000001";
@@ -1109,73 +1117,36 @@ const OPENING_STOCK_COMPLETED_AT: &str = "2026-08-09T05:45:00Z";
 /// Business date `OPENING_STOCK_STARTED_AT` falls on — same computation as
 /// `GRN_BUSINESS_DATE` above.
 const OPENING_STOCK_BUSINESS_DATE: &str = "2026-08-09";
-/// THE RESTAURANT'S NAME, IN ONE PLACE, FOR THE WHOLE PRODUCT.
-///
-/// Holler is white-label: the till, the KDS, the captain page, the admin
-/// console and the printed bill all show the RESTAURANT's name, and "Holler"
-/// appears only as the product mark beside it. Every one of those surfaces
-/// reads the name from the `outlet` (or `tenant`/`brand`) row this constant
-/// seeds -- none of them hard-codes it -- so changing this line and re-seeding
-/// renames the whole product.
-///
-/// The three names are separate constants rather than one string with
-/// suffixes because they are genuinely three different things: the legal
-/// entity that owns the GSTIN, the brand, and the trading name of this
-/// particular outlet. A chain has one tenant, one brand and many outlet names.
-const RESTAURANT_NAME: &str = "Shinjuku Yakitori";
-/// The registered entity printed on a GST invoice. GSTIN-shaped placeholder
-/// GSTIN (contracts-correct format, registered to nobody) -- the same posture
-/// `seed_billing`'s existing `FISCAL_PROFILE_ID` fixture already takes.
-const RESTAURANT_LEGAL_NAME: &str = "Shinjuku Yakitori Hospitality Pvt Ltd";
-/// This outlet's trading name. One outlet today; a second would differ here
-/// ("Shinjuku Yakitori — Koregaon Park") and nowhere else.
-const OUTLET_NAME: &str = RESTAURANT_NAME;
-
-// ---- Bill header, the other half of the single source ----------------------
+// ---- WHO THIS RESTAURANT IS: seed/outlet.toml, not this file --------------
 //
-// These print on the GST invoice and the receipt PDF, so they live beside the
-// names rather than inline at the fiscal-profile upsert 1500 lines below.
-// Changing a line here and re-seeding changes every bill.
+// The restaurant's name, its legal entity, its address, its GSTIN, its FSSAI
+// licence, its invoice prefix and its bill footer WERE constants here. They
+// are now read at run time from `seed/outlet.toml` through
+// `outlet_identity::OutletIdentity`, because ONBOARDING A RESTAURANT IS
+// WRITING ONE FILE, NEVER EDITING CODE.
 //
-// ADDRESS: Pune, Camp, 411001 -- the locality and pincode agree, and nothing
-// here is invented. The street line the fixture used to carry ("123 MG Road")
-// is GONE: a made-up street number on a client's bill reads as a fake document,
-// which is worse than a shorter address. THE REAL REGISTERED ADDRESS REPLACES
-// THESE THREE CONSTANTS AND NOTHING ELSE.
-const OUTLET_ADDRESS_LINE1: &str = "Camp";
-const OUTLET_ADDRESS_LINE2: Option<&str> = None;
-const OUTLET_CITY: &str = "Pune";
-const OUTLET_PINCODE: &str = "411001";
-// Maharashtra. state_code is the GST state code and must be the first two
-// digits of the GSTIN, or place-of-supply on the invoice is wrong.
-const OUTLET_STATE_CODE: &str = "27";
-const OUTLET_STATE_NAME: &str = "Maharashtra";
-/// PLACEHOLDER, registered to nobody: contracts-correct FORMAT (2-digit state
-/// code + PAN + entity digit + Z + checksum char) so the renderer and every
-/// validation exercise a real shape. Never put a real business's registration
-/// in a fixture, and never ship a demo with someone else's.
-const OUTLET_GSTIN: &str = "27AAAAA0000A1Z5";
-/// Placeholder in the same posture as the GSTIN.
-const OUTLET_FSSAI: Option<&str> = Some("11522998000123");
-/// Prints at the foot of every bill. Kept free of "dev", "fixture" and "test":
-/// demo work item 6 is that no internal label reaches a screen the client sees,
-/// and the receipt footer is a screen the client reads closely.
-/// ASCII ONLY, AND THE DASH IS A HYPHEN ON PURPOSE. This string is the only
-/// seeded text that reaches the raw ESC/POS byte stream, and that stream is
-/// emitted as UTF-8 with no codepage translation. An em dash left here ships as
-/// `e2 80 94`, which a thermal printer in its default codepage (CP437/CP1252)
-/// renders as three garbage characters. It is invisible everywhere anyone
-/// looks: the HTML and PDF render it correctly, and the `.txt` companion strips
-/// bytes above 0x7F, so the only place the damage appears is on paper --
-/// observed as the sole non-ASCII bytes in a real bill on 2026-09-13
-/// (offset 786 of an 818-byte receipt).
-///
-/// The general problem -- no codepage handling anywhere in the ESC/POS path, so
-/// a real outlet's name, address or menu text will garble the same way -- is
-/// filed in `docs/pilot-readiness.md` and belongs with the parked
-/// ESC/POS-on-paper gate. THIS constant is fixed rather than filed because it
-/// is one character and it is on the demo bill.
-const INVOICE_FOOTER_TEXT: Option<&str> = Some("Thank you - please visit again");
+// Everything the old constants documented still holds and is documented at
+// the field it belongs to in `seed/outlet.example.toml`:
+//
+//   * Holler is white-label. Every surface -- till, KDS, captain page, admin
+//     console, printed bill -- reads the name from the `outlet`/`tenant`/
+//     `brand` rows this seeder writes. None of them hard-codes it, so
+//     changing the file and re-seeding renames the whole product.
+//   * The three names are three different things (legal entity, brand,
+//     this outlet's trading name), which is why they are three keys.
+//   * `state_code` must equal the GSTIN's first two digits, or
+//     place-of-supply is wrong on every invoice. VALIDATED now, not
+//     commented.
+//   * Every printed string is ASCII-only, because the ESC/POS stream is
+//     emitted as UTF-8 with no codepage translation. VALIDATED now, and for
+//     every printed field rather than only the footer.
+//   * The GSTIN and FSSAI in the committed example are placeholders in a
+//     contracts-correct FORMAT, registered to nobody.
+//
+// THERE IS NO DEFAULT AND NO FALLBACK TO THE EXAMPLE FILE. A missing
+// `seed/outlet.toml` makes this binary refuse to seed and say so: a default
+// would put someone else's restaurant on a client's GST invoice because a
+// file was missing, and nothing in the install path would ever mention it.
 
 // ---- Billing / acceptance fixtures (opt-in, HOLLER_SEED_BILLING=1) ----
 //
@@ -1250,12 +1221,36 @@ const CONFIG_VERSION: i64 = 1;
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();
+
+    // WHO THIS RESTAURANT IS, before anything else happens. Both paths --
+    // emitting the shared catalogue and seeding the edge database -- require
+    // it, and neither has a default: an installation that never wrote
+    // seed/outlet.toml must fail here rather than quietly seed the demo
+    // placeholder restaurant onto a client's machine.
+    let identity_path = outlet_identity::resolve_path(&args);
+    let identity = match OutletIdentity::load(&identity_path) {
+        Ok(i) => i,
+        Err(e) => {
+            eprintln!("devseed: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    println!(
+        "devseed: outlet identity {} -- {} ({}), GSTIN {}, series {} [sha256 {}]",
+        identity_path.display(),
+        identity.outlet_name,
+        identity.city,
+        identity.gstin,
+        identity.invoice_prefix,
+        &identity.source_sha256[..12]
+    );
+
     if let Some(path_arg) = args.iter().position(|a| a == "--emit-json").map(|i| i + 1) {
         let Some(path) = args.get(path_arg) else {
             eprintln!("devseed: --emit-json requires a path argument");
             return ExitCode::FAILURE;
         };
-        return match emit_json(PathBuf::from(path)) {
+        return match emit_json(PathBuf::from(path), &identity) {
             Ok(path) => {
                 println!("devseed: wrote shared catalogue to {}", path.display());
                 ExitCode::SUCCESS
@@ -1267,7 +1262,7 @@ fn main() -> ExitCode {
         };
     }
 
-    match run() {
+    match run(&identity) {
         Ok(path) => {
             println!(
                 "devseed: sealed edge database written to {}",
@@ -1309,7 +1304,7 @@ fn main() -> ExitCode {
 /// JSON, still parses identically regardless of order, and re-emission is
 /// still byte-stable — the drift check's actual guarantee — but a reader
 /// diffing against that document's literal key order will see reordering.
-fn build_shared_catalogue() -> Result<Value, String> {
+fn build_shared_catalogue(identity: &OutletIdentity) -> Result<Value, String> {
     // ---- menu: categories, items, variants, modifiers ----
     // Order matches seed_menu/seed(): the two legacy T0b fixtures (fixed ids,
     // never renamed/repriced/rerouted -- tests/e2e-scenario/harness pins
@@ -1817,13 +1812,58 @@ fn build_shared_catalogue() -> Result<Value, String> {
     }
 
     Ok(json!({
-        "schema_version": 1,
+        // Bumped 1 -> 2 by the `outlet_identity` block and
+        // `outlet_source_sha256` below. `backend/cmd/devseed/seedfile.go`
+        // decodes with DisallowUnknownFields, so the two halves of this
+        // change land together or the cloud seeder fails loudly -- which is
+        // the point (contracts 0.5.9: a field the reader has never heard of
+        // is discarded in silence by a lenient decoder).
+        "schema_version": 2,
         "generated_by": "edge/database/src/bin/devseed.rs --emit-json",
-        "tenant": { "id": TENANT_ID, "name": RESTAURANT_LEGAL_NAME },
-        "brand": { "id": BRAND_ID, "tenant_id": TENANT_ID, "name": RESTAURANT_NAME },
+
+        // WHICH seed/outlet.toml this file was emitted from. Both seeders
+        // compare it against the identity file they were handed and refuse a
+        // mismatch: a committed JSON emitted from one restaurant's file,
+        // seeded on an installation configured for another, would put the
+        // wrong name on every screen and the wrong GSTIN on every invoice,
+        // with nothing anywhere saying so.
+        "outlet_source_sha256": identity.source_sha256,
+
+        "tenant": { "id": TENANT_ID, "name": identity.legal_name },
+        "brand": { "id": BRAND_ID, "tenant_id": TENANT_ID, "name": identity.restaurant_name },
         "outlet": {
-            "id": OUTLET_ID, "brand_id": BRAND_ID, "name": OUTLET_NAME,
-            "timezone": "Asia/Kolkata", "day_start_time": "05:00"
+            "id": OUTLET_ID, "brand_id": BRAND_ID, "name": identity.outlet_name,
+            "timezone": identity.timezone, "day_start_time": identity.day_start_time
+        },
+
+        // Everything a GST invoice prints that is not already on the `outlet`
+        // row. The EDGE consumes all of it (outlet_fiscal_profile +
+        // invoice_series). The CLOUD decodes it and writes none of it today:
+        // `outlet_fiscal_profile` is edge-seeded (seed/README.md "Scope"), so
+        // this block travels for parity of DESCRIPTION, not of rows -- the
+        // `menu_item.station_code` precedent, which the edge consumes and the
+        // cloud deliberately discards.
+        //
+        // It travels rather than staying edge-local because Tier 2 puts these
+        // exact fields behind an admin "Outlet settings" screen writing
+        // `outlet` + `outlet_fiscal_profile` in the CLOUD, delivered to the
+        // edge by the config pull (docs/pilot-readiness.md). When that lands,
+        // this file becomes the bootstrap default and stops being the source
+        // of truth.
+        "outlet_identity": {
+            "restaurant_name": identity.restaurant_name,
+            "legal_name": identity.legal_name,
+            "outlet_name": identity.outlet_name,
+            "address_line1": identity.address_line1,
+            "address_line2": identity.address_line2,
+            "city": identity.city,
+            "state_code": identity.state_code,
+            "state_name": identity.state_name,
+            "pincode": identity.pincode,
+            "gstin": identity.gstin,
+            "fssai": identity.fssai,
+            "invoice_prefix": identity.invoice_prefix,
+            "invoice_footer_text": identity.invoice_footer_text
         },
         "tax_profiles": tax_profiles,
         "compliance_versions": compliance_versions,
@@ -1849,8 +1889,8 @@ fn build_shared_catalogue() -> Result<Value, String> {
 /// SQLite; does not require `HOLLER_DB_KEY_HEX`/`HOLLER_SEED_PASSWORD_HASH`.
 /// See seed/README.md: this is the ONE emitter, and `seed/demo-outlet.json`
 /// is the ONE committed artefact both seeders read.
-fn emit_json(path: PathBuf) -> Result<PathBuf, String> {
-    let catalogue = build_shared_catalogue()?;
+fn emit_json(path: PathBuf, identity: &OutletIdentity) -> Result<PathBuf, String> {
+    let catalogue = build_shared_catalogue(identity)?;
     let mut text =
         serde_json::to_string_pretty(&catalogue).map_err(|e| format!("serialising: {e}"))?;
     text.push('\n');
@@ -1883,11 +1923,49 @@ fn load_shared_catalogue() -> Result<Value, String> {
     serde_json::from_str(&text).map_err(|e| format!("parsing {path:?}: {e}"))
 }
 
-fn run() -> Result<PathBuf, String> {
+/// Refuses a `seed/demo-outlet.json` that was emitted from a DIFFERENT
+/// `seed/outlet.toml` than the one this run was handed.
+///
+/// Without this the failure is silent and total: the committed catalogue
+/// carries the example restaurant's names, so an installation that wrote its
+/// own `outlet.toml` but never re-emitted would seed the cloud and the
+/// `outlet` row with one restaurant's name while the fiscal profile and the
+/// invoice series carried another's. Every screen would be internally
+/// consistent and the bill would be wrong.
+///
+/// `scripts/dev-bootstrap.ps1` re-emits into a run-local file and points both
+/// seeders at it, so this fires only when someone seeds by hand after editing
+/// the identity file -- exactly when it should.
+fn assert_catalogue_was_emitted_from(
+    catalogue: &Value,
+    identity: &OutletIdentity,
+) -> Result<(), String> {
+    let emitted_from = catalogue
+        .get("outlet_source_sha256")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            format!(
+                "{:?} carries no `outlet_source_sha256` -- it predates the outlet                  identity file (schema_version 2). Re-emit it: cd edge/database &&                  cargo run --bin devseed -- --emit-json ../../seed/demo-outlet.json",
+                shared_catalogue_path()
+            )
+        })?;
+    if emitted_from != identity.source_sha256 {
+        return Err(format!(
+            "{:?} was emitted from a different outlet identity file than this run              was handed (catalogue sha256 {}, identity sha256 {}). Seeding anyway              would name one restaurant on the `outlet` row and another on the GST              invoice. Re-emit: cd edge/database && cargo run --bin devseed --              --emit-json ../../seed/demo-outlet.json",
+            shared_catalogue_path(),
+            &emitted_from[..emitted_from.len().min(12)],
+            &identity.source_sha256[..12]
+        ));
+    }
+    Ok(())
+}
+
+fn run(identity: &OutletIdentity) -> Result<PathBuf, String> {
     let key_hex = require_env("HOLLER_DB_KEY_HEX")?;
     let password_hash = require_env("HOLLER_SEED_PASSWORD_HASH")?;
     let key = parse_key_hex(&key_hex)?;
     let catalogue = load_shared_catalogue()?;
+    assert_catalogue_was_emitted_from(&catalogue, identity)?;
 
     // Must match AppState::open in apps/pos/src-tauri/src/state.rs: the POS
     // reads <app_data_dir>/edge.db.enc, so the seeder must write exactly there
@@ -1904,7 +1982,7 @@ fn run() -> Result<PathBuf, String> {
     let mut db =
         Db::open(&sealed_path, &plaintext_path, key).map_err(|e| format!("opening db: {e}"))?;
 
-    seed(&mut db, &password_hash, &catalogue).map_err(|e| format!("seeding: {e}"))?;
+    seed(&mut db, &password_hash, &catalogue, identity).map_err(|e| format!("seeding: {e}"))?;
 
     // close() checkpoints, re-seals with a fresh nonce and wipes the plaintext
     // working copy. Skipping it would leave an unencrypted edge.db on disk.
@@ -1937,6 +2015,7 @@ fn seed(
     db: &mut Db,
     password_hash: &str,
     catalogue: &Value,
+    identity: &OutletIdentity,
 ) -> Result<(), holler_edge_database::DbError> {
     let conn = db.connection();
 
@@ -1945,8 +2024,8 @@ fn seed(
         &Outlet {
             id: OUTLET_ID.to_string(),
             brand_id: BRAND_ID.to_string(),
-            name: OUTLET_NAME.to_string(),
-            timezone: "Asia/Kolkata".to_string(),
+            name: identity.outlet_name.clone(),
+            timezone: identity.timezone.clone(),
             config_version: CONFIG_VERSION,
             created_at: SEEDED_AT.to_string(),
             updated_at: SEEDED_AT.to_string(),
@@ -2079,7 +2158,7 @@ fn seed(
     let conn = db.connection();
 
     if env::var("HOLLER_SEED_BILLING").is_ok_and(|v| v == "1") {
-        seed_billing(conn)?;
+        seed_billing(conn, identity)?;
     }
 
     // Without a sync_state row the outbox has no cursor to advance against
@@ -2619,7 +2698,10 @@ fn write_opening_stock(db: &mut Db, catalogue: &Value) -> Result<(), DbError> {
 ///
 /// Opt-in — see the const block above for why the e2e harness must not get
 /// these rows.
-fn seed_billing(conn: &rusqlite::Connection) -> Result<(), holler_edge_database::DbError> {
+fn seed_billing(
+    conn: &rusqlite::Connection,
+    identity: &OutletIdentity,
+) -> Result<(), holler_edge_database::DbError> {
     repo::upsert_compliance_version(
         conn,
         &ComplianceVersion {
@@ -2701,17 +2783,17 @@ fn seed_billing(conn: &rusqlite::Connection) -> Result<(), holler_edge_database:
         &OutletFiscalProfile {
             id: FISCAL_PROFILE_ID.to_string(),
             outlet_id: OUTLET_ID.to_string(),
-            legal_name: RESTAURANT_LEGAL_NAME.to_string(),
-            trade_name: OUTLET_NAME.to_string(),
-            address_line1: OUTLET_ADDRESS_LINE1.to_string(),
-            address_line2: OUTLET_ADDRESS_LINE2.map(str::to_string),
-            city: OUTLET_CITY.to_string(),
-            state_code: OUTLET_STATE_CODE.to_string(),
-            state_name: OUTLET_STATE_NAME.to_string(),
-            pincode: OUTLET_PINCODE.to_string(),
-            gstin: OUTLET_GSTIN.to_string(),
-            fssai_number: OUTLET_FSSAI.map(str::to_string),
-            invoice_footer_text: INVOICE_FOOTER_TEXT.map(str::to_string),
+            legal_name: identity.legal_name.clone(),
+            trade_name: identity.outlet_name.clone(),
+            address_line1: identity.address_line1.clone(),
+            address_line2: identity.address_line2.clone(),
+            city: identity.city.clone(),
+            state_code: identity.state_code.clone(),
+            state_name: identity.state_name.clone(),
+            pincode: identity.pincode.clone(),
+            gstin: identity.gstin.clone(),
+            fssai_number: identity.fssai.clone(),
+            invoice_footer_text: Some(identity.invoice_footer_text.clone()),
             effective_from: "2020-01-01T00:00:00Z".to_string(),
             config_version: CONFIG_VERSION,
         },
@@ -2723,11 +2805,13 @@ fn seed_billing(conn: &rusqlite::Connection) -> Result<(), holler_edge_database:
             id: INVOICE_SERIES_ID.to_string(),
             outlet_id: OUTLET_ID.to_string(),
             code: "SALES".to_string(),
-            // "SY/" — the outlet's initials, NOT "DEV/". The invoice number is
-            // the most closely read line on the document a customer is handed,
-            // and demo work item 6 is that no internal label reaches a screen
-            // the client sees. "DEV/000008" printed on a GST invoice reads as
-            // an unfinished product in the one place that must not.
+            // From `invoice_prefix` in seed/outlet.toml -- the outlet's own
+            // initials, never "DEV/". The invoice number is the most closely
+            // read line on the document a customer is handed, and demo work
+            // item 6 is that no internal label reaches a screen the client
+            // sees. "DEV/000008" printed on a GST invoice reads as an
+            // unfinished product in the one place that must not. The file's
+            // validation rejects anything but [A-Z]{1,4}/ for that reason.
             //
             // NOTE FOR ANY RE-SEED ON A LIVE DATABASE: the series id is
             // unchanged, so `invoice_sequence` — which is edge-local and keyed
@@ -2736,7 +2820,7 @@ fn seed_billing(conn: &rusqlite::Connection) -> Result<(), holler_edge_database:
             // …/000001). That is correct: a counter that restarted on a
             // cosmetic edit would mint numbers the UNIQUE index has already
             // seen. A clean `demo-reset.ps1 -Force` starts it at 1.
-            prefix_template: "SY/".to_string(),
+            prefix_template: identity.invoice_prefix.clone(),
             reset_policy: "NEVER".to_string(),
             padding_width: 6,
             is_active: true,
@@ -2849,8 +2933,8 @@ fn seed_billing(conn: &rusqlite::Connection) -> Result<(), holler_edge_database:
 
     println!("devseed: billing config seeded (HOLLER_SEED_BILLING=1)");
     println!(
-        "devseed:   tax GST 5% (CGST 2.5 + SGST 2.5), series DEV/, GSTIN {}",
-        OUTLET_GSTIN
+        "devseed:   tax GST 5% (CGST 2.5 + SGST 2.5), series {}, GSTIN {}",
+        identity.invoice_prefix, identity.gstin
     );
     println!("devseed:   discounts STAFF_10 (applies), SPOILAGE (needs a reason), MANAGER_50 (needs order.void — the cashier lacks it)");
     println!("devseed:   printers: Dev Bill Printer [BILL], Dev Kitchen Printer [KITCHEN]");
@@ -2894,12 +2978,29 @@ fn parse_key_hex(hex: &str) -> Result<EncryptionKey, String> {
 #[cfg(test)]
 mod t1b_seed_resolves_tests {
     use super::*;
+
+    /// The COMMITTED example identity, which is also what
+    /// `scripts/check-seed-drift.mjs` and CI read.
+    ///
+    /// Deliberately not `seed/outlet.toml`: that file is gitignored and
+    /// per-installation, so a test reading it would pass or fail depending on
+    /// which machine ran it, and would fail outright in CI where it does not
+    /// exist. The example is the fixture; the drift check pins
+    /// `seed/demo-outlet.json` to it.
+    fn test_identity() -> OutletIdentity {
+        let path = outlet_identity::repo_root()
+            .join("seed")
+            .join("outlet.example.toml");
+        OutletIdentity::load(&path).expect("seed/outlet.example.toml must load and validate")
+    }
+
     use holler_edge_database::inventory::{resolve_recipe_for_variant, GapReason, ResolveOutcome};
 
     fn seeded_db() -> Db {
         let mut db = Db::open_in_memory_for_tests().expect("open in-memory db");
-        let catalogue = build_shared_catalogue().expect("build shared catalogue");
-        seed(&mut db, "unused-in-tests-hash", &catalogue).expect("seed");
+        let identity = test_identity();
+        let catalogue = build_shared_catalogue(&identity).expect("build shared catalogue");
+        seed(&mut db, "unused-in-tests-hash", &catalogue, &identity).expect("seed");
         db
     }
 
@@ -3151,6 +3252,163 @@ mod t1b_seed_resolves_tests {
         }
     }
 
+    /// EVERY IDENTITY FIELD REACHES THE ROW IT PRINTS FROM, AND THE
+    /// ASSERTION NAMES THE FIELD WHEN IT DOES NOT.
+    ///
+    /// The bill's header, its GSTIN, its FSSAI line, its footer and its
+    /// invoice number all come from `seed/outlet.toml` now. Nothing between
+    /// the file and the paper would notice if one of them stopped being
+    /// threaded through — `outlet_fiscal_profile` would simply carry a stale
+    /// or empty value, the bill would render, and it would be wrong in a way
+    /// only a person reading the document would catch.
+    ///
+    /// Asserted per FIELD with the field's own name in the message, rather
+    /// than by comparing two structs: a struct comparison that fails says
+    /// "these differ" and leaves the reader to find which line of the file to
+    /// edit.
+    #[test]
+    fn every_identity_field_reaches_the_row_that_prints_it() {
+        let identity = test_identity();
+        let catalogue = build_shared_catalogue(&identity).expect("build shared catalogue");
+        let mut db = Db::open_in_memory_for_tests().expect("open in-memory db");
+        seed(&mut db, "unused-in-tests-hash", &catalogue, &identity).expect("seed");
+        let conn = db.connection();
+        seed_billing(conn, &identity).expect("seed billing");
+
+        let got = |sql: &str| -> String {
+            conn.query_row(sql, [], |r| r.get::<_, Option<String>>(0))
+                .unwrap_or_else(|e| panic!("{sql}: {e}"))
+                .unwrap_or_default()
+        };
+
+        // (the seed/outlet.toml key, what the file says, what the row says)
+        let checks: &[(&str, &str, String)] = &[
+            (
+                "outlet_name",
+                &identity.outlet_name,
+                got("SELECT name FROM outlet"),
+            ),
+            (
+                "legal_name",
+                &identity.legal_name,
+                got("SELECT legal_name FROM outlet_fiscal_profile"),
+            ),
+            (
+                "outlet_name (invoice trade name)",
+                &identity.outlet_name,
+                got("SELECT trade_name FROM outlet_fiscal_profile"),
+            ),
+            (
+                "address_line1",
+                &identity.address_line1,
+                got("SELECT address_line1 FROM outlet_fiscal_profile"),
+            ),
+            (
+                "city",
+                &identity.city,
+                got("SELECT city FROM outlet_fiscal_profile"),
+            ),
+            (
+                "state_code",
+                &identity.state_code,
+                got("SELECT state_code FROM outlet_fiscal_profile"),
+            ),
+            (
+                "state_name",
+                &identity.state_name,
+                got("SELECT state_name FROM outlet_fiscal_profile"),
+            ),
+            (
+                "pincode",
+                &identity.pincode,
+                got("SELECT pincode FROM outlet_fiscal_profile"),
+            ),
+            (
+                "gstin",
+                &identity.gstin,
+                got("SELECT gstin FROM outlet_fiscal_profile"),
+            ),
+            (
+                "invoice_footer_text",
+                &identity.invoice_footer_text,
+                got("SELECT invoice_footer_text FROM outlet_fiscal_profile"),
+            ),
+            (
+                "invoice_prefix",
+                &identity.invoice_prefix,
+                got("SELECT prefix_template FROM invoice_series WHERE code = 'SALES'"),
+            ),
+            (
+                "timezone",
+                &identity.timezone,
+                got("SELECT timezone FROM outlet"),
+            ),
+        ];
+        for (field, from_file, from_row) in checks {
+            assert_eq!(
+                from_file, from_row,
+                "seed/outlet.toml `{field}` is {from_file:?} but the seeded row carries \
+                 {from_row:?} — the field stopped being threaded from the identity file \
+                 to the row the bill prints from"
+            );
+        }
+
+        // Optional fields travel as absent, not as an empty string: a blank
+        // FSSAI line printed on a bill is worse than no line.
+        assert_eq!(
+            identity.fssai,
+            conn.query_row(
+                "SELECT fssai_number FROM outlet_fiscal_profile",
+                [],
+                |r| r.get::<_, Option<String>>(0)
+            )
+            .expect("fssai_number"),
+            "seed/outlet.toml `fssai`"
+        );
+    }
+
+    /// The other half of the test above: CHANGE ONE FIELD AND WATCH THE
+    /// ASSERTION NAME IT. A test that only ever runs against agreeing values
+    /// proves the comparison executes, not that it can fail — and a
+    /// comparison that has never been watched failing is the defect class in
+    /// half the retro log.
+    #[test]
+    fn a_changed_identity_field_is_named_by_the_assertion() {
+        let mut identity = test_identity();
+        identity.invoice_prefix = "ZZ/".to_string();
+        let catalogue = build_shared_catalogue(&identity).expect("build shared catalogue");
+        let mut db = Db::open_in_memory_for_tests().expect("open in-memory db");
+        seed(&mut db, "unused-in-tests-hash", &catalogue, &identity).expect("seed");
+        let conn = db.connection();
+        seed_billing(conn, &identity).expect("seed billing");
+
+        // The changed value must actually reach the row — that is the
+        // positive half. If it did not, the row would still carry "SY/" and
+        // the whole mechanism would be decorative.
+        let prefix: String = conn
+            .query_row(
+                "SELECT prefix_template FROM invoice_series WHERE code = 'SALES'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("invoice_series");
+        assert_eq!(
+            prefix, "ZZ/",
+            "changing invoice_prefix in the identity file must change the seeded series"
+        );
+
+        // And the outlet name, from the same file, through a different table.
+        identity.outlet_name = "Some Other Restaurant".to_string();
+        let catalogue = build_shared_catalogue(&identity).expect("build shared catalogue");
+        let mut db2 = Db::open_in_memory_for_tests().expect("open in-memory db");
+        seed(&mut db2, "unused-in-tests-hash", &catalogue, &identity).expect("seed");
+        let name: String = db2
+            .connection()
+            .query_row("SELECT name FROM outlet", [], |r| r.get(0))
+            .expect("outlet");
+        assert_eq!(name, "Some Other Restaurant");
+    }
+
     /// SEED PARITY, the edge half, ROW FOR ROW rather than by count.
     ///
     /// `backend/cmd/devseed` and this binary are two independent readers of
@@ -3161,9 +3419,10 @@ mod t1b_seed_resolves_tests {
     /// reset (docs/demo-status.md); this half runs in CI on every commit.
     #[test]
     fn edge_rows_match_the_shared_catalogue_row_for_row() {
-        let catalogue = build_shared_catalogue().expect("build shared catalogue");
+        let identity = test_identity();
+        let catalogue = build_shared_catalogue(&identity).expect("build shared catalogue");
         let mut db = Db::open_in_memory_for_tests().expect("open in-memory db");
-        seed(&mut db, "unused-in-tests-hash", &catalogue).expect("seed");
+        seed(&mut db, "unused-in-tests-hash", &catalogue, &identity).expect("seed");
         let conn = db.connection();
 
         // (catalogue key, table, columns as they appear in BOTH sides)

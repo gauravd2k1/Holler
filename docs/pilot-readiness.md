@@ -250,6 +250,32 @@ authority.
 | **The cloud menu seed is a token (2 rows) and the edge's is real (43)** | **YES** | S | Same family |
 | **The cloud devseed inserts `menu_item` with no `hsn_sac`** | **YES** | S | An invoice cannot legally issue without it |
 | **A menu item deleted in the cloud is never removed from an edge** | NO | M | Apply upserts and does not prune |
+| **No admin "Outlet settings" screen: the outlet's identity is bootstrap-only** | **YES** | M | Tier 2 of the white-label work, filed 2026-09-13. Lands with the config-push rows above — see below |
+
+**Outlet settings in the admin console — Tier 2 of the white-label work, filed
+2026-09-13.** Tier 1 landed: `seed/outlet.toml` is the single source for the
+restaurant's name, legal entity, address, GSTIN, FSSAI, invoice prefix, bill
+footer, timezone, business-day start, UPI payee and logo, both seeders read it,
+and the Rust constants are gone. **Onboarding a restaurant is writing one file.**
+
+That is a BOOTSTRAP mechanism, not an operating one. A pilot outlet cannot
+re-run a seeder to correct its own registered address, and nobody at the
+restaurant has a repository. Tier 2:
+
+- An **"Outlet settings" screen in the admin console** writing `outlet` and
+  `outlet_fiscal_profile` **in the cloud**, delivered to the edge by the
+  existing config pull (`config::pull_and_apply_config`, driven by the A5
+  periodic loop since contracts 0.7.0).
+- **The till refuses to issue an invoice with no fiscal profile** — it already
+  does, with `NO_FISCAL_PROFILE_CONFIGURED`; what changes is that the profile
+  arrives by config pull rather than only by seeding.
+- **`seed/outlet.toml` then becomes the bootstrap DEFAULT and stops being the
+  source of truth.** Two writers for one set of values is the §50.1 split the
+  contract forbids; the file seeds an outlet that has never synced, and the
+  cloud owns it from the first pull onwards.
+
+Lands with the config-push rows above, for the obvious reason: a settings screen
+that writes a row the edge never receives is a screen that does nothing.
 
 ### B3. Security and access
 

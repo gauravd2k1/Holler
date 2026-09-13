@@ -92,6 +92,80 @@ func TestLoadSeedFile_RejectsTenantIDMismatch(t *testing.T) {
 	}
 }
 
+// TestLoadSeedFile_DecodesTheOutletIdentity pins the schema_version 2 block.
+// The cloud writes none of these fields today -- outlet_fiscal_profile is
+// edge-seeded -- so nothing downstream of the decode would notice if the
+// emitter stopped filling them. This test is the only thing that would.
+func TestLoadSeedFile_DecodesTheOutletIdentity(t *testing.T) {
+	sf, err := loadSeedFile("testdata/demo-outlet-fixture.json")
+	if err != nil {
+		t.Fatalf("loadSeedFile: %v", err)
+	}
+	if sf.OutletSourceSHA256 == "" {
+		t.Fatal("outlet_source_sha256 did not decode -- the catalogue cannot say which seed/outlet.toml produced it")
+	}
+	if sf.OutletIdentity.GSTIN == "" || sf.OutletIdentity.InvoicePrefix == "" {
+		t.Fatalf("outlet_identity did not decode: %+v", sf.OutletIdentity)
+	}
+	if sf.OutletIdentity.AddressLine2 != nil {
+		t.Fatalf("address_line2 is null in the fixture and must decode as nil, got %q", *sf.OutletIdentity.AddressLine2)
+	}
+}
+
+// TestLoadSeedFile_RejectsStateCodeGstinMismatch falsifies the cross-field
+// rule on the READER side. The emitter checks it too, but this reader runs
+// against a COMMITTED file a person can edit by hand, and a wrong
+// place-of-supply is not a defect any screen shows. Both values below are
+// individually well-formed -- 29 is Karnataka's real GST state code -- so
+// only the cross-field comparison can catch it.
+func TestLoadSeedFile_RejectsStateCodeGstinMismatch(t *testing.T) {
+	path := writeMutatedFixture(t, func(s string) string {
+		return strings.Replace(s, `"state_code": "27"`, `"state_code": "29"`, 1)
+	})
+	_, err := loadSeedFile(path)
+	if err == nil {
+		t.Fatal("expected a state_code/gstin mismatch to be rejected")
+	}
+	if !strings.Contains(err.Error(), "place-of-supply") {
+		t.Fatalf("expected the error to explain place-of-supply, got: %v", err)
+	}
+}
+
+// TestLoadSeedFile_RejectsNameDisagreement falsifies the rule that the rows
+// this seeder writes must agree with the identity they claim to come from. A
+// tenant named for one restaurant and an invoice footer for another is
+// internally consistent on every screen and wrong on the bill.
+func TestLoadSeedFile_RejectsNameDisagreement(t *testing.T) {
+	path := writeMutatedFixture(t, func(s string) string {
+		return strings.Replace(s, `"outlet_name": "Pune Test Outlet"`, `"outlet_name": "Some Other Outlet"`, 1)
+	})
+	_, err := loadSeedFile(path)
+	if err == nil {
+		t.Fatal("expected a name disagreement to be rejected")
+	}
+	if !strings.Contains(err.Error(), "outlet.name") {
+		t.Fatalf("expected the error to name the disagreeing field, got: %v", err)
+	}
+}
+
+// TestLoadSeedFile_RejectsAnOlderSchemaVersion falsifies the exact-version
+// pin. A reader that accepted schema_version 1 would accept a file with no
+// outlet_identity block at all, and every field in it would read as an empty
+// string -- the failure this whole change exists to prevent, arriving through
+// the back door.
+func TestLoadSeedFile_RejectsAnOlderSchemaVersion(t *testing.T) {
+	path := writeMutatedFixture(t, func(s string) string {
+		return strings.Replace(s, `"schema_version": 2,`, `"schema_version": 1,`, 1)
+	})
+	_, err := loadSeedFile(path)
+	if err == nil {
+		t.Fatal("expected schema_version 1 to be rejected")
+	}
+	if !strings.Contains(err.Error(), "re-emit") {
+		t.Fatalf("expected the error to carry its own remedy, got: %v", err)
+	}
+}
+
 // TestLoadSeedFile_RejectsUnknownField falsifies strict decoding: a field
 // the JSON carries that this reader does not declare must fail the decode,
 // never be silently discarded (the contracts 0.5.9 defect, one hop earlier
@@ -99,8 +173,8 @@ func TestLoadSeedFile_RejectsTenantIDMismatch(t *testing.T) {
 func TestLoadSeedFile_RejectsUnknownField(t *testing.T) {
 	path := writeMutatedFixture(t, func(s string) string {
 		return strings.Replace(s,
-			`"schema_version": 1,`,
-			`"schema_version": 1, "an_unrecognised_field": "should fail the decode",`, 1)
+			`"schema_version": 2,`,
+			`"schema_version": 2, "an_unrecognised_field": "should fail the decode",`, 1)
 	})
 
 	_, err := loadSeedFile(path)

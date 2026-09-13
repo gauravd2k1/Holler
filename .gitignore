@@ -60,3 +60,9 @@ Thumbs.db
 /.github/instructions/
 
 .scenario-results/
+
+# The per-installation outlet identity (seed/outlet.example.toml is the
+# committed template). This file names a real restaurant, carries its real
+# GSTIN and may carry a real UPI payment address — none of which belongs in
+# the repository. See seed/README.md "Onboarding a new restaurant".
+seed/outlet.toml

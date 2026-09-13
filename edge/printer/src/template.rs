@@ -574,10 +574,52 @@ const RECEIPT_LOGO_PNG: &[u8] = include_bytes!("../assets/receipt_logo.png");
 fn render_logo_block() -> String {
     use base64::Engine;
     let encoded = base64::engine::general_purpose::STANDARD.encode(RECEIPT_LOGO_PNG);
-    format!(
-        "<div class=\"brand-logo\">\n<img src=\"data:image/png;base64,{encoded}\" \
-         alt=\"Holler\" />\n</div>\n"
-    )
+    let holler = format!("<img src=\"data:image/png;base64,{encoded}\" alt=\"Holler\" />");
+    match render_outlet_mark() {
+        // The restaurant's own mark FIRST, the Holler mark beside it. Holler
+        // is white-label: the product mark is the smaller of the two and
+        // never the one a customer reads as the name of the place they ate
+        // at.
+        Some(outlet_mark) => {
+            format!("<div class=\"brand-logo\">\n{outlet_mark}\n{holler}\n</div>\n")
+        }
+        // ABSENT CHANGES NOTHING. Byte-for-byte the markup this function
+        // emitted before the outlet mark existed, so a receipt rendered with
+        // no restaurant logo configured is identical to one rendered by the
+        // previous build — which is the property this refactor is proved
+        // against.
+        None => format!("<div class=\"brand-logo\">\n{holler}\n</div>\n"),
+    }
+}
+
+/// The restaurant's own mark, from `logo_path` in `seed/outlet.toml`, handed
+/// to this process as `HOLLER_OUTLET_LOGO_PATH`.
+///
+/// READ AT RENDER TIME, unlike the Holler mark, which is `include_bytes!`d at
+/// compile time: this one is per-installation and cannot be in the binary.
+/// That makes it the one thing on a receipt that can fail at print time, so
+/// every failure here is NON-FATAL and yields `None` — an unreadable logo
+/// prints a bill without it, never no bill at all. The seeder validates that
+/// the path resolves, which is where a missing file is meant to be caught,
+/// with somebody watching.
+///
+/// The ESC/POS byte stream is untouched, exactly as for the Holler mark: a
+/// raster command is real device-dialect variation the hardware gate (PARKED,
+/// ADR-013 addendum) cannot verify.
+fn render_outlet_mark() -> Option<String> {
+    use base64::Engine;
+    let path = std::env::var("HOLLER_OUTLET_LOGO_PATH").ok()?;
+    if path.trim().is_empty() {
+        return None;
+    }
+    let bytes = std::fs::read(path.trim()).ok()?;
+    if bytes.is_empty() {
+        return None;
+    }
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Some(format!(
+        "<img class=\"outlet-mark\" src=\"data:image/png;base64,{encoded}\" alt=\"\" />"
+    ))
 }
 
 /// Renders the demo-build UPI QR block (T11, `docs/demo-kickoff.md` item
@@ -850,6 +892,18 @@ pub fn render_invoice_html(
         body.push_str("</div>\n");
     }
 
+    // EMITTED ONLY WHEN THERE IS A MARK TO STYLE, so a receipt rendered with
+    // no restaurant logo configured is byte-for-byte what the previous build
+    // produced — the refactor is invisible on paper AND in the file. A rule
+    // that is always present and matches nothing is harmless in a browser and
+    // still breaks that comparison, which is the only way anyone would notice
+    // a regression here.
+    let outlet_mark_css = if body.contains("class=\"outlet-mark\"") {
+        "         .brand-logo img.outlet-mark { width: 150px; margin-bottom: 0.25rem; }\n"
+    } else {
+        ""
+    };
+
     Ok(format!(
         "<!DOCTYPE html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\n\
          <title>{title}</title>\n\
@@ -860,6 +914,7 @@ margin: 2rem auto; font-size: 13px; line-height: 1.35; }}\n\
          .line {{ white-space: pre-wrap; }}\n\
          .brand-logo {{ text-align: center; margin-bottom: 0.5rem; }}\n\
          .brand-logo img {{ width: 120px; height: auto; }}\n\
+         {outlet_mark_css}\
          .header .line:first-child {{ font-weight: bold; font-size: 1.2rem; text-align: center; }}\n\
          .section {{ border-top: 1px dashed #000; padding-top: 0.5rem; margin-top: 0.5rem; }}\n\
          .totals .line:last-of-type {{ font-weight: bold; }}\n\
@@ -1269,6 +1324,84 @@ mod tests {
         let bytes = render_invoice(&invoice, &invoice_lines_fixture(), &invoice_ctx(), 80).unwrap();
         let text = String::from_utf8_lossy(&bytes);
         assert!(text.contains("2 of 3"));
+    }
+
+    // ------------------------------------- the restaurant's own logo mark --
+
+    /// ABSENT MUST CHANGE NOTHING. The whole white-label refactor is required
+    /// to be invisible on a bill that does not use the new field, and this is
+    /// the assertion that holds that ground: the exact markup and the exact
+    /// stylesheet the previous build emitted, with no outlet mark, no
+    /// `outlet-mark` class and no rule for one.
+    ///
+    /// Pinned as literal strings rather than "does not contain outlet-mark":
+    /// a rule that is always present and matches nothing is harmless in a
+    /// browser and still breaks a byte comparison, and a byte comparison is
+    /// the only thing that would ever notice a regression here.
+    #[test]
+    fn no_outlet_logo_configured_renders_exactly_what_the_previous_build_did() {
+        std::env::remove_var("HOLLER_OUTLET_LOGO_PATH");
+        let html =
+            render_invoice_html(&invoice_fixture(), &invoice_lines_fixture(), &invoice_ctx())
+                .expect("renders");
+        assert!(
+            !html.contains("outlet-mark"),
+            "no logo configured must emit no outlet mark and no rule for one"
+        );
+        assert!(
+            html.contains("<div class=\"brand-logo\">\n<img src=\"data:image/png;base64,"),
+            "the Holler mark must still be the first and only image in the brand block"
+        );
+        assert!(
+            html.contains(".brand-logo img { width: 120px; height: auto; }\n.header"),
+            "the stylesheet must go straight from the brand-logo rule to the next one: {}",
+            &html[..html.len().min(1200)]
+        );
+    }
+
+    /// The restaurant's mark renders BESIDE the Holler mark, its own first.
+    /// Holler is white-label: the product mark is never the one a customer
+    /// reads as the name of the place they ate at.
+    #[test]
+    fn a_configured_outlet_logo_renders_beside_the_holler_mark() {
+        let dir = std::env::temp_dir().join("holler-outlet-logo-test");
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let logo = dir.join("mark.png");
+        // Not a real PNG: this function does no decoding, it base64s whatever
+        // bytes it is given, and a fixture that decodes is a fixture that can
+        // pass for the wrong reason.
+        std::fs::write(&logo, b"not-a-real-png-on-purpose").expect("write logo");
+        std::env::set_var("HOLLER_OUTLET_LOGO_PATH", &logo);
+        let html =
+            render_invoice_html(&invoice_fixture(), &invoice_lines_fixture(), &invoice_ctx())
+                .expect("renders");
+        std::env::remove_var("HOLLER_OUTLET_LOGO_PATH");
+
+        let outlet_at = html.find("class=\"outlet-mark\"").expect("outlet mark renders");
+        let holler_at = html.find("alt=\"Holler\"").expect("holler mark still renders");
+        assert!(
+            outlet_at < holler_at,
+            "the restaurant's mark comes first: {html}"
+        );
+        assert!(
+            html.contains(".brand-logo img.outlet-mark"),
+            "the rule for the mark is emitted only when there is a mark"
+        );
+    }
+
+    /// A LOGO THAT CANNOT BE READ PRINTS A BILL WITHOUT IT, NEVER NO BILL.
+    /// The seeder validates that the path resolves, which is where a missing
+    /// file is meant to be caught; by render time the only safe behaviour is
+    /// to carry on.
+    #[test]
+    fn an_unreadable_outlet_logo_is_not_fatal() {
+        std::env::set_var("HOLLER_OUTLET_LOGO_PATH", "no/such/file/anywhere.png");
+        let html =
+            render_invoice_html(&invoice_fixture(), &invoice_lines_fixture(), &invoice_ctx())
+                .expect("an unreadable logo must not fail the render");
+        std::env::remove_var("HOLLER_OUTLET_LOGO_PATH");
+        assert!(!html.contains("outlet-mark"), "{html}");
+        assert!(html.contains("alt=\"Holler\""), "{html}");
     }
 
     // -------------------------------------------------------- T11: UPI QR --

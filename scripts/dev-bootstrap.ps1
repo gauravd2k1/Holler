@@ -78,6 +78,23 @@ param(
     # the write and proving only that the copy agrees with itself.
     [string]$PosEnvFile = "",
 
+    # WHO THIS RESTAURANT IS. seed/outlet.toml is the single source for the
+    # restaurant's name, legal entity, address, GSTIN, FSSAI, invoice prefix,
+    # bill footer, timezone, business-day start, UPI payee and logo.
+    # Onboarding a restaurant is writing that file; it is never editing code.
+    #
+    # The file is GITIGNORED and per-installation.
+    # seed/outlet.example.toml is the committed template -- copy it, fill it
+    # in, run this script. There is deliberately NO fallback to the example:
+    # a default here would seed the demo placeholder restaurant onto a real
+    # installation because a file was missing, and nothing in the install path
+    # would ever say so.
+    [string]$OutletFile = "",
+
+    # OVERRIDES for the UPI payee in $OutletFile, not the source of it.
+    # Passing either prints a warning: the file is the source, and a value
+    # given here is not written back to it, so the next run without the flag
+    # silently reverts to what the file says.
     [string]$UpiVpa = "",
     [string]$UpiPayeeName = "",
 
@@ -668,6 +685,61 @@ if ($lockedFiles.Count -gt 0) {
 }
 Write-Host "preflight: no Holler POS process, and nothing holds the edge database" -ForegroundColor DarkGray
 
+# --- 0b. WHO THIS RESTAURANT IS ---------------------------------------------
+#
+# Resolved BEFORE anything is written, so a malformed or missing identity file
+# stops the run while nothing has changed. The Rust seeder validates every
+# field (GSTIN shape and its agreement with state_code, pincode, invoice
+# prefix, ASCII-only printed strings, UPI shape, timezone, logo path) and
+# names the offending field; this step only locates the file and re-emits the
+# shared catalogue from it.
+#
+# WHY RE-EMIT RATHER THAN USE THE COMMITTED seed/demo-outlet.json: that file
+# is generated from seed/outlet.example.toml and carries the EXAMPLE
+# restaurant's names. An installation with its own outlet.toml that seeded
+# from the committed catalogue would put one restaurant's name on the
+# `outlet`/`tenant`/`brand` rows and another's on the GST invoice -- each
+# internally consistent, every screen plausible, the bill wrong. The Rust
+# seeder refuses that mismatch outright (it compares the file's sha256 against
+# the catalogue's `outlet_source_sha256`), so this step exists to make the
+# normal path work rather than to work around a check.
+$outletFilePath = if ([string]::IsNullOrWhiteSpace($OutletFile)) {
+    Join-Path $repoRoot "seed\outlet.toml"
+} else {
+    $OutletFile
+}
+if (-not (Test-Path $outletFilePath)) {
+    Write-Host ""
+    Write-Host "FAILED: no outlet identity file at $outletFilePath. NOTHING HAS BEEN CHANGED." -ForegroundColor Red
+    Write-Host "NEXT ACTION: copy the committed template and fill it in:" -ForegroundColor Yellow
+    Write-Host "    Copy-Item '$(Join-Path $repoRoot 'seed\outlet.example.toml')' '$outletFilePath'" -ForegroundColor Yellow
+    Write-Host "  Then edit the restaurant's name, address, GSTIN, invoice prefix and UPI payee." -ForegroundColor Yellow
+    Write-Host "  There is deliberately no default: seeding the example restaurant onto a real" -ForegroundColor Yellow
+    Write-Host "  installation because a file was missing is the failure this refuses to have." -ForegroundColor Yellow
+    Write-Host "  See seed/README.md, 'Onboarding a new restaurant'." -ForegroundColor Yellow
+    exit 1
+}
+$outletFilePath = (Resolve-Path $outletFilePath).Path
+$outletFileSha = (Get-FileHash -Path $outletFilePath -Algorithm SHA256).Hash.ToLowerInvariant()
+
+# The run-local catalogue. NOT seed/demo-outlet.json: that file is committed
+# and pinned by scripts/check-seed-drift.mjs against the EXAMPLE identity, so
+# a bootstrap that overwrote it would fail the build of every installation
+# that is not the demo one.
+$runCatalogue = Join-Path ([System.IO.Path]::GetTempPath()) "holler-seed-$outletFileSha.json"
+
+Write-Host "`n[0b/4] emitting the shared catalogue from $outletFilePath" -ForegroundColor Cyan
+Push-Location (Join-Path $repoRoot "edge\database")
+try {
+    cargo run --quiet --bin devseed -- --emit-json $runCatalogue --outlet-file $outletFilePath
+    if ($LASTEXITCODE -ne 0) { throw "emitting the shared catalogue from $outletFilePath failed -- see the validation error above, which names the field" }
+} finally {
+    Pop-Location
+}
+Set-BootstrapStateEntry -Key "outletFile|path" -Value $outletFilePath
+Set-BootstrapStateEntry -Key "outletFile|sha256" -Value $outletFileSha
+Write-Host "       catalogue $runCatalogue [outlet.toml sha256 $($outletFileSha.Substring(0,12))]" -ForegroundColor DarkGray
+
 # --- 1. infrastructure -------------------------------------------------------
 # Only postgres/redis/nats. The `backend` compose service is deliberately NOT
 # started: its Dockerfile build is broken (see docs/DEV_SETUP.md, Known gaps),
@@ -699,7 +771,10 @@ if (-not $SkipInfra) {
 Write-Host "`n[2/4] applying Postgres migrations and seeding cloud fixtures..." -ForegroundColor Cyan
 Push-Location (Join-Path $repoRoot "backend")
 try {
-    $seedOutput = go run ./cmd/devseed
+    # -seed-file points at the RUN-LOCAL catalogue emitted in step 0b, not the
+    # committed seed/demo-outlet.json, so the cloud is seeded with this
+    # installation's restaurant rather than the example one.
+    $seedOutput = go run ./cmd/devseed -seed-file $runCatalogue
     if ($LASTEXITCODE -ne 0) { throw "backend devseed failed" }
 } finally {
     Pop-Location
@@ -731,17 +806,23 @@ Write-Host "`n[3/4] seeding the encrypted edge database..." -ForegroundColor Cya
 Push-Location (Join-Path $repoRoot "edge\database")
 $savedEdgeEnv = Save-CallerEnv -Names @(
     "HOLLER_DB_KEY_HEX", "HOLLER_EDGE_DATA_DIR",
-    "HOLLER_SEED_PASSWORD_HASH", "HOLLER_SEED_PASSWORD", "HOLLER_SEED_BILLING")
+    "HOLLER_SEED_PASSWORD_HASH", "HOLLER_SEED_PASSWORD", "HOLLER_SEED_BILLING",
+    "HOLLER_SEED_JSON_PATH")
 try {
     $env:HOLLER_DB_KEY_HEX = $DbKeyHex
     $env:HOLLER_EDGE_DATA_DIR = $EdgeDataDir
+    # The same run-local catalogue the cloud was just seeded from, so both
+    # stores are fed by the same bytes -- the property seed/README.md exists
+    # to hold. The seeder additionally refuses a catalogue whose
+    # `outlet_source_sha256` disagrees with the identity file below.
+    $env:HOLLER_SEED_JSON_PATH = $runCatalogue
     $env:HOLLER_SEED_PASSWORD_HASH = $values["HOLLER_SEED_PASSWORD_HASH"]
     # Setting the plaintext password makes the seeder re-open the sealed file
     # and prove the offline-login path works before we claim success.
     $env:HOLLER_SEED_PASSWORD = $values["HOLLER_SEED_PASSWORD"]
     if ($WithBilling) { $env:HOLLER_SEED_BILLING = "1" }
 
-    cargo run --quiet --bin devseed
+    cargo run --quiet --bin devseed -- --outlet-file $outletFilePath
     if ($LASTEXITCODE -ne 0) { throw "edge devseed failed" }
 } finally {
     Pop-Location
@@ -889,23 +970,48 @@ if (-not $apiUp) {
 # equals sign, the bill screen correctly reported "UPI QR not configured", and
 # the state file held the right value the whole time -- which is what made it
 # look like a write problem rather than an ordering one.
-# The UPI payee, resolved the same way the LAN host is: an explicit
-# parameter wins, otherwise the value this script remembered last time. Only a
-# NEW value is written back, so a re-run with no -UpiVpa keeps what the demo
-# was set up with instead of wiping it.
+# THE UPI PAYEE NOW COMES FROM seed/outlet.toml. It used to be a parameter
+# remembered between runs in the state file, which meant the payment address
+# printed on a customer's bill lived in %LOCALAPPDATA% and nowhere a person
+# would look. It is an outlet property like the GSTIN and belongs beside it.
+#
+# -UpiVpa / -UpiPayeeName still work and still win, as an OVERRIDE, and say so
+# loudly: the value is NOT written back to the file, so the next run without
+# the flag reverts to what the file says. That is deliberate -- a flag that
+# silently became the new persistent truth is how the payee ended up
+# unfindable in the first place.
 $upiStateKey = "$CloudBaseUrl|upi"
 $upiState = Get-BootstrapStateMap
-$resolvedUpiVpa = $UpiVpa
-$resolvedUpiPayee = $UpiPayeeName
+$outletToml = Get-Content $outletFilePath -Raw
+$fileUpiVpa = if ($outletToml -match '(?m)^\s*upi_vpa\s*=\s*"([^"]*)"') { $Matches[1] } else { "" }
+$fileUpiPayee = if ($outletToml -match '(?m)^\s*upi_payee_name\s*=\s*"([^"]*)"') { $Matches[1] } else { "" }
+
+$resolvedUpiVpa = $fileUpiVpa
+$resolvedUpiPayee = $fileUpiPayee
+if (-not [string]::IsNullOrWhiteSpace($UpiVpa)) {
+    Write-Host "       WARNING: -UpiVpa '$UpiVpa' OVERRIDES upi_vpa in $outletFilePath$(if (-not [string]::IsNullOrWhiteSpace($fileUpiVpa)) { " ('$fileUpiVpa')" } else { " (unset there)" })." -ForegroundColor Yellow
+    Write-Host "                It is NOT written back. The next run without the flag uses the file." -ForegroundColor Yellow
+    Write-Host "                To make it permanent, edit upi_vpa in that file instead." -ForegroundColor Yellow
+    $resolvedUpiVpa = $UpiVpa
+}
+if (-not [string]::IsNullOrWhiteSpace($UpiPayeeName)) {
+    Write-Host "       WARNING: -UpiPayeeName '$UpiPayeeName' OVERRIDES upi_payee_name in $outletFilePath. Not written back." -ForegroundColor Yellow
+    $resolvedUpiPayee = $UpiPayeeName
+}
+# A payee remembered by an OLDER build of this script, from before the file
+# existed. Honoured once, with a loud instruction, rather than dropped in
+# silence -- dropping it is exactly the "no QR renders and nothing says why"
+# failure this block's history is full of.
 if ([string]::IsNullOrWhiteSpace($resolvedUpiVpa) -and $upiState.ContainsKey("$upiStateKey|vpa")) {
     $resolvedUpiVpa = $upiState["$upiStateKey|vpa"]
-    Write-Host "       UPI payee $resolvedUpiVpa (remembered from a previous run; pass -UpiVpa to change it)" -ForegroundColor DarkGray
+    if ([string]::IsNullOrWhiteSpace($resolvedUpiPayee) -and $upiState.ContainsKey("$upiStateKey|payee")) {
+        $resolvedUpiPayee = $upiState["$upiStateKey|payee"]
+    }
+    Write-Host "       WARNING: UPI payee '$resolvedUpiVpa' came from this machine's bootstrap state," -ForegroundColor Yellow
+    Write-Host "                not from $outletFilePath. Move it into that file (upi_vpa /" -ForegroundColor Yellow
+    Write-Host "                upi_payee_name) -- the state file is not where a payment address" -ForegroundColor Yellow
+    Write-Host "                anyone can find should live." -ForegroundColor Yellow
 }
-if ([string]::IsNullOrWhiteSpace($resolvedUpiPayee) -and $upiState.ContainsKey("$upiStateKey|payee")) {
-    $resolvedUpiPayee = $upiState["$upiStateKey|payee"]
-}
-if (-not [string]::IsNullOrWhiteSpace($UpiVpa)) { Set-BootstrapStateEntry -Key "$upiStateKey|vpa" -Value $UpiVpa }
-if (-not [string]::IsNullOrWhiteSpace($UpiPayeeName)) { Set-BootstrapStateEntry -Key "$upiStateKey|payee" -Value $UpiPayeeName }
 
 # --- the printer file sink, remembered for exactly the UPI payee's reason ----
 # THIS SCRIPT REWRITES apps\pos\.env.dev WHOLESALE, so a line it does not emit
@@ -979,6 +1085,16 @@ if (-not [string]::IsNullOrWhiteSpace($resolvedUpiVpa)) {
         $envLines += "VITE_HOLLER_DEMO_UPI_PAYEE_NAME=$resolvedUpiPayee"
     }
 }
+# The restaurant's own mark on the receipt, from logo_path in the identity
+# file. Absent renders nothing and changes no layout -- a receipt with no logo
+# configured is byte-for-byte what the build before this feature produced.
+# The seeder already refused a path that does not resolve, so by here it does.
+$fileLogoPath = if ($outletToml -match '(?m)^\s*logo_path\s*=\s*"([^"]*)"') { $Matches[1] } else { "" }
+if (-not [string]::IsNullOrWhiteSpace($fileLogoPath)) {
+    $resolvedLogo = if ([System.IO.Path]::IsPathRooted($fileLogoPath)) { $fileLogoPath }
+                    else { Join-Path $repoRoot $fileLogoPath }
+    $envLines += "HOLLER_OUTLET_LOGO_PATH=$([System.IO.Path]::GetFullPath($resolvedLogo))"
+}
 
 # ASCII so Windows PowerShell 5.1 reads it back without a BOM surprise.
 $envLines | Out-File -FilePath $envFile -Encoding ascii
@@ -1039,10 +1155,10 @@ Write-Host "`n[4/4] wrote $envFile" -ForegroundColor Cyan
 if (-not [string]::IsNullOrWhiteSpace($resolvedUpiVpa)) {
     Write-Host "UPI QR ENABLED: $resolvedUpiVpa$(if (-not [string]::IsNullOrWhiteSpace($resolvedUpiPayee)) { " ($resolvedUpiPayee)" })" -ForegroundColor Cyan
 } else {
-    Write-Host "UPI QR DISABLED: no -UpiVpa given and none remembered." -ForegroundColor Yellow
+    Write-Host "UPI QR DISABLED: upi_vpa is not set in $outletFilePath." -ForegroundColor Yellow
     Write-Host "  The invoice screen and the printed receipt will show NO QR AT ALL -- there is" -ForegroundColor Yellow
     Write-Host "  no empty-QR state, and nothing on screen says why. Demo step 2 shows the QR," -ForegroundColor Yellow
-    Write-Host "  so pass -UpiVpa <vpa> -UpiPayeeName <name> and re-run before the demo." -ForegroundColor Yellow
+    Write-Host "  so set upi_vpa and upi_payee_name in that file and re-run before the demo." -ForegroundColor Yellow
 }
 if ($WithBilling) {
     Write-Host "billing config seeded: bills can be issued, discounted and split on this machine." -ForegroundColor Cyan

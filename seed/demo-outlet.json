@@ -7863,6 +7863,22 @@
     "name": "Shinjuku Yakitori",
     "timezone": "Asia/Kolkata"
   },
+  "outlet_identity": {
+    "address_line1": "Camp",
+    "address_line2": null,
+    "city": "Pune",
+    "fssai": "11522998000123",
+    "gstin": "27AAAAA0000A1Z5",
+    "invoice_footer_text": "Thank you - please visit again",
+    "invoice_prefix": "SY/",
+    "legal_name": "Shinjuku Yakitori Hospitality Pvt Ltd",
+    "outlet_name": "Shinjuku Yakitori",
+    "pincode": "411001",
+    "restaurant_name": "Shinjuku Yakitori",
+    "state_code": "27",
+    "state_name": "Maharashtra"
+  },
+  "outlet_source_sha256": "a29e82d47f67f1a18c910dc06e619619d7ca97855d166b69783d4199fe662fba",
   "recipe_ingredients": [
     {
       "id": "0191e830-0000-7000-8000-000000000001",
@@ -8673,7 +8689,7 @@
       "output_quantity_micro": 1000000
     }
   ],
-  "schema_version": 1,
+  "schema_version": 2,
   "supplier_items": [
     {
       "id": "0191e860-0000-7000-8000-000000000001",

@@ -51,6 +51,15 @@ param(
     # the key against the sealed file first and refuses instead.
     [string]$DbKeyHex = "",
 
+    # WHO THIS RESTAURANT IS. seed/outlet.toml is the single source for the
+    # restaurant's name, legal entity, address, GSTIN, FSSAI, invoice prefix,
+    # bill footer, timezone, business-day start, UPI payee and logo.
+    # Onboarding a restaurant is writing that file; it is never editing code.
+    # Empty means <repo>\seed\outlet.toml. NO FALLBACK to the committed
+    # example: a missing file stops the run rather than resetting the stack to
+    # a placeholder restaurant nobody asked for.
+    [string]$OutletFile = "",
+
     # The repository this run operates on. A parameter because
     # scripts\agent-guard.ps1 requires an agent shell to name a scratch tree
     # EXPLICITLY rather than inherit the real one.
@@ -478,6 +487,53 @@ if (-not $WhatIf) {
 }
 
 # =====================================================================
+# WHO THIS RESTAURANT IS -- resolved before anything is dropped
+# =====================================================================
+# Deliberately ahead of the DROP SCHEMA below: a malformed or missing identity
+# file must stop this run while the stack is still intact, not after the cloud
+# has been emptied.
+#
+# The catalogue is re-emitted from the identity file into a run-local
+# temporary, and BOTH seeders are pointed at it. Not the committed
+# seed/demo-outlet.json, which is generated from seed/outlet.example.toml and
+# carries the EXAMPLE restaurant's names -- an installation with its own
+# outlet.toml that seeded from it would name one restaurant on the
+# outlet/tenant/brand rows and another on the GST invoice, each internally
+# consistent and the bill wrong. The Rust seeder refuses that mismatch
+# outright, so this exists to make the normal path work rather than to work
+# around a check.
+$outletFilePath = if ([string]::IsNullOrWhiteSpace($OutletFile)) {
+    Join-Path $repoRoot "seed\outlet.toml"
+} else {
+    $OutletFile
+}
+if (-not (Test-Path $outletFilePath)) {
+    Fail-WithAction `
+        "no outlet identity file at $outletFilePath. NOTHING HAS BEEN CHANGED." `
+        "Copy the committed template and fill it in: Copy-Item '$(Join-Path $repoRoot 'seed\outlet.example.toml')' '$outletFilePath', then edit the restaurant's name, address, GSTIN, invoice prefix and UPI payee. There is deliberately no default -- resetting to the example restaurant because a file was missing is the failure this refuses to have. See seed/README.md, 'Onboarding a new restaurant'."
+}
+$outletFilePath = (Resolve-Path $outletFilePath).Path
+$outletFileSha = (Get-FileHash -Path $outletFilePath -Algorithm SHA256).Hash.ToLowerInvariant()
+$runCatalogue = Join-Path ([System.IO.Path]::GetTempPath()) "holler-seed-$outletFileSha.json"
+if ($WhatIf) {
+    Write-Note "-WhatIf: would emit the shared catalogue from $outletFilePath to $runCatalogue"
+} else {
+    Write-Note "emitting the shared catalogue from $outletFilePath [sha256 $($outletFileSha.Substring(0,12))]..."
+    Push-Location (Join-Path $repoRoot "edge\database")
+    try {
+        cargo run --quiet --bin devseed -- --emit-json $runCatalogue --outlet-file $outletFilePath
+        $emitExit = $LASTEXITCODE
+    } finally {
+        Pop-Location
+    }
+    if ($emitExit -ne 0) {
+        Fail-WithAction `
+            "emitting the shared catalogue from $outletFilePath failed (exit $emitExit). NOTHING HAS BEEN CHANGED." `
+            "The validation error above names the offending field in that file -- GSTIN shape and its agreement with state_code, pincode, invoice_prefix, a non-ASCII character in a printed string, the UPI address shape, the timezone, or a logo_path that does not resolve. Fix that line and re-run."
+    }
+}
+
+# =====================================================================
 # 2/4 -- drop and re-apply the Postgres schema, then run backend devseed
 # =====================================================================
 Write-Step 2 "dropping and re-applying the Postgres schema, then seeding cloud fixtures..."
@@ -556,7 +612,9 @@ if ($WhatIf) {
     $savedEnv2 = Save-CallerEnv -Names @("DATABASE_URL")
     try {
         $env:DATABASE_URL = $DatabaseUrl
-        $seedOutput = go run ./cmd/devseed
+        # The RUN-LOCAL catalogue emitted above, so the cloud gets this
+        # installation's restaurant rather than the committed example one.
+        $seedOutput = go run ./cmd/devseed -seed-file $runCatalogue
         $devseedExit = $LASTEXITCODE
     } finally {
         Pop-Location
@@ -623,14 +681,19 @@ if ($WhatIf) {
     Push-Location (Join-Path $repoRoot "edge\database")
     $savedEnv3 = Save-CallerEnv -Names @(
         "HOLLER_DB_KEY_HEX", "HOLLER_EDGE_DATA_DIR",
-        "HOLLER_SEED_PASSWORD_HASH", "HOLLER_SEED_PASSWORD", "HOLLER_SEED_BILLING")
+        "HOLLER_SEED_PASSWORD_HASH", "HOLLER_SEED_PASSWORD", "HOLLER_SEED_BILLING",
+        "HOLLER_SEED_JSON_PATH")
     try {
         $env:HOLLER_DB_KEY_HEX = $DbKeyHex
         $env:HOLLER_EDGE_DATA_DIR = $EdgeDataDir
         $env:HOLLER_SEED_PASSWORD_HASH = $cloudValues["HOLLER_SEED_PASSWORD_HASH"]
         $env:HOLLER_SEED_PASSWORD = $cloudValues["HOLLER_SEED_PASSWORD"]
         $env:HOLLER_SEED_BILLING = "1"
-        cargo run --quiet --bin devseed
+        # Same bytes the cloud was just seeded from, and the same identity
+        # file they were emitted from -- the seeder refuses the pair if they
+        # disagree.
+        $env:HOLLER_SEED_JSON_PATH = $runCatalogue
+        cargo run --quiet --bin devseed -- --outlet-file $outletFilePath
         $edgeSeedExit = $LASTEXITCODE
     } finally {
         Pop-Location

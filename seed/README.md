@@ -25,21 +25,60 @@ one variant row in total.
 false.** This directory makes the two seeders read one file, and a drift check
 makes a hand-edit of the derived half fail the build.
 
+## Onboarding a new restaurant
+
+**Writing one file. Never editing code.**
+
+1. `Copy-Item seed\outlet.example.toml seed\outlet.toml` — `seed/outlet.toml` is gitignored and per-installation.
+2. Fill in the restaurant's name, legal entity, address, `state_code`, `pincode`, `gstin`, `fssai`, `invoice_prefix`, `invoice_footer_text`, `timezone` and `day_start_time`.
+3. Optionally set `upi_vpa` / `upi_payee_name` (absent means no QR at all, on screen or on paper) and `logo_path` (absent changes no layout).
+4. `.\scripts\demo-up.ps1 -Fresh` — pass `-OutletFile <path>` only for a file somewhere other than `seed/outlet.toml`.
+
+Both seeders read that file. **There is no default and no fallback to the
+example**: a missing file stops the run rather than seeding a placeholder
+restaurant onto someone's machine. Every field is validated at load and a
+failure names the field — GSTIN shape and its agreement with `state_code`,
+six-digit pincode, `[A-Z]{1,4}/` invoice prefix, ASCII-only on every printed
+string (the ESC/POS stream has no codepage translation), UPI address shape,
+IANA timezone, and a `logo_path` that resolves.
+
+**`seed/demo-outlet.json` is emitted from `seed/outlet.example.toml`**, which
+is what `scripts/check-seed-drift.mjs` and the test suite read — the real
+`outlet.toml` cannot be committed and would make CI depend on whose machine
+ran it. A bootstrap or reset re-emits the catalogue from the installation's
+own file into a run-local temporary and points both seeders at that, so the
+cloud and the edge are still fed by the same bytes. The catalogue records the
+sha256 of the identity file it came from, and **the edge seeder refuses a
+catalogue whose digest disagrees with the identity file it was handed** —
+otherwise one restaurant's name lands on the `outlet`/`tenant`/`brand` rows and
+another's on the GST invoice, each internally consistent, every screen
+plausible, and the bill wrong.
+
+**Once the admin "Outlet settings" screen exists (Tier 2,
+`docs/pilot-readiness.md`), this file becomes the bootstrap default and stops
+being the source of truth**: the cloud will own `outlet` and
+`outlet_fiscal_profile`, delivered to the edge by the config pull.
+
 ## The shape: ONE emitter, ONE committed artefact, TWO readers
 
 ```
-menu_imgs_gong/gong_menu.xlsx          (the CLIENT'S card -- hand-corrected)
-                 |
-                 |  scripts/menu-to-seed.py
-                 v
-edge/database/src/bin/devseed/client_menu.rs   (COMMITTED, generated)
-       + seed/menu-manifest.json        (counts + checksum)
-                 |
-edge/database/src/bin/devseed.rs --emit-json
-                 |
-                 v
-        seed/demo-outlet.json        (COMMITTED, generated, never hand-edited)
-                 |
+menu_imgs_gong/gong_menu.xlsx          seed/outlet.toml   (WHO the restaurant is;
+   (the CLIENT'S card -- hand-corrected)    |              gitignored, per-installation;
+                 |                          |              seed/outlet.example.toml is
+                 |  scripts/menu-to-seed.py  |              the committed template)
+                 v                          |
+edge/database/src/bin/devseed/client_menu.rs|   (COMMITTED, generated)
+       + seed/menu-manifest.json            |   (counts + checksum)
+                 |                          |
+                 +------------+-------------+
+                              v
+        edge/database/src/bin/devseed.rs --emit-json --outlet-file
+                              |
+                              v
+        seed/demo-outlet.json        (COMMITTED, generated, never hand-edited;
+                 |                    emitted from the EXAMPLE identity, and
+                 |                    carrying its sha256 so a mismatch is
+                 |                    refused rather than silently seeded)
         +--------+--------+
         |                 |
         v                 v
@@ -180,12 +219,17 @@ Every field below is required unless marked nullable. Nullable means the key is
 present with a JSON `null`, never absent.
 
 ```
-schema_version            int         // 1
+schema_version            int         // 2
 generated_by              string      // "edge/database/src/bin/devseed.rs --emit-json"
+outlet_source_sha256      string      // sha256 of the seed/outlet.toml this was emitted from
 
 tenant                    { id, name }
 brand                     { id, tenant_id, name }
 outlet                    { id, brand_id, name, timezone, day_start_time }
+outlet_identity           { restaurant_name, legal_name, outlet_name,
+                            address_line1, address_line2?, city, state_code,
+                            state_name, pincode, gstin, fssai?,
+                            invoice_prefix, invoice_footer_text }
 
 tax_profiles[]            { id, outlet_id, code, name, pricing_mode, is_default, is_active }
 compliance_versions[]     { id, outlet_id, label, effective_from, notes? }
@@ -245,6 +289,21 @@ stock_ledger_entry        { id, outlet_id?, entry_seq?, inventory_item_id,
 
 Notes that are load-bearing, not stylistic:
 
+- **`outlet_identity` is consumed by the EDGE only**, to build
+  `outlet_fiscal_profile` and `invoice_series`. Postgres has both tables, but
+  the cloud does not seed them (see "Scope" above), so the cloud reader decodes
+  the block, validates it, and writes none of it — the `station_code`
+  precedent. It is declared in `seedfile.go` rather than omitted because that
+  decoder runs with `DisallowUnknownFields`: "decode it and choose not to write
+  it" is a recorded decision, while "never hear about it" is the contracts
+  0.5.9 defect. Tier 2's admin "Outlet settings" screen is where the cloud
+  starts writing these.
+- **`outlet_source_sha256` is the identity file's digest, and the edge seeder
+  refuses a catalogue whose digest disagrees with the identity file it was
+  handed.** Without it, an installation with its own `outlet.toml` that seeded
+  from the committed catalogue would name one restaurant on the
+  `outlet`/`tenant`/`brand` rows and another on the GST invoice — internally
+  consistent on every screen, wrong on the bill.
 - **`menu_item.station_code` is consumed by the EDGE only**, to build
   `menu_item_station`. Postgres has no such table; the cloud reader decodes it
   and discards it deliberately.

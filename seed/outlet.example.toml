@@ -1,0 +1,135 @@
+# Holler — outlet identity. THE SINGLE SOURCE FOR WHO THIS RESTAURANT IS.
+#
+# Copy this file to `seed/outlet.toml`, fill in the real values, and run
+# `scripts/demo-up.ps1 -Fresh`. Onboarding a restaurant is writing this file.
+# It is never editing code: nothing in `edge/database/src/bin/devseed.rs`,
+# `backend/cmd/devseed` or any script carries a restaurant's name, address or
+# registration any more.
+#
+# `seed/outlet.toml` is GITIGNORED and per-installation. This example file is
+# committed, carries the demo placeholder values, and is what CI and the test
+# suite read — so `seed/demo-outlet.json` is emitted from THIS file and
+# `scripts/check-seed-drift.mjs` pins the pair together.
+#
+# THERE IS NO DEFAULT. A missing `seed/outlet.toml` makes both seeders refuse
+# to run and say so. A default here would ship someone else's restaurant name
+# on a client's GST invoice because nobody noticed a file was missing, and
+# nothing in the install path would ever say so — the same reasoning that
+# denies `dev-bootstrap.ps1` a default encryption key.
+#
+# FORMAT: flat `key = "value"` pairs, one per line, `#` comments, no tables,
+# no arrays. Values are always quoted strings. Optional keys may be omitted
+# entirely or left commented out.
+
+# ---------------------------------------------------------------------------
+# Names. Three keys rather than one, because they are genuinely three
+# different things: the legal entity that owns the GSTIN, the brand, and the
+# trading name of THIS outlet. A chain has one legal_name, one
+# restaurant_name, and a different outlet_name per site.
+# ---------------------------------------------------------------------------
+
+# The brand. This is the name the till, the KDS, the captain page, the admin
+# console and the printed bill all show. "Holler" appears only as the product
+# mark beside it.
+restaurant_name = "Shinjuku Yakitori"
+
+# The registered entity printed on a GST invoice.
+legal_name = "Shinjuku Yakitori Hospitality Pvt Ltd"
+
+# This outlet's trading name. One outlet today; a second site would differ
+# here ("Shinjuku Yakitori - Koregaon Park") and nowhere else.
+outlet_name = "Shinjuku Yakitori"
+
+# ---------------------------------------------------------------------------
+# Registered address. This prints on the GST invoice and the receipt.
+#
+# NOTHING HERE MAY BE INVENTED. A made-up street number on a client's bill
+# reads as a fake document, which is worse than a shorter address. The real
+# registered address replaces these lines and nothing else.
+# ---------------------------------------------------------------------------
+
+address_line1 = "Camp"
+# address_line2 = "Second line, optional — omit the key entirely if unused"
+city = "Pune"
+
+# The GST state code. MUST equal the first two digits of `gstin`, or
+# place-of-supply on the invoice is wrong. Validated, not trusted.
+state_code = "27"
+state_name = "Maharashtra"
+
+# Six digits.
+pincode = "411001"
+
+# ---------------------------------------------------------------------------
+# Registrations.
+#
+# THE VALUES BELOW ARE PLACEHOLDERS REGISTERED TO NOBODY, in a
+# contracts-correct FORMAT (2-digit state code + PAN + entity digit + Z +
+# checksum char) so the renderer and every validation exercise a real shape.
+# Never put a real business's registration in a committed file, and never ship
+# a demo with someone else's.
+# ---------------------------------------------------------------------------
+
+gstin = "27AAAAA0000A1Z5"
+
+# FSSAI licence number. Optional — omit the key if the outlet has none yet.
+fssai = "11522998000123"
+
+# ---------------------------------------------------------------------------
+# The bill.
+# ---------------------------------------------------------------------------
+
+# Invoice number prefix: one to four capital letters followed by "/". Usually
+# the outlet's initials. It is the most closely read line on the document a
+# customer is handed, so it must not carry an internal label — "DEV/000008"
+# printed on a GST invoice reads as an unfinished product in the one place
+# that must not.
+#
+# NOTE FOR A RE-SEED ON A LIVE DATABASE: `invoice_sequence` is edge-local and
+# keyed by SERIES, never by prefix, so changing this does NOT reset the
+# counter. The next bill continues the existing count under the new prefix.
+# A clean `demo-reset.ps1 -Force` starts it at 1.
+invoice_prefix = "SY/"
+
+# Prints at the foot of every bill.
+#
+# ASCII ONLY, AND A HYPHEN IS A HYPHEN ON PURPOSE. This string reaches the raw
+# ESC/POS byte stream, which is emitted as UTF-8 with no codepage translation.
+# An em dash ships as `e2 80 94`, which a thermal printer in its default
+# codepage (CP437/CP1252) renders as three garbage characters — invisible
+# everywhere anyone looks, because the HTML and PDF render it correctly and
+# the `.txt` companion strips bytes above 0x7F. The only place the damage
+# appears is on paper (observed 2026-09-13, offset 786 of an 818-byte
+# receipt). Every printed string in this file is validated ASCII-only for the
+# same reason, not only this one.
+invoice_footer_text = "Thank you - please visit again"
+
+# ---------------------------------------------------------------------------
+# Time. The business day may cross midnight; `day_start_time` is what buckets
+# a trading night into one business date (contracts 0.5.0, `outlet.day_start_time`).
+# ---------------------------------------------------------------------------
+
+timezone = "Asia/Kolkata"
+day_start_time = "05:00"
+
+# ---------------------------------------------------------------------------
+# UPI. Optional. Present means the invoice screen and the printed receipt
+# carry a QR for the bill amount; absent means no QR at all.
+#
+# Absent is the correct default: a QR aimed at nobody opens a payment app on a
+# customer's phone pointed at no payee. There is no empty-QR state.
+#
+# Left unset in this EXAMPLE deliberately — a committed VPA is someone's real
+# payment address. Set it in your own `seed/outlet.toml`.
+# ---------------------------------------------------------------------------
+
+# upi_vpa = "someone@okicici"
+# upi_payee_name = "Shinjuku Yakitori"
+
+# ---------------------------------------------------------------------------
+# The restaurant's own mark, rendered on the receipt BESIDE the Holler mark.
+# Optional: absent renders nothing and changes no layout. Path is relative to
+# the repository root, or absolute. PNG.
+# ---------------------------------------------------------------------------
+
+# logo_path = "seed/assets/restaurant-logo.png"

@@ -10,6 +10,116 @@ Read `CLAUDE.md`'s `## Current milestone:` block for scope and EXCLUDES.
 
 ---
 
+## White-label outlet identity — Tier 1, landed 2026-09-13
+
+**Onboarding a restaurant is writing one file. It is never editing code.**
+
+`seed/outlet.toml` is the single source for the restaurant's name, legal
+entity, address, `state_code`, pincode, GSTIN, FSSAI, invoice prefix, bill
+footer, timezone, business-day start, UPI payee and logo. Both seeders read it
+and the `RESTAURANT_NAME…INVOICE_FOOTER_TEXT` constants block in
+`edge/database/src/bin/devseed.rs` is gone. The file is gitignored and
+per-installation; `seed/outlet.example.toml` is the committed template and
+carries today's Shinjuku Yakitori values.
+
+### What was observed, in the order the brief asked for
+
+All of it in a scratch tree under the agent guard — a scratch Postgres database
+`holler_wl_scratch` on the existing container (no port bound, dropped
+afterwards) and a scratch edge data directory. **The operator's stack was not
+touched**; `holler-pos` pid 12660 and the Vite server on 5173 were running
+throughout and were left alone.
+
+1. **Example file → both stores.** Cloud seeded from the committed catalogue
+   into the scratch database; edge seeded into a scratch data directory from
+   `seed/outlet.example.toml`. The edge seeder's own output named the file's
+   values back: `series SY/, GSTIN 27AAAAA0000A1Z5`.
+2. **Parity, zero diff.** 16 shared tables compared catalogue-to-Postgres by
+   row count, plus `grn_line` and `stock_ledger_entry`, plus the three name
+   rows compared against `outlet.toml` itself: **ZERO DIFF**. The edge half is
+   `edge_rows_match_the_shared_catalogue_row_for_row`, which compares field by
+   field and runs in CI. *A first run showed +1 on every table and was thrown
+   away: the Go Postgres test had seeded its own fixture into the same scratch
+   database minutes earlier. The uniform offset is what gave it away.*
+3. **The identity reaches the rows the bill prints from.**
+   `every_identity_field_reaches_the_row_that_prints_it` asserts twelve fields
+   through `outlet`, `outlet_fiscal_profile` and `invoice_series`, each naming
+   its own `seed/outlet.toml` key on failure.
+4. **Change one field and watch the assertion name it — FALSIFIED, not
+   assumed.** The footer's wiring was replaced with a differing literal and the
+   test failed with: ``seed/outlet.toml `invoice_footer_text` is "Thank you -
+   please visit again" but the seeded row carries "Visit us again soon"``. Note
+   the first attempt planted a literal EQUAL to the file's value and passed —
+   a planted value that agrees proves nothing.
+5. **One red case per validation rule.** Eighteen tests in
+   `devseed/outlet_identity.rs`, each mutating the valid example by one line and
+   asserting the message names the field: GSTIN shape; `state_code` disagreeing
+   with the GSTIN (both values individually well-formed — 29 is Karnataka's real
+   code, so only the cross-field rule can catch it); pincode; invoice prefix
+   (four bad shapes); non-ASCII in the footer AND in the restaurant's name; five
+   malformed UPI addresses; `day_start_time`; timezone; unresolvable
+   `logo_path`; missing field; typo'd key; duplicate key; unquoted value;
+   missing file. Plus four on the Go side, which re-checks the cross-field GSTIN
+   rule because that reader runs against a committed file a person can edit.
+6. **The refactor is invisible on paper — byte-compared.** A receipt was
+   rendered by the PRE-change `template.rs` and by the post-change one with
+   identical inputs and no logo configured: **HTML byte-identical, ESC/POS
+   byte-identical.** The first compare differed by one line — an always-emitted
+   CSS rule for a mark that was not there — so the rule is now emitted only when
+   there is a mark to style.
+7. **Suites green, through `assert-tests-ran.mjs`, with counts.** devseed 29
+   (was 9); `edge/database` lib 262; `edge/printer` lib 60 (was 57);
+   `backend/cmd/devseed` 9 Go tests including the Postgres-backed writer;
+   `check-seed-drift` OK and falsified by editing the example and watching it
+   fail; `check-seams` clean on all three manifests.
+8. **`demo-assert` on the scratch edge database**: `sync_replay_block` 0,
+   `stock_deduction_gap` 0, `sync_outbox_block` blocked 0, banner proxy 0.
+
+### What was NOT run, and why
+
+**The two PowerShell scripts were parse-checked, not executed.**
+`dev-bootstrap.ps1` and `demo-reset.ps1` both gained `-OutletFile`, both
+re-emit the catalogue from the identity file into a run-local temporary and
+point BOTH seeders at it, and both refuse outright when the file is missing.
+All three scripts tokenize clean. A real run needs `apps\pos\.env.dev`, which
+is deny-ruled to agents, and `demo-reset.ps1 -WhatIf` stopped at its own
+preflight because the operator's POS process was alive. **The operator's
+Monday-morning `demo-up.ps1 -Fresh` is the first real run of them**, and it
+doubles as Monday's clean reset. If anything in that run differs from the
+scratch proof above, the whole change is reverted.
+
+### Two things a later reader should not have to rediscover
+
+- **`seed/demo-outlet.json` is emitted from the EXAMPLE identity**, because the
+  real `outlet.toml` cannot be committed and CI would otherwise depend on whose
+  machine ran it. `schema_version` is 2, and the catalogue now carries
+  `outlet_source_sha256` — **the edge seeder refuses a catalogue whose digest
+  disagrees with the identity file it was handed.** Without that check, an
+  installation with its own `outlet.toml` that seeded from the committed
+  catalogue would put one restaurant's name on the `outlet`/`tenant`/`brand`
+  rows and another's on the GST invoice: internally consistent on every screen,
+  wrong on the bill.
+- **`-UpiVpa`/`-UpiPayeeName` are now OVERRIDES that warn and are not written
+  back.** The payee used to live in `%LOCALAPPDATA%\Holler\dev-bootstrap-state.json`
+  — a payment address printed on a customer's bill, stored where nobody would
+  look. A value remembered there by an older run is still honoured once, loudly,
+  with an instruction to move it into the file.
+
+### A finding, not fixed, not in scope
+
+`demo-reset.ps1` takes `-DatabaseUrl` and `-PostgresDb` as separate parameters,
+and **the destructive `DROP SCHEMA` uses `-PostgresDb`** while the seeders use
+`-DatabaseUrl`. Passing a scratch `-DatabaseUrl` alone leaves the drop aimed at
+`holler`. Seen in this session's `-WhatIf` banner, which announced it would drop
+the `holler` schema while every seeder argument pointed at the scratch database.
+**Same family as the `-BackendPort 8099` incident already recorded in
+`CLAUDE.md`**: an argument that names a scratch target which the destructive
+step does not read. Nothing was dropped — `-WhatIf` destroys nothing — and no
+fix was attempted, because that script is on the six-step path two days before
+the demo.
+
+---
+
 ## The verification list, in order — agreed 2026-09-13
 
 Ordered by what would end the demo, not by effort. **The chat is not the record,

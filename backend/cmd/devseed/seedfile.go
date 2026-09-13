@@ -22,17 +22,44 @@ type seedFile struct {
 	SchemaVersion int    `json:"schema_version"`
 	GeneratedBy   string `json:"generated_by"`
 
+	// SHA-256 of the seed/outlet.toml the emitter read, lowercase hex. Which
+	// restaurant's identity file produced this catalogue -- so a run can be
+	// traced back to the file that configured it, and so a mismatch is
+	// detectable rather than a wrong name nobody notices.
+	OutletSourceSHA256 string `json:"outlet_source_sha256"`
+
 	Tenant seedTenant `json:"tenant"`
 	Brand  seedBrand  `json:"brand"`
 	Outlet seedOutlet `json:"outlet"`
+
+	// Everything a GST invoice prints that is not already on the outlet row,
+	// from seed/outlet.toml (schema_version 2).
+	//
+	// THE CLOUD DECODES THIS AND WRITES NONE OF IT TODAY, deliberately:
+	// outlet_fiscal_profile is edge-seeded (seed/README.md "Scope"), so this
+	// block travels for parity of DESCRIPTION, not of rows -- exactly the
+	// menu_item.station_code precedent, which the edge consumes to build
+	// menu_item_station and the cloud discards because Postgres has no such
+	// table.
+	//
+	// It is declared rather than omitted because the decoder runs with
+	// DisallowUnknownFields: an undeclared field here is a loud failure, and
+	// "decode it and choose not to write it" is a recorded decision, while
+	// "never hear about it" is the contracts 0.5.9 defect.
+	//
+	// Tier 2 (docs/pilot-readiness.md) puts these fields behind an admin
+	// "Outlet settings" screen writing outlet + outlet_fiscal_profile HERE,
+	// in the cloud, delivered to the edge by the config pull. This struct is
+	// where that writer will read from.
+	OutletIdentity seedOutletIdentity `json:"outlet_identity"`
 
 	TaxProfiles        []seedTaxProfile        `json:"tax_profiles"`
 	ComplianceVersions []seedComplianceVersion `json:"compliance_versions"`
 	TaxRules           []seedTaxRule           `json:"tax_rules"`
 
-	MenuCategories    []seedMenuCategory    `json:"menu_categories"`
-	MenuItems         []seedMenuItem        `json:"menu_items"`
-	MenuItemVariants  []seedMenuItemVariant `json:"menu_item_variants"`
+	MenuCategories    []seedMenuCategory     `json:"menu_categories"`
+	MenuItems         []seedMenuItem         `json:"menu_items"`
+	MenuItemVariants  []seedMenuItemVariant  `json:"menu_item_variants"`
 	MenuItemModifiers []seedMenuItemModifier `json:"menu_item_modifiers"`
 
 	InventoryItems      []seedInventoryItem      `json:"inventory_items"`
@@ -48,7 +75,7 @@ type seedFile struct {
 	// Deliberate exception (seed/README.md, "The goods receipt is a
 	// deliberate exception"). Nullable: a seed file with no receipt yet is
 	// legal while the demo content is still being authored.
-	GoodsReceipt *seedGoodsReceipt `json:"goods_receipt"`
+	GoodsReceipt *seedGoodsReceipt      `json:"goods_receipt"`
 	OpeningStock []seedStockLedgerEntry `json:"opening_stock"`
 }
 
@@ -63,12 +90,34 @@ type seedBrand struct {
 	Name     string `json:"name"`
 }
 
+// seedOutletIdentity mirrors the `outlet_identity` block, which mirrors
+// seed/outlet.toml one key for one field. Every value is a validated string
+// by the time it reaches this file: the emitter refuses a GSTIN whose leading
+// digits disagree with state_code, a non-six-digit pincode, an invoice_prefix
+// that is not [A-Z]{1,4}/, and any non-ASCII character in a printed string.
+// See edge/database/src/bin/devseed/outlet_identity.rs.
+type seedOutletIdentity struct {
+	RestaurantName    string  `json:"restaurant_name"`
+	LegalName         string  `json:"legal_name"`
+	OutletName        string  `json:"outlet_name"`
+	AddressLine1      string  `json:"address_line1"`
+	AddressLine2      *string `json:"address_line2"`
+	City              string  `json:"city"`
+	StateCode         string  `json:"state_code"`
+	StateName         string  `json:"state_name"`
+	Pincode           string  `json:"pincode"`
+	GSTIN             string  `json:"gstin"`
+	FSSAI             *string `json:"fssai"`
+	InvoicePrefix     string  `json:"invoice_prefix"`
+	InvoiceFooterText string  `json:"invoice_footer_text"`
+}
+
 type seedOutlet struct {
-	ID            string `json:"id"`
-	BrandID       string `json:"brand_id"`
-	Name          string `json:"name"`
-	Timezone      string `json:"timezone"`
-	DayStartTime  string `json:"day_start_time"`
+	ID           string `json:"id"`
+	BrandID      string `json:"brand_id"`
+	Name         string `json:"name"`
+	Timezone     string `json:"timezone"`
+	DayStartTime string `json:"day_start_time"`
 }
 
 type seedTaxProfile struct {
@@ -82,11 +131,11 @@ type seedTaxProfile struct {
 }
 
 type seedComplianceVersion struct {
-	ID             string `json:"id"`
-	OutletID       string `json:"outlet_id"`
-	Label          string `json:"label"`
-	EffectiveFrom  string `json:"effective_from"`
-	Notes          *string `json:"notes"`
+	ID            string  `json:"id"`
+	OutletID      string  `json:"outlet_id"`
+	Label         string  `json:"label"`
+	EffectiveFrom string  `json:"effective_from"`
+	Notes         *string `json:"notes"`
 }
 
 type seedTaxRule struct {
@@ -107,14 +156,14 @@ type seedMenuCategory struct {
 }
 
 type seedMenuItem struct {
-	ID              string  `json:"id"`
-	OutletID        string  `json:"outlet_id"`
-	CategoryID      string  `json:"category_id"`
-	Name            string  `json:"name"`
-	BasePricePaise  int64   `json:"base_price_paise"`
-	IsAvailable     bool    `json:"is_available"`
-	TaxProfileID    *string `json:"tax_profile_id"`
-	HsnSac          string  `json:"hsn_sac"`
+	ID             string  `json:"id"`
+	OutletID       string  `json:"outlet_id"`
+	CategoryID     string  `json:"category_id"`
+	Name           string  `json:"name"`
+	BasePricePaise int64   `json:"base_price_paise"`
+	IsAvailable    bool    `json:"is_available"`
+	TaxProfileID   *string `json:"tax_profile_id"`
+	HsnSac         string  `json:"hsn_sac"`
 	// StationCode travels for the edge only, to build menu_item_station --
 	// there is no such table in Postgres. Read and deliberately discarded.
 	StationCode string `json:"station_code"`
@@ -149,20 +198,20 @@ type seedInventoryItem struct {
 }
 
 type seedItemUnitConversion struct {
-	ID               string `json:"id"`
-	InventoryItemID  string `json:"inventory_item_id"`
-	PackUnitLabel    string `json:"pack_unit_label"`
-	SourceDimension  string `json:"source_dimension"`
-	Numerator        int64  `json:"numerator"`
-	Denominator      int64  `json:"denominator"`
+	ID              string `json:"id"`
+	InventoryItemID string `json:"inventory_item_id"`
+	PackUnitLabel   string `json:"pack_unit_label"`
+	SourceDimension string `json:"source_dimension"`
+	Numerator       int64  `json:"numerator"`
+	Denominator     int64  `json:"denominator"`
 }
 
 type seedRecipe struct {
-	ID                   string `json:"id"`
-	MenuItemVariantID    string `json:"menu_item_variant_id"`
-	Name                 string `json:"name"`
-	OutputDimension      string `json:"output_dimension"`
-	OutputQuantityMicro  int64  `json:"output_quantity_micro"`
+	ID                  string `json:"id"`
+	MenuItemVariantID   string `json:"menu_item_variant_id"`
+	Name                string `json:"name"`
+	OutputDimension     string `json:"output_dimension"`
+	OutputQuantityMicro int64  `json:"output_quantity_micro"`
 }
 
 // seedRecipeIngredient. component_kind is deliberately NOT a JSON field: it
@@ -170,43 +219,43 @@ type seedRecipe struct {
 // structural fact rather than an authored value -- unlike QuantityDimension,
 // which is the unit the author chose and is NEVER derived (contracts 0.5.2).
 type seedRecipeIngredient struct {
-	ID                 string  `json:"id"`
-	RecipeID           string  `json:"recipe_id"`
-	InventoryItemID    *string `json:"inventory_item_id"`
-	SubRecipeID        *string `json:"sub_recipe_id"`
-	QuantityMicro      int64   `json:"quantity_micro"`
-	QuantityDimension  string  `json:"quantity_dimension"`
+	ID                string  `json:"id"`
+	RecipeID          string  `json:"recipe_id"`
+	InventoryItemID   *string `json:"inventory_item_id"`
+	SubRecipeID       *string `json:"sub_recipe_id"`
+	QuantityMicro     int64   `json:"quantity_micro"`
+	QuantityDimension string  `json:"quantity_dimension"`
 }
 
 type seedModifierIngredientDelta struct {
-	ID                  string `json:"id"`
-	MenuItemModifierID  string `json:"menu_item_modifier_id"`
-	InventoryItemID     string `json:"inventory_item_id"`
-	QuantityMicro       int64  `json:"quantity_micro"`
+	ID                 string `json:"id"`
+	MenuItemModifierID string `json:"menu_item_modifier_id"`
+	InventoryItemID    string `json:"inventory_item_id"`
+	QuantityMicro      int64  `json:"quantity_micro"`
 }
 
 type seedSupplier struct {
-	ID                string  `json:"id"`
-	OutletID          string  `json:"outlet_id"`
-	Code              string  `json:"code"`
-	Name              string  `json:"name"`
-	Gstin             *string `json:"gstin"`
-	Phone             *string `json:"phone"`
-	Email             *string `json:"email"`
-	Address           *string `json:"address"`
-	PaymentTermsDays  int     `json:"payment_terms_days"`
-	IsActive          bool    `json:"is_active"`
+	ID               string  `json:"id"`
+	OutletID         string  `json:"outlet_id"`
+	Code             string  `json:"code"`
+	Name             string  `json:"name"`
+	Gstin            *string `json:"gstin"`
+	Phone            *string `json:"phone"`
+	Email            *string `json:"email"`
+	Address          *string `json:"address"`
+	PaymentTermsDays int     `json:"payment_terms_days"`
+	IsActive         bool    `json:"is_active"`
 }
 
 type seedSupplierItem struct {
-	ID                 string  `json:"id"`
-	SupplierID         string  `json:"supplier_id"`
-	InventoryItemID    string  `json:"inventory_item_id"`
-	PurchaseUnit       string  `json:"purchase_unit"`
-	PackSizeMicro      int64   `json:"pack_size_micro"`
-	QuantityDimension  string  `json:"quantity_dimension"`
-	LastPricePaise     *int64  `json:"last_price_paise"`
-	IsPreferred        bool    `json:"is_preferred"`
+	ID                string `json:"id"`
+	SupplierID        string `json:"supplier_id"`
+	InventoryItemID   string `json:"inventory_item_id"`
+	PurchaseUnit      string `json:"purchase_unit"`
+	PackSizeMicro     int64  `json:"pack_size_micro"`
+	QuantityDimension string `json:"quantity_dimension"`
+	LastPricePaise    *int64 `json:"last_price_paise"`
+	IsPreferred       bool   `json:"is_preferred"`
 }
 
 // seedGoodsReceipt and seedGRNLine mirror goods_receipt_note/grn_line
@@ -215,17 +264,17 @@ type seedSupplierItem struct {
 // provide -- and the cloud's copy stays a REPLICA (contracts 0.7.0)
 // regardless of how it got there.
 type seedGoodsReceipt struct {
-	ID                string  `json:"id"`
-	OutletID          string  `json:"outlet_id"`
-	PurchaseOrderID   *string `json:"purchase_order_id"`
-	SupplierID        *string `json:"supplier_id"`
-	GrnNumber         string  `json:"grn_number"`
-	DeliveryNoteRef   *string `json:"delivery_note_ref"`
-	ReceivedAt        string  `json:"received_at"`
-	ReceivedByUserID  string  `json:"received_by_user_id"`
-	BusinessDate      string  `json:"business_date"`
-	Notes             *string `json:"notes"`
-	Lines             []seedGRNLine `json:"lines"`
+	ID               string        `json:"id"`
+	OutletID         string        `json:"outlet_id"`
+	PurchaseOrderID  *string       `json:"purchase_order_id"`
+	SupplierID       *string       `json:"supplier_id"`
+	GrnNumber        string        `json:"grn_number"`
+	DeliveryNoteRef  *string       `json:"delivery_note_ref"`
+	ReceivedAt       string        `json:"received_at"`
+	ReceivedByUserID string        `json:"received_by_user_id"`
+	BusinessDate     string        `json:"business_date"`
+	Notes            *string       `json:"notes"`
+	Lines            []seedGRNLine `json:"lines"`
 	// LedgerEntries are the stock movements the receipt produced, if the
 	// emitter chooses to carry them here rather than in top-level
 	// opening_stock. Optional: this file never invents a ledger row the JSON
@@ -234,19 +283,19 @@ type seedGoodsReceipt struct {
 }
 
 type seedGRNLine struct {
-	ID                      string  `json:"id"`
-	InventoryItemID         string  `json:"inventory_item_id"`
-	LineNumber              int     `json:"line_number"`
-	PurchaseOrderLineID     *string `json:"purchase_order_line_id"`
-	EnteredPurchaseUnit     string  `json:"entered_purchase_unit"`
-	EnteredQuantityMicro    int64   `json:"entered_quantity_micro"`
-	QuantityDimension       string  `json:"quantity_dimension"`
-	BaseQuantityMicro       int64   `json:"base_quantity_micro"`
-	PackSizeMicroApplied    int64   `json:"pack_size_micro_applied"`
-	UnitCostPaise           int64   `json:"unit_cost_paise"`
-	LineTotalPaise          int64   `json:"line_total_paise"`
-	BatchCode               *string `json:"batch_code"`
-	ExpiryDate              *string `json:"expiry_date"`
+	ID                   string  `json:"id"`
+	InventoryItemID      string  `json:"inventory_item_id"`
+	LineNumber           int     `json:"line_number"`
+	PurchaseOrderLineID  *string `json:"purchase_order_line_id"`
+	EnteredPurchaseUnit  string  `json:"entered_purchase_unit"`
+	EnteredQuantityMicro int64   `json:"entered_quantity_micro"`
+	QuantityDimension    string  `json:"quantity_dimension"`
+	BaseQuantityMicro    int64   `json:"base_quantity_micro"`
+	PackSizeMicroApplied int64   `json:"pack_size_micro_applied"`
+	UnitCostPaise        int64   `json:"unit_cost_paise"`
+	LineTotalPaise       int64   `json:"line_total_paise"`
+	BatchCode            *string `json:"batch_code"`
+	ExpiryDate           *string `json:"expiry_date"`
 }
 
 // seedStockLedgerEntry mirrors stock_ledger_entry. entry_seq is optional in
@@ -255,32 +304,32 @@ type seedGRNLine struct {
 // way the value actually written is never invented silently -- it is either
 // the author's value or a value this file is responsible for and documents.
 type seedStockLedgerEntry struct {
-	ID                    string  `json:"id"`
-	OutletID              *string `json:"outlet_id"`
-	EntrySeq              *int64  `json:"entry_seq"`
-	InventoryItemID       string  `json:"inventory_item_id"`
-	InventoryItemName     string  `json:"inventory_item_name"`
-	Dimension             string  `json:"dimension"`
-	EntryType             string  `json:"entry_type"`
-	Origin                string  `json:"origin"`
-	QuantityMicro         int64   `json:"quantity_micro"`
-	RecipeID              *string `json:"recipe_id"`
-	RecipeVersion         *int    `json:"recipe_version"`
-	RecipeName            *string `json:"recipe_name"`
-	ReasonCode            *string `json:"reason_code"`
-	Note                  *string `json:"note"`
-	OccurredAt            string  `json:"occurred_at"`
-	BusinessDate          string  `json:"business_date"`
-	CreatedByUserID       *string `json:"created_by_user_id"`
-	ModifierDeltaID       *string `json:"modifier_delta_id"`
-	ModifierName          *string `json:"modifier_name"`
-	ModifierDeltaVersion  *int    `json:"modifier_delta_version"`
-	UnitCostPaise         *int64  `json:"unit_cost_paise"`
-	LineTotalPaise        *int64  `json:"line_total_paise"`
-	SourceGrnID           *string `json:"source_grn_id"`
-	SourcePurchaseReturnID *string `json:"source_purchase_return_id"`
+	ID                       string  `json:"id"`
+	OutletID                 *string `json:"outlet_id"`
+	EntrySeq                 *int64  `json:"entry_seq"`
+	InventoryItemID          string  `json:"inventory_item_id"`
+	InventoryItemName        string  `json:"inventory_item_name"`
+	Dimension                string  `json:"dimension"`
+	EntryType                string  `json:"entry_type"`
+	Origin                   string  `json:"origin"`
+	QuantityMicro            int64   `json:"quantity_micro"`
+	RecipeID                 *string `json:"recipe_id"`
+	RecipeVersion            *int    `json:"recipe_version"`
+	RecipeName               *string `json:"recipe_name"`
+	ReasonCode               *string `json:"reason_code"`
+	Note                     *string `json:"note"`
+	OccurredAt               string  `json:"occurred_at"`
+	BusinessDate             string  `json:"business_date"`
+	CreatedByUserID          *string `json:"created_by_user_id"`
+	ModifierDeltaID          *string `json:"modifier_delta_id"`
+	ModifierName             *string `json:"modifier_name"`
+	ModifierDeltaVersion     *int    `json:"modifier_delta_version"`
+	UnitCostPaise            *int64  `json:"unit_cost_paise"`
+	LineTotalPaise           *int64  `json:"line_total_paise"`
+	SourceGrnID              *string `json:"source_grn_id"`
+	SourcePurchaseReturnID   *string `json:"source_purchase_return_id"`
 	SourceStockTransferOutID *string `json:"source_stock_transfer_out_id"`
-	SourceStockCountID    *string `json:"source_stock_count_id"`
+	SourceStockCountID       *string `json:"source_stock_count_id"`
 }
 
 // loadSeedFile decodes path with DisallowUnknownFields: a field the JSON
@@ -314,8 +363,54 @@ func loadSeedFile(path string) (*seedFile, error) {
 // quantity_dimension always travels with a recipe_ingredient row (contracts
 // 0.5.2), and the required id fields are never empty.
 func (sf *seedFile) validate() error {
-	if sf.SchemaVersion != 1 {
-		return fmt.Errorf("schema_version %d is not 1", sf.SchemaVersion)
+	// Bumped 1 -> 2 when the outlet_identity block landed. Pinned to the
+	// exact version rather than ">= 1": a reader that accepts an older file
+	// accepts one with no identity block at all, and every field below would
+	// read as an empty string.
+	if sf.SchemaVersion != 2 {
+		return fmt.Errorf("schema_version %d is not 2 -- re-emit seed/demo-outlet.json: cd edge/database && cargo run --bin devseed -- --emit-json ../../seed/demo-outlet.json", sf.SchemaVersion)
+	}
+	// The identity fields the cloud does not write are still REQUIRED to be
+	// present and non-empty. A block that decodes to zero values would mean
+	// the emitter stopped filling it, and the first symptom otherwise is a
+	// blank name on a bill several steps downstream.
+	if sf.OutletSourceSHA256 == "" {
+		return fmt.Errorf("outlet_source_sha256 must not be empty -- the catalogue does not say which seed/outlet.toml produced it")
+	}
+	for field, value := range map[string]string{
+		"restaurant_name":     sf.OutletIdentity.RestaurantName,
+		"legal_name":          sf.OutletIdentity.LegalName,
+		"outlet_name":         sf.OutletIdentity.OutletName,
+		"address_line1":       sf.OutletIdentity.AddressLine1,
+		"city":                sf.OutletIdentity.City,
+		"state_code":          sf.OutletIdentity.StateCode,
+		"state_name":          sf.OutletIdentity.StateName,
+		"pincode":             sf.OutletIdentity.Pincode,
+		"gstin":               sf.OutletIdentity.GSTIN,
+		"invoice_prefix":      sf.OutletIdentity.InvoicePrefix,
+		"invoice_footer_text": sf.OutletIdentity.InvoiceFooterText,
+	} {
+		if value == "" {
+			return fmt.Errorf("outlet_identity.%s must not be empty", field)
+		}
+	}
+	// Re-checked here rather than trusted from the emitter. This reader runs
+	// against a COMMITTED file that a person can edit by hand, and a wrong
+	// place-of-supply on every invoice is not a defect any screen shows.
+	if len(sf.OutletIdentity.GSTIN) < 2 || sf.OutletIdentity.GSTIN[:2] != sf.OutletIdentity.StateCode {
+		return fmt.Errorf("outlet_identity.state_code %q does not match the first two digits of gstin %q -- place-of-supply would be wrong on every invoice", sf.OutletIdentity.StateCode, sf.OutletIdentity.GSTIN)
+	}
+	// The names on the three rows this seeder writes come from the identity
+	// file, so they must agree with it. A tenant named for one restaurant and
+	// an invoice footer for another is internally consistent on every screen.
+	if sf.Tenant.Name != sf.OutletIdentity.LegalName {
+		return fmt.Errorf("tenant.name %q does not match outlet_identity.legal_name %q", sf.Tenant.Name, sf.OutletIdentity.LegalName)
+	}
+	if sf.Brand.Name != sf.OutletIdentity.RestaurantName {
+		return fmt.Errorf("brand.name %q does not match outlet_identity.restaurant_name %q", sf.Brand.Name, sf.OutletIdentity.RestaurantName)
+	}
+	if sf.Outlet.Name != sf.OutletIdentity.OutletName {
+		return fmt.Errorf("outlet.name %q does not match outlet_identity.outlet_name %q", sf.Outlet.Name, sf.OutletIdentity.OutletName)
 	}
 	if sf.Tenant.ID == "" || sf.Brand.ID == "" || sf.Outlet.ID == "" {
 		return fmt.Errorf("tenant/brand/outlet id must not be empty")
