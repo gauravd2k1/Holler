@@ -1730,3 +1730,64 @@ Testing a refusal by pointing it at the thing it protects is only safe when the 
 - **Exercise a guard against a scratch copy, never the live artefact.** Build a fixture with the same shape, or extract the predicate and exercise it in isolation and say so, or decline to run it and name the unexercised branch. **An honestly-named gap is worth more than a test that was safe by accident.** Added to `.claude/agents/rust-edge-builder.md`, beside the existing prohibitions on `git checkout --` and worktree checkouts — the same rule, arriving through a third door.
 - **A deny rule protects a file, not a secret.** Every agent this session that needed `.env.dev` reported the denial honestly and unprompted; the protection was bypassed anyway by a script an agent was asked to run. The denial says nothing about whether an agent may *cause* the write. Enumerate the **writers** of a protected artefact before invoking anything that touches it.
 - **An instruction in a brief is not a control either.** This one was explicit, bold, and in the first paragraph. It was followed everywhere except the one place it mattered. Where the cost of a mistake is the operator's data, the constraint has to be structural — a scratch path the agent is given, rather than a prohibition it is asked to honour.
+
+---
+
+## 2026-09-13 — A field the phone read on every table had no writer anywhere
+
+**Severity:** medium. Caught by inspection three days before a client demo, in a
+path no test and no human had ever driven end to end.
+
+### What happened
+
+`GET /api/tables`, the call the captain app makes every time a waiter walks back
+to a table, carries `open_order_id` so a second round can be **appended** to the
+round already in the kitchen. It was read from
+`table_session.current_order_id`.
+
+Nothing in the shipped POS has ever written a `table_session` row.
+`update_table_session` has exactly one caller in the repository —
+`edge/database/src/lib.rs` itself — reached by no Tauri command, no HTTP route
+and no seed. So the field was `null` on every table, forever;
+`apps/captain/src/App.tsx`'s append branch was unreachable; and **every Send
+opened a second order on the same table** — two orders, two bills, one table.
+
+The suite was green throughout. Seven captain tests passed, including one that
+asserted `open_order_id` **is null** on a fresh table — true, and true for the
+wrong reason. The client code read the field correctly, the server wrote it
+correctly from the row it had, the row simply never existed.
+
+### Root cause
+
+The read was verified; the write was assumed. Every piece in the chain was
+individually right, and the chain had no source.
+
+### The rule
+
+**Enumerate the WRITERS before trusting a READ.** A field, a file, a table or a
+config key that something reads in the shipped path is worth exactly one
+question: what writes it, in a path that actually runs? Answer it by grepping
+for the writer and following its callers out to a real entry point — not by
+confirming the reader looks correct, which it will.
+
+This is the same shape as the protected-file finding, from the other side: there
+the write went somewhere nothing read, here the read came from somewhere nothing
+wrote. Both look correct in review, both pass every test, and both are found by
+asking about the end of the chain nobody is looking at. It also generalises the
+0.5.2 rule already in `CLAUDE.md` — *a column nothing reads is a column that does
+not exist* — to its mirror: **a column nothing writes is a column that is always
+null**, and a reader of one is a feature that never runs.
+
+### What it cost, and what it uncovered
+
+Nothing in production — the captain has never run at an outlet. But fixing it
+immediately exposed a second defect **that had never been reachable**:
+`POST /api/orders/{id}/send` confirmed unconditionally, and confirm rejects a
+non-DRAFT order, so the newly-possible second round was appended and then
+refused with `ORDER_NOT_CONFIRMABLE`, leaving lines in an order the kitchen
+would never be told about. Both fixed in `52d8930`, the tests written first and
+watched fail.
+
+That is the M6 C3 pattern again: **a fix for one defect can uncover another with
+nothing announcing it.** Dead code hides its own bugs — the day it stops being
+dead, they are new.

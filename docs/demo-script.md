@@ -246,6 +246,16 @@ Join the hotspot, open the captain page, pair with the WAITER token.
 > device-row fix has **no backfill**: a device paired before it stays broken and
 > re-pairing does not help — it must be re-ENROLLED. (Scenario board S-CAP-20.)
 
+> **ON A SEND ERROR, CHECK THE KDS BEFORE TAPPING SEND AGAIN.** The listener may
+> have accepted the order and lost only the reply — the commonest shape of a
+> WiFi drop mid-send — in which case the kitchen already has the round and a
+> second tap cooks it twice. A duplicate ORDER can no longer happen (`52d8930`:
+> the table now reports its open order, so a retry appends), but duplicate
+> LINES still can, because no request carries an idempotency key. **Wrong line
+> on the ticket: void it on the till.** The real fix is `client_order_id` on
+> both write routes and is filed in `docs/pilot-readiness.md` §0 for before the
+> first pilot — deliberately not done before the demo.
+
 ---
 
 ## Rules that bind anyone touching this stack before the demo

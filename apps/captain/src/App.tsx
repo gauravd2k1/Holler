@@ -9,6 +9,7 @@ import {
   createOrder,
   sendOrder,
   fetchSession,
+  fetchTables,
   ApiError,
   type CaptainTable,
   type KotSummary,
@@ -113,6 +114,27 @@ export function App() {
         return;
       }
       setSendError(err instanceof Error ? err.message : String(err));
+      // RE-READ THE TABLE BEFORE THE WAITER CAN TAP SEND AGAIN. The commonest
+      // send failure is a dropped connection on a request the listener
+      // ACCEPTED, so the order may well exist with the reply lost. The table
+      // we are holding was read before any of that and still says the table is
+      // empty; retrying against it would open a second order. A fresh read
+      // names the open order, so the retry appends to it instead.
+      //
+      // It does NOT make a retry safe on its own -- the same round can still be
+      // sent twice as duplicate LINES, which needs an idempotency key
+      // (docs/pilot-readiness.md §0). It removes the duplicate ORDER only.
+      // Best-effort: a failed refresh must never replace the send error the
+      // waiter needs to read.
+      if (token !== null) {
+        try {
+          const fresh = (await fetchTables(token)).find((t) => t.id === table.id);
+          if (fresh !== undefined) setScreen({ kind: "menu", table: fresh });
+        } catch {
+          // Keep the send error on screen; the table refresh is an
+          // optimisation, not the message.
+        }
+      }
     } finally {
       setSending(false);
     }

@@ -20,6 +20,40 @@ Sizes are estimates from reading the entries, not from planning the work.
 
 ---
 
+## 0. The captain duplicates an order on a lost-response retry · **Blocks pilot: YES** · **Size: S**
+
+**Filed 2026-09-13 by operator ruling, deliberately NOT fixed before the demo.**
+
+`POST /api/orders` and `POST /api/orders/{orderId}/items` carry no idempotency
+key, and nothing rejects a second open order on one table. So a request the
+listener **accepted** whose **response** the phone never received — the WiFi
+drop that is the normal case in a restaurant, not an edge case — leaves the
+waiter looking at an error beside an order the kitchen already has. Tapping
+Send again sends the lines a second time.
+
+Two distinct halves, and the first is already closed:
+
+- **A duplicate ORDER** — closed by `52d8930`. `GET /api/tables` now resolves
+  `open_order_id` from the order rows, so a retry after a refetch appends to
+  the order that exists instead of opening a second one.
+- **Duplicate LINES** — open, and this entry. A retry still re-sends the same
+  cart, and the kitchen cooks the round twice. Nothing in the request lets the
+  listener tell "the waiter sent the same round again on purpose" from "the
+  waiter is retrying a send he never saw succeed", because the two are
+  byte-identical.
+
+**The fix is a client-supplied `client_order_id` on both routes, unique per
+tenant**, stored with the order and the appended line, so a replay resolves to
+the row it already created and returns it rather than creating another. Minted
+on the phone, at the moment the cart is committed — never server-side, which
+would mint a new one per attempt and defeat the point.
+
+**Landing: before the first pilot.** The demo mitigation is procedural and is
+written into `docs/demo-script.md`'s captain step: on a Send error, check the
+KDS before tapping Send again; a wrong line is voided on the till.
+
+---
+
 ## A. The Phase A carries — what A4, A6 and A7 actually are
 
 Phase A closed with **five of seven landed (A1, A1b, A2, A3, A5) and three
