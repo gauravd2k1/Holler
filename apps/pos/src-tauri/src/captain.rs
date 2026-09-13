@@ -260,20 +260,43 @@ fn handle_tables(state: &AppState) -> ApiResult {
     // under a new name. Table plus status is also the behaviour wanted: a
     // waiter appending to a round the TILL opened is correct.
     //
-    // One list read for the whole outlet rather than a query per table: the
-    // rows are already ordered `created_at DESC`, so the first appendable
-    // match per table is the current one.
+    // One list read for the whole outlet rather than a query per table.
+    //
+    // WHEN A TABLE HAS MORE THAN ONE APPENDABLE ORDER, THE OLDEST WINS, AND
+    // THAT IS PINNED BY A TEST. A clean outlet cannot reach that state through
+    // this route any more — it is what the fix prevents — but a database that
+    // ran the pre-fix build already holds such tables, and a dev or demo reset
+    // is the only thing that clears them. "Whatever the query happened to
+    // return" is not an answer a waiter can predict, so: the oldest open order
+    // is the round the table has been eating, and the one a new round belongs
+    // on. `list_orders_for_outlet` returns `created_at DESC`; the sort below
+    // re-orders ASCENDING with the order id as a tie-break before the first
+    // match per table is taken. The tie-break is not decoration: `created_at`
+    // is an ISO timestamp in milliseconds, two orders on one table can share
+    // one, and the query's ordering alone leaves their relative order to
+    // SQLite. A UUIDv7 id is itself time-ordered, so the tie-break agrees with
+    // the timestamp rather than fighting it.
     let open_orders: std::collections::HashMap<String, String> = {
         let db = lock_db(state)?;
-        holler_edge_database::repo::list_orders_for_outlet(db.connection(), &state.outlet_id)
-            .map_err(|e| storage_error(e.into()))?
-            .into_iter()
-            .filter(|o| APPENDABLE_ORDER_STATUSES.contains(&o.status.as_str()))
-            .filter_map(|o| o.table_id.clone().map(|t| (t, o.id)))
-            .fold(std::collections::HashMap::new(), |mut acc, (table, id)| {
+        let mut appendable: Vec<(String, String, String)> =
+            holler_edge_database::repo::list_orders_for_outlet(db.connection(), &state.outlet_id)
+                .map_err(|e| storage_error(e.into()))?
+                .into_iter()
+                .filter(|o| APPENDABLE_ORDER_STATUSES.contains(&o.status.as_str()))
+                .filter_map(|o| {
+                    o.table_id
+                        .clone()
+                        .map(|t| (t, o.created_at.clone(), o.id.clone()))
+                })
+                .collect();
+        appendable.sort_by(|a, b| (&a.1, &a.2).cmp(&(&b.1, &b.2)));
+        appendable.into_iter().fold(
+            std::collections::HashMap::new(),
+            |mut acc, (table, _created_at, id)| {
                 acc.entry(table).or_insert(id);
                 acc
-            })
+            },
+        )
     };
 
     let mut out = Vec::with_capacity(tables.len());

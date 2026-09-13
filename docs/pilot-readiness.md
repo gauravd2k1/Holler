@@ -338,6 +338,45 @@ that writes a row the edge never receives is a screen that does nothing.
 | **The pump makes the till sluggish while the cloud is down** | NO | S–M | Against ADR-013's own promise. Severity at the shipped 60s interval is unmeasured |
 | **The Orders screen renders raw UTC** | NO | S | Read as a clock fault by the operator mid-run |
 | **Four M1/M2 POS ordering defects** | NO | M | Filed with an M6 trigger, listed here as operator-facing |
+| **Every captain request re-verifies Argon2id at 64 MiB** | NO | S | The latency root cause on the phone. See below |
+
+#### Every captain request pays a full Argon2id verification · **Blocks pilot: NO** · **Size: S**
+
+**Added 2026-09-13 by operator ruling.** `captain.rs::authenticate` runs the
+device credential through a full Argon2id verification on **every single
+request** — the table list, the menu, each create, each appended line, each
+send.
+
+The cost is **m=64 MiB, t=2, p=4** in production, and that is worth stating
+precisely because the verifier does not name it: `edge/database/src/auth.rs`
+parses the parameters out of the stored PHC string and re-runs whatever the
+ENROLLER chose (`:41-47`), so the figure lives in
+`backend/internal/platform/crypto/password.go:21-24`, where every credential
+this system mints is hashed. A test fixture with the same numbers is therefore
+evidence about the fixture; the backend constants are the evidence about the
+outlet.
+
+That parameter set is correct for a login, where it is paid once and its cost is
+the point. It is the wrong shape for a per-request check on a phone walking
+around a restaurant, and it is the first place to look for captain latency
+rather than anything in the order path.
+
+**Measured consequence, not a suspicion:** `apps/pos/src-tauri/tests/
+captain_http.rs` had to widen its HTTP read timeout from **5s to 30s** for its
+request-heavy cases to stop timing out under parallel execution. That widening
+is the same smell papered over, and **it must come out with this fix** — it is
+named here so the two travel together rather than the timeout quietly becoming
+the permanent shape of the suite.
+
+The fix is a short-lived verified-token cache keyed by credential id, so the
+Argon2id cost is paid on first contact per device and not again until it
+expires — never a weakening of the parameters themselves, which protect the
+cached hashes the edge database holds for offline login (§A-bis).
+
+**The number the demo needs first is the observed one:** Monday's captain
+send → KDS render measurement, from the `HOLLER-PERF` markers. Over 1s on the
+phone is a demo blocker by the operator's own rule, and this is the first thing
+to suspect if it is.
 
 ### B6. Tooling and environment
 

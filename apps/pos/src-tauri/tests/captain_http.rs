@@ -767,6 +767,15 @@ fn a_second_round_on_one_table_appends_to_the_open_order_instead_of_opening_a_se
     assert_eq!(appended.status, 201, "append: {:?}", appended.body);
     assert_eq!(appended.body["holler_order_id"], order_id);
 
+    let appended_item_id = appended.body["items"]
+        .as_array()
+        .expect("items array")
+        .last()
+        .expect("the appended line is the last one")["id"]
+        .as_str()
+        .expect("appended line id")
+        .to_string();
+
     let resent = http_request(
         addr,
         "POST",
@@ -785,6 +794,47 @@ fn a_second_round_on_one_table_appends_to_the_open_order_instead_of_opening_a_se
 
     let guard = db_handle.lock().expect("db lock");
     let conn = guard.connection();
+
+    // THE SECOND TICKET CARRIES ONLY THE NEW ROUND. Counting tickets cannot
+    // see the failure that matters here: a send that re-ticketed round one
+    // would also produce exactly two KOTs, and the kitchen would cook the
+    // first round twice with nothing on any screen saying so. Asserted on the
+    // ticket's own `items_json` snapshot, which is what the KDS and the
+    // printer render.
+    let kots_in_order = repo::list_kots_for_order(conn, &order_id).expect("list kots");
+    let ticket_lines = |kot: &holler_edge_database::model::Kot| -> Vec<(String, i64)> {
+        serde_json::from_str::<serde_json::Value>(&kot.items_json)
+            .expect("items_json parses")
+            .as_array()
+            .expect("items_json is an array")
+            .iter()
+            .map(|i| {
+                (
+                    i["order_item_id"].as_str().expect("order_item_id").to_string(),
+                    i["quantity"].as_i64().expect("quantity"),
+                )
+            })
+            .collect()
+    };
+    let mut by_sequence = kots_in_order.clone();
+    by_sequence.sort_by_key(|k| k.sequence);
+    let first_ticket = ticket_lines(&by_sequence[0]);
+    let second_ticket = ticket_lines(&by_sequence[1]);
+    assert_eq!(
+        first_ticket.len(),
+        1,
+        "round one's ticket holds one line: {first_ticket:?}"
+    );
+    assert_eq!(first_ticket[0].1, 1, "round one is 1 cover");
+    assert_eq!(
+        second_ticket,
+        vec![(appended_item_id.clone(), 3)],
+        "the second ticket carries the appended line ALONE -- re-ticketing          round one would also yield two KOTs and cook it twice"
+    );
+    assert_ne!(
+        second_ticket[0].0, first_ticket[0].0,
+        "the two tickets must not name the same order line"
+    );
 
     // EXACTLY ONE order row for this table. This is the duplicate the fix
     // exists to prevent, asserted on storage rather than on a response.
@@ -910,4 +960,68 @@ fn two_tables_report_their_own_open_orders_and_never_each_others() {
     let after = http_request(addr, "GET", "/api/tables", Some(&token), None);
     assert_eq!(find(&after.body, "table-1")["open_order_id"], order_one);
     assert_eq!(find(&after.body, "table-2")["open_order_id"], order_two);
+}
+
+/// A table carrying MORE THAN ONE appendable order reports the OLDEST, every
+/// time.
+///
+/// The dev database already holds tables in this state from the pre-fix build,
+/// and only a reset clears them — so the read must be deterministic even though
+/// a clean outlet no longer reaches it. "Whatever the query happened to return"
+/// is not something a waiter can predict, and the failure it produces is a
+/// round appended to the wrong bill, which nothing on any screen would flag.
+/// The oldest open order is the round the table has been eating.
+///
+/// The state is built through the ROUTE, not around it: `POST /api/orders`
+/// carries no one-order-per-table guard and never did — the fix is on the read
+/// — so two creates on one table is exactly how a pre-fix till got here.
+#[test]
+fn a_table_with_two_appendable_orders_reports_the_oldest_deterministically() {
+    let (addr, _db) = start_test_server();
+    let token = format!("cred-waiter-1.{WAITER_SECRET}");
+
+    let create_on_table_1 = || -> String {
+        let created = http_request(
+            addr,
+            "POST",
+            "/api/orders",
+            Some(&token),
+            Some(
+                &serde_json::json!({
+                    "order_type": "DINE_IN",
+                    "table_id": "table-1",
+                    "items": [{
+                        "menu_item_id": "item-1",
+                        "variant_id": "variant-1",
+                        "quantity": 1,
+                        "unit_price_paise": 25000,
+                        "notes": null,
+                        "modifiers": []
+                    }]
+                })
+                .to_string(),
+            ),
+        );
+        assert_eq!(created.status, 201, "create: {:?}", created.body);
+        created.body["holler_order_id"]
+            .as_str()
+            .expect("order id")
+            .to_string()
+    };
+
+    let first = create_on_table_1();
+    let second = create_on_table_1();
+    assert_ne!(first, second, "two distinct orders on one table");
+
+    // Read it twice. An answer that happens to agree once is not a pinned
+    // answer, and this is the assertion that would go quiet if the fold ever
+    // went back to keeping the newest.
+    for attempt in 1..=2 {
+        let tables = http_request(addr, "GET", "/api/tables", Some(&token), None);
+        assert_eq!(
+            tables.body["tables"][0]["open_order_id"], first,
+            "attempt {attempt}: the OLDEST appendable order wins, never the newest: {:?}",
+            tables.body
+        );
+    }
 }
