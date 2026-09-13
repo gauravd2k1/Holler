@@ -184,10 +184,17 @@ clean demo reset starts it at 1.
 - [ ] **Two phones, two tables, concurrently.** Two `table_session` rows and two
       orders open at once is the first real test of the captain's table handling,
       and the demo may well be shown that way.
-- [ ] **One phone: WiFi off and on mid-cart — and NO DUPLICATE ORDER.** The
-      captain creates the order on first send; a retry across a dropped
-      connection must not create a second. Check the KDS shows one ticket and the
-      hub one order, not two.
+- [ ] **One phone: WiFi off and on mid-cart.** **EXPECTED RESULT CHANGED
+      2026-09-13 by operator ruling: duplicate LINES, not a duplicate ORDER.**
+      `52d8930` closed the duplicate-order half — the table now reports its open
+      order, and the client re-reads the table after a failed send, so a retry
+      appends. The line-level duplicate stays open on purpose: no request carries
+      an idempotency key, so the listener cannot tell a deliberate repeat round
+      from a retry of a send nobody saw succeed. Filed as
+      `docs/pilot-readiness.md` §0, before the first pilot. **If this run
+      produces NEITHER — no duplicate lines and no duplicate order — stop and
+      report it**, because that contradicts the code and something else is
+      happening.
 - [ ] **The KDS actually CONNECTED.** Never observed this session. `demo-up` can
       only check the port and the env URL; the indicator is the observation.
 - [ ] **`demo-up.ps1` end to end.** Steps 2–10 have never executed — only the
