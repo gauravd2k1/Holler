@@ -1020,6 +1020,20 @@ if (-not [string]::IsNullOrWhiteSpace($resolvedUpiVpa)) {
     Write-Host "wrote $viteEnvFile (the file Vite reads for the UPI QR)" -ForegroundColor Cyan
     Write-Host "  RESTART THE VITE DEV SERVER, not just the POS window: a Vite already" -ForegroundColor Yellow
     Write-Host "  serving 5173 keeps serving the old bundle, and tauri dev will not replace it." -ForegroundColor Yellow
+} else {
+    # NO VPA RESOLVED, SO REMOVE .env.local TOO. .env.dev is rewritten
+    # WHOLESALE and therefore loses its unprefixed HOLLER_DEMO_UPI_VPA on a run
+    # with no payee, while this file was only ever WRITTEN and never cleared --
+    # so a previous run's VITE_ line survived and the bill SCREEN kept
+    # rendering a QR the printed receipt could not. Screen and receipt then
+    # disagreed with nothing saying why (observed 2026-09-13, invoice
+    # SY/000001). One value writes both files; one absence must clear both, or
+    # the yellow "UPI QR DISABLED" line below is contradicted by the screen.
+    $viteEnvFile = Join-Path (Split-Path -Parent $envFile) ".env.local"
+    if (Test-Path $viteEnvFile) {
+        Remove-Item $viteEnvFile -Force
+        Write-Host "removed $viteEnvFile (no UPI payee this run; the screen must not show a QR the receipt cannot)" -ForegroundColor Yellow
+    }
 }
 Write-Host "`n[4/4] wrote $envFile" -ForegroundColor Cyan
 if (-not [string]::IsNullOrWhiteSpace($resolvedUpiVpa)) {

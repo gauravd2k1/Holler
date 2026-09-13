@@ -514,7 +514,20 @@ if ($WhatIf) {
             foreach ($entry in $parsed.PSObject.Properties) {
                 # Keys are "cloud|outlet|kind|name"; only this cloud's entries
                 # were invalidated by this drop.
-                if ($entry.Name -like "$CloudBaseUrl|*") { $dropped++ } else { $kept[$entry.Name] = $entry.Value }
+                #
+                # EXCEPT THE UPI PAYEE, which is "cloud|upi" and is NOT a device
+                # row: dropping the schema invalidates ids the backend no longer
+                # has, and a VPA is a payee address this machine was given once.
+                # Pruning it made -Fresh forget it, after which dev-bootstrap
+                # rewrote apps\pos\.env.dev WITHOUT the unprefixed
+                # HOLLER_DEMO_UPI_VPA -- so the printed receipt rendered no QR
+                # while the bill SCREEN kept showing one from a stale
+                # .env.local. Observed 2026-09-13 on invoice SY/000001.
+                if ($entry.Name -like "$CloudBaseUrl|*" -and $entry.Name -notlike "*|upi*") {
+                    $dropped++
+                } else {
+                    $kept[$entry.Name] = $entry.Value
+                }
             }
             if ($dropped -gt 0) {
                 ($kept | ConvertTo-Json) | Out-File -FilePath $bootstrapState -Encoding ascii
