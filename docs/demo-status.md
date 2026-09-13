@@ -18,13 +18,45 @@ that something already built actually works.
 
 ### Tonight
 
-- [ ] **Bill header** on a NEW bill: `Shinjuku Yakitori Hospitality Pvt Ltd`,
+- [x] **Bill header** on a NEW bill: `Shinjuku Yakitori Hospitality Pvt Ltd`,
       `Camp`, `Pune 411001`, footer `Thank you — please visit again`, and the
       invoice number now reads **`SY/…`** rather than `DEV/…`. This also proves
       `seed_billing` ran.
-- [ ] **Three things on that same bill, one look:** the UPI QR is present; the
+- [x] **Three things on that same bill, one look:** the UPI QR is present; the
       **PDF opens by itself** (nobody has yet observed the open-on-print half —
       the tests deliberately suppress it); four files land in `.dev-prints\`.
+
+**Both observed 2026-09-13 by the operator, on this machine, on prints written
+to `.dev-prints\`:**
+
+- Header, `20260913T045903.548287600-Dev-Bill-Printer`: `Shinjuku Yakitori
+  Hospitality Pvt Ltd` / `Camp` / `Pune 411001`, GSTIN `27AAAAA0000A1Z5`, FSSAI
+  `11522998000123`, `Invoice No: SY/000001`, `Date: 13 Sept 2026, 10:28 AM IST`,
+  footer `Thank you - please visit again`. The footer's hyphen is ASCII
+  deliberately (`6882bce`): the ESC/POS stream has no codepage. `seed_billing`
+  therefore ran.
+- PDF opens by itself, unprompted — the half no test had ever observed, because
+  the tests suppress the open.
+- Four files land per print, one stem: `.escpos`, `.txt`, `.html`, `.pdf`.
+- QR, on the SECOND print `20260913T054022.646460500-...` after the fix below:
+  one `<svg>` inside `class="qr"`, caption `Scan to pay Rs 1289.00 via UPI
+  (Shinjuku Yakitori)`, the amount agreeing with `Grand Total: Rs 1289.00` on
+  the same bill.
+
+**The first print had NO QR, and finding out why fixed a defect (`c246a9d`).**
+`demo-reset.ps1` pruned the whole `"<cloud>|"` prefix from the bootstrap state
+file, which includes the remembered UPI payee at `"<cloud>|upi"`, so every
+`-Fresh` run forgot it. What hid that is the two env files behaving differently
+on absence: `apps\pos\.env.dev` is rewritten wholesale and lost the unprefixed
+`HOLLER_DEMO_UPI_VPA`, while `.env.local` was only ever written when a VPA
+resolved and never cleared — so a stale `VITE_` line kept the QR on the bill
+SCREEN while the printed receipt had none. **Screen and receipt disagreed and
+nothing said why.** One value already wrote both files; one absence now clears
+both, and the payee survives `-Fresh`.
+
+Note `SY/000001` on both prints: `-Fresh` resets the edge-local
+`invoice_sequence`. That is correct — the counter is keyed by series, and a
+clean demo reset starts it at 1.
 
 ### Monday
 
