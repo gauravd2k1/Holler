@@ -49,6 +49,24 @@ nothing here has a default that will do.
 `scripts/dev-bootstrap.ps1 -WithBilling` seeds all of the above for
 **development only**. It is not a rollout tool.
 
+**Where those values come from today: `seed/outlet.toml`.** The outlet's legal
+name, trading name, address, `state_code`, pincode, GSTIN, FSSAI and invoice
+prefix are read from that one file by both seeders (`seed/README.md`,
+"Onboarding a new restaurant"). Onboarding a restaurant is writing that file;
+it is never editing code. The file is validated on load and a failure names the
+field — including **`state_code` against the GSTIN's leading digits**, which is
+the item on this list nothing else checks and which puts a wrong
+place-of-supply on every invoice when it is wrong.
+
+**That is a BOOTSTRAP mechanism, not an operating one, and this checklist is
+where the gap bites.** A pilot outlet cannot re-run a seeder to correct its own
+registered address, and nobody at the restaurant has a repository. The admin
+"Outlet settings" screen that fixes it — writing `outlet` and
+`outlet_fiscal_profile` in the cloud, delivered to the edge by the config pull,
+after which `outlet.toml` becomes the bootstrap default and stops being the
+source of truth — is filed in `docs/pilot-readiness.md` §B2 as a pilot blocker
+and is **not built**.
+
 ## 3. Hardware — blocks printing, not billing
 
 - [ ] **At least one printer with the `BILL` role.** A printer with no role row

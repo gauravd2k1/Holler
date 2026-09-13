@@ -21,15 +21,23 @@ enrollment that does not exist yet.
 #    it refuses to run without this. Use the same value every re-run.
 $env:HOLLER_DB_KEY_HEX = -join ((1..32) | ForEach-Object { '{0:x2}' -f (Get-Random -Max 256) })
 
-# 2. everything except the frontends; also writes apps\pos\.env.dev and
+# 2. SAY WHICH RESTAURANT THIS IS. seed\outlet.toml is the single source for
+#    the name, legal entity, address, GSTIN, FSSAI, invoice prefix, bill
+#    footer, timezone, business-day start, UPI payee and logo. There is NO
+#    default -- the bootstrap refuses without it, for the same reason it
+#    refuses without a key. Copy the template and edit it.
+Copy-Item seed\outlet.example.toml seed\outlet.toml
+notepad seed\outlet.toml
+
+# 3. everything except the frontends; also writes apps\pos\.env.dev and
 #    apps\kds\.env.dev
 .\scripts\dev-bootstrap.ps1
 
-# 3. install frontend deps once
+# 4. install frontend deps once
 cd apps\pos
 pnpm install
 
-# 4. the blessed launch command. ONE terminal: tauri's beforeDevCommand starts
+# 5. the blessed launch command. ONE terminal: tauri's beforeDevCommand starts
 #    Vite for you (gap 4, closed), and this also starts the KDS LAN server
 #    (embedded in the POS process — see "Milestone 2" below).
 .\apps\pos\run-dev.ps1
@@ -48,6 +56,22 @@ variables; regenerate `.env.dev` by re-running the bootstrap instead.
 
 Re-running `dev-bootstrap.ps1` is safe — both seeders upsert against fixed
 development ids. Add `-SkipInfra` when the containers are already up.
+
+**`seed/outlet.toml` is gitignored and per-installation. Onboarding a
+restaurant is writing that one file; it is never editing code.** Every field is
+validated when the bootstrap runs and a failure names the field — GSTIN shape
+and its agreement with `state_code`, six-digit pincode, `[A-Z]{1,4}/` invoice
+prefix, ASCII-only on every printed string (the ESC/POS stream has no codepage
+translation, so a non-ASCII character is garbage on paper and correct in the
+HTML, the PDF and the `.txt` companion), UPI address shape, IANA timezone, and
+a `logo_path` that resolves. Point the bootstrap somewhere else with
+`-OutletFile <path>`. `seed/README.md` has the field-by-field guide under
+"Onboarding a new restaurant".
+
+**The UPI payee lives in that file now, not in a parameter.**
+`-UpiVpa`/`-UpiPayeeName` still work as a one-run override, print a warning and
+are **not** written back — the next run without the flag uses what the file
+says.
 
 Want to see a kitchen ticket land on a screen? Skip to
 ["Milestone 2: KDS LAN server and the item-1 runbook"](#milestone-2-kds-lan-server-and-the-item-1-runbook)

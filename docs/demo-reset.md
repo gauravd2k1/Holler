@@ -35,7 +35,23 @@ $env:HOLLER_DB_KEY_HEX = "<the 64-hex-char key from apps\pos\.env.dev>"
 .\scripts\demo-reset.ps1 -Force
 ```
 
-Prerequisite: `docker compose up -d postgres redis nats` already running.
+Prerequisites: `docker compose up -d postgres redis nats` already running,
+**and `seed/outlet.toml` present**. That file is the single source for the
+restaurant's identity -- name, legal entity, address, GSTIN, FSSAI, invoice
+prefix, bill footer, timezone, business-day start, UPI payee and logo -- and
+this script **refuses to reset anything without it**, before the schema is
+dropped rather than after. There is no default and no fallback to
+`seed/outlet.example.toml`: resetting a real installation to the example
+restaurant because a file was missing is the failure that refusal exists to
+prevent. Copy the template (`Copy-Item seed\outlet.example.toml
+seed\outlet.toml`), fill it in, or pass `-OutletFile <path>`.
+
+The reset re-emits the shared catalogue from that file into a run-local
+temporary and points **both** seeders at it, so the cloud and the edge are fed
+by the same bytes and both carry this installation's restaurant rather than the
+committed example's. Every field is validated first and a failure names the
+field, so a typo stops the run with the stack intact.
+
 This script does not start infrastructure -- `scripts/dev-bootstrap.ps1` and
 `scripts/dev-up.ps1` own that, and this script reuses their patterns (the
 devseed `KEY=VALUE` output parsing, the hex-key validation, the "own window"

@@ -466,6 +466,17 @@ Established by inspection, not recall — cite the file, not this summary:
 
 ### Rebuilding the stack from cold
 
+0. **`seed/outlet.toml` must exist.** It is the single source for the
+   restaurant's name, legal entity, address, GSTIN, FSSAI, invoice prefix, bill
+   footer, timezone, business-day start, UPI payee and logo, it is **gitignored
+   and per-installation**, and both seeders plus `dev-bootstrap.ps1`,
+   `demo-reset.ps1` and `demo-up.ps1` **refuse to run without it** — there is no
+   default and no fallback to `seed/outlet.example.toml`. Copy the template and
+   fill it in; point elsewhere with `-OutletFile <path>`. **Onboarding a
+   restaurant is writing that one file, never editing code.** The
+   `RESTAURANT_NAME…INVOICE_FOOTER_TEXT` constants block in `devseed.rs` is
+   gone. The UPI payee lives there too — `-UpiVpa`/`-UpiPayeeName` are a warned
+   one-run override that is **not** written back.
 1. `docker compose up -d postgres redis nats` — **not** `make dev`, and not a
    bare `docker compose up`: the compose file's `backend` service fails to build
    (`go build -o /out/api ./cmd/api` exits 1) and is not used here. Docker

@@ -34,6 +34,27 @@ fixed while someone is watching.
 The first three also protect the hotspot specifically: Windows Mobile Hotspot
 turns itself off when the machine sleeps, and it does not come back on its own.
 
+### 0.0b `seed\outlet.toml` exists — check it ONCE, before the day
+
+**`demo-up.ps1` refuses to run without it**, and it is the file that decides
+the restaurant's name on every screen, the GSTIN and address on the bill, the
+`SY/` invoice prefix and the UPI payee behind the QR. It is gitignored and
+per-installation, so a fresh clone does not have one.
+
+```powershell
+Get-Content seed\outlet.toml       # if this errors, copy the template:
+# Copy-Item seed\outlet.example.toml seed\outlet.toml   then edit it
+```
+
+Check: `restaurant_name`, `gstin`, `invoice_prefix` and `upi_vpa` read what you
+expect. **If `upi_vpa` is missing there is NO QR at all** on the bill screen or
+the receipt — there is no empty-QR state and nothing on screen says why, and
+demo step 2 shows the QR.
+
+Every field is validated when `demo-up` runs and a failure names the field, so
+a typo stops the run before anything is reset rather than surfacing on a bill
+in front of the client.
+
 ### 0.1 Then the three lines
 
 1. **Hotspot up**, and note its IP (section 0.2 below).
@@ -66,6 +87,11 @@ Three things it does that are easy to undo by hand and expensive to get wrong:
 
 **`-DbKeyHex` is yours** — `apps\pos\.env.dev` is deny-ruled to agents and no
 agent supplies a literal key.
+
+**The UPI payee comes from `seed\outlet.toml` now, not from `-UpiVpa`.** The
+flags still work as a one-run override, print a warning and are **not** written
+back — so a demo run that overrides the payee reverts on the next run. Change
+it in the file.
 
 Section 0.2 below is the **manual sequence**, which is both the
 fallback when `demo-up` fails at a step and the explanation of what each step is
