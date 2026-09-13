@@ -98,8 +98,8 @@ if (regeneratedText !== committed) {
     "seed/demo-outlet.json is STALE — it does not match what " +
       "edge/database/src/bin/devseed.rs --emit-json produces right now.\n" +
       "  seed/demo-outlet.json is GENERATED, never hand-edited (seed/README.md).\n" +
-      "  Edit the seed data in edge/database/src/bin/devseed.rs -- or, for the
-  outlet's identity, seed/outlet.example.toml -- then re-run:\n" +
+      "  Edit the seed data in edge/database/src/bin/devseed.rs -- or, for " +
+      "the outlet's identity, seed/outlet.example.toml -- then re-run:\n" +
       "    cd edge/database && cargo run --bin devseed -- --emit-json ../../seed/demo-outlet.json\n" +
       "  and commit both files together.",
   );

@@ -148,6 +148,12 @@ fn modifier_ingredient_delta_id(seq: u32) -> String {
 fn supplier_item_id(seq: u32) -> String {
     format!("0191e860-0000-7000-8000-{seq:012x}")
 }
+/// Tables T3 upwards. T1 and T2 keep the fixed legacy ids below, because
+/// `tests/e2e-scenario/harness/src/main.rs` pins both by value — renumbering
+/// them silently breaks that harness (seed/README.md, "Identity").
+fn restaurant_table_id(seq: u32) -> String {
+    format!("0191e900-0000-7000-8000-{seq:012x}")
+}
 fn grn_line_seed_id(seq: u32) -> String {
     format!("0191e870-0000-7000-8000-{seq:012x}")
 }
@@ -2095,7 +2101,32 @@ fn seed(
         },
     )?;
 
-    for (id, label) in [(TABLE_1_ID, "T1"), (TABLE_2_ID, "T2")] {
+    // TWELVE TABLES, because two reads as a fixture on the captain's table
+    // screen and on the bill's "Table:" line — presentability (demo work item
+    // 6), not a feature.
+    //
+    // T1 and T2 KEEP THEIR FIXED LEGACY IDS. `tests/e2e-scenario/harness`
+    // pins both by value (src/main.rs:73-74), so renumbering them breaks that
+    // harness silently. T3 upwards are minted from `restaurant_table_id`, on
+    // its own disjoint prefix like every other seeded entity.
+    //
+    // Seat counts vary because a real floor does: a room where every table
+    // seats four is the same tell as a room with two tables in it.
+    let tables: Vec<(String, &str, i64)> = vec![
+        (TABLE_1_ID.to_string(), "T1", 4),
+        (TABLE_2_ID.to_string(), "T2", 4),
+        (restaurant_table_id(3), "T3", 2),
+        (restaurant_table_id(4), "T4", 2),
+        (restaurant_table_id(5), "T5", 4),
+        (restaurant_table_id(6), "T6", 4),
+        (restaurant_table_id(7), "T7", 4),
+        (restaurant_table_id(8), "T8", 6),
+        (restaurant_table_id(9), "T9", 6),
+        (restaurant_table_id(10), "T10", 2),
+        (restaurant_table_id(11), "T11", 4),
+        (restaurant_table_id(12), "T12", 8),
+    ];
+    for (id, label, seat_count) in &tables {
         repo::upsert_restaurant_table(
             conn,
             &RestaurantTable {
@@ -2103,12 +2134,13 @@ fn seed(
                 outlet_id: OUTLET_ID.to_string(),
                 section: "Main".to_string(),
                 label: label.to_string(),
-                seat_count: 4,
+                seat_count: *seat_count,
                 is_active: true,
                 config_version: CONFIG_VERSION,
             },
         )?;
     }
+    println!("devseed: seed tables — {} tables in section Main", tables.len());
 
     // Stations are EDGE ONLY (seed/README.md) -- never in the shared
     // catalogue. The legacy STATION_ID/"MAIN_KITCHEN" fixture first (fixed
