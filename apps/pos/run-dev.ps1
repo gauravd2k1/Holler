@@ -31,7 +31,19 @@ param(
 
     # Suppress the informational note about an already-running Vite server.
     # No longer skips a gate -- `tauri dev` starts Vite itself now.
-    [switch]$SkipViteCheck
+    [switch]$SkipViteCheck,
+
+    # Run the RELEASE binary that is already built, instead of `tauri dev`.
+    #
+    # This is the build a demo and a firewall rule point at: the rule names an
+    # exact program path, and target\debug is not that path, so a rehearsal run
+    # through `tauri dev` proves nothing about the inbound rule the phone
+    # depends on (docs/demo-script.md 0.0b).
+    #
+    # No Vite, and no 5173 guard: the release binary serves its own embedded
+    # frontend, so a dev server running beside it is simply unrelated rather
+    # than a conflict.
+    [switch]$Release
 )
 
 $ErrorActionPreference = "Stop"
@@ -99,7 +111,7 @@ if ($loaded["HOLLER_DB_KEY_HEX"].Length -ne 64) {
 # So: refuse, name the pid, and say what to do. -SkipViteCheck still forces a
 # launch, for the case where the operator knows the running server is the right
 # one; the warning it prints says what they are accepting.
-if (-not $SkipViteCheck) {
+if (-not $SkipViteCheck -and -not $Release) {
     $viteHolder = $null
     $conn = Get-NetTCPConnection -LocalPort 5173 -State Listen -ErrorAction SilentlyContinue
     if ($conn) { $viteHolder = $conn.OwningProcess | Select-Object -First 1 }
@@ -122,6 +134,52 @@ if (-not $SkipViteCheck) {
     }
 }
 
+# --- -Release: the binary must exist, and must be NEWER than the frontend ----
+# A release binary embeds apps\pos\dist at COMPILE time (tauri.conf.json's
+# frontendDist). So a dist rebuilt after the last link is a window showing the
+# previous UI with nothing anywhere saying so -- the exact shape of the stale
+# -Vite incident this script already refuses for (see the 5173 block below),
+# one build profile over. Refuse rather than warn: a demo rehearsal that
+# silently exercises last night's screens is worse than one that does not start.
+$releaseExe = Join-Path $PSScriptRoot "src-tauri\target\release\holler-pos.exe"
+if ($Release) {
+    if (-not (Test-Path $releaseExe)) {
+        throw @"
+-Release was given but no release binary exists at:
+    $releaseExe
+
+Build it first (frontends, then the binary -- in that order):
+    cd $PSScriptRoot; pnpm build
+    cd $PSScriptRoot\..\captain; pnpm build
+    cd $PSScriptRoot\src-tauri; cargo build --release
+"@
+    }
+
+    $exeTime = (Get-Item $releaseExe).LastWriteTime
+    $distDir = Join-Path $PSScriptRoot "dist"
+    if (Test-Path $distDir) {
+        $newestDist = Get-ChildItem $distDir -Recurse -File |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+        if ($newestDist -and $newestDist.LastWriteTime -gt $exeTime) {
+            throw @"
+The release binary is OLDER than apps\pos\dist, so it embeds a previous frontend.
+
+    binary : $exeTime  $releaseExe
+    dist   : $($newestDist.LastWriteTime)  $($newestDist.FullName)
+
+The POS frontend is embedded at compile time, so rebuilding dist alone changes
+nothing in the window. Re-link:
+    cd $PSScriptRoot\src-tauri; cargo build --release
+
+(apps\captain\dist is NOT checked here and does not need to be: the captain
+page is served from disk at request time, so a captain rebuild takes effect
+without a relink.)
+"@
+        }
+    }
+}
+
 $lanAddr = if ($loaded.ContainsKey('HOLLER_LAN_BIND_ADDR')) { $loaded['HOLLER_LAN_BIND_ADDR'] } else { "0.0.0.0:9310 (default)" }
 
 Write-Host "outlet : $($loaded['HOLLER_OUTLET_ID'])"
@@ -131,11 +189,20 @@ Write-Host "KDS LAN server will bind $lanAddr on this machine (unauthenticated -
 if ($loaded.ContainsKey('HOLLER_PRINTER_FILE_SINK_DIR') -and $loaded['HOLLER_PRINTER_FILE_SINK_DIR'] -ne "") {
     Write-Host "printer: FILE SINK ACTIVE -- prints go to $($loaded['HOLLER_PRINTER_FILE_SINK_DIR']), not to any device." -ForegroundColor Yellow
 }
+if ($Release) {
+    Write-Host "build  : RELEASE -- $releaseExe" -ForegroundColor Cyan
+} else {
+    Write-Host "build  : DEBUG (tauri dev, Vite on 5173)" -ForegroundColor DarkGray
+}
 Write-Host ""
 
-Push-Location $PSScriptRoot
-try {
-    pnpm exec tauri dev
-} finally {
-    Pop-Location
+if ($Release) {
+    & $releaseExe
+} else {
+    Push-Location $PSScriptRoot
+    try {
+        pnpm exec tauri dev
+    } finally {
+        Pop-Location
+    }
 }

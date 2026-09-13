@@ -63,7 +63,8 @@ moves, is a phone that loads nothing with no error anywhere — Windows drops th
 inbound SYN silently.
 
 ```
-C:\Code\Hollerpps\pos\src-tauri	argetelease\holler-pos.exe
+C:\Code\Hollerpps\pos\src-tauri	arget
+elease\holler-pos.exe
 ```
 
 Built 2026-09-14 from commit `78c87f5`.
@@ -80,6 +81,38 @@ source rather than from memory — there is no third:
 5173 and 5175 are **dev servers** and are not part of a release run: the release
 binary serves its own embedded UI.
 
+**Starting it is `-Release`, not by hand.** `.\apps\pos\run-dev.ps1 -Release`
+and `.\scripts\demo-up.ps1 ... -Release` both launch this exact binary and
+print the path they resolved.
+
+<details>
+<summary>FALLBACK ONLY — launching it by hand, if those scripts cannot run</summary>
+
+The env parse below is `apps\pos\run-dev.ps1`'s own, copied, so the process
+gets exactly the environment a script launch gives it. Prefer the switch: a
+hand-assembled environment is one forgotten variable away from a till that
+starts and then behaves oddly, and this copy cannot check that the binary is
+newer than `apps\pos\dist`.
+
+```powershell
+cd C:\Code\Holler
+Get-Content apps\pos\.env.dev | ForEach-Object {
+  $t = $_.Trim()
+  if ($t -and -not $t.StartsWith("#") -and $t -match '^([A-Za-z_][A-Za-z0-9_]*)=(.*)$') {
+    Set-Item -Path "Env:\$($Matches[1])" -Value $Matches[2].Trim()
+  }
+}
+.\apps\pos\src-tauri\target\release\holler-pos.exe
+```
+
+From a terminal **you** own — a Tauri window launched with redirected stdio
+never appears. The data directory is the same either way: it comes from
+Tauri's `app_data_dir()` for identifier `com.holler.pos`, so both profiles
+open `%APPDATA%\com.holler.pos\edge.db.enc`. There is no separate release
+database.
+
+</details>
+
 **One elevated PowerShell command** (Run as administrator), idempotent — it
 removes any rule of the same name first, so re-running after a rebuild is safe:
 
@@ -87,7 +120,8 @@ removes any rule of the same name first, so re-running after a rebuild is safe:
 Remove-NetFirewallRule -DisplayName "Holler POS (demo)" -ErrorAction SilentlyContinue
 New-NetFirewallRule -DisplayName "Holler POS (demo)" `
   -Direction Inbound -Action Allow -Protocol TCP -LocalPort 9310,9320 `
-  -Program "C:\Code\Hollerpps\pos\src-tauri	argetelease\holler-pos.exe" `
+  -Program "C:\Code\Hollerpps\pos\src-tauri	arget
+elease\holler-pos.exe" `
   -Profile Any
 ```
 
@@ -119,7 +153,7 @@ valid; a binary anywhere else does not, and the failure is silent.
 
 1. **Hotspot up**, and note its IP (section 0.2 below).
 2. ```powershell
-   .\scripts\demo-up.ps1 -DbKeyHex <64-hex-key> -LanHost <hotspot-ip> -Fresh
+   .\scripts\demo-up.ps1 -DbKeyHex <64-hex-key> -LanHost <hotspot-ip> -Fresh -Release
    ```
 3. **The phone**: join the hotspot, open the captain URL `demo-up` printed, paste
    the pair token it printed.
@@ -256,6 +290,30 @@ deny-ruled to agents, and no agent may supply a literal key.
 > delete that state file and re-run. See `docs/lan-setup.md` §5.
 
 ### 4. Start the POS — ONE command, and only this one
+
+```powershell
+.\apps\pos\run-dev.ps1 -Release
+```
+
+**`-Release` is the demo form, and it is not a preference.** The inbound
+firewall rule names one exact program path (§0.0b), and `target\debug` is not
+it — a rehearsal on the debug build proves nothing about the rule the phone
+depends on, and a blocked inbound connection produces no error anywhere. It
+also skips Vite and the 5173 guard entirely: the release binary serves its own
+embedded frontend, so a dev server left running beside it is unrelated rather
+than a conflict.
+
+It **refuses** if the binary is missing, and refuses if the binary is OLDER
+than `apps\pos\dist` — that frontend is embedded at link time, so rebuilding
+dist alone changes nothing in the window and would otherwise be invisible.
+`apps\captain\dist` is deliberately not checked: the captain page is served
+from disk per request, so a captain rebuild needs no relink.
+
+Both forms print the resolved build on start — `build  : RELEASE -- <path>` or
+`build  : DEBUG (tauri dev, Vite on 5173)`. Read that line rather than assuming
+which one is running.
+
+**Without `-Release`** (a debug run, for development, not for the demo):
 
 ```powershell
 Get-NetTCPConnection -LocalPort 5173 -State Listen -ErrorAction SilentlyContinue   # must return nothing

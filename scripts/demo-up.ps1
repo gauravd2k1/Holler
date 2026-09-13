@@ -156,6 +156,16 @@ param(
     [string]$UpiVpa = "",
     [string]$UpiPayeeName = "",
 
+    # Start the POS from the RELEASE binary at step 8 instead of `tauri dev`.
+    #
+    # THE FIREWALL RULE NAMES AN EXACT PROGRAM PATH, and target\debug is not
+    # that path (docs/demo-script.md 0.0b). A rehearsal through the debug build
+    # therefore proves nothing about the inbound rule the phone depends on --
+    # and a blocked inbound connection has no error anywhere, it is a phone
+    # that loads nothing. Passed straight through to apps\pos\run-dev.ps1,
+    # which refuses if the binary is missing or older than apps\pos\dist.
+    [switch]$Release,
+
     # Where every print is written instead of being sent to a device
     # (HOLLER_PRINTER_FILE_SINK_DIR). Empty resolves to <repo>\.dev-prints.
     #
@@ -810,7 +820,7 @@ if ($WhatIf) {
 }
 
 # =====================================================================
-Write-Step 8 "POS in its own window -- run-dev.ps1, and it is THE ONLY VITE"
+Write-Step 8 "POS in its own window -- run-dev.ps1$(if ($Release) { ' -Release (NO Vite)' } else { ', and it is THE ONLY VITE' })"
 # =====================================================================
 # There is ONE way to start the POS. tauri.conf.json's beforeDevCommand is
 # 'pnpm dev', so 'tauri dev' ALWAYS starts Vite itself, and vite.config.ts sets
@@ -818,7 +828,8 @@ Write-Step 8 "POS in its own window -- run-dev.ps1, and it is THE ONLY VITE"
 # up serving the window serves a bundle built in a different environment -- that
 # is exactly how the UPI QR went missing from the bill screen on 2026-09-12.
 if ($WhatIf) {
-    Write-Note "-WhatIf: would start apps\pos\run-dev.ps1 in its own window and wait for $CaptainPort and $LanPort"
+    $whatIfPos = if ($Release) { "apps\pos\run-dev.ps1 -Release" } else { "apps\pos\run-dev.ps1" }
+    Write-Note "-WhatIf: would start $whatIfPos in its own window and wait for $CaptainPort and $LanPort"
 } else {
     $posDir = Join-Path $repoRoot "apps\pos"
     if (-not (Test-Path (Join-Path $posDir "node_modules"))) {
@@ -826,8 +837,22 @@ if ($WhatIf) {
         Push-Location $posDir
         try { pnpm install } finally { Pop-Location }
     }
-    $posWindow = Start-ServiceWindow "holler-pos (demo-up)" $posDir ".\run-dev.ps1"
-    Record-Process "pos-window" $posWindow "runs run-dev.ps1; the till binds $PosVitePort, $LanPort, $CaptainPort"
+    $posCommand = if ($Release) { ".\run-dev.ps1 -Release" } else { ".\run-dev.ps1" }
+    $releaseExe = Join-Path $posDir "src-tauri\target\release\holler-pos.exe"
+    if ($Release) {
+        # Printed BEFORE the window opens: this is the path the firewall rule
+        # must name, and the one to check Get-Process against afterwards.
+        Write-Note "RELEASE build: $releaseExe"
+        if (Test-Path $releaseExe) {
+            Write-Note "               linked $((Get-Item $releaseExe).LastWriteTime)"
+        } else {
+            Fail-WithAction "-Release was given but no binary exists at $releaseExe." `
+                            "Build it in this order: cd apps\pos; pnpm build, then cd ..\captain; pnpm build, then cd ..\pos\src-tauri; cargo build --release."
+        }
+    }
+    $posWindow = Start-ServiceWindow "holler-pos (demo-up)" $posDir $posCommand
+    $portsNote = if ($Release) { "$LanPort, $CaptainPort (no Vite)" } else { "$PosVitePort, $LanPort, $CaptainPort" }
+    Record-Process "pos-window" $posWindow "runs $posCommand; the till binds $portsNote"
     Write-Note "launched window pid $($posWindow.Id) -- a cold Rust build can take minutes"
     Write-Note "LNK1104 'cannot open file ...exe' is McAfee holding a fresh binary, not a code error: re-run."
 
