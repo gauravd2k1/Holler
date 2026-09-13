@@ -224,17 +224,68 @@ struct TablesResponse {
     tables: Vec<CaptainTable>,
 }
 
+/// The statuses in which an order still accepts a new line, and therefore the
+/// statuses in which a table has an order a waiter can add a round to.
+///
+/// Exactly the set `add_order_item_impl` is legal in (`#132-A`,
+/// `commands/orders.rs`) — naming a wider set here would hand the phone an
+/// order id that the append route then rejects with `ORDER_NOT_DRAFT`, which
+/// reads on the phone as a broken Send rather than as a table that has moved
+/// on. READY and SERVED are deliberately outside it: the kitchen is done, and
+/// a further round is a new order.
+const APPENDABLE_ORDER_STATUSES: [&str; 4] =
+    ["DRAFT", "CONFIRMED", "SENT_TO_KITCHEN", "PREPARING"];
+
 fn handle_tables(state: &AppState) -> ApiResult {
     let tables = list_tables_impl(state).map_err(|e| (500, e))?;
+
+    // WHY THE ORDER ROWS AND NOT `table_session`. This field used to be
+    // `table_session.current_order_id`, and NOTHING IN THE SHIPPED POS EVER
+    // WROTE A `table_session` ROW -- `update_table_session` has exactly one
+    // caller in the repository, `edge/database/src/lib.rs` itself, reached by
+    // no command, and `devseed` seeds none. So `open_order_id` was null on
+    // every table forever, `apps/captain/src/App.tsx`'s append branch was
+    // unreachable, and every Send opened a SECOND order on the same table.
+    // A reader in the shipped path with no writer anywhere: enumerate the
+    // WRITERS before trusting a read.
+    //
+    // `table_session` is untouched and stays reserved for M8's customer tab
+    // (ADR-025), so `open_session_id` keeps reporting it and keeps reading
+    // null until something writes one.
+    //
+    // NOT FILTERED BY `order.source`: the captain writes `POS`, identically to
+    // the till (`create_order_impl_as`), and `TABLE_TAB` is written by nothing
+    // (`scripts/check-order-source-drift.mjs` fails the build if it ever is).
+    // Filtering on it would return zero rows forever -- the same dead read
+    // under a new name. Table plus status is also the behaviour wanted: a
+    // waiter appending to a round the TILL opened is correct.
+    //
+    // One list read for the whole outlet rather than a query per table: the
+    // rows are already ordered `created_at DESC`, so the first appendable
+    // match per table is the current one.
+    let open_orders: std::collections::HashMap<String, String> = {
+        let db = lock_db(state)?;
+        holler_edge_database::repo::list_orders_for_outlet(db.connection(), &state.outlet_id)
+            .map_err(|e| storage_error(e.into()))?
+            .into_iter()
+            .filter(|o| APPENDABLE_ORDER_STATUSES.contains(&o.status.as_str()))
+            .filter_map(|o| o.table_id.clone().map(|t| (t, o.id)))
+            .fold(std::collections::HashMap::new(), |mut acc, (table, id)| {
+                acc.entry(table).or_insert(id);
+                acc
+            })
+    };
+
     let mut out = Vec::with_capacity(tables.len());
     for t in tables {
         let session = get_open_table_session_impl(state, &t.id).map_err(|e| (500, e))?;
+        let open_order_id = open_orders.get(&t.id).cloned();
         out.push(CaptainTable {
             id: t.id,
             name: t.label,
             seats: t.seat_count,
             open_session_id: session.as_ref().map(|s| s.id.clone()),
-            open_order_id: session.and_then(|s| s.current_order_id),
+            open_order_id,
         });
     }
     json_response(200, &TablesResponse { tables: out })
@@ -477,11 +528,30 @@ fn handle_send(state: &AppState, order_id: &str) -> ApiResult {
         ));
     }
 
-    let confirmed = confirm_order_impl(state, order_id).map_err(|e| (400, e))?;
+    // CONFIRM ONLY FROM DRAFT. A second round is appended to an order the
+    // kitchen already has (`add_order_item_impl` is legal through
+    // DRAFT/CONFIRMED/SENT_TO_KITCHEN/PREPARING, `#132-A`), so by the time
+    // this route sees it the order has long left DRAFT and
+    // `confirm_order_impl` rejects it with `ORDER_NOT_CONFIRMABLE` -- which
+    // reached the phone as a failed Send and left the appended lines sitting
+    // in an order the kitchen would never be told about. Found by the append
+    // test the moment `open_order_id` started resolving; before that, no
+    // client path could reach a second send at all.
+    //
+    // Skipping the confirm is not a skipped transition: the order is already
+    // past CONFIRMED. `send_order_to_kitchen_impl` tickets only the lines
+    // that have no ticket yet, so the second call produces a KOT for the new
+    // round alone.
+    let confirmed = if existing.status == "DRAFT" {
+        Some(confirm_order_impl(state, order_id).map_err(|e| (400, e))?)
+    } else {
+        None
+    };
     let kots = send_order_to_kitchen_impl(state, order_id).map_err(|e| (400, e))?;
-    let order = get_order_impl(state, order_id)
-        .map_err(|e| (500, e))?
-        .unwrap_or(confirmed);
+    let order = match get_order_impl(state, order_id).map_err(|e| (500, e))? {
+        Some(o) => o,
+        None => confirmed.unwrap_or(existing),
+    };
 
     let kot_summaries = kots
         .into_iter()

@@ -257,8 +257,14 @@ struct HttpResponse {
 /// whole response without needing to track `Content-Length`.
 fn http_request(addr: SocketAddr, method: &str, path: &str, token: Option<&str>, body: Option<&str>) -> HttpResponse {
     let mut stream = TcpStream::connect(addr).expect("connect to captain listener");
+    // 30s, not 5. EVERY captain request re-verifies the device credential with
+    // Argon2id at 64 MiB / t=2, which is deliberately expensive, and this suite
+    // runs its tests in parallel -- the request-heavy cases below timed out at
+    // 5s purely on that contention, which reads as a server hang rather than as
+    // a slow hash. The timeout exists so a genuinely wedged listener still
+    // fails the test rather than hanging the suite; it is not a latency budget.
     stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
+        .set_read_timeout(Some(Duration::from_secs(30)))
         .expect("set read timeout");
 
     let body_bytes = body.unwrap_or("").as_bytes();
@@ -540,8 +546,14 @@ struct RawHttpResponse {
 
 fn http_request_raw(addr: SocketAddr, path: &str) -> RawHttpResponse {
     let mut stream = TcpStream::connect(addr).expect("connect to captain listener");
+    // 30s, not 5. EVERY captain request re-verifies the device credential with
+    // Argon2id at 64 MiB / t=2, which is deliberately expensive, and this suite
+    // runs its tests in parallel -- the request-heavy cases below timed out at
+    // 5s purely on that contention, which reads as a server hang rather than as
+    // a slow hash. The timeout exists so a genuinely wedged listener still
+    // fails the test rather than hanging the suite; it is not a latency budget.
     stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
+        .set_read_timeout(Some(Duration::from_secs(30)))
         .expect("set read timeout");
 
     let request = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
@@ -657,4 +669,245 @@ fn a_null_variant_id_is_rejected_rather_than_passed_through() {
     );
     assert_eq!(created.status, 400);
     assert_eq!(created.body["code"], "VARIANT_REQUIRED");
+}
+
+// --------------------------------------------------- the append path --
+//
+// `GET /api/tables` carries `open_order_id` so the phone can APPEND a second
+// round to a round already in the kitchen rather than open a second order on
+// one table. Until 2026-09-13 that field was read from
+// `table_session.current_order_id` — and NOTHING in the shipped POS writes a
+// `table_session` row (the only caller of `update_table_session` is
+// `edge/database/src/lib.rs` itself). So it was null on every table forever,
+// `apps/captain/src/App.tsx`'s append branch was unreachable, and every Send
+// created a new order. A reader in the shipped path with no writer anywhere:
+// enumerate the WRITERS before trusting a read.
+//
+// These two tests pin the behaviour, not the plumbing. Neither mentions
+// `table_session`, which stays unwritten and reserved for M8 (ADR-025).
+
+/// A second Send on a table whose order is already in the kitchen appends to
+/// that order and tickets ONLY the new lines.
+///
+/// Written before the fix and watched fail on the `open_order_id` assertion —
+/// the field the defect made permanently null.
+#[test]
+fn a_second_round_on_one_table_appends_to_the_open_order_instead_of_opening_a_second() {
+    let (addr, db_handle) = start_test_server();
+    let token = format!("cred-waiter-1.{WAITER_SECRET}");
+
+    let line = |qty: i64| {
+        serde_json::json!({
+            "menu_item_id": "item-1",
+            "variant_id": "variant-1",
+            "quantity": qty,
+            "unit_price_paise": 25000,
+            "notes": null,
+            "modifiers": []
+        })
+    };
+
+    // Round one: the phone finds no open order, creates, sends.
+    let before = http_request(addr, "GET", "/api/tables", Some(&token), None);
+    assert_eq!(
+        before.body["tables"][0]["open_order_id"],
+        serde_json::Value::Null
+    );
+
+    let created = http_request(
+        addr,
+        "POST",
+        "/api/orders",
+        Some(&token),
+        Some(
+            &serde_json::json!({
+                "order_type": "DINE_IN",
+                "table_id": "table-1",
+                "items": [line(1)]
+            })
+            .to_string(),
+        ),
+    );
+    assert_eq!(created.status, 201, "create: {:?}", created.body);
+    let order_id = created.body["holler_order_id"]
+        .as_str()
+        .expect("order id")
+        .to_string();
+
+    let sent = http_request(
+        addr,
+        "POST",
+        &format!("/api/orders/{order_id}/send"),
+        Some(&token),
+        None,
+    );
+    assert_eq!(sent.status, 200, "send: {:?}", sent.body);
+    assert_eq!(sent.body["order"]["status"], "SENT_TO_KITCHEN");
+
+    // THE ASSERTION THE DEFECT FAILED. A fresh read of the table list — the
+    // exact call the phone makes when the waiter walks back to the table —
+    // must now name the order the kitchen is already cooking.
+    let after = http_request(addr, "GET", "/api/tables", Some(&token), None);
+    assert_eq!(
+        after.body["tables"][0]["open_order_id"], order_id,
+        "a table with an order in the kitchen must report it as open: {:?}",
+        after.body
+    );
+
+    // Round two travels the append route, which no client path could reach
+    // while open_order_id was null.
+    let appended = http_request(
+        addr,
+        "POST",
+        &format!("/api/orders/{order_id}/items"),
+        Some(&token),
+        Some(&line(3).to_string()),
+    );
+    // 201, per docs/captain-api.md line 233 -- an append CREATES a line.
+    assert_eq!(appended.status, 201, "append: {:?}", appended.body);
+    assert_eq!(appended.body["holler_order_id"], order_id);
+
+    let resent = http_request(
+        addr,
+        "POST",
+        &format!("/api/orders/{order_id}/send"),
+        Some(&token),
+        None,
+    );
+    assert_eq!(resent.status, 200, "second send: {:?}", resent.body);
+    let second_kots = resent.body["kots"].as_array().expect("kots array");
+    assert_eq!(
+        second_kots.len(),
+        1,
+        "the second send tickets the appended line only: {:?}",
+        resent.body
+    );
+
+    let guard = db_handle.lock().expect("db lock");
+    let conn = guard.connection();
+
+    // EXACTLY ONE order row for this table. This is the duplicate the fix
+    // exists to prevent, asserted on storage rather than on a response.
+    let orders_on_table: Vec<_> = repo::list_orders_for_outlet(conn, OUTLET_ID)
+        .expect("list orders")
+        .into_iter()
+        .filter(|o| o.table_id.as_deref() == Some("table-1"))
+        .collect();
+    assert_eq!(
+        orders_on_table.len(),
+        1,
+        "one table, one open order — found {:?}",
+        orders_on_table
+            .iter()
+            .map(|o| (o.id.clone(), o.status.clone()))
+            .collect::<Vec<_>>()
+    );
+
+    // TWO tickets, both on that one order: the kitchen saw two rounds.
+    let kots = repo::list_kots_for_order(conn, &order_id).expect("list kots");
+    assert_eq!(kots.len(), 2, "two rounds, two tickets: {kots:?}");
+
+    // Four covers total (1 + 3), so the append reached the same order's lines
+    // rather than a second order nothing would ever bill.
+    let items = repo::list_order_items(conn, &order_id).expect("list items");
+    assert_eq!(items.iter().map(|i| i.quantity).sum::<i64>(), 4);
+}
+
+/// Two tables, two orders, no cross-attach: each table reports its OWN open
+/// order and never its neighbour's. The cheap way to get the first test
+/// passing is a query that forgets to filter by table at all, and that bug
+/// would send one table's second round to the other table's bill.
+#[test]
+fn two_tables_report_their_own_open_orders_and_never_each_others() {
+    let (addr, db_handle) = start_test_server();
+    let token = format!("cred-waiter-1.{WAITER_SECRET}");
+
+    {
+        let guard = db_handle.lock().expect("db lock");
+        repo::upsert_restaurant_table(
+            guard.connection(),
+            &model::RestaurantTable {
+                id: "table-2".to_string(),
+                outlet_id: OUTLET_ID.to_string(),
+                section: "Main".to_string(),
+                label: "T2".to_string(),
+                seat_count: 2,
+                is_active: true,
+                config_version: 1,
+            },
+        )
+        .expect("seed second table");
+    }
+
+    let open_on = |table_id: &str| -> String {
+        let created = http_request(
+            addr,
+            "POST",
+            "/api/orders",
+            Some(&token),
+            Some(
+                &serde_json::json!({
+                    "order_type": "DINE_IN",
+                    "table_id": table_id,
+                    "items": [{
+                        "menu_item_id": "item-1",
+                        "variant_id": "variant-1",
+                        "quantity": 1,
+                        "unit_price_paise": 25000,
+                        "notes": null,
+                        "modifiers": []
+                    }]
+                })
+                .to_string(),
+            ),
+        );
+        assert_eq!(
+            created.status, 201,
+            "create on {table_id}: {:?}",
+            created.body
+        );
+        let id = created.body["holler_order_id"]
+            .as_str()
+            .expect("order id")
+            .to_string();
+        let sent = http_request(
+            addr,
+            "POST",
+            &format!("/api/orders/{id}/send"),
+            Some(&token),
+            None,
+        );
+        assert_eq!(sent.status, 200, "send on {table_id}: {:?}", sent.body);
+        id
+    };
+
+    let find = |body: &serde_json::Value, id: &str| -> serde_json::Value {
+        body["tables"]
+            .as_array()
+            .expect("tables array")
+            .iter()
+            .find(|t| t["id"] == id)
+            .unwrap_or_else(|| panic!("table {id} missing from {body:?}"))
+            .clone()
+    };
+
+    let order_one = open_on("table-1");
+
+    // With only table-1 open, table-2 must still read null — a query missing
+    // its table filter passes the first assertion and fails this one.
+    let mid = http_request(addr, "GET", "/api/tables", Some(&token), None);
+    assert_eq!(mid.body["tables"].as_array().expect("tables array").len(), 2);
+    assert_eq!(find(&mid.body, "table-1")["open_order_id"], order_one);
+    assert_eq!(
+        find(&mid.body, "table-2")["open_order_id"],
+        serde_json::Value::Null,
+        "an empty table must not inherit its neighbour's order"
+    );
+
+    let order_two = open_on("table-2");
+    assert_ne!(order_one, order_two);
+
+    let after = http_request(addr, "GET", "/api/tables", Some(&token), None);
+    assert_eq!(find(&after.body, "table-1")["open_order_id"], order_one);
+    assert_eq!(find(&after.body, "table-2")["open_order_id"], order_two);
 }
