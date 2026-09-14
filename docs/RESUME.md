@@ -104,6 +104,121 @@ restructure should commit it.
    runs were debug. The release rehearsal and its `HOLLER-PERF` number are
    outstanding and belong to the demo-prep session.
 
+# Demo prep (this session, 2026-09-14) — restart here
+
+**Everything below is committed and pushed. Nothing of this session's is
+outstanding in the working tree.** The repo is the authority; where this block
+and the repository disagree, the repository wins.
+
+## HEAD at handoff
+
+`e666af3` — `docs(resume): white-label handoff`. This session's own work is
+`c246a9d`, `f3dcc71`, `52d8930`, `1ef2124`, `3b80a48`, `78c87f5`, `73cfb6a`,
+`d1d3ebc`.
+
+## The release binary — and when it stops being current
+
+```
+C:\Code\Holler\apps\pos\src-tauri\target\release\holler-pos.exe
+```
+
+Built from **`78c87f5`**, SHA-256
+`76481393712c004adeebea314ad0e08acc2f71081d0ac9eb04bdb078625481d8`.
+
+**REBUILD IT IF HEAD'S PRODUCT CODE MOVES.** Right now it has not: everything
+between `78c87f5` and `e666af3` is docs plus `apps\pos\run-dev.ps1`, and
+`git diff --name-only 78c87f5..HEAD -- apps/pos/src apps/pos/src-tauri/src
+apps/captain/src edge packages` returns **zero files**. Run that same command
+against the new HEAD before every rehearsal; a non-empty answer means the
+binary is stale.
+
+Two asymmetries that decide what a rebuild costs:
+
+- **`apps\pos\dist` is embedded at LINK time** (`tauri.conf.json`'s
+  `frontendDist`), so a POS frontend change needs `cargo build --release` after
+  `pnpm build` or the window shows the previous UI silently.
+  `run-dev.ps1 -Release` refuses when the binary is older than that dist.
+- **`apps\captain\dist` is served from DISK per request** (`captain.rs:66-71`,
+  an absolute path baked from `CARGO_MANIFEST_DIR`), so a captain rebuild takes
+  effect with no relink — but moving or deleting that folder is a phone that
+  loads nothing.
+
+## Firewall rule
+
+Name: **`Holler POS (demo)`**. Inbound TCP **9310** (KDS LAN WebSocket) and
+**9320** (captain HTTP) — the only two listeners the POS process starts —
+scoped to the exact program path above, `-Profile Any` because Windows
+classifies a Mobile Hotspot adapter as **Public**. The command and the checks
+are `docs/demo-script.md` §0.0b. A rule bound to a `target\debug` path covers
+nothing, and a blocked inbound connection produces no error anywhere.
+
+## Starting the stack
+
+```powershell
+.\scripts\demo-up.ps1 -DbKeyHex <64-hex-key> -LanHost <hotspot-ip> -Fresh -Release
+```
+
+`-Release` is new this session (`d1d3ebc`) and is the demo form: it starts the
+binary the firewall rule names, skips Vite and the 5173 guard, and prints the
+resolved path and link time before the window opens. Without it, step 8 starts
+`tauri dev` — the debug build, which the rule does not cover. `-UpiVpa` is
+remembered between runs and now survives `-Fresh` (`c246a9d`).
+
+Verify the launch by identity, never by the port answering:
+`Get-Process holler-pos | Select-Object Id, Path, StartTime` — `Path` must end
+`target\release\holler-pos.exe`.
+
+## Monday's test order — each step's failure means something the next cannot
+
+1. Hotspot up, note its IP, `demo-up ... -Release -Fresh`.
+2. Load the captain URL on the phone **before** pairing (isolates static
+   serving from auth).
+3. Pair, then reload the page — the token must survive.
+4. One item, one table, Send. Watch the phone, the KDS and the hub together,
+   and take the `HOLLER-PERF` delta (`captain_order_sent` →
+   `kds_ticket_rendered`).
+5. Repeat from a clean reset **three times** — that is the cut-off condition,
+   not one success.
+6. Two phones, two tables, concurrently.
+7. WiFi off and on mid-cart. **Expected: duplicate LINES, not a duplicate
+   order** (`3b80a48`). Neither appearing contradicts the code — stop and
+   report.
+8. Till → bill on a captain order, for the second perf number.
+
+## Open items, stated as open
+
+- **The `HOLLER-PERF` number is NOT RECORDED.** The operator reported the phone
+  check passed on the release binary but left the figure as a placeholder, and
+  nothing was written down rather than a number being invented. Monday's perf
+  row in `docs/demo-status.md` is still empty, and **over 1s on the phone is a
+  demo blocker**.
+- **The `seed/outlet.toml` refusal path has still never fired** on the real
+  scripts — read-verified only (white-label §4.2, unchanged by this session).
+- **`logo_path` stays unset**, so the bill renders byte-identically to the
+  pre-white-label build. The present case is unit-tested only; setting it
+  before the demo would put an unrendered path on the client's bill.
+
+## What this session changed in the captain, in one line each
+
+- `52d8930` — a table's open order is read from the ORDER ROWS; nothing in the
+  shipped POS has ever written a `table_session` row, so the phone's append
+  branch was unreachable and every Send opened a second order. Uncovered a
+  second defect that had never been reachable: `/send` confirmed
+  unconditionally and confirm rejects a non-DRAFT order.
+- `78c87f5` — the OLDEST appendable order wins (pinned, falsified by reversing
+  the sort), and the second ticket is asserted to carry only the new round.
+- `1ef2124` — the lost-response retry that duplicates LINES is filed in
+  `docs/pilot-readiness.md` §0, deliberately not fixed before the demo; the
+  client re-reads `/api/tables` after a failed send.
+- `c246a9d` — `-Fresh` no longer forgets the UPI payee, and `.env.local` is
+  cleared when none resolves, so the bill screen and the printed receipt can no
+  longer disagree about the QR.
+
+`apps/pos/src-tauri/tests/captain_http.rs` holds 10 tests, all executed through
+`node scripts/assert-tests-ran.mjs`.
+
+---
+
 # Resume state — 2026-09-13
 
 > ## RESTART HERE — SESSION ENDED 2026-09-13, HEAD `8aa46dd`, WORKING TREE CLEAN AND PUSHED
