@@ -13,6 +13,7 @@ import { groupItemsByCategory, resolveVariantForTap, variantPricePaise } from ".
 import { SUPPORTED_ORDER_TYPES, cartSubtotalPaise, canSendOrder, requiresTable, lineTotal } from "../domain/cart";
 import { formatPaiseAsRupees, parseRupeesToPaise } from "../domain/money";
 import { hasPermission } from "../domain/permissions";
+import { orderStatusLabel } from "../domain/kitchen";
 import { useAuthStore } from "../store/auth";
 import { useCartStore } from "../store/cart";
 import { PrintFailureBanner } from "./PrintFailureBanner";
@@ -103,6 +104,20 @@ export function PosScreen() {
 
   const subtotalPaise = cartSubtotalPaise(lines);
   const sendEnabled = canCreateOrder && canSendOrder(orderType, tableId, lines) && !cartPending;
+  // Why the Send button is grey, in the cashier's words. Presentation only:
+  // every branch reads state this component already holds and the gate stays
+  // `canSendOrder` — this never decides anything, it only explains what that
+  // already decided. A disabled control with no stated reason is what teaches
+  // a cashier to tap twice and then call someone over.
+  const sendDisabledReason = !canCreateOrder
+    ? "You do not have permission to take orders"
+    : lines.length === 0
+      ? "Add an item to the order"
+      : requiresTable(orderType) && tableId === null
+        ? "Select a table"
+        : cartPending
+          ? "Saving…"
+          : null;
   // Order type/table stay editable for the order's entire DRAFT lifetime —
   // not merely before it existed (docs/retro.md P0 regression, task T14).
   // `orderId === null` means no order has been persisted yet (also
@@ -251,27 +266,37 @@ export function PosScreen() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
-        <div className="pos-order-type">
+        {/* One segmented control, not three loose buttons: the three order
+            types are a choice between three, and the markup should say so.
+            `orderStatusLabel` humanises the enum — DINE_IN on a screen is a
+            variable name, and it is the same helper the Orders list uses, so
+            the two cannot drift apart. */}
+        <div className="pos-order-type" role="group" aria-label="Order type">
           {SUPPORTED_ORDER_TYPES.map((type) => (
             <button
               key={type}
               type="button"
               className={type === orderType ? "active" : ""}
+              aria-pressed={type === orderType}
               disabled={!canEditOrderShape || cartPending}
               onClick={() => void setOrderType(type)}
             >
-              {type}
+              {orderStatusLabel(type)}
             </button>
           ))}
         </div>
         {requiresTable(orderType) && (
           <select
             className="pos-table-select"
+            aria-label="Table"
             value={tableId ?? ""}
             disabled={!canEditOrderShape || cartPending}
             onChange={(e) => void setTableId(e.target.value || null)}
           >
-            <option value="">Select table…</option>
+            {/* A chosen table shows its own name here, because a native
+                select renders the selected option's text. The empty option
+                is the prompt and is only ever visible while none is chosen. */}
+            <option value="">Choose table</option>
             {(tablesQuery.data ?? []).map((table) => (
               <option key={table.id} value={table.id}>
                 {table.section} / {table.label}
@@ -279,18 +304,20 @@ export function PosScreen() {
             ))}
           </select>
         )}
-        <button type="button" onClick={() => void navigate({ to: "/orders" })}>
-          Orders
-        </button>
-        {/* M6 C1. A platform order that has arrived is invisible without an
-            entry point, and a screen nothing navigates to is the same defect as
-            a query nothing calls. */}
-        <button type="button" onClick={() => void navigate({ to: "/aggregator-orders" })}>
-          Platform Orders
-        </button>
-        <button type="button" onClick={() => void navigate({ to: "/inventory/stock" })}>
-          Stock
-        </button>
+        <nav className="pos-nav" aria-label="Sections">
+          <button type="button" onClick={() => void navigate({ to: "/orders" })}>
+            Orders
+          </button>
+          {/* M6 C1. A platform order that has arrived is invisible without an
+              entry point, and a screen nothing navigates to is the same defect
+              as a query nothing calls. */}
+          <button type="button" onClick={() => void navigate({ to: "/aggregator-orders" })}>
+            Platform Orders
+          </button>
+          <button type="button" onClick={() => void navigate({ to: "/inventory/stock" })}>
+            Stock
+          </button>
+        </nav>
       </header>
 
       <nav className="pos-categories">
@@ -410,7 +437,12 @@ export function PosScreen() {
         ))}
       </section>
 
+      {/* The cart owns its own totals and its own Send button now. The old
+          full-width bottom bar held one button and a subtotal across the
+          whole screen, which put the two things a cashier looks at last as
+          far apart on screen as they could be. */}
       <aside className="pos-cart">
+        <div className="pos-cart-lines">
         {lines.map((line) => (
           <div className="pos-cart-line" key={line.lineId}>
             <span className="name">{line.menuItemName}</span>
@@ -445,6 +477,7 @@ export function PosScreen() {
             <span className="line-total money">{formatPaiseAsRupees(lineTotal(line))}</span>
             <button
               type="button"
+              className="pos-cart-line-remove"
               disabled={!canCreateOrder || cartPending}
               onClick={() => void removeItem(line.lineId, menuItems)}
             >
@@ -452,20 +485,45 @@ export function PosScreen() {
             </button>
           </div>
         ))}
-        {lines.length === 0 && <p className="pos-cart-empty">Cart is empty.</p>}
-      </aside>
+        {lines.length === 0 && <p className="pos-cart-empty">Add items to start an order</p>}
+        </div>
 
-      <footer className="pos-bottom-bar">
-        <span className="pos-subtotal">Subtotal: <span className="money">{formatPaiseAsRupees(subtotalPaise)}</span></span>
-        {cartError && (
-          <span className="pos-send-error" role="alert">
-            {cartError}
-          </span>
-        )}
-        <button type="button" className="pos-send" disabled={!sendEnabled} onClick={handleSend}>
-          Send
-        </button>
-      </footer>
+        <footer className="pos-cart-footer">
+          <dl className="pos-cart-totals">
+            <div>
+              <dt>Subtotal</dt>
+              <dd className="money">{formatPaiseAsRupees(subtotalPaise)}</dd>
+            </div>
+            {/* TAX IS NOT COMPUTED HERE, AND THIS ROW SAYS SO RATHER THAN
+                SHOWING A NUMBER. CLAUDE.md: tax is computed per line at the
+                edge, at full precision, rounded once — "never recompute tax
+                in TypeScript". A cart-stage tax figure could only be a second
+                implementation of that arithmetic, and the first time it
+                disagreed with the invoice by one paisa the till and the bill
+                would be showing a customer two different numbers.
+
+                For the same reason there is no "Total" row: a total that
+                silently excludes tax is a wrong number wearing the right
+                label, which is worse than no row at all. The bill screen
+                shows the real total, from the edge. */}
+            <div className="pos-tax-row">
+              <dt>Tax</dt>
+              <dd>Added on the bill</dd>
+            </div>
+          </dl>
+          {cartError && (
+            <span className="pos-send-error" role="alert">
+              {cartError}
+            </span>
+          )}
+          <button type="button" className="pos-send" disabled={!sendEnabled} onClick={handleSend}>
+            Send
+          </button>
+          {sendDisabledReason !== null && (
+            <span className="pos-send-reason">{sendDisabledReason}</span>
+          )}
+        </footer>
+      </aside>
     </main>
   );
 }

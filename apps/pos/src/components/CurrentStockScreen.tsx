@@ -53,6 +53,12 @@ export function CurrentStockScreen() {
       <div className="screen-body">
       {stockQuery.isLoading && <p>Loading stock…</p>}
       {stockQuery.isError && <p role="alert">Could not load current stock.</p>}
+      {/* Same gap as the Orders list: an empty stock table rendered as a
+          header row over nothing, which reads as a broken screen rather than
+          as an outlet with no inventory configured. */}
+      {!stockQuery.isLoading && !stockQuery.isError && lines.length === 0 && (
+        <p className="screen-empty">No stock on record yet.</p>
+      )}
       <div className="card">
       <table>
         <thead>

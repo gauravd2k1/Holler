@@ -121,6 +121,13 @@ export function OrderListScreen() {
       <div className="screen-body">
       {ordersQuery.isLoading && <p>Loading orders…</p>}
       {ordersQuery.isError && <p role="alert">Could not load orders.</p>}
+      {/* Loading and error had words; zero orders rendered a table with a
+          header row and an empty body. This is the FIRST screen after every
+          clean reset, so an empty table with no explanation is what a new
+          shift — and a demo — opens on. */}
+      {!ordersQuery.isLoading && !ordersQuery.isError && (ordersQuery.data ?? []).length === 0 && (
+        <p className="screen-empty">No orders yet. Start one on the POS screen.</p>
+      )}
       {confirmError && (
         <p className="order-confirm-error" role="alert">
           {confirmError}
@@ -131,6 +138,10 @@ export function OrderListScreen() {
           {sendError}
         </p>
       )}
+      {/* The table renders only when it has rows: a header row over an
+          empty body reads as a broken screen, and the empty state above
+          already says what is going on. */}
+      {(ordersQuery.data ?? []).length > 0 && (
       <div className="card">
       <table>
         <thead>
@@ -245,6 +256,7 @@ export function OrderListScreen() {
         </tbody>
       </table>
       </div>
+      )}
       </div>
     </main>
   );
