@@ -1,3 +1,109 @@
+# White-label (parallel session, 2026-09-14)
+
+**Handoff from a parallel session. Its work is COMMITTED AND PUSHED; nothing
+of its own is outstanding.** Demo prep continues in another session — this
+block is a pointer, not a second source of truth. The repo is the authority.
+
+## 1. Commits (all pushed, all on `main`)
+
+| hash | subject |
+|---|---|
+| `807552c` | feat(seed): onboarding a restaurant is writing one file, never editing code |
+| `042dd06` | docs: seed/outlet.toml is a prerequisite, so every runbook that starts the stack says so |
+| `d2cae64` | docs(backlog): two script arguments that name a target the step that matters never reads |
+| `c621f6a` | fix(scripts): check-seed-drift could not parse, and seed twelve tables instead of two |
+| `e77ff41` | docs: the captain-cache acceptance is about what it must still REFUSE, and the pump's lock spans cloud I/O |
+
+## 2. WHAT THE WHITE-LABEL CHANGE ACTUALLY TOUCHES
+
+`seed/outlet.toml` is the single source for the restaurant's name, legal
+entity, address, `state_code`, pincode, GSTIN, FSSAI, invoice prefix, bill
+footer, timezone, business-day start, UPI payee and logo. Both seeders read
+it; the `RESTAURANT_NAME…INVOICE_FOOTER_TEXT` constants block in `devseed.rs`
+is gone. Gitignored and per-installation; `seed/outlet.example.toml` is the
+committed template and is what CI and the test suite read.
+
+**Answering the question directly — did any order, bill, KOT, sync or captain
+path change?**
+
+- **Order, KOT, sync, captain: NO CODE TOUCHED.** Not one file under
+  `edge/sync/`, `apps/captain/`, `apps/kds/`, `apps/pos/src/`,
+  `apps/pos/src-tauri/src/` (`captain.rs`, `commands/`, `state.rs`) was
+  modified by any of the five commits above. Verify with
+  `git show --stat 807552c c621f6a`.
+- **Bill: ONE RENDER-PATH FILE CHANGED — say this out loud rather than
+  claiming "branding only".** `edge/printer/src/template.rs` gained
+  `render_outlet_mark()` and a two-line change inside `render_logo_block`,
+  so the restaurant's own mark renders beside the Holler mark when
+  `logo_path` is set. **No `logo_path` is configured, and with none set the
+  output is byte-identical to the pre-change build** — proven, not asserted:
+  a receipt was rendered by the pre-change `template.rs` and by this one with
+  identical inputs, and both the HTML and the ESC/POS bytes compared equal
+  (`cmp`, 2026-09-13). The first compare differed by one always-emitted CSS
+  rule, which is why that rule is now emitted only when there is a mark to
+  style.
+- **Everything else is seed, config, script or docs**: `devseed.rs` +
+  `devseed/outlet_identity.rs` (new, seed-only), `backend/cmd/devseed/` (the
+  cloud seed reader and its fixture), the three PowerShell runners,
+  `seed/`, `scripts/check-seed-drift.mjs`, and documentation.
+- **No contract change.** Contracts stay FROZEN at v0.8.2. Every field already
+  had a column; `logo_path` is never stored — it is a render input passed as
+  `HOLLER_OUTLET_LOGO_PATH`.
+- **`schema_version` in `seed/demo-outlet.json` went 1 → 2**, adding
+  `outlet_identity` and `outlet_source_sha256`. The cloud DECODES both and
+  writes neither (the `station_code` precedent) — declared in `seedfile.go`
+  rather than omitted because that decoder runs with
+  `DisallowUnknownFields`. **The edge seeder refuses a catalogue whose digest
+  disagrees with the identity file it was handed**, which is what stops one
+  restaurant's name landing on `outlet`/`tenant`/`brand` and another's on the
+  GST invoice.
+- `c621f6a` also seeds **twelve tables instead of two**. T1/T2 keep their
+  fixed legacy ids because `tests/e2e-scenario/harness/src/main.rs:73-74`
+  pins both by value.
+
+**Observed on the real stack, not in a harness** (operator run, 2026-09-13/14):
+bills `SY/000001` and `SY/000002` carried every field from the file, including
+`Place of Supply: Maharashtra (27)` — the cross-field GSTIN/`state_code` rule
+on a legal document — and the ESC/POS stream held **0 non-ASCII bytes in 775**.
+Live cloud parity against the run catalogue was **zero diff** across 16 shared
+tables. A captain order was attributed to the WAITER device, not the till.
+
+## 3. WORKING TREE AT HANDOFF — read before you commit anything
+
+`origin/main` and `HEAD` are level; **every commit above is pushed and nothing
+of this session's is uncommitted.**
+
+**Two files are modified/untracked and they are NOT this session's work:**
+`CLAUDE.md` (modified) and `docs/milestone-history.md` (untracked) — one
+coherent change that trims `CLAUDE.md`'s tech-stack, directory-ownership and
+test-command lists and extracts the closed-milestone record into the new file.
+
+**They were deliberately NOT stashed or committed.** A parallel session was
+editing them live, and stashing another session's in-progress work is the one
+action here that could lose it. This session's own `CLAUDE.md` addition (step 0,
+`seed/outlet.toml` must exist) is committed in `042dd06`, is present at the top
+of "Rebuilding the stack from cold", and **the uncommitted diff does not touch
+it** (`git diff CLAUDE.md | grep -c outlet.toml` → 0). Whoever owns that
+restructure should commit it.
+
+## 4. WHAT IS LEFT UNDONE ON WHITE-LABEL
+
+1. **`logo_path` has never rendered on a real bill.** The absent case is proven
+   byte-identical; the present case is unit-tested only.
+2. **The identity-file REFUSAL path has never fired on the real scripts.** A
+   missing/invalid `seed/outlet.toml` is tested in Rust, but no run has had the
+   file absent, so `dev-bootstrap`/`demo-reset`'s refusal is read-verified only.
+3. **Tier 2 is not built** — admin "Outlet settings" writing `outlet` +
+   `outlet_fiscal_profile` in the cloud, delivered by the config pull, after
+   which this file becomes the bootstrap default and stops being the source of
+   truth. Filed in `docs/pilot-readiness.md` §B2 as a pilot blocker.
+4. **The cloud still seeds no `outlet_fiscal_profile`.** It decodes
+   `outlet_identity` and writes none of it, deliberately — so only the edge
+   knows the GSTIN, and the admin console cannot show it.
+5. **No white-label run has happened on the RELEASE binary yet.** Both operator
+   runs were debug. The release rehearsal and its `HOLLER-PERF` number are
+   outstanding and belong to the demo-prep session.
+
 # Resume state — 2026-09-13
 
 > ## RESTART HERE — SESSION ENDED 2026-09-13, HEAD `8aa46dd`, WORKING TREE CLEAN AND PUSHED
