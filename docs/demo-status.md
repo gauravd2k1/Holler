@@ -204,8 +204,19 @@ clean demo reset starts it at 1.
       banner clears, order appears in admin. Not rehearsed against this build.
 - [ ] **Admin Orders tab and the received GRN** against the FRESH seed. Both were
       observed on a scratch database with fixture rows, never on the demo seed.
-- [ ] **The two perf numbers** from the `HOLLER-PERF` lines — captain send → KDS
-      render, till tap → bill open. **Over 1s is a demo blocker.**
+- [x] **KDS ticket latency, SAME-MACHINE: `wire 5 ms / render 4 ms`, n=1**,
+      measured 2026-09-15 ~02:00 on the release binary by the KDS's own readout
+      (`?perf=1`, `apps/kds/src/lib/perf.ts`) rather than by hand. 5 ms against
+      a 1s blocker threshold is not a marginal pass.
+      **WHAT IT DOES NOT COVER, AND THE NUMBERS THEMSELVES SAY SO:** wire 5 ms
+      minus render 4 ms leaves ~1 ms of transit, which is loopback. **This was a
+      KDS on the till itself — no WiFi, no second device, no clock skew.** The
+      Act 2 path is a phone or a second laptop over the hotspot and is a
+      DIFFERENT measurement; it is not yet taken. One sample, too.
+- [ ] **KDS latency from a SECOND DEVICE over the hotspot** — the number Act 2
+      actually depends on. Take several, and read `worst`, not `last`.
+- [ ] **Till tap → bill open.** Instrumented (`Ctrl+Alt+P` on the till,
+      `apps/pos/src/lib/perf.ts`) but not yet read. **Over 1s is a demo blocker.**
 - [ ] **Draft the six steps** in `docs/demo-script.md`, Monday evening, from the
       runs above rather than from memory.
 
