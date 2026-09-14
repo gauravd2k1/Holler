@@ -7,6 +7,7 @@ import { ConnectionBanner } from "./components/ConnectionBanner";
 import type { KotStatus } from "@holler/contracts";
 
 import type { WebSocketLike } from "./lib/lanClient";
+import { noteTicketPainted, latencySummary } from "./lib/perf";
 
 /** Adapts the browser's `WebSocket` (whose handler types carry an `Event`
  * argument) to the minimal `WebSocketLike` shape `LanClient` depends on. */
@@ -93,16 +94,49 @@ export function App() {
   // FIRST time a ticket id appears on this screen -- never on a re-render,
   // which would bury the timestamp that matters under its own repeats.
   // Same `HOLLER-PERF` format as the Rust side, correlated by order id.
+  //
+  // IT NOW REPORTS THE LATENCY RATHER THAN A TIMESTAMP TO BE SUBTRACTED BY
+  // HAND. The old line was half a measurement: it had to be paired with
+  // `kot_upserted_emitted` from the POS terminal and the difference worked out
+  // manually, which nobody does under demo pressure -- so the number went
+  // unrecorded for days. `sent_at` is already on the frame, so the KDS can
+  // just do the arithmetic. See lib/perf.ts for why there are two numbers.
   const seenTickets = useRef(new Set<string>());
+  const [, forcePerfRender] = useState(0);
   useEffect(() => {
+    let painted = false;
     for (const kot of tickets) {
       if (seenTickets.current.has(kot.id)) continue;
       seenTickets.current.add(kot.id);
-      console.log(
-        `HOLLER-PERF ts=${new Date().toISOString()} event=kds_ticket_rendered id=${kot.order_id}`,
-      );
+      const latency = noteTicketPainted(kot.id, kot.order_id);
+      if (latency) {
+        painted = true;
+        console.log(
+          `HOLLER-PERF ts=${new Date().toISOString()} event=kds_ticket_rendered ` +
+            `id=${kot.order_id} wire_ms=${latency.wireMs} render_ms=${latency.renderMs}`,
+        );
+      } else {
+        // No sample: this ticket arrived in a snapshot (a reconnect or first
+        // load), not as a live upsert. Timing a snapshot ticket would measure
+        // how long it sat on the till before this screen connected, which is
+        // not what anyone means by kitchen latency.
+        console.log(
+          `HOLLER-PERF ts=${new Date().toISOString()} event=kds_ticket_rendered ` +
+            `id=${kot.order_id} wire_ms=n/a (snapshot, not a live ticket)`,
+        );
+      }
     }
+    if (painted) forcePerfRender((n) => n + 1);
   }, [tickets]);
+
+  // ?perf=1 shows the readout on screen. OFF by default and deliberately so:
+  // a latency box is for a rehearsal, and a stray debug overlay in front of a
+  // client is exactly the kind of dev furniture the demo brief forbids.
+  const showPerf = useMemo(
+    () => new URLSearchParams(window.location.search).get("perf") === "1",
+    [],
+  );
+  const perf = latencySummary();
 
   if (configError) {
     return (
@@ -138,6 +172,34 @@ export function App() {
         {connectionStatus === "connected" ? "● Connected" : `● ${connectionLabel(connectionStatus)}`}
       </div>
       <ConnectionBanner status={connectionStatus} />
+      {showPerf && (
+        <div className="kds-perf" role="status" data-testid="perf-readout">
+          {perf.count === 0 ? (
+            <span>waiting for a live ticket…</span>
+          ) : (
+            <>
+              <span>
+                last <strong>{perf.last!.wireMs} ms</strong>
+              </span>
+              <span>
+                worst <strong>{perf.worstWireMs} ms</strong>
+              </span>
+              <span>
+                render {perf.last!.renderMs} ms · n={perf.count}
+              </span>
+              {/* Stated, not hidden: `last` and `worst` cross two clocks. On a
+                  KDS running on the till there is no skew and they are exact;
+                  on another device they carry whatever that device's clock is
+                  out by. `render` is measured entirely here and cannot skew,
+                  so a sane render beside an absurd wire figure means the
+                  clocks disagree, not that the software is slow. */}
+              <span className="kds-perf__note">
+                wire crosses two clocks; render is local
+              </span>
+            </>
+          )}
+        </div>
+      )}
       <div className="kds-board">
         {tickets.map((kot) => (
           <TicketCard

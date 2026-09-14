@@ -4,6 +4,7 @@
 import type { KdsLanMessage, KotStatus } from "@holler/contracts";
 import type { LanConfig } from "./lanConfig";
 import { LanClient, type WebSocketFactory } from "./lanClient";
+import { noteTicketReceived } from "./perf";
 import type { useKdsStore } from "../store/kdsStore";
 
 type KdsStore = ReturnType<typeof useKdsStore.getState>;
@@ -113,6 +114,9 @@ export class ConnectionController {
         state.applySnapshot(message.kots);
         break;
       case "kot_upserted":
+        // Stamp the arrival BEFORE the store update, so the number is the
+        // ticket's own transit and not this device's React work.
+        noteTicketReceived(message.kot.id, message.sent_at);
         state.upsertKot(message.kot);
         break;
       case "kot_removed":

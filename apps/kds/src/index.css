@@ -147,3 +147,29 @@
   padding: var(--space-6);
   color: var(--color-warn);
 }
+
+/* Latency readout. `?perf=1` only -- see App.tsx. Deliberately plain and
+   deliberately not in the ticket area: it is rehearsal instrumentation, and
+   nothing about it should read as part of the product. */
+.kds-perf {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-4);
+  margin: 0 var(--space-4) var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px dashed var(--color-border-strong);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  font-family: var(--font-mono);
+}
+.kds-perf strong {
+  color: var(--color-text);
+  font-size: var(--text-lg);
+}
+.kds-perf__note {
+  margin-left: auto;
+  font-style: italic;
+}
