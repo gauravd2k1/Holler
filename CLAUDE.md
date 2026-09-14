@@ -4,11 +4,8 @@ Restaurant Operating System for India. Local-first: core ops run without interne
 Full vision: `docs/vision.md`. Full spec source: `HOLLER_MASTER_PROMPT.md` (orchestrator/humans only — builder agents do not load it).
 
 ## Tech stack
-- POS desktop: Tauri + React + TypeScript + Rust + SQLite (WAL)
-- Cloud backend: Go, PostgreSQL, Redis, NATS JetStream (modular monolith)
-- Web admin: React, TypeScript, Vite, TanStack Query/Router
-- KDS: PWA (web), LAN-first
-- Waiter app: Flutter (Android-first) — decided, see ADR-010
+Per-app stacks are in each manifest (`package.json`, `Cargo.toml`, `go.mod`). Two that a manifest cannot tell you:
+- Waiter app: Flutter (Android-first) — decided, see ADR-010. No code yet (M9).
 - Contracts: `packages/contracts/` — TS+Zod, Go structs, OpenAPI, SQLite/Postgres migrations. Read-only for builder agents.
 
 ## Deployment target (ADR-013) — read before assuming anything about the host
@@ -47,10 +44,8 @@ The split that matters: WSL2 hosts the **cloud** dependencies for local developm
 - Never `// TODO implement later` for current-milestone or excluded-list work.
 
 ## Directory ownership
-- `apps/pos` — POS Tauri app. `apps/admin` — web admin. `apps/kds` — kitchen display PWA. `apps/waiter` — Flutter app.
-- `edge/` — local edge node services (sync, printer, device, database) — Rust.
-- `backend/internal/<context>` — one bounded context per directory (auth, tenant, outlet, menu, ordering, kitchen, inventory, procurement, payments, aggregators, compliance, reporting, crm).
-- `packages/contracts` — cross-boundary source of truth (read-only to builders). `packages/ui`, `packages/validation`, `packages/generated`.
+The tree is what `ls` shows; `backend/internal/<context>` is one bounded context per directory. Two ownership rules it cannot show:
+- `packages/contracts` — cross-boundary source of truth, **read-only to builders**.
 - `docs/spec/<context>.md` — one spec per bounded context; an agent loads only CLAUDE.md + its assigned spec file(s) + `packages/contracts/`.
 
 ## Test/build commands
@@ -523,43 +518,21 @@ as settled, not as open questions, and must not re-litigate them:
 
 ### Completed milestones
 
-**M6 Sync gaps, back office, aggregator framework** is **CLOSED and tagged
-`m6-complete`** (2026-09-11) at contracts v0.8.1. **Seven of eight criteria
-observed on the shipping binaries: C1, C3, C4, C5, C6, C7, C8** — evidence in
-`docs/m6-acceptance.md`, handover in `docs/m6-phase-c-boundary.md`. Record it
-honestly, in these three parts:
+**M1**, **M2**, **M4** (`m4-complete`), **M5** and **M6** (`m6-complete`,
+2026-09-11, contracts v0.8.1) are closed. The full record — criteria counts,
+evidence files, and the retro finding each milestone left behind — is
+**`docs/milestone-history.md`**. **Do not re-run any M6 criterion and do not
+reconstruct a verdict from git history.** Three things from it stay resident
+because they still bind:
+
 - **M6 C8 is `SHAPE ONLY — no integration evidence`.** Both adapters run against
   fakes we authored, so it proves the contract shape twice and the integration
   zero times. Its integration half travels to M6.1 as an explicitly UNMET row
   (M6.1 C1), carried and never merged into C8.
-- **M6 C2 is PARKED and M6 closed WITH it parked, deliberately.** Trigger: *any
-  platform sandbox access granted*. It cannot be evidenced from our own logs —
-  "never evidence a snooze from our own log" is the criterion's own wording — so
-  M6 closed without it rather than with a fake pass.
-- **Phase A closed FIVE of seven: A1, A1b, A2, A3, A5 landed; A4, A6, A7
-  carried**, each in `docs/backlog.md` and `docs/pilot-readiness.md` with the
-  trigger *before the first pilot*. **Never report it as "Phase A complete".**
-  A7 is not cosmetic: `edge/sync/src/route.rs` maps only `order` and
-  `table_session`, so 78 rows on the live edge database have no route and can
-  never be sent (55 `kot`, 22 `stock_count`, 1 `invoice`, measured 2026-09-07).
-
-**Do not re-run any M6 criterion and do not reconstruct a verdict from git
-history.**
-
-**M1 Core POS** and **M2 Kitchen** are complete. M2's acceptance item 5 — one real KDS↔edge socket session — **is met**, re-evidenced 4/4 against a real socket after ADR-017. Record it honestly: it stood recorded as met while its test bridge silently failed to **compile** for a period, so the `lan-integration` CI job was failing at `cargo build` and proving no socket session at all (`docs/RESUME.md` §5). The `rust-seams` job and `make check-seams` exist so a tenth such break fails fast.
-
-**M3 Billing** is code-complete and functionally exercised, but **NOT acceptance-complete**: it is untagged and blocked on the two PARKED hardware gates above. `docs/RESUME.md` §2 and §6 carry the corrections. Two M3 defects are filed to M6 rather than fixed here, and a builder should not treat either as settled behaviour: `invoice.business_date` is bucketed by **UTC calendar day** (`business_date_from`, `apps/pos/src-tauri/src/commands/billing.rs`), which splits one trading night across two business dates and can reset a `DAILY` invoice series mid-service; and a `reset_policy` whose prefix lacks a matching date token yields duplicate invoice numbers, caught only by the UNIQUE index. `compute_business_date` (`edge/database/src/deduction/business_date.rs`) is the correct function and the stock ledger already uses it.
-
-**M5 Procurement** is **CLOSED at contracts v0.6.3** — seven of seven criteria
-observed on the shipping binaries, evidence in `docs/m5-acceptance.md`. Two
-findings outlive the milestone. **An acceptance criterion satisfied by either of
-two definitions cannot tell you which one you built** (criterion 7 passes under
-both a lifetime and an on-hand cost average, and reports neither). And **a test
-condition the environment cannot produce is not a weak test, it is no test** —
-every "network disconnected" step since M1 was performed by switching WiFi off
-against a cloud at `http://localhost:8080`.
-
-**M4 Inventory & Recipes** is **complete and tagged `m4-complete`** — all seven acceptance criteria observed against the shipping binaries, none evidenced by a test harness. Criterion 1 was CONTESTED for four days and closed by `7e88d1c`: the till hardcoded `variantId: null`, so no sale the POS ever took wrote a ledger row, while the harness that evidenced the criterion selected a variant directly. **A deduction test proves deduction only for the path its caller takes.** Criterion 6 was falsified, not merely observed, and the falsification found a dropped field the 201-echo comparison structurally could not see.
+- **M3 Billing** is code-complete and functionally exercised, but **NOT acceptance-complete**: it is untagged and blocked on the two PARKED hardware gates above. `docs/RESUME.md` §2 and §6 carry the corrections. Two M3 defects are filed to M6 rather than fixed here, and a builder should not treat either as settled behaviour: `invoice.business_date` is bucketed by **UTC calendar day** (`business_date_from`, `apps/pos/src-tauri/src/commands/billing.rs`), which splits one trading night across two business dates and can reset a `DAILY` invoice series mid-service; and a `reset_policy` whose prefix lacks a matching date token yields duplicate invoice numbers, caught only by the UNIQUE index. `compute_business_date` (`edge/database/src/deduction/business_date.rs`) is the correct function and the stock ledger already uses it.
+- The Phase A carry-overs (A4, A6, A7) and the parked M6 C2 are in **Carried out
+  of M6, still live, still binding** above — that section, not this one, is the
+  live list.
 ## Response rules for agents
 Inspect repo first, output a concise plan, then edit real files. If a task touches >15 files, stop and present the plan instead of proceeding. Report per milestone: Implemented / Verified / Performance / Remaining / Next.
 
