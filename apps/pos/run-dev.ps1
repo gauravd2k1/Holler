@@ -148,10 +148,14 @@ if ($Release) {
 -Release was given but no release binary exists at:
     $releaseExe
 
-Build it first (frontends, then the binary -- in that order):
-    cd $PSScriptRoot; pnpm build
+Build it with the TAURI CLI, which is not the same as cargo:
     cd $PSScriptRoot\..\captain; pnpm build
-    cd $PSScriptRoot\src-tauri; cargo build --release
+    cd $PSScriptRoot; pnpm exec tauri build --no-bundle
+
+NOT ``cargo build --release``. That produces a DEV-MODE binary in the release
+profile: the window loads http://localhost:5173 instead of the UI compiled
+into it, and shows "can't reach this page" with no dev server running. Only
+the Tauri CLI sets the environment that embeds the frontend. (2026-09-15.)
 "@
     }
 
@@ -170,13 +174,31 @@ The release binary is OLDER than apps\pos\dist, so it embeds a previous frontend
 
 The POS frontend is embedded at compile time, so rebuilding dist alone changes
 nothing in the window. Re-link:
-    cd $PSScriptRoot\src-tauri; cargo build --release
+    cd $PSScriptRoot; pnpm exec tauri build --no-bundle
 
 (apps\captain\dist is NOT checked here and does not need to be: the captain
 page is served from disk at request time, so a captain rebuild takes effect
 without a relink.)
 "@
         }
+    }
+
+    # AND THE CHECK THAT MATTERS: is the UI actually INSIDE the binary?
+    #
+    # Everything above this point is a check on the FILE -- that it exists and
+    # that it is newer than dist. Both pass on a binary that cannot draw a
+    # window, which is exactly what shipped on 2026-09-14: `build : RELEASE`
+    # printed, correct path, correct hash, and a window reading "can't reach
+    # this page -- localhost refused to connect". Existence and identity
+    # checks standing in for a function check.
+    $checker = Join-Path $PSScriptRoot "..\..\scripts\check-release-binary.ps1"
+    if (Test-Path $checker) {
+        & $checker -RepoRoot (Resolve-Path (Join-Path $PSScriptRoot "..\..")) -Quiet
+        if ($LASTEXITCODE -ne 0) {
+            throw "the release binary does not carry the UI -- see the refusal above. Nothing was launched."
+        }
+    } else {
+        Write-Host "WARNING: scripts\check-release-binary.ps1 is missing -- the embedded-UI check did NOT run." -ForegroundColor Red
     }
 }
 
