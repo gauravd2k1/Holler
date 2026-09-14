@@ -15,6 +15,16 @@ export default defineConfig({
     // you end up testing yesterday's build.
     port: 5175,
     strictPort: true,
+    // Bind all interfaces, same reason as the KDS: the back office is shown
+    // on a SECOND machine during a demo, and Vite's default `localhost` makes
+    // that impossible. Outlet network or demo hotspot only — see the note in
+    // apps/kds/vite.config.ts.
+    host: true,
+  },
+  preview: {
+    port: 5175,
+    strictPort: true,
+    host: true,
   },
   // @holler/contracts IS NEVER PREBUNDLED, AND THAT IS THE WHOLE POINT.
   //
