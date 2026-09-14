@@ -641,13 +641,61 @@ if ($WhatIf) {
 }
 
 # =====================================================================
+# THE ADDRESS IS RESOLVED HERE, ONCE, AND NEVER TYPED.
+#
+# -LanHost used to be the operator's to supply on every run, and it is a
+# MOVING TARGET: a DHCP renewal changes it, a hotspot changes it, tethering
+# changes it. Three times in one evening (2026-09-14/15) the KDS was left
+# dialling an address the machine no longer had -- .106 after a lease moved,
+# then 10.214.149.115 left over from a tethered session -- and the symptom
+# each time was a screen that loads, looks perfect and never connects, with no
+# error on either side because lanClient retries for ever.
+#
+# Chasing that by hand is not a workflow. When -LanHost is omitted the ranked
+# detector picks it (scripts\lan-ip.ps1, which knows a hotspot from the WSL
+# switch), and the command line stops changing:
+#
+#     .\scripts\demo-up.ps1 -DbKeyHex <key> -Fresh -Release
+#
+# It PRINTS what it chose and which adapter, every run, because an automatic
+# value nobody sees is how the wrong one goes unnoticed for an hour. Pass
+# -LanHost explicitly to override; nothing about that path changed.
+# =====================================================================
+if ($LanHost -eq "") {
+    $detected = & (Join-Path $PSScriptRoot "lan-ip.ps1") -Bare
+    if ($LASTEXITCODE -ne 0 -or -not $detected) {
+        Fail-WithAction "could not work out this machine's LAN address -- every address it has is virtual." `
+                        "Turn on Mobile Hotspot (or join a network), then re-run. Or pass -LanHost explicitly."
+    }
+    $LanHost = $detected.Trim()
+    $adapter = (Get-NetIPAddress -AddressFamily IPv4 |
+        Where-Object { $_.IPAddress -eq $LanHost } | Select-Object -First 1).InterfaceAlias
+    Write-Ok "LAN address auto-detected: $LanHost  (adapter: $adapter)"
+    Write-Note "no -LanHost was given. Override it by passing -LanHost, or see the full ranking with scripts\lan-ip.ps1"
+} else {
+    # AN EXPLICIT ADDRESS IS STILL CHECKED. The failure this whole block
+    # exists for is an address that is not this machine's, and passing it by
+    # hand is exactly how it got there. Warn rather than refuse: routing an
+    # outlet's traffic through an address this box does not own is unusual but
+    # not forbidden, and a refusal would be wrong on that setup.
+    $owned = @(Get-NetIPAddress -AddressFamily IPv4 | Select-Object -ExpandProperty IPAddress)
+    if ($owned -notcontains $LanHost) {
+        Write-Warn "-LanHost $LanHost is NOT one of this machine's addresses."
+        Write-Warn "  this machine has: $($owned -join ', ')"
+        Write-Warn "  a phone and the KDS will both fail to connect, silently. Check it before carrying on."
+    } else {
+        Write-Ok "LAN address: $LanHost (given explicitly, and this machine has it)"
+    }
+}
+
+# =====================================================================
 Write-Step 5 "bootstrap -- edge seed, env files, POS and KDS credentials"
 # =====================================================================
 $resolvedSinkDir = if ($PrinterFileSinkDir -ne "") { $PrinterFileSinkDir } else { Join-Path $repoRoot ".dev-prints" }
 
 $bootstrapArgs = @{ WithBilling = $true; PrinterFileSinkDir = $resolvedSinkDir }
 if ($DbKeyHex -ne "")     { $bootstrapArgs["DbKeyHex"] = $DbKeyHex }
-if ($LanHost -ne "")      { $bootstrapArgs["LanHost"]  = $LanHost }
+$bootstrapArgs["LanHost"] = $LanHost   # always set now -- resolved above
 if ($OutletFile -ne "")   { $bootstrapArgs["OutletFile"] = $OutletFile }
 if ($UpiVpa -ne "")       { $bootstrapArgs["UpiVpa"] = $UpiVpa }
 if ($UpiPayeeName -ne "") { $bootstrapArgs["UpiPayeeName"] = $UpiPayeeName }

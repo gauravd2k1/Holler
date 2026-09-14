@@ -45,8 +45,9 @@ param(
     [string]$Email = "owner@holler.test",
     [string]$Password = "holler123",
 
-    # Print the pairing URL with this host. Defaults to the machine's
-    # default-route IPv4, which is what the phones must reach.
+    # Print the pairing URL with this host. Empty = resolved by
+    # scripts\lan-ip.ps1, which ranks a hotspot above the normal network and
+    # never returns the WSL switch.
     [string]$LanHost = "",
     [int]$CaptainPort = 9320
 )
@@ -56,12 +57,17 @@ $ErrorActionPreference = "Stop"
 
 function Say($m, $c = "Gray") { Write-Host $m -ForegroundColor $c }
 
+# The SAME ranked detector demo-up uses, not a second opinion. Picking the
+# default-route interface (what this used to do) is wrong on demo day: a
+# hotspot carries no default route, so it would return the upstream WiFi
+# address and print a URL no phone on the hotspot can reach.
 if ($LanHost -eq "") {
-    $LanHost = (Get-NetIPConfiguration |
-        Where-Object { $_.IPv4DefaultGateway -ne $null } |
-        Select-Object -First 1).IPv4Address.IPAddress
+    $LanHost = (& (Join-Path $PSScriptRoot "lan-ip.ps1") -Bare)
+    if ($LASTEXITCODE -ne 0 -or -not $LanHost) {
+        throw "could not work out this machine's LAN address -- turn on the hotspot or pass -LanHost."
+    }
+    $LanHost = $LanHost.Trim()
 }
-if (-not $LanHost) { throw "could not work out this machine's LAN address -- pass -LanHost" }
 
 # WHICH TENANT AND OUTLET -- read from apps\pos\.env.dev, exactly as
 # demo-up.ps1 does (its step 7). This is NOT optional decoration: /auth/login

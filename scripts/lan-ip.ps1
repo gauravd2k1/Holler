@@ -26,7 +26,13 @@
 [CmdletBinding()]
 param(
     # Also print the URLs to type into the phones and the second laptop.
-    [switch]$Urls
+    [switch]$Urls,
+
+    # Print NOTHING but the chosen address, so other scripts can use it:
+    #     $ip = & scripts\lan-ip.ps1 -Bare
+    # Exits 1 with no output when there is no usable address, so a caller can
+    # tell "no network" from a value rather than parsing prose.
+    [switch]$Bare
 )
 
 $ErrorActionPreference = "Stop"
@@ -67,6 +73,13 @@ $rows = foreach ($a in $addrs) {
     }
 }
 $rows = @($rows | Sort-Object Rank, IP)
+
+if ($Bare) {
+    $chosen = $rows | Where-Object { $_.Rank -le 2 } | Select-Object -First 1
+    if (-not $chosen) { exit 1 }
+    Write-Output $chosen.IP
+    exit 0
+}
 
 Write-Host ""
 Write-Host "This machine's IPv4 addresses, best first:" -ForegroundColor White
