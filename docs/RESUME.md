@@ -1,3 +1,130 @@
+# RESTART HERE — session ended 2026-09-15 02:00, HEAD `f0741b1`, tree clean and pushed
+
+**Demo is WEDNESDAY, at the client's restaurant.** The plan is
+**`docs/demo-wednesday.md`** and it is the first thing to read — cast of
+devices, what to run, seven acts with dialogue, the hard questions, 60-second
+triage, Tuesday checklist. This block is a pointer; the repo is the authority.
+
+Everything below is committed and pushed. Nothing of this session's is
+outstanding.
+
+## THE ONE COMMAND THAT CHANGED
+
+```powershell
+.\scripts\demo-build.ps1                                  # build everything
+.\scripts\demo-up.ps1 -DbKeyHex <key> -Fresh -Release     # start everything
+```
+
+**`-LanHost` is gone.** It is resolved automatically and printed with its
+adapter on every run. Pass it only to override. This is the whole point of the
+last hour: the address was a moving target and chasing it by hand cost three
+separate failures in one evening.
+
+## THE DEFECT THAT WOULD HAVE KILLED THE DEMO
+
+**`cargo build --release` DOES NOT PRODUCE A PRODUCTION TAURI APP.** It
+produces a dev-mode app in the release profile whose window loads
+`http://localhost:5173` and shows *"Hmmm… can't reach this page"*. Only the
+Tauri CLI (`pnpm exec tauri build`) embeds the frontend.
+
+**`-Release` had therefore NEVER rendered a window, on any build, through
+three sessions.** Proven, not argued: the old binary contained
+`http://localhost:5173` and did not contain the built asset filename.
+
+**How it survived is the part to keep.** Every check was a check on the FILE —
+it exists at the path the firewall rule names, it is newer than `dist`, its
+SHA-256 (recorded twice), `Get-Process` shows `target\release`, the launcher
+prints `build : RELEASE`. **Every one of those passes on a binary that cannot
+draw a window.** Existence and identity checks standing in for a function
+check, unnoticed because each individually looks like diligence.
+
+`CLAUDE.md` now names **four runtimes, not three** — build output, dev server,
+browser, **and the Tauri release window**. That omission is why the existing
+rule was followed and still missed it: the 2026-09-14 screenshots were honest
+browser-runtime evidence that explicitly disclaimed proving anything about the
+Tauri window. Everyone's evidence was true and nobody's covered the gap.
+
+Guard: **`scripts/check-release-binary.ps1`**, run by `run-dev.ps1 -Release`
+and by `demo-build.ps1`. It requires the binary to CONTAIN the current `dist`
+entry chunk's hashed filename. Note why it is that and not the obvious test —
+a correct production binary still embeds the whole `tauri.conf.json` with
+`devUrl` in it, so a check keyed on `localhost:5173` being present passes the
+BROKEN binary and proves nothing. **Positive evidence, never absence.** It was
+watched refusing the old binary and passing the new one, twenty minutes apart.
+
+## PROVEN ON REAL HARDWARE THIS SESSION
+
+- Release binary renders the till. UI pass visible in the Tauri window.
+- **Captain page loads on a real phone over the LAN** (`:9320`), pairs, holds
+  its token.
+- **KDS reachable from another device** — both vite configs bound loopback
+  only until this session, so no phone or second laptop could ever open the
+  kitchen screen or the back office. `host: true` on both, `preview` too.
+- Firewall rule created: TCP **9310, 9320, 5174, 5175**, **Private+Public**.
+  Note it is PORT-scoped, not program-scoped: the KDS and admin pages are
+  served by Node, so a rule naming `holler-pos.exe` leaves both screens dark.
+- **The 60-second pairing window is REAL and was OBSERVED** — a valid token
+  rejected with the same wording a wrong token gets, then accepted a minute
+  later with nothing changed in between. Enrol every phone while the stack
+  boots.
+- **KDS latency: `wire 5 ms / render 4 ms`, n=1.** Against a 1s blocker
+  threshold, not marginal. **But wire minus render is ~1 ms of transit, and
+  1 ms is loopback** — that was a KDS on the till, no WiFi, no second device,
+  no skew. The Act 2 number is still unmeasured.
+
+## NEXT, IN ORDER — TUESDAY
+
+1. **KDS latency from a SECOND DEVICE over the hotspot.** The number Act 2
+   actually depends on. Several samples; read `worst`, not `last`.
+2. **Till tap → bill open.** Instrumented and unread. `Ctrl+Alt+P` on the till.
+3. **The KDS should take the till's address from `window.location`**, not from
+   a baked env var. The address is baked at dev-server START, so a stale
+   `.env.dev` or a server started before a network change serves a dead
+   address for ever — and `lanClient` retries it silently. That is what bit us
+   three times tonight (`.106`, then `10.214.149.115`). If the page loaded from
+   `http://192.168.0.100:5174/`, the till IS at `192.168.0.100` — it cannot go
+   stale. Deferred deliberately: a behaviour change on the demo path deserves
+   tests and a rehearsal, not a 02:00 commit.
+4. **Rehearse on the HOTSPOT, never home WiFi.** Different network class,
+   different firewall profile, different addresses.
+5. `docs/demo-wednesday.md` Part 6 checklist, top to bottom. The two items most
+   likely to embarrass: **three phones sending at once**, and **killing mobile
+   data without killing the hotspot** (practise that exact click).
+6. Three timed rehearsals from a clean reset, then the recording.
+
+## TWO SEED PROBLEMS ON THE TILL, NOT YET FIXED
+
+Seen on the running till, both in front of the client on Wednesday:
+
+- **A category called `Test fixtures…`** in the rail, beside `Kitchen Pre…`.
+  A dev label on screen, which work item 6 forbids. Seed fix, not code.
+- **The rail opens on alcohol** — Cognac, Shooters, Sake, wines. Those are the
+  ones that must NOT be billed (VAT is inexpressible, 141 bar items sit at
+  CGST 0 / SGST 0). Open on a food category.
+
+Also cosmetic: the price and the `+ Modifier` link abut on a card
+(`₹525.00+ Modifier`) — the link is absolutely positioned and the price grows
+into it.
+
+## SECURITY
+
+The `-DbKeyHex` value was pasted into a chat transcript this session. It
+encrypts the edge database, which holds staff credential hashes. **Rotate it**
+(`dev-bootstrap.ps1 -RotateKey`) before anything real runs on that machine.
+
+## STILL TRUE, STILL BINDING
+
+- **No test or probe starts, stops or binds anything on 8080, 9310, 9320,
+  5173, 5174 or 5175.** Nothing this session did; the screenshot and KDS
+  probes used scratch port 5399 and read-only page loads.
+- **`apps\pos\.env.dev` is deny-ruled to agents.** The operator runs anything
+  needing it. `add-waiter.ps1` reads it in the operator's own shell.
+- Contracts FROZEN at v0.8.2. Nothing this session touched them.
+- **A7 still stands:** only `order` and `table_session` have sync routes. KOTs,
+  invoices and stock counts do not replay. Do not read that as a new defect.
+
+---
+
 # White-label (parallel session, 2026-09-14)
 
 **Handoff from a parallel session. Its work is COMMITTED AND PUSHED; nothing
