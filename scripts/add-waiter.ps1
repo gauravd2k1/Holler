@@ -37,6 +37,8 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$Name,
 
+    [string]$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path,
+
     [string]$CloudBaseUrl = "http://localhost:8080",
 
     # The operator account demo-up already uses to enrol. Needs outlet.manage.
@@ -61,13 +63,53 @@ if ($LanHost -eq "") {
 }
 if (-not $LanHost) { throw "could not work out this machine's LAN address -- pass -LanHost" }
 
-Say "signing in as $Email" "Cyan"
-$session = Invoke-RestMethod -Uri "$CloudBaseUrl/auth/login" -Method Post `
-    -Body (@{ email = $Email; password = $Password } | ConvertTo-Json) `
-    -ContentType "application/json"
+# WHICH TENANT AND OUTLET -- read from apps\pos\.env.dev, exactly as
+# demo-up.ps1 does (its step 7). This is NOT optional decoration: /auth/login
+# requires an X-Tenant-ID header AND outlet_id in the body, and without them it
+# returns {"code":"unauthorized","message":"authentication required"} -- which
+# reads like a wrong password and is not. The first version of this script sent
+# only email and password and failed exactly that way (2026-09-15).
+#
+# The file is read HERE, at run time, by the operator's own shell. It carries
+# the edge encryption key and is deny-ruled to agents; nothing in this script
+# prints it or any part of it.
+$posEnvFile = Join-Path $RepoRoot "apps\pos\.env.dev"
+if (-not (Test-Path $posEnvFile)) {
+    throw "$posEnvFile not found -- run scripts\dev-bootstrap.ps1 first; it writes the tenant and outlet ids."
+}
+$envValues = @{}
+foreach ($line in Get-Content $posEnvFile) {
+    $trimmed = $line.Trim()
+    if ($trimmed -and -not $trimmed.StartsWith("#") -and $trimmed -match '^([A-Za-z_][A-Za-z0-9_]*)=(.*)$') {
+        $envValues[$Matches[1]] = $Matches[2].Trim()
+    }
+}
+$tenantId = $envValues['HOLLER_TENANT_ID']
+$outletId = $envValues['HOLLER_OUTLET_ID']
+if ((-not $tenantId) -or (-not $outletId)) {
+    throw "$posEnvFile carries no HOLLER_TENANT_ID / HOLLER_OUTLET_ID. Re-run scripts\dev-bootstrap.ps1 -- it writes both."
+}
 
-$tenantId = $session.principal.tenant_id
-$outletId = $session.principal.outlet_id
+Say "signing in as $Email" "Cyan"
+try {
+    $session = Invoke-RestMethod -Uri "$CloudBaseUrl/auth/login" -Method Post `
+        -Body (@{ email = $Email; password = $Password; outlet_id = $outletId } | ConvertTo-Json) `
+        -ContentType "application/json" -Headers @{ 'X-Tenant-ID' = $tenantId }
+} catch {
+    $detail = $_.ErrorDetails.Message
+    if (-not $detail) { $detail = $_.Exception.Message }
+    Write-Host ""
+    Write-Host "  Could not log in as $Email against $CloudBaseUrl" -ForegroundColor Red
+    Write-Host "  $detail" -ForegroundColor Red
+    Write-Host ""
+    Write-Host "  A 401 here is one of three things, indistinguishable by design (ADR-012):" -ForegroundColor Yellow
+    Write-Host "    - a wrong password" -ForegroundColor Yellow
+    Write-Host "    - the login rate limiter" -ForegroundColor Yellow
+    Write-Host "    - the dev database's user rows overwritten by a Go test fixture hash" -ForegroundColor Yellow
+    Write-Host "  The last one is fixed by re-running demo-up.ps1 with -Fresh." -ForegroundColor Yellow
+    Write-Host ""
+    exit 1
+}
 $headers = @{ 'X-Tenant-ID' = $tenantId; 'Authorization' = "Bearer $($session.access_token)" }
 
 Say "enrolling WAITER device '$Name'" "Cyan"
