@@ -197,10 +197,11 @@ Verify the launch by identity, never by the port answering:
 `Get-Process holler-pos | Select-Object Id, Path, StartTime` — `Path` must end
 `target\release\holler-pos.exe`.
 
-## Monday's test order — each step's failure means something the next cannot
+## The run list — TUESDAY 09:00, each step's failure means something the next cannot
 
-**Run them in this order.** Steps 0 and 4b are one-shot proofs of things that
-have never been observed on the real scripts; every other step is repeated.
+**Run them in this order.** Steps 0, 4b and 4c are one-shot proofs of things
+that have never been observed on the real scripts; every other step is
+repeated.
 
 0. **Fire the `seed/outlet.toml` refusal, ONCE, before anything else.** It has
    never fired outside a Rust test (white-label §4.2) — the scripts' refusal
@@ -225,8 +226,23 @@ have never been observed on the real scripts; every other step is repeated.
    fixed, returning**, and it is the one failure on this list that invalidates
    step 1a of the demo story rather than delaying it. Stop and report either
    way; do not carry on to step 5 with it unexplained.
+4c. **KDS bumps that ticket to READY. Then, on the TILL, leave the order and
+   re-open its Kitchen view.** Expected: it reads READY. Nothing pushes a KOT
+   status from the LAN hub into the till's UI and `useKotsForOrderQuery` has no
+   `refetchInterval` (`apps/pos/src/lib/queries.ts:99`), so the till's only
+   route to a fresh value is a REMOUNT — collapsing and re-expanding the
+   Kitchen panel, or navigating away and back. `staleTime` is unset and
+   `refetchOnMount` defaults true, which is why a remount should be enough.
+   **Do NOT settle for alt-tabbing to the till and looking:** `App.tsx:13`
+   sets `refetchOnWindowFocus: false`, so a focus change refetches nothing and
+   a stale reading taken that way proves nothing about the cache.
+   **If it is STILL stale after a real re-open, that is a cache-invalidation
+   finding, not the known staleness** — record it on `docs/backlog.md` row
+   145 as line 1a. **RECORD WHAT WAS OBSERVED, NOT WHAT WAS EXPECTED**, either
+   way: this step exists to find out which of the two it is, and writing down
+   the expectation is how the answer gets lost.
 5. Repeat from a clean reset **three times** — that is the cut-off condition,
-   not one success. Steps 1–4b each time; step 0 is not repeated.
+   not one success. Steps 1–4c each time; step 0 is not repeated.
 6. Two phones, two tables, concurrently.
 7. WiFi off and on mid-cart. **Expected: duplicate LINES, not a duplicate
    order** (`3b80a48`). Neither appearing contradicts the code — stop and
