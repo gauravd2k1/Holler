@@ -66,8 +66,12 @@ inbound SYN silently.
 C:\Code\Holler\apps\pos\src-tauri\target\release\holler-pos.exe
 ```
 
-Built 2026-09-14 **19:01 IST** from commit `6f65313`.
-SHA-256 `b238bd084ef09bc983a9991412b6bc55c6025b26dff926ffc54a901aea434b31`.
+Built 2026-09-15 **01:01 IST** with `scripts\demo-build.ps1`.
+SHA-256 `7bb1e809d735b7e42e2a1e85d424e2eaf45e774e666852c66d57ca93dd581fca`.
+
+**Build it with `scripts\demo-build.ps1`, never `cargo build --release`** --
+cargo produces a dev-mode binary whose window loads `localhost:5173` and shows
+"can't reach this page". Verify with `scripts\check-release-binary.ps1`.
 
 **The hash identifies the FILE, not the source.** This binary was relinked at
 19:01 from a different commit than the 09:29 one and hashed differently; an MSVC

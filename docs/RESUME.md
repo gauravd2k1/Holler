@@ -122,8 +122,15 @@ and the repository disagree, the repository wins.
 C:\Code\Holler\apps\pos\src-tauri\target\release\holler-pos.exe
 ```
 
-Built **2026-09-14 19:01 IST** from **`6f65313`**, SHA-256
-`b238bd084ef09bc983a9991412b6bc55c6025b26dff926ffc54a901aea434b31`.
+Built **2026-09-15 01:01 IST** with `scripts\demo-build.ps1`, SHA-256
+`7bb1e809d735b7e42e2a1e85d424e2eaf45e774e666852c66d57ca93dd581fca`.
+
+**THE 19:01 BINARY AND EVERY RELEASE BINARY BEFORE IT COULD NOT DRAW A
+WINDOW.** They were built with `cargo build --release`, which produces a
+DEV-MODE app in the release profile: the window fetches its UI from
+`build.devUrl` and shows "can't reach this page" with no Vite running. Only
+the Tauri CLI embeds the frontend. `scripts\check-release-binary.ps1` now
+refuses such a binary and `run-dev.ps1 -Release` runs it before launching.
 
 **The digest identifies the FILE ON DISK, and NEVER the source it was built
 from.** An MSVC link is not reproducible: the 01:43 and 09:29 builds came from

@@ -99,15 +99,20 @@ both work.
 
 ```powershell
 cd C:\Code\Holler
-pnpm --dir apps\pos build
-cd apps\pos\src-tauri ; cargo build --release ; cd ..\..\..
-pnpm --dir apps\kds build
-pnpm --dir apps\admin build
+.\scripts\demo-build.ps1
 ```
 
-The POS frontend is embedded into the binary at link time, so `cargo build
---release` must come AFTER `pnpm --dir apps\pos build` or the window shows the
-previous screen with nothing saying so.
+One command. It builds captain, the KDS, the back office and the POS, in that
+order, and then **proves the binary carries its UI** before saying it is done.
+
+**Never `cargo build --release`.** That produces a DEV-MODE binary in the
+release profile: the window loads `http://localhost:5173` instead of the UI
+inside it, and shows "can't reach this page". Every release binary before
+2026-09-15 01:01 was built that way and none of them could draw a window. The
+build script refuses to finish on such a binary; so does `-Release`.
+
+It also refuses up front if the POS is running, because the till holds its own
+.exe open and the failure otherwise lands several minutes into the compile.
 
 ### T-2. The firewall rule — ONE elevated command, and it is not optional
 
