@@ -47,6 +47,7 @@ import {
 import { useAuthStore } from "../store/auth";
 import { useCashShiftStore } from "../store/cashShift";
 import { formatIST } from "../lib/datetime";
+import { markBillOpened } from "../lib/perf";
 import { UpiPaymentQr } from "./UpiPaymentQr";
 import { OutletName } from "./OutletName";
 
@@ -91,8 +92,16 @@ export function BillingScreen() {
   // mount, because this component being mounted IS the bill being on the
   // glass. Same `HOLLER-PERF` format as the Rust side.
   useEffect(() => {
+    // Compute and REPORT the interval rather than emit a timestamp for
+    // someone to pair with `till_bill_tapped` by hand (lib/perf.ts). Both
+    // ends are stamped in this process on one clock, so there is no skew and
+    // one number is the whole truth -- unlike the KDS, which has to report
+    // two. A null means this open was not preceded by a tap we saw: a reload
+    // or a back-navigation, which must not be timed against a stale tap.
+    const latency = markBillOpened(orderId);
     console.log(
-      `HOLLER-PERF ts=${new Date().toISOString()} event=till_bill_screen_opened id=${orderId}`,
+      `HOLLER-PERF ts=${new Date().toISOString()} event=till_bill_screen_opened id=${orderId}` +
+        (latency ? ` open_ms=${latency.ms}` : ` open_ms=n/a (no preceding tap)`),
     );
     // Mount only: re-running this on every orderId change is correct, but it
     // must not re-run on unrelated re-renders.

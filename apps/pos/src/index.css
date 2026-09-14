@@ -994,3 +994,36 @@
 .sync-failing-summary {
   opacity: 0.85;
 }
+
+/* Till latency readout. Ctrl+Alt+P only -- see components/PerfOverlay.tsx.
+   Fixed to a corner and deliberately plain: it is rehearsal instrumentation
+   and must never read as part of the product. */
+.perf-overlay {
+  position: fixed;
+  right: var(--space-3);
+  bottom: var(--space-3);
+  z-index: 2000;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px dashed var(--color-border-strong);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-raised);
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  box-shadow: var(--shadow-md);
+}
+.perf-overlay__label {
+  font-weight: var(--weight-semibold);
+  color: var(--color-text);
+}
+.perf-overlay strong {
+  color: var(--color-text);
+  font-size: var(--text-base);
+}
+.perf-overlay__note {
+  font-style: italic;
+  opacity: 0.7;
+}

@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider } from "@tanstack/react-router";
 import { router } from "./routes/router";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { PerfOverlay } from "./components/PerfOverlay";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -24,6 +25,10 @@ export function App() {
     <ErrorBoundary>
       <QueryClientProvider client={queryClient}>
         <RouterProvider router={router} />
+        {/* Hidden unless Ctrl+Alt+P has been pressed. Rendered here so it is
+            available on every screen, not just the two that stamp the
+            interval. */}
+        <PerfOverlay />
       </QueryClientProvider>
     </ErrorBoundary>
   );

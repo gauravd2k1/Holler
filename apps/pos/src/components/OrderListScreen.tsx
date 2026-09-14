@@ -23,6 +23,7 @@ import {
 } from "../domain/kitchen";
 import { useAuthStore } from "../store/auth";
 import { formatIST } from "../lib/datetime";
+import { markBillTapped } from "../lib/perf";
 import { PrintFailureBanner } from "./PrintFailureBanner";
 import { SyncBlockedBanner } from "./SyncBlockedBanner";
 import { LowStockBanner } from "./LowStockBanner";
@@ -225,7 +226,10 @@ export function OrderListScreen() {
                         // navigation, because the interval starts when the
                         // cashier's finger lands, not when the router agrees
                         // to move. Far end: `till_bill_screen_opened` in
-                        // BillingScreen.
+                        // BillingScreen, which computes and REPORTS the
+                        // difference -- this line no longer has to be paired
+                        // with that one by hand (lib/perf.ts).
+                        markBillTapped(order.holler_order_id);
                         console.log(
                           `HOLLER-PERF ts=${new Date().toISOString()} event=till_bill_tapped id=${order.holler_order_id}`,
                         );
