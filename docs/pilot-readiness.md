@@ -373,6 +373,43 @@ Argon2id cost is paid on first contact per device and not again until it
 expires — never a weakening of the parameters themselves, which protect the
 cached hashes the edge database holds for offline login (§A-bis).
 
+**Cache per CONNECTION, the way the KDS socket already does.** The precedent is
+in this repository: `edge/device/src/server.rs` authenticates a KDS websocket
+**once, on its first frame**, and every message after that rides the
+established connection. The captain surface is HTTP and has no connection to
+hang the decision on, which is the whole of the difference — so the cache is
+the thing that gives a request-based surface the property the socket gets for
+free.
+
+**ACCEPTANCE — operator ruling 2026-09-14, and it is about what the cache must
+still REFUSE, not about the latency it buys.** A cache that makes the phone
+fast and a revoked credential usable has traded a demo annoyance for a security
+defect:
+
+1. **Red-then-green: a rotated or revoked credential is refused within one
+   cache window.** Verify a token, rotate/revoke it cloud-side, and assert the
+   next request fails once the window has elapsed — watched RED against a build
+   without the expiry check, so the test is known to be capable of failing.
+   A cache whose entries outlive the credential is indistinguishable from no
+   revocation at all, and nothing on any screen would say so.
+2. **`demo-up`'s per-run rotation must still 401 the old phone.** Every run
+   rotates the WAITER credential deliberately (S-CAP-20: a device paired before
+   a fix must not stay silently broken). If a cached entry lets yesterday's
+   token keep working, that rotation stops being structural and becomes
+   decorative — the exact property it was built to guarantee, undone by a
+   performance fix.
+
+**Landing: before the first pilot. NOT before Wednesday** — this is a change to
+an auth path, and the demo runs on the release binary instead (`-Release`,
+`d1d3ebc`), which is a build-profile change and touches no product code.
+
+**The demo does not need this fix, and that is measured:** one
+`verify_password` costs **2.78 s in a debug build and 0.17 s in release** on
+this machine (`edge/database` `matches_a_known_go_produced_vector`, timed both
+ways 2026-09-14). The phone's sluggishness was a debug artefact on top of a
+real design issue; release removes the artefact, and this row is the design
+issue.
+
 **The number the demo needs first is the observed one:** Monday's captain
 send → KDS render measurement, from the `HOLLER-PERF` markers. Over 1s on the
 phone is a demo blocker by the operator's own rule, and this is the first thing
