@@ -122,8 +122,16 @@ and the repository disagree, the repository wins.
 C:\Code\Holler\apps\pos\src-tauri\target\release\holler-pos.exe
 ```
 
-Built from **`78c87f5`**, SHA-256
-`76481393712c004adeebea314ad0e08acc2f71081d0ac9eb04bdb078625481d8`.
+Built **2026-09-14 09:29 IST** from **`78c87f5`**, SHA-256
+`2ed7e709f88fff09e09d43bf7d74c107c92b3ceb471134dd5e992df9234bef83`.
+
+**The digest identifies the FILE ON DISK, not the source.** This binary was
+relinked at 09:29 from the same commit as the 01:43 one and hashed
+differently — an MSVC link is not reproducible, so a changed digest is not
+evidence that the source moved and an unchanged one would not be evidence
+that it had not. The source-identity check is the `git diff --name-only`
+command below; the digest only tells you whether the file the firewall rule
+names is the file you hashed.
 
 **REBUILD IT IF HEAD'S PRODUCT CODE MOVES.** Right now it has not: everything
 between `78c87f5` and `e666af3` is docs plus `apps\pos\run-dev.ps1`, and
@@ -145,12 +153,20 @@ Two asymmetries that decide what a rebuild costs:
 
 ## Firewall rule
 
-Name: **`Holler POS (demo)`**. Inbound TCP **9310** (KDS LAN WebSocket) and
-**9320** (captain HTTP) — the only two listeners the POS process starts —
-scoped to the exact program path above, `-Profile Any` because Windows
-classifies a Mobile Hotspot adapter as **Public**. The command and the checks
-are `docs/demo-script.md` §0.0b. A rule bound to a `target\debug` path covers
-nothing, and a blocked inbound connection produces no error anywhere.
+DisplayName: **`Holler demo - POS release (KDS 9310, captain 9320)`**. Inbound
+TCP **9310,9320** — the KDS LAN WebSocket and the captain HTTP listener, the
+only two the POS process starts — `-Profile Private,Public`, `-Program` the
+exact release path above. **This is the only rule definition; the command and
+the checks are `docs/demo-script.md` §0.0c and nothing here restates them.**
+
+`Public` is there because Windows classifies a Mobile Hotspot adapter as Public;
+`Private` because a rehearsal on home WiFi must exercise the same rule. Domain
+is excluded: no demo network is domain-joined.
+
+A rule bound to a `target\debug` path covers nothing, and a blocked inbound
+connection produces no error anywhere. `docs/lan-setup.md` carries a separate
+five-rule per-port set for the DEV stack (5174, 5175, 8080 as well, scoped by
+`-RemoteAddress`); that set is not this one and the demo does not use it.
 
 ## Starting the stack
 
@@ -170,20 +186,46 @@ Verify the launch by identity, never by the port answering:
 
 ## Monday's test order — each step's failure means something the next cannot
 
+**Run them in this order.** Steps 0 and 4b are one-shot proofs of things that
+have never been observed on the real scripts; every other step is repeated.
+
+0. **Fire the `seed/outlet.toml` refusal, ONCE, before anything else.** It has
+   never fired outside a Rust test (white-label §4.2) — the scripts' refusal
+   is read-verified only, and a refusal that has never run is a refusal nobody
+   has seen fail open. Rename the file, run `demo-up`, watch it stop and name
+   the missing file, rename it back, and re-run. **Do this before the hotspot,
+   not after:** it must abort before anything is reset, and if it does NOT
+   abort, the run that follows has already reseeded the cloud against a file
+   that was not there. Do it once; do not repeat it on the later resets.
 1. Hotspot up, note its IP, `demo-up ... -Release -Fresh`.
 2. Load the captain URL on the phone **before** pairing (isolates static
    serving from auth).
 3. Pair, then reload the page — the token must survive.
 4. One item, one table, Send. Watch the phone, the KDS and the hub together,
    and take the `HOLLER-PERF` delta (`captain_order_sent` →
-   `kds_ticket_rendered`).
+   `kds_ticket_rendered`). **Over 1s is a demo blocker** — record the number,
+   never an impression.
+4b. **Second Send on the SAME table, without clearing it. Expected: the round
+   APPENDS to the open order and the KDS shows a SECOND ticket carrying only
+   the new round** — not a second order, and not a ticket repeating round one
+   (`52d8930`, `78c87f5`). **A second ORDER appearing is the defect `52d8930`
+   fixed, returning**, and it is the one failure on this list that invalidates
+   step 1a of the demo story rather than delaying it. Stop and report either
+   way; do not carry on to step 5 with it unexplained.
 5. Repeat from a clean reset **three times** — that is the cut-off condition,
-   not one success.
+   not one success. Steps 1–4b each time; step 0 is not repeated.
 6. Two phones, two tables, concurrently.
 7. WiFi off and on mid-cart. **Expected: duplicate LINES, not a duplicate
    order** (`3b80a48`). Neither appearing contradicts the code — stop and
    report.
 8. Till → bill on a captain order, for the second perf number.
+9. **Confirm `logo_path` is still unset** before the bill is shown to anyone:
+   `grep logo_path seed/outlet.toml` must return only the commented example
+   line. With none set the receipt renders byte-identically to the
+   pre-white-label build, which is the only rendering that has been proven
+   (white-label §4.1). **Setting it would put a never-rendered path on the
+   client's bill**, and the failure would first be visible on the printed
+   receipt in front of the client.
 
 ## Open items, stated as open
 

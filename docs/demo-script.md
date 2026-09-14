@@ -55,7 +55,7 @@ Every field is validated when `demo-up` runs and a failure names the field, so
 a typo stops the run before anything is reset rather than surfacing on a bill
 in front of the client.
 
-### 0.0b The release binary and the firewall rule
+### 0.0c The release binary and the firewall rule
 
 **The demo runs the RELEASE binary, and the firewall rule names its exact
 path.** A rule bound to the dev-build path, or to `cargo`, or to a path that
@@ -63,12 +63,16 @@ moves, is a phone that loads nothing with no error anywhere — Windows drops th
 inbound SYN silently.
 
 ```
-C:\Code\Hollerpps\pos\src-tauri	arget
-elease\holler-pos.exe
+C:\Code\Holler\apps\pos\src-tauri\target\release\holler-pos.exe
 ```
 
-Built 2026-09-14 from commit `78c87f5`.
-SHA-256 `76481393712c004adeebea314ad0e08acc2f71081d0ac9eb04bdb078625481d8`.
+Built 2026-09-14 **09:29 IST** from commit `78c87f5`.
+SHA-256 `2ed7e709f88fff09e09d43bf7d74c107c92b3ceb471134dd5e992df9234bef83`.
+
+**The hash identifies the FILE, not the source.** This binary was relinked at
+09:29 from the same commit as the 01:43 one and hashed differently: an MSVC
+link is not reproducible. The source-identity check is the `git diff
+--name-only` command in `docs/RESUME.md`, not this digest.
 
 **The POS process listens on exactly two ports**, both enumerated from the
 source rather than from memory — there is no third:
@@ -117,22 +121,22 @@ database.
 removes any rule of the same name first, so re-running after a rebuild is safe:
 
 ```powershell
-Remove-NetFirewallRule -DisplayName "Holler POS (demo)" -ErrorAction SilentlyContinue
-New-NetFirewallRule -DisplayName "Holler POS (demo)" `
+Remove-NetFirewallRule -DisplayName "Holler demo - POS release (KDS 9310, captain 9320)" -ErrorAction SilentlyContinue
+New-NetFirewallRule -DisplayName "Holler demo - POS release (KDS 9310, captain 9320)" `
   -Direction Inbound -Action Allow -Protocol TCP -LocalPort 9310,9320 `
-  -Program "C:\Code\Hollerpps\pos\src-tauri	arget
-elease\holler-pos.exe" `
-  -Profile Any
+  -Program "C:\Code\Holler\apps\pos\src-tauri\target\release\holler-pos.exe" `
+  -Profile Private,Public
 ```
 
-`-Profile Any` is deliberate: Windows classifies a Mobile Hotspot adapter as
-**Public**, and a rule left on Private only is a chain that works on home WiFi
-and fails on the hotspot — the single most demo-specific failure on this list.
+`-Profile Private,Public` is deliberate: Windows classifies a Mobile Hotspot
+adapter as **Public**, and a rule left on Private only is a chain that works on
+home WiFi and fails on the hotspot — the single most demo-specific failure on
+this list. Domain is excluded because no demo network is domain-joined.
 
 **Check, and it is not "the rule exists":**
 
 ```powershell
-Get-NetFirewallRule -DisplayName "Holler POS (demo)" |
+Get-NetFirewallRule -DisplayName "Holler demo - POS release (KDS 9310, captain 9320)" |
   Get-NetFirewallApplicationFilter | Select-Object Program
 ```
 
@@ -296,7 +300,7 @@ deny-ruled to agents, and no agent may supply a literal key.
 ```
 
 **`-Release` is the demo form, and it is not a preference.** The inbound
-firewall rule names one exact program path (§0.0b), and `target\debug` is not
+firewall rule names one exact program path (§0.0c), and `target\debug` is not
 it — a rehearsal on the debug build proves nothing about the rule the phone
 depends on, and a blocked inbound connection produces no error anywhere. It
 also skips Vite and the 5173 guard entirely: the release binary serves its own
