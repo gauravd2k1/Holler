@@ -66,11 +66,11 @@ inbound SYN silently.
 C:\Code\Holler\apps\pos\src-tauri\target\release\holler-pos.exe
 ```
 
-Built 2026-09-14 **09:29 IST** from commit `78c87f5`.
-SHA-256 `2ed7e709f88fff09e09d43bf7d74c107c92b3ceb471134dd5e992df9234bef83`.
+Built 2026-09-14 **19:01 IST** from commit `6f65313`.
+SHA-256 `b238bd084ef09bc983a9991412b6bc55c6025b26dff926ffc54a901aea434b31`.
 
 **The hash identifies the FILE, not the source.** This binary was relinked at
-09:29 from the same commit as the 01:43 one and hashed differently: an MSVC
+19:01 from a different commit than the 09:29 one and hashed differently; an MSVC
 link is not reproducible. The source-identity check is the `git diff
 --name-only` command in `docs/RESUME.md`, not this digest.
 
@@ -149,6 +149,19 @@ Get-Process holler-pos | Select-Object Id, Path, StartTime
 
 A `Path` under `target\debug` means the dev build is running and the rule does
 not cover it.
+
+**CHECKED 2026-09-14 19:05 IST, AND THE RULE IS NOT THERE.** `Get-NetFirewallRule`
+returns **zero** enabled inbound rules whose program is the release binary, and
+no rule by the name above exists at all. What IS present is a pair of enabled
+inbound rules called `Holler POS` (TCP and UDP, Private+Public, all local
+ports) naming **`target\debug\holler-pos.exe`** — the dev build, which a
+`-Release` run does not start. So on the release binary today the phone and the
+KDS are both blocked, and Windows will drop the inbound SYN with nothing on any
+screen saying why.
+
+**Run the elevated command above before the first rehearsal.** It needs Run as
+administrator, so it is the operator's to run; re-run the check afterwards and
+read the Program line rather than trusting that the rule exists.
 
 **Rebuild = re-check.** A new release binary at the same path keeps the rule
 valid; a binary anywhere else does not, and the failure is silent.

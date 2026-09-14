@@ -122,23 +122,29 @@ and the repository disagree, the repository wins.
 C:\Code\Holler\apps\pos\src-tauri\target\release\holler-pos.exe
 ```
 
-Built **2026-09-14 09:29 IST** from **`78c87f5`**, SHA-256
-`2ed7e709f88fff09e09d43bf7d74c107c92b3ceb471134dd5e992df9234bef83`.
+Built **2026-09-14 19:01 IST** from **`6f65313`**, SHA-256
+`b238bd084ef09bc983a9991412b6bc55c6025b26dff926ffc54a901aea434b31`.
 
-**The digest identifies the FILE ON DISK, not the source.** This binary was
-relinked at 09:29 from the same commit as the 01:43 one and hashed
-differently — an MSVC link is not reproducible, so a changed digest is not
-evidence that the source moved and an unchanged one would not be evidence
-that it had not. The source-identity check is the `git diff --name-only`
-command below; the digest only tells you whether the file the firewall rule
-names is the file you hashed.
+**The digest identifies the FILE ON DISK, and NEVER the source it was built
+from.** An MSVC link is not reproducible: the 01:43 and 09:29 builds came from
+one commit, `78c87f5`, and hashed differently. So a CHANGED digest is not
+evidence that the source moved, and an UNCHANGED one would not be evidence
+that it had not. It tells you one thing only — whether the file the firewall
+rule names is the file you hashed. The source-identity check is the `git diff`
+command below, and it is the one to run.
 
-**REBUILD IT IF HEAD'S PRODUCT CODE MOVES.** Right now it has not: everything
-between `78c87f5` and `e666af3` is docs plus `apps\pos\run-dev.ps1`, and
-`git diff --name-only 78c87f5..HEAD -- apps/pos/src apps/pos/src-tauri/src
-apps/captain/src edge packages` returns **zero files**. Run that same command
-against the new HEAD before every rehearsal; a non-empty answer means the
-binary is stale.
+**REBUILD IT IF HEAD'S PRODUCT CODE MOVES.** It moved at 19:01: `6f65313`
+rewrote the POS order screen, and `apps\pos\dist` is embedded at LINK time, so
+that needed a `cargo build --release` and got one. As of this build,
+
+```
+git diff --name-only 6f65313..HEAD -- apps/pos/src apps/pos/src-tauri/src \
+  apps/captain/src edge packages
+```
+
+returns **zero files**. Run it against the new HEAD before every rehearsal; a
+non-empty answer means the binary is stale and the window will show the
+previous UI with nothing on screen saying so.
 
 Two asymmetries that decide what a rebuild costs:
 
@@ -167,6 +173,13 @@ A rule bound to a `target\debug` path covers nothing, and a blocked inbound
 connection produces no error anywhere. `docs/lan-setup.md` carries a separate
 five-rule per-port set for the DEV stack (5174, 5175, 8080 as well, scoped by
 `-RemoteAddress`); that set is not this one and the demo does not use it.
+
+**THE RULE DOES NOT EXIST YET — CHECKED 19:05 IST ON 2026-09-14.** Zero enabled
+inbound rules name the release binary. The two enabled `Holler POS` rules point
+at `target\debug`, which `-Release` never starts. **This blocks the phone and
+the KDS on the demo build and produces no error anywhere**, so it is the first
+thing to fix before a rehearsal. The elevated command is in
+`docs/demo-script.md` §0.0c and is the operator's to run.
 
 ## Starting the stack
 
