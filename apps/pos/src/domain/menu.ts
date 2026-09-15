@@ -12,6 +12,30 @@ export interface MenuCategoryGroup {
   items: MenuItem[];
 }
 
+// A category with NOTHING ORDERABLE IN IT IS NOT A TAB.
+//
+// The seed's two internal categories -- "Test fixtures (internal -- not sold)"
+// and "Kitchen Prep (internal -- not sold)" -- were reaching the rail as
+// visible tabs reading as dev labels on a customer-facing screen. The seed is
+// not at fault and this is not fixed there: both already sort last (98/99) and
+// every item in both is `is_available: false`. What put them on screen is this
+// function grouping every item regardless, with `PosScreen` only DISABLING the
+// unavailable ones -- correct per item, wrong per category.
+//
+// The rule is by ORDERABILITY, never by name. Matching on "internal" or
+// "fixture" would hide exactly today's two strings and nothing else: rename
+// one and the label is back, and a real category named unluckily would vanish.
+//
+// Items keep their existing per-item behaviour: an 86'd item inside a category
+// that still has other available items stays visible and disabled, because
+// staff need to see that it exists and is off. Only the all-unavailable
+// category loses its tab. Consequence to know: 86'ing the LAST available item
+// in a category removes that tab mid-service, and if it was the active one
+// `PosScreen` falls back to the first group.
+function hasOrderableItem(items: readonly MenuItem[]): boolean {
+  return items.some((item) => item.is_available);
+}
+
 export function groupItemsByCategory(
   items: readonly MenuItem[],
   categories: readonly MenuCategory[],
@@ -27,6 +51,7 @@ export function groupItemsByCategory(
     }
   }
   return Array.from(byCategory.entries())
+    .filter(([, categoryItems]) => hasOrderableItem(categoryItems))
     .map(([categoryId, categoryItems]) => {
       const category = nameById.get(categoryId);
       return {
