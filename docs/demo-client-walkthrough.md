@@ -89,6 +89,10 @@ This assumes you have already built the software and created the firewall rule.
 Both of those are in `docs/demo-wednesday.md`, sections T-1 and T-2, and both
 must be done first.
 
+If you have not set up a Windows hotspot before, or you are not sure how the
+waiters' keys are produced, read section 9 first. It covers both in full, step
+by step. This section is the short version for somebody who has done it before.
+
 **First,** switch the hotspot on, then find your address:
 
 ```powershell
@@ -646,3 +650,199 @@ honest position here is weaker than you might assume.
 > until you are bored of it working. The corrections work I mentioned lands
 > during that period, because your floor is where we find out which of them you
 > actually need first."
+
+---
+
+# 9. Setting up the hotspot, and binding each waiter's phone
+
+Two practical jobs, both done before anybody arrives. The first is turning your
+laptop into the restaurant's network. The second is giving each waiter's phone
+its own identity, so that an order can be traced to the waiter who took it
+rather than to "one of the phones".
+
+Neither is difficult, but both have a step that catches people out, and both of
+those steps are marked below.
+
+## 9.1 Turning on the Mobile Hotspot in Windows
+
+Your laptop becomes the network. Every phone joins it, and none of them touch
+the restaurant's own wireless network at any point.
+
+**Step one.** Open Settings, either from the Start menu or by holding the
+Windows key and pressing I.
+
+**Step two.** Go to Network and internet, then Mobile hotspot.
+
+**Step three.** Set "Share my internet connection from" to whatever is
+currently giving the laptop internet. On demonstration day that will usually be
+your phone's tethering or a mobile dongle rather than the venue's wireless.
+
+**Step four.** Set "Share over" to Wi-Fi. Do not choose Bluetooth. It works,
+after a fashion, and it is far too slow for this.
+
+**Step five.** Click Edit and set the network name and password yourself. Pick
+something short that you can read out loud across a table, and a password you
+can dictate without spelling it twice. You will be saying both out loud to
+strangers, so please do not leave the random name Windows generates.
+
+**Step six.** Set the band to 5 GHz if the option is offered and all your phones
+are modern. It is faster and far less congested in a restaurant. If any phone
+refuses to see the network, switch back to 2.4 GHz, which is slower but which
+everything can see.
+
+**Step seven.** Turn the Mobile hotspot switch on. Windows will show you the
+name, the password, and a count of connected devices, which is genuinely useful
+later for confirming that a phone joined.
+
+**Step eight.** Find the address the phones will type:
+
+```powershell
+.\scripts\lan-ip.ps1 -Urls
+```
+
+Write it on a piece of paper. It normally starts with `192.168.137.` when
+Windows is hosting the hotspot.
+
+### The step that catches people out
+
+**Windows treats a Mobile Hotspot as a public network, not a private one.** The
+firewall rule has to allow both, which is why the rule in
+`docs/demo-wednesday.md` says Private and Public rather than just Private. A
+rule set to Private only works perfectly on your home wireless and then fails
+completely at the venue, which is the worst possible time to discover it.
+
+### Two more things that will bite you
+
+**The hotspot switches itself off.** Windows turns it off when no device has
+been connected for a while, and also when the laptop sleeps. Set the laptop
+never to sleep, and if there is a long gap before the client arrives, check the
+hotspot is still on before you start.
+
+**The address can change.** If you turn the hotspot off and on again, the
+laptop's address on it may be different, and any page already open on a phone
+will be pointing at the old one. If you restart the hotspot, run `lan-ip.ps1`
+again and reload the pages on the phones.
+
+## 9.2 Connecting the phones
+
+Do this for all three phones, including the one being used as the kitchen
+screen.
+
+**On each phone,** open the wireless settings, find the network name you chose,
+and enter the password. Then check the laptop: the Mobile hotspot page shows a
+list of connected devices, and the phone should now appear there. If it does
+not, nothing that follows will work, so fix this first.
+
+**Turn mobile data off on each phone.** This matters more than it sounds.
+Android and iPhone will both quietly decide that a network with no internet is
+useless and send traffic over the mobile network instead, at which point the
+phone can no longer reach your laptop at all. If a phone joins the network and
+still cannot load the page, this is almost always the reason.
+
+If the phone shows a warning that the network has no internet and asks whether
+to stay connected, say yes, and if it offers to remember that choice, take it.
+
+**Then open the right address on each phone:**
+
+* Waiters' phones: `http://<TILL-IP>:9320/`
+* The kitchen screen phone: `http://<TILL-IP>:5174/`
+
+Once a page has loaded, add it to the phone's home screen. On both Android and
+iPhone that is in the browser's share or menu button. It saves you retyping the
+address if a phone locks itself, and it looks considerably better than a
+browser with an address bar across the top when you hand the device to somebody.
+
+## 9.3 Giving each waiter their own key
+
+### What the key actually is
+
+When you enrol a waiter's device, the cloud does the following:
+
+* It generates a random secret of 256 bits, using the operating system's
+  cryptographic random number generator.
+* It stores only an Argon2id hash of that secret. **The secret itself is never
+  written down anywhere on our side**, which is why nobody can look it up
+  afterwards, including us.
+* It hands you back a single line made of the credential's identifier, a full
+  stop, and the secret. The identifier half is public and is only there so the
+  till can find the right record quickly instead of testing every one.
+
+That line is what you paste into the phone. The phone keeps it in its own
+browser storage and sends it with every request, and the till checks it against
+the stored hash.
+
+**It is shown once and it is never retrievable.** If you lose it, the fix is to
+enrol another device, not to recover the old one. This is deliberate. A key you
+can look up later is a key somebody else can look up later.
+
+### How to create one
+
+The first waiter's key is printed by `demo-up.ps1` when you start everything,
+so you already have one. For each additional phone, run:
+
+```powershell
+.\scripts\add-waiter.ps1 -Name "Priya's phone"
+```
+
+It prints the address to open on the phone and the key to paste into it.
+
+**Use a real name.** "Priya's phone" tells you something on a screen three
+minutes later. "WAITER-2" tells you nothing. The name is how an order becomes
+traceable to a person, which is the entire reason for giving each phone its own
+key rather than sharing one.
+
+**Each name must be different.** Enrolling a name that already exists is
+refused, and the script says so rather than quietly issuing a second key
+against the same device.
+
+### Binding it to the phone
+
+On the phone, open `http://<TILL-IP>:9320/`. The first screen asks for the key.
+Paste it in once. The phone remembers it from then on, including after the
+browser is closed, so a waiter never sees that screen again.
+
+> ### The sixty seconds, again
+>
+> This is the same warning as section 2, and it is repeated here because this
+> is where it actually bites.
+>
+> The till keeps its own copy of which devices are allowed, and refreshes that
+> copy once a minute. A key pasted in during the first minute after enrolling
+> it is rejected, **with the same message it would give for a key typed in
+> wrongly**. The key is correct. The till simply has not heard about it yet.
+>
+> Enrol every phone while the system is starting up, then pair them. Done in
+> that order you will never see this. If you do see it, wait a full minute and
+> paste it again before you start looking for a fault.
+
+### If something goes wrong with a key
+
+| What you see | What it means | What to do |
+|---|---|---|
+| The key was rejected, and you enrolled it moments ago | The till has not refreshed its list yet | Wait a minute and paste it again |
+| The key was rejected, and it was working earlier | Usually a reset since it was issued. `-Fresh` clears enrolled devices | Enrol the phone again with `add-waiter.ps1` |
+| You have lost the key | It is genuinely unrecoverable | Enrol a new device under a new name |
+| The name is already enrolled | You have used that name before | Choose a different name. Do not assume you have been given a fresh key |
+| The phone loads the page but nothing happens after pasting | Usually mobile data being used instead of the hotspot | Turn mobile data off on that phone |
+
+### If you are short of time
+
+Enrolling each phone separately is what makes each waiter's orders
+distinguishable. If you are running late, **the same key can be pasted into
+every phone and all of them will work immediately.** The cost is that every
+order then appears to have come from one device, so you lose the "two named
+waiters" part of the story. It is a reasonable trade if the alternative is
+fumbling with a terminal in front of the client. Decide it in five seconds, not
+five minutes.
+
+## 9.4 A sensible order for the whole thing
+
+1. Turn the hotspot on and note the address.
+2. Start the system with `demo-up.ps1`. Keep the key it prints for the first
+   phone.
+3. While it is still starting, run `add-waiter.ps1` for the second phone.
+4. Join all three phones to the hotspot and turn their mobile data off.
+5. Open the kitchen screen on the third phone and wait for it to say connected.
+6. Pair the two waiters' phones, by which time the minute has passed.
+7. Put all three pages on the phones' home screens.
+8. Run once through the whole demonstration yourself before anybody arrives.
