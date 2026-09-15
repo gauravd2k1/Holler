@@ -66,8 +66,8 @@ inbound SYN silently.
 C:\Code\Holler\apps\pos\src-tauri\target\release\holler-pos.exe
 ```
 
-Built 2026-09-15 **01:01 IST** with `scripts\demo-build.ps1`.
-SHA-256 `7bb1e809d735b7e42e2a1e85d424e2eaf45e774e666852c66d57ca93dd581fca`.
+Built 2026-09-15 **16:29 IST** with `scripts\demo-build.ps1`.
+SHA-256 `810dc5a7553a973d11fb4c4c16248a2e9788f28537bdfa76df1cefef4729c389`.
 
 **Build it with `scripts\demo-build.ps1`, never `cargo build --release`** --
 cargo produces a dev-mode binary whose window loads `localhost:5173` and shows

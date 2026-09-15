@@ -114,6 +114,22 @@ build script refuses to finish on such a binary; so does `-Release`.
 It also refuses up front if the POS is running, because the till holds its own
 .exe open and the failure otherwise lands several minutes into the compile.
 
+**The binary this plan was rehearsed against:**
+
+```
+C:\Code\Holler\apps\pos\src-tauri\target\release\holler-pos.exe
+```
+
+Built 2026-09-15 **16:29 IST**, SHA-256 `810dc5a7553a973d11fb4c4c16248a2e9788f28537bdfa76df1cefef4729c389`.
+`scripts\check-release-binary.ps1` passed on it: *OK -- the release binary carries this
+frontend.*
+
+**The hash identifies the FILE, not the source.** An MSVC link is not
+reproducible, so rebuilding from the same commit produces a different hash.
+It tells you whether the .exe on disk is the one that was checked, and
+nothing more. If it differs, re-run `scripts\check-release-binary.ps1` rather than assuming the
+binary is wrong.
+
 ### T-2. The firewall rule — ONE elevated command, and it is not optional
 
 The phones and the second laptop reach four ports on your laptop. Windows
