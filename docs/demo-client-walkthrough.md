@@ -535,3 +535,114 @@ steps:
 
 Those four, in that order. Everything else in this document is detail for a
 longer meeting.
+
+---
+
+# 8. Awkward questions, and honest answers
+
+Somebody in that room will ask about something we have not finished. That is
+not a problem in itself. The only thing that loses you the room is being caught
+overstating what exists, so every answer below is written to be true.
+
+**How to answer any of these.** Say what the system does today in one sentence,
+say plainly what it does not do, and then say where it sits in the plan. Do not
+apologise more than once, and do not invent a date. "That is not built yet, and
+here is what happens instead" is a perfectly respectable answer from a product
+that is being piloted. Waffle is not.
+
+**One habit worth having.** If you genuinely do not know, say "I do not know,
+and I will find out for you." Nobody has ever lost a deal for saying that.
+Several people have lost one by guessing and being wrong in front of their own
+engineer.
+
+## 8.1 Cancelling and correcting things
+
+This is the most likely area to come up, because it is what actually happens in
+a restaurant during every service. Please read this section properly. The
+honest position here is weaker than you might assume.
+
+| They ask | What is actually true today | What to say |
+|---|---|---|
+| "A table changes its mind. How do I cancel the whole order?" | There is no way to cancel a whole order from any screen. The status exists in the system but nothing sets it. | "Today you would either not send it to the kitchen, or handle it as a correction at the till before billing. A proper cancellation, with a reason recorded against it, is pilot work, and it needs to be, because it is the first thing a manager will ask for." |
+| "A guest wants one dish taken off before it goes to the kitchen." | A line's quantity can be changed, but never down to zero, and there is no remove or void action. | "You can change quantities before it goes to the kitchen. Taking a line off entirely is one of the corrections we finish during the pilot." |
+| "The dish is already with the kitchen and they want it taken off." | The engine can do this, and it sends the kitchen a cancellation ticket. It is not on any screen. | "The kitchen side of that is built, and it tells the kitchen properly rather than leaving them to notice. The button for it is not on the screen yet." Please do not attempt this in the demonstration. |
+| "The bill is wrong and it is already printed." | Nothing can cancel an issued bill. The design allows it. It has not been built. | "By design a bill is never edited. It is cancelled and a fresh one issued, so your numbering stays trustworthy for your accountant. The cancellation itself is pilot work." This is a strong answer. The refusal to edit a bill is the valuable part. |
+| "Can I refund a customer?" | Refunds are not implemented. | "Not yet. Money taken is recorded permanently, and a refund is recorded as its own entry rather than by rubbing out the original, which is the right shape for it. Doing that from the screen is pilot work." |
+| "Can I move a table, or merge two tables?" | Not built. | "Not today. It is on the list, and it is a small piece of work rather than a structural one, because a table's session and its order are already separate things." |
+| "Can I split a bill between guests?" | Built and working. | "Yes." Show it if the moment is right. |
+| "Can I give a discount?" | Built, on the billing screen, including discounts that require a reason. | "Yes, and where your policy demands a reason the system insists on one." |
+
+## 8.2 Payments
+
+| They ask | What is actually true today | What to say |
+|---|---|---|
+| "Does it take card payments?" | Cash, UPI, card and several other methods can all be recorded. None of them are processed. There is no payment gateway and no card machine connected. | "Today the system records how a bill was settled, and the money itself moves through your existing machine or UPI app. Connecting a gateway, so the card terminal is driven directly, is later work, and the system is already built to receive it." |
+| "So the UPI code on the bill is not connected to anything?" | Correct. It is a standard UPI code for the right amount and payee. The customer's own app moves the money. | "It is an ordinary UPI code for that exact amount, so any app will pay it. What it does not do yet is tell the till by itself that it has been paid, so the cashier confirms it. Automatic confirmation is gateway work." |
+| "What if the card machine says yes and the till says no?" | There is no link between them, so this can happen today. | "Today those are two separate records and your cashier reconciles them, which is what they already do. Removing that step is exactly what connecting the gateway is for." |
+| "Can we run house accounts, or monthly credit for regulars?" | The payment method exists in the design, but there is no screen and no ledger behind it. | "It is in the design, but I would be overselling it to call it built." |
+| "Is there a cash drawer and an end of day count?" | Opening and closing a shift, and paying money in and out, are built. | "Yes. Shifts open and close, and cash movements are recorded against them." |
+
+## 8.3 Stock and purchasing
+
+| They ask | What is actually true today | What to say |
+|---|---|---|
+| "Can I correct a stock figure when the count is wrong?" | Stock counts and wastage entries are built, on the till, with reasons. | "Yes, from the till. You can count, and you can record waste against a reason, which is the number you actually want at the end of the month." |
+| "Can the owner see and fix stock from home?" | No. The back office shows orders, the menu, suppliers and received deliveries. There is no stock screen there. | "Stock lives at the restaurant today. The owner's view of it is the next piece of work, and it is the one I would put first after the pilot." |
+| "Does it tell me what I should have used against what I actually used?" | The parts exist. The report does not. | "The system knows what you used, because it took it out by recipe, and it knows what you counted. Putting those two side by side as a variance report is reporting work, which is the next milestone." |
+| "Can I raise a purchase order and receive against it?" | Both built. Receiving works even with no purchase order at all, deliberately. | "Yes. And importantly a delivery is never blocked because the paperwork is missing. Goods standing at your back door get received, and the mismatch is recorded for the buyer to sort out afterwards. Refusing a delivery is worse than recording an oddity." |
+| "Batch numbers and expiry dates?" | Captured at receipt. Nothing acts on them yet. | "They are captured when goods are received, because that is the only moment they can be captured. Nothing acts on them yet, and expiry alerting is later work." |
+| "Does it handle a central kitchen, or stock moving between branches?" | Not built. A later milestone on purpose. | "Not yet. That is multi branch work, and it comes after reporting." |
+
+## 8.4 Reporting and the back office
+
+| They ask | What is actually true today | What to say |
+|---|---|---|
+| "Where are my sales reports?" | The back office lists orders. There are no summaries, no charts and no daily totals. | "Today you can see every order. Proper reporting, your day summaries and your item performance, is the next milestone, and it is deliberately after the things that have to be correct first. Reports built on wrong numbers are worse than no reports." |
+| "Can I see which dishes make me money?" | Not built. | "Menu profitability needs recipe costing, which exists, joined to sales, which also exists. It is reporting work rather than new plumbing." |
+| "Can I see it on my phone?" | The back office is a web page and will open on a phone, but it has not been designed or tested for one. | "It is a web page, so it opens. I would not claim it is designed for a phone yet." |
+| "Do the kitchen tickets and the bills reach the cloud?" | Only orders travel up today. | "Orders do. Kitchen tickets, bills and stock counts stay at the restaurant for now. The restaurant is the authority by design, and we are widening what travels up one piece at a time." |
+
+## 8.5 Delivery apps and other systems
+
+| They ask | What is actually true today | What to say |
+|---|---|---|
+| "Does it connect to Swiggy and Zomato?" | The framework for receiving an outside order is built and has been tested, but only against our own test harness. There is no live connection to any platform. | "The plumbing for outside orders is built, and an order from a delivery platform arrives at the till like any other order. What we have not done is the commercial onboarding with a particular platform, which is their paperwork and their approval rather than engineering." |
+| "What about ONDC?" | The same position. Built to the shape, never connected. | The same answer. Please do not demonstrate it. |
+| "Can it talk to our accounting software?" | No integration exists. | "Not today. The bills are correct and can be exported, which is the hard part. A direct connection is a known piece of work rather than a research project." |
+| "Can we use our existing printers?" | The output is standard thermal printer output, but no physical printer has ever been connected to it. | "It produces exactly what a thermal printer expects. I have not connected one, and I am not going to pretend otherwise. Proving it on your hardware is the first thing in the pilot." |
+
+## 8.6 Staff, security, and the questions their IT person asks
+
+| They ask | What is actually true today | What to say |
+|---|---|---|
+| "Can I control what staff are allowed to do?" | Roles and permissions are built and enforced. | "Yes. Staff have roles, and the system checks them." |
+| "Can a waiter give himself a discount?" | Permissions govern who may apply a discount, and some discounts require a reason. | "Your policy decides that, and where a reason is required the system will not let the discount through without one." |
+| "Where is the data actually kept?" | Encrypted on the till, with a copy in the cloud. | "On the till, encrypted, with a copy in the cloud. The restaurant's copy is the authoritative one." |
+| "What if somebody steals the till?" | The database is encrypted at rest. | "The database is encrypted, so the machine on its own is of no use to anybody." |
+| "Two waiters on the same table at the same time?" | Handled. The table reports its open order and the new round is added to it. | "They add to the same order rather than opening two." |
+| "What if a waiter's phone loses signal halfway through sending an order?" | If a send fails and the waiter sends again, the same round can be recorded twice as duplicate lines. It will not create a duplicate order or a second bill. | "It will not open a second bill. It can, in a bad moment, put the same round on twice, and the cashier sees that before billing. Making it impossible means each send carrying its own reference, and that is pilot work." Please do not volunteer this one. |
+
+## 8.7 Three answers worth rehearsing out loud
+
+**"What is actually not finished?"**
+
+> "Three things worth your attention. Corrections, meaning cancelling an order
+> or a bill from the screen. The owner's view of stock from home. And proper
+> reporting. Everything underneath those is built and working, which is why they
+> are weeks of work rather than months."
+
+**"Why should we trust this over an established product?"**
+
+> "You should not trust it because I say so. Look at what it does when the
+> internet dies, because that is the thing established products handle worst,
+> and it is the thing that costs you money on a Saturday night. Everything else
+> is catching up on features. That part is a design decision made at the
+> beginning, and it cannot be added later."
+
+**"What happens in the pilot?"**
+
+> "We install it in one outlet with your real menu and your real tax details,
+> connect your printer, train your staff, and run it alongside what you do now
+> until you are bored of it working. The corrections work I mentioned lands
+> during that period, because your floor is where we find out which of them you
+> actually need first."
