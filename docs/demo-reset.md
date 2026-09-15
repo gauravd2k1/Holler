@@ -35,6 +35,17 @@ $env:HOLLER_DB_KEY_HEX = "<the 64-hex-char key from apps\pos\.env.dev>"
 .\scripts\demo-reset.ps1 -Force
 ```
 
+**RUN IT WITH THE DEFAULT DATABASE ARGUMENTS ONLY.** `-DatabaseUrl` and
+`-PostgresDb` are separate parameters that can name different databases, and
+nothing reconciles them: the seeders read `-DatabaseUrl` while the destructive
+`DROP SCHEMA` reads `-PostgresDb`. **Passing a scratch `-DatabaseUrl` on its
+own leaves the drop aimed at `holler`** -- seen in a `-WhatIf` banner
+announcing it would drop the `holler` schema while every seeder argument
+pointed elsewhere. Same family as the `-BackendPort 8099` incident in
+`CLAUDE.md`: an argument that names a scratch target which the destructive
+step never reads. Filed in `docs/backlog.md`; not fixed in the script,
+because it sits on the six-step path.
+
 Prerequisites: `docker compose up -d postgres redis nats` already running,
 **and `seed/outlet.toml` present**. That file is the single source for the
 restaurant's identity -- name, legal entity, address, GSTIN, FSSAI, invoice

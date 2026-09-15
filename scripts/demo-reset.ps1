@@ -78,6 +78,20 @@ param(
     # <project>-<service>-<index>; the project name is this repo directory's
     # name lowercased ("holler"), the same value scripts\dev-bootstrap.ps1
     # already hardcodes for its device-lookup psql call.
+    # RUN WITH THESE DEFAULTS. -DatabaseUrl and -PostgresDb are separate
+    # parameters that can name DIFFERENT databases, and nothing reconciles
+    # them: the seeders below read -DatabaseUrl, while the destructive
+    # DROP SCHEMA reads -PostgresDb. So passing a scratch -DatabaseUrl on its
+    # own leaves the drop aimed at 'holler' -- observed in a -WhatIf banner
+    # announcing it would drop the 'holler' schema while every seeder argument
+    # pointed at a scratch database.
+    #
+    # Same family as the -BackendPort 8099 incident in CLAUDE.md: an argument
+    # that names a scratch target which the destructive step never reads.
+    # Filed in docs/backlog.md and NOT fixed here on purpose -- this script is
+    # on the six-step demo path and a change to its drop logic is not a
+    # pre-demo edit. Until then the safe rule is: change both, or change
+    # neither.
     [string]$DatabaseUrl = "postgres://holler:holler_dev@localhost:5432/holler?sslmode=disable",
     [string]$PostgresContainer = "holler-postgres-1",
     [string]$PostgresUser = "holler",
