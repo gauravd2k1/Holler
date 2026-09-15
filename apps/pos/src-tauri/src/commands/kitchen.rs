@@ -230,8 +230,31 @@ pub fn print_invoice_impl(state: &AppState, invoice_id: &str) -> AppResult<Vec<S
 /// (docs/spec/hardware-printing.md: "Print failures must be visible to
 /// staff").
 pub fn send_order_to_kitchen_impl(state: &AppState, order_id: &str) -> AppResult<Vec<Kot>> {
+    let device_id = state.device_id.clone();
+    send_order_to_kitchen_impl_as(state, &device_id, order_id)
+}
+
+/// Same as [`send_order_to_kitchen_impl`], but stamps the tickets with
+/// `device_id` rather than `state.device_id` (the till).
+///
+/// The `create_order_impl_as` trap, one column further on. `order.device_id`
+/// was fixed when the captain was built; `kot.created_by_device_id` was not,
+/// so a waiter-placed order recorded the WAITER on the order and the TILL on
+/// every ticket it produced — two columns describing the same act,
+/// disagreeing, with nothing to say which was right. It read correctly on
+/// every screen because the KDS renders no ticket origin at all.
+///
+/// The caller must resolve `device_id` from a verified credential (see
+/// `captain.rs::authenticate`) — never from anything the request supplies.
+/// That is the same rule `create_order_impl_as` states, and it is the rule
+/// that makes this attribution worth storing.
+pub fn send_order_to_kitchen_impl_as(
+    state: &AppState,
+    device_id: &str,
+    order_id: &str,
+) -> AppResult<Vec<Kot>> {
     let meta = holler_edge_database::model::SendToKitchenMeta {
-        device_id: state.device_id.clone(),
+        device_id: device_id.to_string(),
         occurred_at: now_iso(),
     };
 

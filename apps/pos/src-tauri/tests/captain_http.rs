@@ -429,6 +429,32 @@ fn create_order_send_reaches_the_kitchen_and_is_attributed_to_the_waiter_not_the
         .expect("order must exist");
     assert_eq!(stored.device_id, WAITER_DEVICE_ID);
     assert_ne!(stored.device_id, TILL_DEVICE_ID);
+
+    // AND THE TICKET, which until now nothing checked. One act -- a waiter
+    // sending a round -- is recorded in two columns, and they used to
+    // disagree: `order.device_id` said WAITER while every
+    // `kot.created_by_device_id` said TILL, because `handle_send`
+    // authenticated the credential and then threw it away. Nothing caught it
+    // because the KDS renders no ticket origin at all, so both values look
+    // right on every screen.
+    //
+    // Read from the stored rows rather than the HTTP response: the `kots`
+    // array in `SendResponse` carries id/station/sequence/status and NOT the
+    // device, so a response-level assertion cannot see this field at all --
+    // the 0.5.9 shape, where a test was green because the thing it compared
+    // was absent from both sides.
+    let kot_rows = guard.list_kots_for_order(&order_id).expect("list kots");
+    assert_eq!(kot_rows.len(), 1, "item-1 routes to exactly one station");
+    for kot in &kot_rows {
+        assert_eq!(
+            kot.created_by_device_id, WAITER_DEVICE_ID,
+            "the ticket must name the waiter who sent it"
+        );
+        assert_ne!(
+            kot.created_by_device_id, TILL_DEVICE_ID,
+            "a captain-sent ticket attributed to the till is the defect this pins"
+        );
+    }
 }
 
 /// THE hub half of the pass condition, exercised directly rather than

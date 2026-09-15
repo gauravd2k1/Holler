@@ -1042,15 +1042,40 @@ the KDS renders from. Closed at `d805218`: the test now subscribes to a real
 `order_id` and `station`. **Falsified** by pointing the subscription at a decoy
 `Hub` never wired into the running state and watching `recv_timeout` fire.
 
-### Known, filed, not fixed
+### Known, filed — the KOT half FIXED 2026-09-15, the appended-line half still open
 
-**A captain-originated KOT's `created_by_device_id` is the till, not the
-waiter.** `send_order_to_kitchen_impl` stamps it from `state.device_id`.
-`order.device_id` **is** correctly attributed to the waiter — these are two
-different columns and only the KOT one is wrong. It is invisible today: **the KDS
-renders no ticket origin at all, for any ticket.** Also, attribution is captured
-only at order-create time, so appended lines record nothing about who added them
-in either direction.
+**A captain-originated KOT's `created_by_device_id` was the till, not the
+waiter.** `send_order_to_kitchen_impl` stamped it from `state.device_id`, and
+`handle_send` authenticated the waiter's credential and then threw it away.
+`order.device_id` **was** correctly attributed — so one act, a waiter sending a
+round, was recorded in two columns that disagreed, with nothing to say which
+was right. Invisible because **the KDS renders no ticket origin at all, for any
+ticket.**
+
+Fixed by `send_order_to_kitchen_impl_as`, the `create_order_impl_as` pattern
+one column further on: the id comes from the VERIFIED credential, never from
+anything the request supplies. `send_order_to_kitchen_impl` stays as the till's
+wrapper, so no other caller changed.
+
+**Falsified against the pre-fix behaviour, not just watched pass.** The call
+site was reverted to `state.device_id` and the new assertion failed naming both
+values — `left: "till-1"`, `right: "waiter-1"` — then restored and re-run.
+That matters here because the old code was not merely untested: **the `kots`
+array in `SendResponse` carries id/station/sequence/status and NOT the device**,
+so no response-level assertion could ever have seen this field. The test reads
+the stored rows through the same `Arc<Mutex<Db>>` the server wrote through.
+This is the 0.5.9 shape — green because the thing being compared was absent
+from both sides.
+
+**Counts:** `captain_http` 10 executed through `assert-tests-ran.mjs`;
+`check-seams` clean on all three manifests (a new `pub` signature in
+`apps/pos/src-tauri` is exactly what that check exists for).
+
+**STILL OPEN, deliberately untouched:** attribution is captured only at
+order-create and send time, so **appended lines still record nothing about who
+added them**, in either direction. A second round sent by a different waiter
+mints a ticket naming that waiter, but the lines themselves carry no author.
+That needs a column and therefore a contract change; it is not demo scope.
 
 ### Still standing between here and the cut-off
 

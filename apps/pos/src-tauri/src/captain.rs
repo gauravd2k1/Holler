@@ -38,7 +38,7 @@ use holler_edge_database::model::DeviceCredentialCache;
 use serde::{Deserialize, Serialize};
 use tiny_http::{Header, Method, Request, Response, Server};
 
-use crate::commands::kitchen::send_order_to_kitchen_impl;
+use crate::commands::kitchen::send_order_to_kitchen_impl_as;
 use crate::commands::menu::{
     list_menu_categories_impl, list_menu_item_modifiers_impl, list_menu_item_variants_impl,
     list_menu_items_impl,
@@ -168,8 +168,8 @@ fn route_api(request: &mut Request, state: &AppState, method: &Method, rest: &st
             handle_add_item(state, order_id, &body)
         }
         (Method::Post, ["orders", order_id, "send"]) => {
-            authenticate(request, state)?;
-            handle_send(state, order_id)
+            let cred = authenticate(request, state)?;
+            handle_send(state, &cred, order_id)
         }
         _ => Err((
             404,
@@ -529,7 +529,7 @@ pub fn perf_mark(event: &str, id: &str) {
     );
 }
 
-fn handle_send(state: &AppState, order_id: &str) -> ApiResult {
+fn handle_send(state: &AppState, cred: &DeviceCredentialCache, order_id: &str) -> ApiResult {
     perf_mark("captain_send_received", order_id);
     let existing = get_order_impl(state, order_id).map_err(|e| (500, e))?;
     let Some(existing) = existing else {
@@ -570,7 +570,14 @@ fn handle_send(state: &AppState, order_id: &str) -> ApiResult {
     } else {
         None
     };
-    let kots = send_order_to_kitchen_impl(state, order_id).map_err(|e| (400, e))?;
+    // The tickets carry the WAITER, not the till. `order.device_id` was
+    // attributed correctly from the day the captain was built and
+    // `kot.created_by_device_id` was not, so one act was recorded twice and
+    // the two halves disagreed -- invisible because the KDS renders no
+    // ticket origin. The id comes from the VERIFIED credential, never from
+    // the request.
+    let kots =
+        send_order_to_kitchen_impl_as(state, &cred.device_id, order_id).map_err(|e| (400, e))?;
     let order = match get_order_impl(state, order_id).map_err(|e| (500, e))? {
         Some(o) => o,
         None => confirmed.unwrap_or(existing),
