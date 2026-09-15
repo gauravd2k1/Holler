@@ -227,8 +227,32 @@
 /* The CELL carries the card surface, not the button inside it. A button
    cannot legally contain another button, and "+ Modifier" has to sit
    inside the card rather than under it — so the cell is the card, the tap
-   target fills it, and the modifier link is positioned over its corner. */
+   target fills it, and the modifier link is positioned over its corner.
+
+   The link gets a ROW OF ITS OWN, and that is the whole reason this value
+   exists. It used to sit in the bottom-right corner on the same line as
+   the price, clearing it only by luck: at four columns the widest item on
+   the card (₹14,995.00) is wider than the space left beside the link, and
+   the two ran together as "₹525.00+ Modifier" on narrower cells.
+
+   Reserving horizontal space instead would have to truncate the price, and
+   a card whose price is cut off is worse than a clipped name — the rule
+   already written against `.name` below. So the price keeps the full width
+   of the card and the link sits under it.
+
+   ONE NUMBER, consumed by both: the link's own box, and the space reserved
+   for it. It is derived rather than typed, so the two cannot drift —
+   which is why `line-height` is pinned on the link below rather than
+   inherited. The trailing `--space-1` is CLEARANCE, and it is deliberate:
+   the derived height alone leaves the price's bottom edge exactly touching
+   the link's top edge, and a 0px gap is not a margin — the two boxes still
+   overlap horizontally on a wide price, so anything that nudges a font
+   metric puts them back on top of each other. */
 .pos-menu-item-cell {
+  --pos-modifier-row: calc(
+    var(--space-2) + var(--space-1) * 2 + var(--text-xs) * var(--leading-tight)
+      + var(--space-1)
+  );
   position: relative;
   display: flex;
   flex-direction: column;
@@ -246,8 +270,9 @@
   justify-content: space-between;
   align-items: flex-start;
   width: 100%;
-  /* Bottom padding clears the modifier link in the opposite corner. */
-  padding: var(--space-3) var(--space-3) var(--space-2);
+  /* Bottom padding reserves the modifier link's whole row, so the price
+     below can never grow into it however wide the amount is. */
+  padding: var(--space-3) var(--space-3) var(--pos-modifier-row);
   border: none;
   background: transparent;
   color: inherit;
@@ -275,6 +300,10 @@
   font-weight: var(--weight-bold);
   font-size: var(--text-lg);
   opacity: 1;
+  /* A price is never wrapped and never ellipsised. It has the card's full
+     width now, so if one ever does overflow, it must be visible on screen
+     rather than quietly shortened into a different number. */
+  white-space: nowrap;
 }
 .pos-menu-item-modifier-toggle {
   position: absolute;
@@ -287,6 +316,10 @@
   background: transparent;
   color: var(--color-accent);
   font-size: var(--text-xs);
+  /* Pinned, not inherited: `--pos-modifier-row` above computes this box's
+     height from it, so an inherited line-height would make the reserved
+     space and the thing it reserves for disagree. */
+  line-height: var(--leading-tight);
   font-weight: var(--weight-semibold);
   cursor: pointer;
 }

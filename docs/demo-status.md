@@ -1474,3 +1474,89 @@ they do not prevent one agent committing another's.
 `e9e7337` and `29df694`. Both are pushed. The builder flagged them rather than
 amending, which was correct — rewriting shared history to add a trailer trades a
 real risk for a cosmetic gain. Recorded here instead.
+
+---
+
+## Two till-screen defects fixed 2026-09-15, the day before the demo
+
+Both were carried in `docs/RESUME.md` as things seen on the running till. Both
+are on the screen the client judges the product by, so both were fixed under
+the operator's ruling that a known bug may be coded against during the freeze.
+
+### The rail was showing two dev labels, and the seed was not at fault
+
+`Test fixtures (internal -- not sold)` and `Kitchen Prep (internal -- not
+sold)` were reaching the till's category rail as visible tabs, which work item
+6 forbids.
+
+**The restart note called this a seed fix. It is not one, and the repo is the
+authority.** Both categories already sort last (98/99) in
+`seed/demo-outlet.json` and every item in both is `is_available: false` —
+verified by counting the seed, not by recall. What put them on screen is
+`groupItemsByCategory` (`apps/pos/src/domain/menu.ts`) grouping every item
+regardless of availability, with `PosScreen` only DISABLING the unavailable
+ones. Correct per item, wrong per category.
+
+The filter is by **orderability, never by name**. Matching on "internal" or
+"fixture" would hide exactly today's two strings: rename one and the label is
+back, and a real category named unluckily would vanish. A test pins that
+distinction in both directions — an internal-sounding category WITH an
+orderable item stays, an ordinary-sounding one with nothing orderable goes.
+
+**Falsified, not assumed:** with the filter removed the suite fails naming both
+real strings back — `+ "Test fixtures (internal -- not sold)"`, `+ "Kitchen
+Prep (internal -- not sold)"`. 5 new tests; POS suite 259 executed through
+`assert-tests-ran.mjs`; `tsc --noEmit` clean.
+
+**Runtime observed: vitest/node only.** The Tauri window is a different runtime
+and the rail has not been looked at there since the change.
+
+### The price and the "+ Modifier" link shared a row, and cleared each other by luck
+
+Seen as `₹525.00+ Modifier` running together on a card. The link was absolutely
+positioned in the bottom-right corner on the same line as the price, so the two
+cleared each other only when the amount happened to be narrow enough.
+
+Reserving horizontal space instead would have to truncate a price, and the rule
+already written into this stylesheet is that a card whose price is cut off is
+worse than a clipped name. So **the link was given a row of its own** and the
+price keeps the card's full width. The reserved space is DERIVED from the
+link's own box in one `--pos-modifier-row` value rather than typed as a
+constant, so the two cannot drift; `line-height` is pinned on the link for the
+same reason.
+
+**Measured, not eyeballed.** No suite covers CSS and the Chrome extension was
+not connected, so the check is a geometry probe: the real `tokens.css` and
+`index.css` bytes, the real card markup, rendered in headless Edge, asserting
+that the price and link rectangles do not intersect and that neither escapes
+its card. Run at grid widths 480, 560, 700 and 900 px.
+
+- **Falsified first.** Against the pre-fix padding the probe reports
+  `VERDICT: FAIL (2)`, and it fails on exactly the wide prices — `₹14,995.00`
+  (Moet Et Chandon, the widest available item in the seed) and `₹1,250.00` —
+  while clearing `₹525.00` and `₹425.00` at that width. That card-dependence is
+  the reported symptom.
+- **The first passing run was not accepted.** It read `VERDICT: PASS` with
+  `gap_y=0.0`: the price's bottom edge exactly touching the link's top edge,
+  the two still overlapping horizontally, separated only by the vertical split.
+  A 0px gap is not a margin — any font-metric change puts them back on top of
+  each other. A `--space-1` of real clearance was added and the probe now reads
+  `gap_y=4.0` at every width tested.
+- The probe's own first version checked only the price against the card, not
+  the link. Extended and re-run before the result was believed.
+
+**Runtime observed: headless Edge against the real stylesheet bytes.** That is
+the browser runtime, not the Tauri release window.
+
+### Consequence for the release binary — BOTH of these need a rebuild
+
+Both changes are frontend. `scripts/check-release-binary.ps1` keys on the
+current `dist` entry chunk's hashed filename, so the existing release binary
+now carries neither fix and will be REFUSED by that guard until
+`scripts/demo-build.ps1` is re-run. That is the guard working as designed.
+
+### One behaviour change worth knowing before the demo
+
+86'ing the **last** available item in a real category now removes that category
+from the rail mid-service, and if it was the active one the grid falls back to
+the first category. Unlikely on the day, but it is new.
