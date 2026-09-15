@@ -1,8 +1,30 @@
 // Connection configuration for the LAN hop to `edge/device` (ADR-014 §6).
-// No hard-coded URL: the endpoint is supplied by the deploy-time environment
-// (a Vite env var here; a PWA installed per-outlet reads its own config), so
-// the same build works against whatever host/port the edge node is running
-// on for that outlet.
+//
+// THE TILL'S ADDRESS IS DERIVED FROM THE PAGE, NOT BAKED INTO IT.
+//
+// This screen is served BY the till: the kitchen laptop opens
+// `http://<till>:5174/` and your own laptop opens `http://localhost:5174/`
+// (`docs/demo-wednesday.md` step 3). So the host this page was loaded from IS
+// the till, on every machine that can see this screen at all, and it cannot
+// go stale — it is re-read from the page on every load.
+//
+// What it replaces, and why: `VITE_KDS_LAN_URL` is read by Vite at
+// DEV-SERVER START and frozen into the bundle as a literal string. A server
+// started before the network changed, or a `.env.dev` written for a previous
+// hotspot lease, therefore serves a dead address for ever — and `lanClient`
+// reconnects on every close, so it retries that dead address silently and
+// never errors. `docs/backlog.md` records the live incident: a host that was
+// never one of this machine's addresses was written, printed back as an `OK`
+// line, and passed every downstream check, because `Test-NetConnection`
+// succeeded against the WRONG host and nothing compared the two. It cost
+// three separate failures in one evening.
+//
+// The env var REMAINS SUPPORTED and still wins when set, because deriving is
+// only correct while the page is served by the till. A deployment that hosts
+// this screen somewhere else — a CDN, a separate kiosk image, a reverse proxy
+// — sets `VITE_KDS_LAN_URL` and gets exactly today's behaviour. That is the
+// escape hatch, and it is also the rollback: setting it restores the old path
+// with no code change.
 //
 // Transport note (post-merge interop fix): `edge/device`'s server takes
 // connection IDENTITY only from handshake query params —
@@ -59,21 +81,77 @@ const DEFAULT_HEARTBEAT_TIMEOUT_MS = 15_000;
 const DEFAULT_RECONNECT_DELAY_MS = 2_000;
 const DEFAULT_TRANSITION_TIMEOUT_MS = 8_000;
 
-/** Reads `import.meta.env.VITE_KDS_LAN_URL` / `VITE_KDS_OUTLET_ID` /
- * `VITE_KDS_DEVICE_ID` / `VITE_KDS_DEVICE_TOKEN` (and optional
- * `VITE_KDS_STATION`). Throws rather than falling back to a hard-coded host
- * or a guessed identity — an unconfigured KDS must fail loudly at startup,
- * not silently point at localhost, an empty outlet/device id the edge would
- * 400 on anyway, or (now) an absent credential the edge would reject after
- * the handshake already succeeded. */
-export function loadLanConfigFromEnv(env: Record<string, string | undefined>): LanConfig {
-  const url = env.VITE_KDS_LAN_URL;
+/** The edge node's default LAN bind port (`HOLLER_LAN_BIND_ADDR` defaults to
+ * `0.0.0.0:9310`, `edge/device/src/server.rs`) and the path its WebSocket
+ * handshake is served on. Overridable per-install by `VITE_KDS_LAN_PORT`;
+ * the PATH is fixed because the edge routes on it. */
+const DEFAULT_LAN_PORT = "9310";
+const LAN_PATH = "/kds";
+
+/** The parts of `window.location` this module needs, and nothing more.
+ * Passed in rather than read from a global so the derivation is a pure
+ * function with tests, and so no module-level code touches `window`. */
+export interface PageOrigin {
+  /** `"http:"` or `"https:"` — decides `ws:` vs `wss:`. */
+  protocol: string;
+  /** Host without the port. May be an IPv6 literal. */
+  hostname: string;
+}
+
+/** Builds the edge node's WebSocket base URL from the address this page was
+ * served from. The PORT is the edge's, never the page's: the page comes from
+ * Vite on 5174 and the edge listens on 9310, so reusing the page's port would
+ * point the socket at the dev server. */
+export function deriveLanUrlFromPage(page: PageOrigin, port: string): string {
+  const hostname = page.hostname;
+  if (!hostname) {
+    throw new Error(
+      "This page has no hostname to derive the till's address from (opened from a file rather than served?). Set VITE_KDS_LAN_URL explicitly.",
+    );
+  }
+  // A page served over https must not open an insecure socket — the browser
+  // blocks it as mixed content, and the failure is silent in exactly the way
+  // this whole change exists to stop.
+  const scheme = page.protocol === "https:" ? "wss" : "ws";
+  // An IPv6 literal must stay bracketed inside a URL. Browsers disagree about
+  // whether `location.hostname` keeps the brackets, so normalise rather than
+  // trust either spelling.
+  const host = hostname.includes(":") && !hostname.startsWith("[") ? `[${hostname}]` : hostname;
+  return `${scheme}://${host}:${port}${LAN_PATH}`;
+}
+
+/** Reads `import.meta.env.VITE_KDS_OUTLET_ID` / `VITE_KDS_DEVICE_ID` /
+ * `VITE_KDS_DEVICE_TOKEN` (and optional `VITE_KDS_STATION`,
+ * `VITE_KDS_LAN_PORT`, `VITE_KDS_LAN_URL`).
+ *
+ * The till's ADDRESS comes from `page` — see the derivation note at the top
+ * of this file — with `VITE_KDS_LAN_URL` overriding it when set.
+ *
+ * Still throws rather than guessing an IDENTITY. An unconfigured KDS must
+ * fail loudly at startup, not point at an empty outlet/device id the edge
+ * would 400 on anyway, or an absent credential the edge would reject after
+ * the handshake already succeeded. The address is now derivable; a
+ * credential never is. */
+export function loadLanConfigFromEnv(
+  env: Record<string, string | undefined>,
+  page?: PageOrigin,
+): LanConfig {
+  const configuredUrl = env.VITE_KDS_LAN_URL;
   const outletId = env.VITE_KDS_OUTLET_ID;
   const deviceId = env.VITE_KDS_DEVICE_ID;
   const deviceToken = env.VITE_KDS_DEVICE_TOKEN;
   const station = env.VITE_KDS_STATION;
-  if (!url) {
-    throw new Error("VITE_KDS_LAN_URL is not configured — cannot connect to the edge node.");
+  let url: string;
+  if (configuredUrl) {
+    // Explicitly configured: used verbatim, exactly as before. This is the
+    // escape hatch AND the rollback.
+    url = configuredUrl;
+  } else if (page) {
+    url = deriveLanUrlFromPage(page, env.VITE_KDS_LAN_PORT || DEFAULT_LAN_PORT);
+  } else {
+    throw new Error(
+      "Cannot work out the till's address: this screen was loaded without a page origin to derive from and VITE_KDS_LAN_URL is not set.",
+    );
   }
   if (!outletId) {
     throw new Error("VITE_KDS_OUTLET_ID is not configured — this screen has no outlet identity.");

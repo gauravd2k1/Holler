@@ -1560,3 +1560,67 @@ now carries neither fix and will be REFUSED by that guard until
 86'ing the **last** available item in a real category now removes that category
 from the rail mid-service, and if it was the active one the grid falls back to
 the first category. Unlikely on the day, but it is new.
+
+### The KDS took the till's address from a baked string, and retried a dead one silently
+
+Fixed 2026-09-15. `docs/backlog.md` carried this with the trigger *before the
+next demo rehearsal*; it had already cost three separate failures in one
+evening (`.106`, then `10.214.149.115`).
+
+**What was wrong.** `VITE_KDS_LAN_URL` is read by Vite at DEV-SERVER START and
+frozen into the bundle as a literal string. A server started before the network
+moved, or a `.env.dev` written for a previous hotspot lease, therefore served a
+dead address for ever — and `lanClient` reconnects on every close, so it
+retried that address silently and never errored. The live incident is the shape
+to remember: a host that was never one of this machine's addresses was written,
+**printed back as an `OK` line**, and passed every downstream check, because
+`Test-NetConnection` succeeded against the WRONG host and nothing compared the
+two.
+
+**What it is now.** The KDS derives the till's address from the address the
+PAGE was served from. That is correct because the till is what serves this
+screen — `docs/demo-wednesday.md` step 3 has the kitchen laptop open
+`http://<till>:5174/`, and this machine opens `http://localhost:5174/`. The
+address is re-read on every page load, so it cannot go stale. Only the PORT is
+configured (`VITE_KDS_LAN_PORT`, default 9310), because the edge's listener is
+a different process from the page's dev server and cannot be derived.
+
+**`VITE_KDS_LAN_URL` still wins when set.** A deployment that does not serve
+this screen from the till sets it and gets exactly the old behaviour. That is
+both the escape hatch and the rollback — restoring the previous path needs no
+code change.
+
+**Observed in the browser runtime, not only in unit tests.** The built bundle
+was served from a scratch static server on port **5399** (no operator port
+touched) and loaded in headless Edge from three different origins, with
+`WebSocket` wrapped to record the URL the app actually attempts:
+
+```
+page from 127.0.0.1    -> ws://127.0.0.1:9310/kds?outlet_id=...&device_id=...
+page from localhost    -> ws://localhost:9310/kds?outlet_id=...&device_id=...
+page from 172.28.176.1 -> ws://172.28.176.1:9310/kds?outlet_id=...&device_id=...
+```
+
+The socket follows the page in all three, including a real LAN IP, and
+`device_token` appears in none of them (ADR-017 §3 still holds). The probe
+build also carries **no `ws://` literal and no dotted-quad at all** — there is
+no baked address left in the bundle to go stale. The probe bundle used a
+throwaway identity and was discarded; `dist` was rebuilt clean afterwards and
+checked for both the probe code and the scratch token.
+
+**What this does NOT prove.** No socket was opened — the probe deliberately
+never touches the network — so this is evidence about which address the screen
+aims at, not that the edge accepts it. **A KDS connecting end to end over the
+hotspot is still unobserved** and is the rehearsal's job, along with the
+second-device latency number Act 2 depends on.
+
+**Counts:** KDS suite 40 executed through `assert-tests-ran.mjs` (21 in
+`lanConfig.test.ts`, up from 12); `tsc --noEmit` clean; both PowerShell scripts
+tokenize clean. The Playwright smoke test is untouched and still exercises the
+OVERRIDE path, since `.env.e2e` sets the URL explicitly — so the old behaviour
+keeps its regression coverage.
+
+**One file an agent cannot edit:** `apps/kds/.env.dev.example` still shows
+`VITE_KDS_LAN_URL=ws://192.168.1.50:9310/kds` as the normal setting. It is
+deny-ruled, so the operator updates it; it is documentation only and changes no
+behaviour.

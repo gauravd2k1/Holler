@@ -954,23 +954,31 @@ if ($WhatIf) {
     # and the LAN port accepting a TCP connection, are each necessary and neither
     # is sufficient: "connected" is a WebSocket the browser opens, and the only
     # place it is visible is the indicator on the KDS screen.
+    # THE ABSENCE OF VITE_KDS_LAN_URL IS NOW THE HEALTHY STATE, not a fault.
+    # The KDS derives the till's address from the address the PAGE was served
+    # from, so there is no baked host left to go stale and nothing here to
+    # compare against -LanHost. An address that is still written is an
+    # OVERRIDE -- supported, and the documented rollback -- but it re-opens the
+    # staleness this removed, so it is reported loudly rather than passed over.
     $kdsEnvFile = Join-Path $kdsDir ".env.dev"
     $expectedLanUrl = $null
     if ($LanHost -ne "") { $expectedLanUrl = "ws://${LanHost}:$LanPort/kds" }
     if (Test-Path $kdsEnvFile) {
         $lanLine = @(Get-Content $kdsEnvFile | Where-Object { $_ -match '^VITE_KDS_LAN_URL=' }) | Select-Object -First 1
         if (-not $lanLine) {
-            Write-Warn "apps\kds\.env.dev carries no VITE_KDS_LAN_URL -- the KDS will throw at startup"
+            Write-Ok "no VITE_KDS_LAN_URL baked in -- the KDS derives the till's address from the page it loads from"
         } else {
             $actual = ($lanLine -split '=', 2)[1].Trim()
+            Write-Warn "apps\kds\.env.dev still sets VITE_KDS_LAN_URL=$actual, which OVERRIDES the derived address."
+            Write-Warn "  That is the rollback path and it works, but it is a literal string that goes stale when the network moves."
+            Write-Warn "  Delete that line (or re-run the bootstrap) to let the KDS follow the address it was served from."
             if ($expectedLanUrl -and ($actual -ne $expectedLanUrl)) {
-                Fail-WithAction "apps\kds\.env.dev says VITE_KDS_LAN_URL=$actual but -LanHost $LanHost implies $expectedLanUrl." `
-                                "A stale address here is a KDS that loads, looks fine and never connects. Re-run with the correct -LanHost."
+                Fail-WithAction "apps\kds\.env.dev overrides with VITE_KDS_LAN_URL=$actual but -LanHost $LanHost implies $expectedLanUrl." `
+                                "A stale override here is a KDS that loads, looks fine and never connects. Delete the line, or re-run with the correct -LanHost."
             }
             if ($actual -match 'localhost|127\.0\.0\.1') {
-                Write-Warn "VITE_KDS_LAN_URL is $actual -- fine on this machine, unreachable from any other. Pass -LanHost for a second screen."
+                Write-Warn "  It names $actual -- fine on this machine, unreachable from any other screen."
             }
-            Write-Ok "VITE_KDS_LAN_URL=$actual"
         }
         if (-not @(Get-Content $kdsEnvFile | Where-Object { $_ -match '^VITE_KDS_DEVICE_TOKEN=.+' })) {
             Fail-WithAction "apps\kds\.env.dev has no VITE_KDS_DEVICE_TOKEN." `

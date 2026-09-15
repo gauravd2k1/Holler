@@ -57,7 +57,15 @@ export function App() {
 
   const controller = useMemo(() => {
     try {
-      const config = loadLanConfigFromEnv(import.meta.env as unknown as Record<string, string>);
+      // The till's address is derived from the address THIS PAGE came from,
+      // because the till is what serves this screen — see the derivation
+      // note in `lib/lanConfig.ts`. Read here at mount rather than at
+      // dev-server start, which is the whole point: a baked address goes
+      // stale the moment the network moves and is retried silently for ever.
+      const config = loadLanConfigFromEnv(import.meta.env as unknown as Record<string, string>, {
+        protocol: window.location.protocol,
+        hostname: window.location.hostname,
+      });
       return new ConnectionController({
         config,
         createSocket: createBrowserSocketFactory(),
