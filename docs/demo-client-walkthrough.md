@@ -1,489 +1,537 @@
-# The client walkthrough — three phones, one laptop, one restaurant
+# The client demonstration: three phones, one laptop, one restaurant
 
-**This is the doc you speak from.** It is the story, the exact actions, and —
-the part that actually wins the room — *why each thing is hard*, in language a
-restaurant owner understands.
+This is the document you speak from. It tells you what to show, what to say,
+and why each thing you are showing is genuinely difficult to build. That last
+part matters. Anyone can show a screen. Explaining why the screen was hard to
+build is what turns a demonstration into a reason to buy.
 
-It does **not** replace the two files you already have:
+This file does not replace the two you already have.
 
-| File | What it is | When you read it |
+| File | What it contains | When to read it |
 |---|---|---|
-| `docs/demo-wednesday.md` | The operational plan — build, firewall, triage, hard questions | The night before, and if something breaks |
-| `docs/demo-script.md` | The day-of checklist for bringing the stack up | While setting up |
-| **`docs/demo-client-walkthrough.md`** (this file) | **The performance — what you show, what you say, what it proves** | **In the room** |
+| `docs/demo-wednesday.md` | The operating plan: building, the firewall, what to do when things break | The night before, and during any trouble |
+| `docs/demo-script.md` | The checklist for starting everything up on the day | While you are setting up |
+| `docs/demo-client-walkthrough.md` (this file) | The demonstration itself: what you show and what you say | In the room |
 
-> **One deviation from `docs/demo-wednesday.md`, and you must know it.** That
-> plan puts the kitchen screen on a **second laptop**. This one puts it on a
-> **phone**. Read [§1.2](#12-the-kitchen-screen-on-a-phone--what-is-verified-and-what-is-not)
-> before you commit to it: the layout is built to collapse to one column and
-> the buttons are full-width touch targets, but **the kitchen screen has never
-> been run on a phone**, and I am telling you that rather than letting you find
-> out in the room.
+**One important difference from `docs/demo-wednesday.md`.** That plan puts the
+kitchen screen on a second laptop. This one puts it on a telephone. Please read
+section 1.2 before you decide to do it that way. The screen is built to work on
+a small display, and I have checked that in the code, but nobody has ever
+actually run it on a telephone. I would rather tell you now than let you find
+out in front of the client.
 
 ---
 
-# 1. The cast
+# 1. What you need, and what each thing represents
 
-Four devices. Each one stands for a real thing in a real restaurant, and you
-should introduce them that way — not as "my laptop and three phones".
+You have four devices. Each one stands for something real in a working
+restaurant, and you should introduce them that way, rather than as "my laptop
+and three phones".
 
-| Device | Plays | Address it opens | What the client should understand |
+| Device | What it represents | What it opens | What the client should understand |
 |---|---|---|---|
-| **Your laptop** | **The till** — the cash counter | The Holler window (already open) | The brain. Everything is stored here. It is the only device that takes money. |
-| **Phone 1** | **Waiter — "Rahul"** | `http://<TILL-IP>:9320/` | A waiter's own phone. No app installed. |
-| **Phone 2** | **Waiter — "Priya"** | `http://<TILL-IP>:9320/` | A second waiter, working a different table at the same time. |
-| **Phone 3** | **The kitchen screen** | `http://<TILL-IP>:5174/` | Mounted by the pass in a real kitchen. Here, a phone. |
-| Your laptop, browser tab | **The back office** | `http://localhost:5175` | What the owner sees from home. |
+| Your laptop | The till at the cash counter | The Holler window, already open | This is the brain. Everything is stored here, and it is the only device that handles money. |
+| Telephone 1 | A waiter, say Rahul | `http://<TILL-IP>:9320/` | An ordinary phone. Nothing was installed on it. |
+| Telephone 2 | A second waiter, say Priya | `http://<TILL-IP>:9320/` | Another waiter, working a different table at the same moment. |
+| Telephone 3 | The kitchen screen | `http://<TILL-IP>:5174/` | In a real kitchen this is mounted by the pass. Today it is a phone. |
+| Your laptop, in a browser | The back office | `http://localhost:5175` | What the owner looks at from home. |
 
-**`<TILL-IP>` is your laptop's address on your own hotspot.** Get it with:
+`<TILL-IP>` is your laptop's address on your own hotspot. You can find it by
+running:
 
 ```powershell
 .\scripts\lan-ip.ps1 -Urls
 ```
 
-Write it on a sticky note. Every phone types the same host, different port.
+Write that address on a piece of paper. Every phone types the same address,
+with a different number after the colon.
 
 ## 1.1 The one thing that must be true
 
-**Every device is on YOUR laptop's Mobile Hotspot. Never the restaurant's
-WiFi.** Their network will have client isolation, a captive portal or a guest
-VLAN that silently blocks device-to-device traffic — and the failure looks
-exactly like your software being broken. This is the single most likely way to
-lose the demo, and it has nothing to do with the product.
+Every device must be connected to your laptop's own mobile hotspot, and never
+to the restaurant's wireless network. Their network will almost certainly stop
+devices from talking to one another, either through client isolation, or a
+login page, or a separate guest network. When that happens the demonstration
+simply stops working, and it looks exactly as though your software is broken.
+This is the most likely way to lose the room, and it has nothing whatever to do
+with the product.
 
-## 1.2 The kitchen screen on a phone — what is verified and what is not
+## 1.2 The kitchen screen on a telephone: what I checked and what I did not
 
-Be honest with yourself about this before you stand up.
+Please be honest with yourself about this before you stand up.
 
-**What I verified in the code:**
+Here is what I confirmed by reading the code:
 
-- The ticket grid is `repeat(auto-fill, minmax(280px, 1fr))` — on a phone
-  viewport it collapses to **one column of tickets**, stacked. Nothing is cut
-  off and nothing needs sideways scrolling.
-- The action button on each ticket is **full width** at the large control
-  height — a genuine touch target, not a mouse target.
-- A cook advances a ticket with four taps over its life: **Accept → Start
-  preparing → Mark ready → Mark served**.
-- The kitchen screen needs **no pairing**. Its credential is built into the
-  page. Open the URL and it is the kitchen screen.
+* The tickets are laid out so that on a narrow screen they become a single
+  column, one under the other. Nothing is cut off and nothing has to be
+  scrolled sideways.
+* The button on each ticket runs the full width of the ticket and is sized for
+  a finger rather than a mouse.
+* A cook moves a ticket along with four taps over its life: Accept, then Start
+  preparing, then Mark ready, then Mark served.
+* The kitchen screen does not need to be paired with anything. Its credentials
+  are built into the page. You open the address and it is the kitchen screen.
 
-**What nobody has observed:** the kitchen screen running on an actual phone.
-Not once. It has always been a laptop or the till itself. Test it during setup,
-not in the room.
+Here is what nobody has ever done: run that screen on a real telephone. Not
+once. It has always been a laptop, or the till itself. Please try it while you
+are setting up, rather than in front of the client.
 
-**If it looks wrong on the phone:** put the kitchen screen on your laptop in a
-second window and hand a phone to a panel member as a *third waiter* instead.
-The demo does not weaken — it arguably strengthens, because three waiters
-ordering at once is the harder thing.
+If it looks wrong on the phone, put the kitchen screen on your laptop in a
+second window and hand the spare phone to somebody on the panel as a third
+waiter. The demonstration does not suffer for it. It may even improve, because
+three waiters ordering at the same time is the harder thing to do.
 
 ---
 
-# 2. Setup, in order
+# 2. Setting up, in order
 
-Assumes `demo-build.ps1` has run and the firewall rule exists — see
-`docs/demo-wednesday.md` T-1 and T-2. Both must be done before this.
+This assumes you have already built the software and created the firewall rule.
+Both of those are in `docs/demo-wednesday.md`, sections T-1 and T-2, and both
+must be done first.
 
-**1. Hotspot on.** Then note the address:
+**First,** switch the hotspot on, then find your address:
 
 ```powershell
 .\scripts\lan-ip.ps1 -Urls
 ```
 
-**2. Start the stack** (your own terminal, not one I control):
+**Second,** start everything, from a terminal you opened yourself:
 
 ```powershell
 .\scripts\demo-up.ps1 -DbKeyHex <key> -Fresh -Release
 ```
 
-`-Fresh` resets cloud and edge to the demo seed: the full menu, recipes,
-opening stock, one supplier, one received delivery. You want this. A demo on
-yesterday's data has yesterday's mistakes in it.
+The `-Fresh` part resets both the till and the cloud back to the prepared
+demonstration data: the full menu, the recipes, opening stock, one supplier and
+one delivery already received. You want this. A demonstration run on
+yesterday's data still has yesterday's mistakes in it.
 
-**3. While that is coming up, enrol the second waiter phone:**
+**Third,** while that is starting, enrol the second waiter's phone:
 
 ```powershell
 .\scripts\add-waiter.ps1 -Name "Priya's phone"
 ```
 
-> ### THE SIXTY SECONDS — the one thing that will look broken and is not
+> **Please read this next part carefully, because it will look like a fault and
+> it is not one.**
 >
-> The till refreshes its list of allowed devices **every 60 seconds**. A phone
-> paired immediately after enrolment is told *"That device token was
-> rejected"* — **the same message a wrong token gives**. It is not broken. It
-> is early.
+> The till refreshes its list of permitted devices once every sixty seconds. If
+> you pair a phone immediately after enrolling it, the phone is told that the
+> device code was rejected. That is the same message it would give for a code
+> typed in wrongly, so it reads like a real failure. It is not. The phone is
+> simply early.
 >
-> **Enrol both phones while the stack is booting.** Then pairing just works.
-> Do not debug this in the first thirty seconds.
+> Enrol both phones while everything is still starting up and you will never
+> see this. If you do see it, wait a minute and try once more. Please do not
+> start investigating it in the first thirty seconds.
 
-**4. Pair the two waiter phones.** Each opens `http://<TILL-IP>:9320/` and
-pastes its **own** token once. The phone remembers it.
+**Fourth,** pair the two waiters' phones. Each one opens
+`http://<TILL-IP>:9320/` and pastes in its own code, once. The phone remembers
+it from then on.
 
-**5. Open the kitchen screen** on phone 3: `http://<TILL-IP>:5174/`. Wait for
-the indicator to say **connected**. If it sits on "Connecting to the till…"
-for more than ten seconds, the address is wrong or the firewall rule is
-missing — those are the only two causes.
+**Fifth,** open the kitchen screen on the third phone at
+`http://<TILL-IP>:5174/` and wait until it says it is connected. If it still
+says it is connecting after about ten seconds, then either the address is wrong
+or the firewall rule is missing. Those are the only two causes.
 
-**6. Open the back office** on your laptop: `http://localhost:5175`, sign in as
-the owner.
+**Sixth,** open the back office on your laptop at `http://localhost:5175` and
+sign in as the owner.
 
-**7. Laptop settings:** sleep and screen-off to **Never**, Do Not Disturb
-**on**. A notification banner across the till during the bill is a bad look.
+**Seventh,** set your laptop so that it never sleeps and never turns its screen
+off, and switch on Do Not Disturb. A message sliding across the till while you
+are showing somebody their bill looks careless.
 
 ---
 
-# 3. THE DEMO
+# 3. The demonstration
 
-Eight acts, about 25 minutes. Each act below gives you **DO**, **THEY SEE**,
-**SAY**, and **WHY THIS IS HARD** — the last one is the commentary that turns a
-screen recording into a reason to buy.
+There are eight parts and they take about twenty five minutes altogether. Each
+one tells you what to do, what the client will see, roughly what to say, and
+why the thing you have just shown is difficult to build. That last section is
+the one worth reading twice.
 
 ---
 
-## ACT 0 — The claim *(1 min)*
+## Part one: the opening claim (about a minute)
 
-**DO:** Nothing yet. Devices on the table, screens on.
+**What you do:** nothing yet. The devices are on the table with their screens
+on.
 
-**SAY:**
+**What to say:**
 
-> "Before I show you anything — one sentence about what this is.
+> "Before I show you anything, let me tell you in one sentence what this is.
 >
-> Most restaurant software is a website. If the internet drops, you stop
-> billing. Holler is the other way round: everything runs on the till, in this
-> room, on this machine. The internet is a convenience, not a requirement.
+> Most restaurant software is really a website. If the internet goes down, you
+> stop billing. This works the other way round. Everything runs on the till, in
+> this room, on this machine. The internet is a convenience, not a requirement.
 >
-> I'm going to show you an order taken on a waiter's phone, cooked in the
-> kitchen, billed with a legal GST invoice, and deducted from stock — and then
-> I'm going to unplug the internet and do it again."
+> I am going to show you an order taken on a waiter's phone, cooked in the
+> kitchen, billed with a proper GST invoice, and taken out of stock. Then I am
+> going to disconnect the internet and do the whole thing again."
 
-**WHY THIS IS HARD:** You have just promised the hardest thing in the room and
-set up Act 6. Do not soften it.
+**Why this matters:** you have just promised them the hardest thing you have,
+and you have set up part seven. Do not water it down.
 
 ---
 
-## ACT 1 — Two waiters, two tables, one kitchen *(5 min) — THE CENTREPIECE*
+## Part two: two waiters, two tables, one kitchen (about five minutes)
 
-This is the act the client's mental model is built around: *device at table →
-hub → kitchen*. Everything else is supporting material.
+This is the most important part of the demonstration. The picture in the
+client's head is a device at the table, talking to a machine at the counter,
+talking to the kitchen. Everything else you show is supporting material.
 
-**DO:**
-1. Hand **Phone 1 to one panel member**, **Phone 2 to another**. Let them hold
-   the devices. This matters more than anything you say.
-2. Phone 1: tap **Table 4**. Phone 2: tap **Table 7**.
-3. Each picks two or three dishes. **Food only — see the warning below.**
-4. Both tap **Send** at roughly the same time.
+**What you do:**
 
-**THEY SEE:** Two tickets appear on the kitchen phone, near-instantly, each
-naming its own table.
+1. Hand telephone 1 to somebody on the panel and telephone 2 to somebody else.
+   Let them hold the devices themselves. This does more for you than anything
+   you can say.
+2. On the first phone, tap table four. On the second, tap table seven.
+3. Each person chooses two or three dishes. Food only, and please read the
+   warning below.
+4. Both tap Send at roughly the same moment.
 
-**SAY:**
+**What they see:** two tickets appear on the kitchen phone almost at once, each
+one naming its own table.
 
-> "Neither of them installed anything. That's a web page served by the till
-> itself — the phone joined the restaurant's network and that was the whole
-> setup. In a real outlet a new waiter is handed a phone and is taking orders
-> in about ten seconds.
+**What to say:**
+
+> "Neither of you installed anything. That is a web page being served by the
+> till itself. The phone joined the restaurant's network, and that was the whole
+> of the setup. In a real restaurant you hand a new waiter a phone and he is
+> taking orders about ten seconds later.
 >
-> Notice they worked at the same time, on different tables, and nothing
-> collided."
+> And notice that you both worked at the same time, on different tables, and
+> nothing went wrong."
 
-> ### ⚠️ DO NOT ORDER A BAR ITEM
-> Alcohol is seeded at zero tax because state VAT on liquor is not yet
-> expressible in the system. An alcohol line on the bill in Act 4 is a wrong
-> bill in front of a client. **Order food.** If asked about the bar menu: *"GST
-> is done; state VAT on liquor is the next tax module."*
-
-**WHY THIS IS HARD — say some of this, not all:**
-
-- **No app store.** Nothing is installed, so nothing needs updating on twelve
-  phones. Deploy once to the till, every device is current.
-- **It works with the internet down.** The phone talks to the till over the
-  local network. It never needed the internet, so losing it changes nothing —
-  which is what Act 6 proves.
-- **The order knows who took it.** Each phone has its own credential, and the
-  order records the *device that actually created it* — not the till, and not
-  whatever the phone claims to be. That distinction is exactly why "which
-  waiter took this order" is answerable later rather than guessable.
-- **Two waiters, two tables, simultaneously** is the boring-sounding thing that
-  breaks naive systems. Each table holds its own open order; neither can
-  scribble on the other's.
-
----
-
-## ACT 2 — The kitchen answers back *(3 min)*
-
-**DO:**
-1. Take the kitchen phone. Tap **Accept** on one ticket, then **Start
-   preparing**.
-2. Show the till: the order's state has moved.
-3. Tap **Mark ready**.
-
-**THEY SEE:** Ticket state changes on the kitchen phone; the till reflects it.
-
-**SAY:**
-
-> "The kitchen isn't a printer here — it's a participant. The cook accepting a
-> ticket is recorded, and the front of house can see it. When a table asks
-> 'how long?', the answer is on the screen instead of in someone's head."
-
-**WHY THIS IS HARD:**
-
-- **The kitchen screen is never the authority.** Tapping a button *requests* a
-  change; the till decides and confirms. If a ticket cannot legally move, the
-  screen shows what the till confirmed, not what the cook tapped. That's how
-  two screens never drift apart.
-- **It's a live connection, not polling.** The ticket appears when it's sent,
-  not up to N seconds later.
-- **Four honest states** — accepted, preparing, ready, served — not a binary
-  done/not-done, because a kitchen is not binary.
-
-*Optional flourish, only if the room is technical:* open the kitchen screen
-with `?perf=1` and it shows its own wire-to-render time in milliseconds. Do not
-promise a number you have not measured on the hotspot first.
-
----
-
-## ACT 3 — A second round on a live table *(2 min)*
-
-**DO:** Phone 1, same table (Table 4): add one more dish. **Send** again.
-
-**THEY SEE:** A **new ticket** for the new dish only. The table still has **one**
-bill.
-
-**SAY:**
-
-> "Second round on the same table. The kitchen gets a ticket for the new dish
-> only — they don't re-cook the first round. And the table still has one bill,
-> not two."
-
-**WHY THIS IS HARD:** "Append to an order the kitchen already has" is where
-most systems either duplicate the whole order or open a second bill. The table
-is asked what its open order is and the round is appended to it; only the
-lines that have no ticket yet are sent to the kitchen.
-
----
-
-## ACT 4 — The bill *(5 min)*
-
-**DO:**
-1. On the **till**, open Table 4 and go to billing.
-2. Show the invoice on screen. Point at: **invoice number**, **restaurant name
-   and GSTIN**, the **CGST/SGST split**, **HSN codes**, the **UPI QR**.
-3. Take payment as **split — part cash, part UPI**.
-4. The **PDF opens by itself**.
-
-**THEY SEE:** A GST invoice that looks like a real bill, paid two ways, opening
-as a document.
-
-**SAY:**
-
-> "That's not a receipt-shaped picture — it's a compliant GST tax invoice.
-> Sequential numbering, your GSTIN, tax split per line, HSN code on every item,
-> place of supply. Your accountant can use this.
+> **Please do not order anything from the bar.**
 >
-> Split payment, because tables actually pay that way — some cash, the rest
-> UPI, one bill.
+> The drinks have been set up with no tax on them, because state tax on alcohol
+> is not something the system can express yet. If a drink ends up on the bill in
+> part five, you will be showing the client an incorrect bill. Order food.
 >
-> And the QR is for this exact amount, not a generic one."
+> If somebody asks about it, the honest answer is short: "GST is finished. State
+> tax on liquor is the next piece of tax work."
 
-**WHY THIS IS HARD — this is your strongest technical section:**
+**Why this is difficult to build.** Say some of this, not all of it, and judge
+the room.
 
-- **Money is never a decimal.** Every amount is a whole number of paise, end to
-  end. Floating-point money is how a chain loses lakhs invisibly over a year.
-  This is a structural choice, not a detail.
-- **Tax is computed once, in one place.** The screen and the printed bill
-  cannot disagree, because neither of them does the arithmetic — both display
-  what the till calculated. Per-line at full precision, summed, rounded once.
-- **The invoice cannot be edited.** Once issued, it's frozen. A mistake is
-  corrected by a cancellation, never by quietly changing a number. That is what
-  makes the number sequence trustworthy.
-- **A bill cannot be issued without an HSN code** on every line, because a GST
-  invoice without it isn't a compliant document. The system refuses rather than
-  producing something that looks fine and isn't.
-- **The invoice number is minted on the till and never leaves it.** No cloud
-  service hands out numbers, so no outage can produce a gap or a duplicate.
-
-**On the printer, if asked:** *"There's no thermal printer in the room. That
-PDF is rendered from exactly the same data the printer gets."*
+* Nothing is installed, so nothing ever has to be updated on twelve different
+  phones. You update the till and every device is current.
+* It keeps working when the internet is down. The phone is talking to the till
+  over the local network. It never needed the internet in the first place,
+  which is what part seven proves.
+* The order knows who took it. Each phone has its own credentials, and the
+  order records the device that actually created it, rather than the till, and
+  rather than whatever the phone claims to be. That is precisely why you can
+  answer "which waiter took this order" afterwards instead of guessing.
+* Two waiters working two tables at the same time sounds dull, and it is the
+  thing that breaks simpler systems. Each table holds its own open order, and
+  neither waiter can write over the other's work.
 
 ---
 
-## ACT 5 — It knows what you used *(3 min)*
+## Part three: the kitchen answers back (about three minutes)
 
-**DO:** On the till, open the stock screen. Show the ingredients that moved
-because of the sale you just billed. Point out any low-stock warning.
+**What you do:**
 
-**SAY:**
+1. Pick up the kitchen phone. Tap Accept on one of the tickets, then tap Start
+   preparing.
+2. Show the client the till. The order has moved along.
+3. Tap Mark ready.
 
-> "Nobody typed this. You sold those dishes, so those ingredients came down —
-> by recipe, at the right quantities. If a base is made in batches and used in
-> three dishes, selling any of them draws down the batch correctly.
+**What they see:** the ticket changes on the kitchen phone, and the till knows
+about it.
+
+**What to say:**
+
+> "The kitchen here is not a printer. It takes part. When the cook accepts a
+> ticket that is recorded, and the front of house can see it. So when a table
+> asks how long their food will be, the answer is on a screen instead of in
+> somebody's head."
+
+**Why this is difficult to build.**
+
+* The kitchen screen is never in charge. Tapping a button asks the till to make
+  the change. The till decides, and the screen then shows what the till
+  confirmed, rather than what the cook tapped. That is how two screens are kept
+  from drifting apart and telling two different stories.
+* The connection stays open, so the ticket appears the moment it is sent,
+  instead of whenever the screen next thinks to ask.
+* There are four honest stages rather than a simple done or not done, because a
+  kitchen does not work in two states.
+
+If the room is a technical one, you can open the kitchen screen with `?perf=1`
+added to the address and it will show you how many milliseconds it took for a
+ticket to arrive and appear. Please do not quote a number you have not measured
+on the hotspot yourself first.
+
+---
+
+## Part four: adding to a table that is already eating (about two minutes)
+
+**What you do:** on the first phone, go back to table four and add one more
+dish. Send it again.
+
+**What they see:** a new ticket in the kitchen for the new dish only. The table
+still has one bill.
+
+**What to say:**
+
+> "That is a second round on the same table. The kitchen gets a ticket for the
+> new dish only, so they do not cook the first round again. And the table still
+> has one bill rather than two."
+
+**Why this is difficult to build.** Adding to an order the kitchen already has
+is where most systems either send the whole order again or quietly open a
+second bill. Here the table is asked what its open order is, the new round is
+added to that order, and only the lines that have not been sent to the kitchen
+yet are sent.
+
+---
+
+## Part five: the bill (about five minutes)
+
+**What you do:**
+
+1. On the till, open table four and go to billing.
+2. Show them the bill on screen. Point at the invoice number, the restaurant's
+   name and GST number, the way the tax is split into its two halves, the HSN
+   codes against each item, and the payment code.
+3. Take the payment as a split: part cash, the rest by UPI.
+4. The bill opens by itself as a document.
+
+**What they see:** something that looks like a real bill, paid in two ways,
+opening as a proper document.
+
+**What to say:**
+
+> "That is not a picture shaped like a receipt. It is a proper GST tax invoice.
+> Numbered in sequence, your GST number on it, tax split correctly on every
+> line, an HSN code against each item, and the place of supply. Your accountant
+> can work from this.
+>
+> And it was paid two ways, because that is how tables actually pay. Some cash,
+> the rest by phone, one bill.
+>
+> The payment code is for this exact amount, not a general one."
+
+**Why this is difficult to build.** This is your strongest section technically,
+so take your time over it.
+
+* Money is never stored as a decimal number. Every amount is a whole number of
+  paise from beginning to end. Storing money as a decimal is how a chain of
+  restaurants loses a great deal of it invisibly over a year. This was a
+  deliberate decision rather than a detail.
+* The tax is worked out once, in one place. The screen and the printed bill
+  cannot disagree with one another, because neither of them does the
+  arithmetic. Both simply show what the till worked out.
+* Once a bill has been issued it cannot be edited. A mistake is corrected by
+  cancelling it and issuing another, never by quietly changing a number. That is
+  what makes the numbering worth trusting.
+* A bill cannot be issued at all if any item is missing its HSN code, because a
+  GST invoice without one is not a valid document. The system refuses, rather
+  than producing something that looks correct and is not.
+* The invoice number is produced on the till and never leaves it. No service
+  somewhere else hands out numbers, so no outage can create a gap in the
+  sequence, or the same number twice.
+
+If somebody asks about the printer, the answer is simply that there is no
+thermal printer in the room, and that the document they are looking at is
+produced from exactly the same information the printer would be given.
+
+---
+
+## Part six: it knows what you used (about three minutes)
+
+**What you do:** on the till, open the stock screen. Show the ingredients that
+came down because of the sale you have just billed. Point out any item that is
+now running low.
+
+**What to say:**
+
+> "Nobody typed any of this in. You sold those dishes, so those ingredients
+> came down, by recipe, in the right quantities. If a sauce is made in batches
+> and used in three different dishes, selling any of them takes the right amount
+> out of the batch.
 >
 > This is the difference between knowing what you sold and knowing what you
-> used. The gap between those two numbers is theft, waste and over-portioning —
-> and right now most owners find out at month end, if at all."
+> used. The gap between those two figures is theft, waste and over generous
+> portions, and most owners only find out at the end of the month, if they find
+> out at all."
 
-**WHY THIS IS HARD:**
+**Why this is difficult to build.**
 
-- **Recipes nest.** A dish uses a sauce; the sauce has its own recipe and its
-  own batch size. Selling the dish draws down through both levels at exact
-  ratios — and if the sauce is rescaled from 300ml to 3 litres, every dish that
-  uses it stays correct.
-- **Stock never blocks a sale.** Negative stock is allowed on purpose. A
-  counting error must never stop you selling food — it's a signal to
-  investigate, not a wall.
-- **A missing recipe never fails a bill.** If an item has no recipe, the sale
-  completes and the gap is *recorded* — "items sold with no recipe" is a report
-  you can act on, not a silent hole.
+* Recipes sit inside other recipes. A dish uses a sauce, and the sauce has its
+  own recipe and its own batch size. Selling the dish works its way down through
+  both levels at the right proportions. If the sauce is later made in three
+  litre batches instead of three hundred millilitre ones, every dish that uses
+  it stays correct.
+* Running out of stock never stops a sale. Stock is allowed to go below zero on
+  purpose. A counting error must never stop you selling food. It is something to
+  look into, not a locked door.
+* A missing recipe never stops a bill either. If an item has no recipe the sale
+  still goes through and the gap is written down, so that "items sold with no
+  recipe" is a report somebody can act on rather than a silent hole.
 
 ---
 
-## ACT 6 — Pull the plug *(4 min) — THE ONE THEY REMEMBER*
+## Part seven: disconnect the internet (about four minutes)
 
-**DO:**
-1. Say what you are about to do, then do it: **turn off your laptop's mobile
-   data / internet — but leave the hotspot running.** Practise this exact click
-   beforehand; it is easy to kill the hotspot by accident and take every phone
-   down with it.
-2. A **banner** appears: the till says it cannot reach the cloud.
-3. **Take another order on a phone. Send it. Cook it. Bill it.** Everything
-   works.
+This is the part they will still be talking about afterwards.
+
+**What you do:**
+
+1. Tell them what you are about to do, then do it. Turn off your laptop's
+   internet connection, but leave the hotspot running. Please practise this
+   exact step beforehand. It is very easy to switch off the hotspot by accident
+   and take all three phones down with it.
+2. A message appears on the till saying it cannot reach the cloud.
+3. Take another order on a phone. Send it. Cook it. Bill it. All of it works.
 4. Turn the internet back on.
-5. The banner clears. Open the back office — **the order is there.**
+5. The message clears by itself. Open the back office and the order is there.
 
-**SAY:**
+**What to say:**
 
-> "Internet's gone. Watch what still works.
+> "The internet has gone. Watch what still works.
 >
-> …everything. Orders, kitchen, the bill, stock. Because none of it was ever
-> asking permission from a server somewhere else.
+> All of it. Orders, the kitchen, the bill, the stock. None of it was ever
+> asking permission from a machine somewhere else.
 >
-> Now watch it come back." *(reconnect)* "Nobody typed anything twice. Nothing
-> was lost. It caught up by itself."
+> Now watch it catch up." (reconnect) "Nobody typed anything twice. Nothing was
+> lost. It sorted itself out."
 
-**WHY THIS IS HARD — and this is the real engineering:**
+**Why this is difficult to build, and this is the real engineering.**
 
-- **Sending is the easy half.** The hard half is knowing exactly what has and
-  has not arrived, and never sending the same thing twice. Every order carries
-  its own identity and replays in order.
-- **One stuck record must not block the rest.** If one item can never be
-  accepted, it's set aside and flagged to a human — the queue behind it keeps
-  moving. Silence is the failure mode we designed against.
-- **The outlet is the source of truth.** The cloud is a copy. That is why the
-  restaurant never stops.
+* Sending the information is the easy half. The hard half is knowing exactly
+  what has arrived and what has not, and never sending the same thing twice.
+  Every order carries its own identity and goes up in order.
+* One stuck record must not hold up everything behind it. If one item can never
+  be accepted, it is set aside and somebody is told about it, and the queue
+  behind it keeps moving. A system that goes quiet is the failure we designed
+  against.
+* The restaurant holds the true record and the cloud holds a copy. That is the
+  reason the restaurant never has to stop.
 
-**Be honest if pressed:** today it's **orders** that flow up to the back
-office. Kitchen tickets, invoices and stock counts stay on the till. *"The
-outlet is the source of truth by design; we're widening what replays upward,
-one stream at a time."*
+If they press you, be straightforward. At the moment it is orders that travel
+up to the back office. Kitchen tickets, bills and stock counts stay on the
+till. The honest sentence is: "The restaurant is the authority by design, and
+we are widening what travels up one piece at a time."
 
 ---
 
-## ACT 7 — The owner's view *(2 min)*
+## Part eight: the owner's view (about two minutes)
 
-**DO:** Back office on the laptop. Show **Orders** — including the one taken
-while the internet was down. Show the **menu**, the **supplier**, and the
-**received delivery**.
+**What you do:** open the back office on your laptop. Show the orders,
+including the one taken while the internet was off. Show the menu, the
+supplier, and the delivery that was received.
 
-**SAY:**
+**What to say:**
 
-> "This is you, at home, on a Sunday. Today's orders, your menu and prices,
-> your suppliers, and what was actually received into the kitchen."
+> "This is you at home on a Sunday. Today's orders, your menu and your prices,
+> your suppliers, and what actually came into the kitchen."
 
-**WHY THIS IS HARD:**
+**Why this is difficult to build.**
 
-- **A price changed here reaches the till by itself.** The till pulls its
-  configuration on a schedule — and if it can't, it keeps selling on the last
-  configuration it had. It never stops to ask.
-- **What you see is a copy, and we label it as one.** The outlet's own record
-  is authoritative. We show both rather than pretending one number exists when
-  two honestly do.
+* If you change a price here it reaches the till on its own. The till asks for
+  its settings on a schedule, and if it cannot reach anything it carries on
+  selling using the last settings it had. It never stops to ask permission.
+* What you are looking at is a copy, and we label it as one. The restaurant's
+  own record is the authority. Where the two can honestly differ we show both,
+  rather than pretending there is only one number.
 
-**Do not promise:** stock editing or variance reports in the back office. Not
-built. *"Stock lives at the outlet today; the owner's stock view is next."*
-
----
-
-## ACT 8 — The close: onboarding is one file *(2 min)*
-
-**DO:** Optionally show `seed/outlet.toml` — one small text file.
-
-**SAY:**
-
-> "Last thing, and it's the one that matters commercially.
->
-> Everything you've seen branded as this restaurant — the name on the bill, the
-> GSTIN, the address, the invoice prefix, the UPI ID, the logo — is one file.
-> Onboarding a restaurant is writing that file. It is never changing code.
->
-> That's the difference between a product and a project. One restaurant or
-> fifty, it's the same build."
-
-**WHY THIS IS HARD:** Most "customisable" systems customise by branching the
-code, and every branch is a maintenance cost forever. There's also a guard that
-refuses to start if the identity file and the menu don't belong together — so
-one restaurant's name can never end up on another's GST invoice.
+Please do not promise stock editing or waste reports in the back office. They
+are not built. If asked: "Stock lives at the restaurant today. The owner's view
+of it is the next piece of work."
 
 ---
 
-# 4. The hard questions
+## The closing point: setting up a restaurant is one file (about two minutes)
 
-Short answers. Do not over-explain; a long answer sounds like a weak one.
+**What you do:** if it helps, show them `seed/outlet.toml`. It is one small
+text file.
 
-| They ask | You say |
+**What to say:**
+
+> "One last thing, and commercially it is the one that matters.
+>
+> Everything you have seen today with this restaurant's name on it, the name on
+> the bill, the GST number, the address, the invoice prefix, the payment
+> address, the logo, all of that is one file. Setting up a new restaurant means
+> writing that file. It never means changing the software.
+>
+> That is the difference between a product and a one off project. One restaurant
+> or fifty, it is the same software."
+
+**Why this is difficult to build.** Most systems that claim to be adaptable
+adapt by making a separate copy of the software for each customer, and every
+copy has to be looked after for ever afterwards. There is also a safeguard here
+which refuses to start if the restaurant's details and its menu do not belong
+together, so one restaurant's name can never end up on another's tax invoice.
+
+---
+
+# 4. Questions they are likely to ask
+
+Keep the answers short. A long answer sounds like a weak one.
+
+| Question | Answer |
 |---|---|
-| "What if the till dies?" | "The data is on the till, encrypted, and it syncs to the cloud. Hardware replacement is a restore — that's a process we set up with you at install, not something I'd hand-wave now." |
-| "Can the waiter take payment?" | "Deliberately not. Money goes through one screen with one person accountable. Phone-side payment is a separate decision with its own controls." |
-| "Can it handle our bar?" | "GST is done. State VAT on liquor is the next tax module — that's why I ordered food today rather than show you something I'd have to caveat." |
-| "How many devices?" | "It's your local network, not a per-seat licence. The limit is practical, not architectural." |
-| "Is my data safe?" | "The database on the till is encrypted at rest, and staff credentials are never sent anywhere in readable form." |
-| "What about our existing menu?" | "Your menu is already in here — that's what you've been looking at all session." |
-| "Who else uses this?" | Do not invent a customer. "You'd be the first outlet running it in production, which is why the pilot terms matter and why I'm being precise with you about what's built and what isn't." |
-| "Can we get it next week?" | "What you saw is real. What's between here and your floor is a pilot — printer, your tax profile, your staff trained. Weeks, not months." |
+| What happens if the till breaks? | "The information is on the till, encrypted, and it copies up to the cloud. Replacing the machine is a restore, and that is something we would set up with you properly at installation, rather than my waving a hand at it now." |
+| Can the waiter take the payment? | "Deliberately not. Money goes through one screen with one person answerable for it. Taking payment on the phone is a separate decision with its own controls." |
+| Can it cope with our bar? | "GST is finished. State tax on liquor is the next piece of tax work, which is why I ordered food today rather than show you something I would have to apologise for." |
+| How many devices can we have? | "It is your own network rather than a licence for each person, so the limit is practical rather than built in." |
+| Is our information safe? | "The database on the till is encrypted, and staff passwords are never sent anywhere in a readable form." |
+| What about our existing menu? | "Your menu is already in here. It is what you have been looking at all the way through." |
+| Who else is using it? | Do not invent a customer. "You would be the first restaurant running it properly, which is why the pilot terms matter, and why I am being careful to tell you exactly what is built and what is not." |
+| Can we have it next week? | "What you have seen is real. What stands between here and your floor is a pilot: the printer, your tax details, your staff trained on it. That is weeks rather than months." |
 
 ---
 
-# 5. If it breaks — 60-second triage
+# 5. If something goes wrong
 
-**Rule: never open a terminal in front of the client.** If it needs a terminal,
-it needs a break.
+The rule is simple. Never open a terminal window in front of the client. If
+something needs a terminal, it needs to wait until they have gone.
 
-| Symptom | Almost certainly | Do this |
+| What you see | Almost certainly | What to do |
 |---|---|---|
-| Phone shows "token rejected" | Paired within 60s of enrolling | Wait a minute, paste again. Say nothing. |
-| Phone loads nothing at all | Wrong network, or firewall | Check the phone is on **your** hotspot. |
-| Kitchen screen stuck "Connecting…" | Firewall rule missing, or wrong address | Move on; use the till's own kitchen view and carry on talking. |
-| Order sent, no ticket | Kitchen screen lost its connection | Reload the page on the kitchen phone. |
-| A screen is frozen | — | Reload. Don't investigate; keep talking. |
-| Anything worse | — | **"That's the demo gremlin — let me show you the next bit."** Move to the next act. Never debug in the room. |
+| The phone says the code was rejected | It was paired within a minute of being enrolled | Wait a minute and paste it again. Say nothing about it. |
+| The phone will not load anything at all | It is on the wrong network, or the firewall rule is missing | Check that the phone is on your hotspot. |
+| The kitchen screen will not connect | The firewall rule is missing, or the address is wrong | Leave it. Use the till's own kitchen view and keep talking. |
+| An order was sent but no ticket appeared | The kitchen screen lost its connection | Reload the page on the kitchen phone. |
+| A screen has frozen | Anything | Reload it. Do not investigate. Keep talking. |
+| Something worse | Anything | "That is the demonstration gremlin, let me show you the next part." Move on. Never debug in the room. |
 
-**The recovery line, memorised:** *"I'll come back to that."* Then don't.
-
----
-
-# 6. What NOT to do
-
-1. **Do not bill an alcohol item.** Zero tax; wrong bill.
-2. **Do not use the restaurant's WiFi.** Yours, always.
-3. **Do not open a terminal**, or a code editor, or a log file.
-4. **Do not promise a date** for anything not in this walkthrough.
-5. **Do not invent a reference customer.**
-6. **Do not apologise for what isn't built.** State it in one sentence and move
-   on. Confidence about the boundary reads as competence; hedging reads as
-   hiding something.
-7. **Do not zoom into the GSTIN.** It's a correctly-shaped placeholder, not
-   their real number. If they notice: *"Placeholder — yours goes in that one
-   file at install."*
+The sentence to have ready is "I will come back to that." Then do not.
 
 ---
 
-# 7. The 45-second version
+# 6. Things not to do
 
-If you get five minutes instead of thirty, this is the whole product:
+1. Do not put a drink on the bill. There is no tax on it and the bill will be
+   wrong.
+2. Do not use the restaurant's wireless network. Use your own hotspot, always.
+3. Do not open a terminal window, a code editor, or a log file.
+4. Do not promise a date for anything that is not in this document.
+5. Do not invent a customer who is already using it.
+6. Do not apologise at length for the things that are not built. Say what is
+   missing in one sentence and move on. Being clear about the edges sounds
+   competent. Hedging sounds as though you are hiding something.
+7. Do not zoom in on the GST number. It is a correctly formed placeholder
+   rather than their real one. If they notice: "That is a placeholder. Yours
+   goes into that one file when we install it."
 
-1. **Phone → kitchen.** Order on a waiter's phone, ticket on the kitchen
-   screen. No app installed.
-2. **Internet off. Do it again.** Everything still works.
-3. **Internet on. It catches up by itself.**
-4. **The bill is a real GST invoice**, and the stock moved by itself.
+---
 
-Those four beats, in that order. Everything else in this file is supporting
-detail for a longer meeting.
+# 7. If you only get five minutes
+
+If the meeting collapses to five minutes, this is the whole product in four
+steps:
+
+1. An order goes from a waiter's phone to the kitchen screen, with nothing
+   installed on the phone.
+2. Turn the internet off and do it again. It all still works.
+3. Turn the internet back on. It catches up on its own.
+4. The bill is a proper GST invoice, and the stock came down by itself.
+
+Those four, in that order. Everything else in this document is detail for a
+longer meeting.
