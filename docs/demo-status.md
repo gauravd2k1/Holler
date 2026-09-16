@@ -1796,6 +1796,19 @@ Severity is against the SIX-STEP DEMO PATH, not against a pilot.
 | D13 | **`demo-reset.ps1` aims its destructive `DROP SCHEMA` at `-PostgresDb` while every seeder argument reads `-DatabaseUrl`.** A scratch `-DatabaseUrl` alone leaves the drop pointed at `holler` | **Could destroy the operator's database during a rehearsal.** Same family as the `-BackendPort 8099` incident in CLAUDE.md | **FIXED** — `-PostgresDb` is derived from `-DatabaseUrl`, a disagreement is refused, and under an agent shell only a `holler_scratch_*` name is allowed |
 | D14 | **The till shows a stale kitchen status** until its Kitchen panel is remounted. Nothing pushes a KOT status from the LAN hub into the till's UI and `useKotsForOrderQuery` has no `refetchInterval` | Step 1 ends on the KDS bump; the till is where a client may look next | **OPEN** — `docs/backlog.md` row 145; run-list step 4c decides whether it is this or a cache-invalidation defect |
 
+### Found after this register was compiled
+
+**D25, D26 and D27 were raised in conversation on 2026-09-16 and are written
+here because a defect number that exists only in a transcript is not a
+record.** D1–D24 were compiled from the scenario board; these three came out
+of the work itself.
+
+| # | Defect | Severity | State |
+|---|---|---|---|
+| D25 | **The KDS carries its own KOT forward flow**, unchecked against the edge's table — the same class as the till's copy D14 removed | A cook pressing a button the edge refuses, or a ticket with no button at all if a state is added | **FIXED** `9f7d5b6` — it cannot be deleted (the KDS is a browser page with no Tauri command to call), so it is COMPARED in both directions by `check-kitchen-event-drift.mjs` |
+| D26 | **CI has been red on every run in its visible history — zero successes in forty.** Six jobs fail: `crash-durability`, `contracts`, `edge-style`, `cloud-replay`, `backend`, `e2e-scenario` | **Every local green claim in this session was made over a red CI.** A wall of pre-existing red also hides any new failure completely | **OPEN — triage first, causes per job, no fixes until reported.** One cause already fixed (`7d5daea`): four `crash_durability` tests could not run on a clean checkout because they defaulted to the gitignored `seed/outlet.toml` |
+| D27 | **`crash_durability`'s `grn_sequence_next_value` reads `MAX(next_value)` across the whole table, unfiltered**, while every helper beside it filters by the receipt under test. The dev seed issues a REAL goods receipt, so the counter is already 1 | The assertion fails with "an uncommitted receipt must not consume a GRN number", which is **not what happened** — it means the seed happened | **OPEN, re-scoped** — filter to the receipt under test. **NOT a durability defect and NOT a pilot blocker**: both the GRN and invoice counters mint inside the transaction that commits the document. `3dbed53` adds the probe that proves the seed's side effect |
+
 ### Open — off the six-step path
 
 | # | Defect | State |
