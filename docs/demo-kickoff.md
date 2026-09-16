@@ -1,5 +1,23 @@
 # Demo build
 
+## DEFERRED TO THE WEEK OF 2026-09-21, recorded 2026-09-16
+
+The demo is deferred by one week. Nothing below is cancelled and nothing below
+is re-scoped: the six steps, the work items and the excludes all stand as
+written, and the Monday/Tuesday dates in them are the ones of the demo week,
+not of the week this note was written.
+
+What the deferral changes is only what is worked on now. Until the demo week
+starts, work is **defect repair on the six-step path**, not presentability and
+not rehearsals. Item 0's Monday 18:00 IST cut-off for `apps/captain` moves with
+the demo week; it has not been spent.
+
+Two defects found on the live stack on 2026-09-16 and fixed the same day are
+recorded in `docs/demo-status.md` under that date. The one that mattered —
+order transitions rejected 409 forever, or accepted and silently not applied —
+sat directly on step 4 and step 5.
+
+
 Purpose: client demo. Scope is presentability and reliability of what exists. No new features, no M6.1, no pilot-only work. Pilot items stay in docs/pilot-readiness.md untouched.
 
 Story to demo, in order:

@@ -1649,3 +1649,112 @@ keeps its regression coverage.
 `VITE_KDS_LAN_URL=ws://192.168.1.50:9310/kds` as the normal setting. It is
 deny-ruled, so the operator updates it; it is documentation only and changes no
 behaviour.
+
+## The demo is deferred to the week of 2026-09-21, and two defects were fixed on 2026-09-16
+
+The deferral is recorded at the top of `docs/demo-kickoff.md`. Scope, the six
+steps and the excludes are unchanged; only the dates move, and item 0's Monday
+18:00 IST cut-off moves with them. Work between now and the demo week is defect
+repair on the six-step path.
+
+Both defects below were found by reading the till's own screen — a screenshot
+of the running POS taken 2026-09-16 07:06 IST, showing the sync banner over the
+menu — and then confirmed against the live Postgres and the source, never from
+the screenshot alone.
+
+### Order transitions were rejected forever, or accepted and silently not applied
+
+The banner read `5 records will not reach the cloud`, every line
+`5 attempts · conflict (HTTP 409)`. Live Postgres agreed and added the part the
+banner could not show:
+
+```
+ display_number | status | version | items
+ #A1            | DRAFT  |       2 |     5
+ #A2            | DRAFT  |       8 |     7
+ #A3            | DRAFT  |       6 |     0
+```
+
+Three orders that the till had sent to the kitchen and billed were sitting in
+the cloud as DRAFT, and one of them had no lines at all.
+
+**The cause is that `SyncEnvelope.version` cannot carry the meaning the cloud
+was reading into it.** The edge fills it from the LIVE aggregate row at the
+moment it sends an outbox row (`load_aggregate_envelope_fields`,
+`edge/sync/src/worker.rs`), not when the event was recorded, so every event
+still queued for one order ships the same number — whatever the order has
+reached by then. The cloud required a transition's version to be exactly
+`current + 1` (`backend/internal/ordering/service.go`), which that number can
+never be relied on to be. It failed in both directions:
+
+- **Order synced online, then more lines added.** The transition arrived
+  several versions ahead, was refused `409`, and — because refusal is
+  permanent and M6 A2 holds per-aggregate order — every later row of that
+  order queued behind it. That is the five blocked rows, and it is why `#A1`
+  is missing its sixth line and `#A3` all of its.
+- **Order taken entirely offline.** Create and transitions all ship the same
+  version, so the transition read as an already-applied replay and returned
+  200 without applying anything. No error, no blocked row, no banner — the
+  order simply stayed DRAFT in the cloud forever. **This is the one that would
+  have been seen in the demo**, because it is exactly step 4: stop the cloud,
+  take an order, restart the cloud, look in the admin.
+
+**The fix makes the state machine the whole guard**, which is what
+`docs/spec/sync.md` already specifies for the order aggregate ("state machine +
+command validation") and what `openapi.yaml` already documents the transition
+routes' 409 as ("illegal transition" — never a version gap). `current.Status ==
+to` is the idempotency test, `validTransition` is the legality test, and the
+stored version still only moves forward (`replayVersion`). No contract shape
+changed and none needed to.
+
+**Falsifier, and it was watched RED.** `TestTransition_EnvelopeVersionNever
+BlocksOrSwallowsAReplay` reproduces both shapes. Against a reconstructed
+pre-fix service — the old version rule pasted back by hand, the C8
+planted-branch precedent — both subtests fail, the first with `ErrConflict` and
+the second by leaving the order DRAFT while returning no error. Against the fix
+both pass. **Counts:** `internal/ordering` 33 executed, whole backend 20
+packages executed, both through `scripts/assert-tests-ran.mjs`, Postgres-backed
+tests included by pointing `HOLLER_TEST_DATABASE_URL` at a scratch database
+(`holler_scratch_ordering`, created and dropped inside the running container —
+no port bound, `holler` untouched).
+
+**Two behaviours changed with it, deliberately, and both are pinned by the
+tests they altered.** Redelivering a cancel for an order that is already
+CANCELLED, and redelivering a confirm for one already CONFIRMED, are now
+idempotent successes rather than errors. They have to be: the edge retries a
+row whose acknowledgement was lost, and there is no longer a version to tell
+that retry apart from a fresh command. A terminal status that is NOT the one
+being replayed is still refused — `TestCancel_RequiresReasonAndRejectsAfter
+Closed` now proves that with a CLOSED order.
+
+**ESCALATION, not fixed here.** Two things this uncovered belong to the
+contracts owner, and neither was touched:
+
+1. `openapi.yaml` describes `/orders/{id}/confirm`'s 409 as "the order was not
+   in DRAFT". Confirm-on-CONFIRMED is now a 200 idempotent replay, so that one
+   line is narrower than the behaviour. Description only, no shape.
+2. `/orders/{id}/items` is documented as replaying "an item appended to a DRAFT
+   order", and the cloud enforces DRAFT-only. **The edge legally appends
+   through DRAFT / CONFIRMED / SENT_TO_KITCHEN / PREPARING** (`#132-A`,
+   `require_amendable_for_item_changes`), which is the append-after-send path
+   the captain page depends on. Today the mismatch is hidden, because every
+   cloud order was stuck in DRAFT. **Now that orders leave DRAFT cloud-side, a
+   line added after the order was sent will be refused 409 and will wedge that
+   order's queue.** The fix is to widen the cloud's rule to the edge's
+   amendable set, and it needs a contracts decision because the route's
+   description says DRAFT.
+
+### The till was printing `Order ##A2`
+
+`display_number` is minted WITH its `#` (`format_order_display_number`,
+`edge/database/src/repo.rs` returns `"#A184"`). Two POS surfaces added a second
+one — the sync banner (`SyncBlockedBanner.tsx`) and the order list
+(`OrderListScreen.tsx`). The admin console and the captain page already printed
+the column raw, which is why only the till showed it. Both now render it as
+stored. **Counts:** POS 259 tests executed via `assert-tests-ran.mjs`,
+`tsc --noEmit` clean.
+
+**Observed in the build output and the dev server only.** Neither the browser
+nor the Tauri release window has been looked at since these two edits, so per
+CLAUDE.md's four-runtimes rule this is not yet verified on the screen the
+client sees.
