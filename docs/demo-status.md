@@ -1825,3 +1825,63 @@ Severity is against the SIX-STEP DEMO PATH, not against a pilot.
 - **S-CUI-06 and S-SYNC-06 are NOT TESTABLE**, not failures: no item in the
   catalogue is snoozed, and the edge database is encrypted at rest with no read
   surface from outside the POS process.
+
+
+## The build step, and why the demo morning does not compile (2026-09-16)
+
+`scripts\demo-up.ps1` step 6 rebuilds the frontends on every run, and under
+`-Release` the binary too, then runs `check-release-binary.ps1` and refuses to
+start anything if the binary does not contain the dist it just built. The
+reason is recorded in the retro: **a POS started fresh at 11:39 was running a
+00:40 build**, and `run-dev.ps1 -Release`'s newer-than-dist rule passed it,
+because both were stale and a comparison between two stale things is satisfied.
+
+**`-NoBuild` is for the morning of the demo.** It skips the compiling and
+nothing else: `check-release-binary.ps1` still runs and still refuses a binary
+that does not carry the current dist, and the run aborts if there is no binary
+or no dist to check. The demo runs on the binary Tuesday's rehearsal was
+verified against, rather than on something compiled an hour before the client
+arrives.
+
+**TAURI BUILD WALL TIME: NOT MEASURED YET.** It was not measured for this note
+and no figure is invented here — the operator's POS holds the `.exe` open, so
+an agent cannot run the build to time it. `demo-up.ps1` now times every
+release build and prints `POS release binary built in Xm Ys`, so the number
+records itself at the next rehearsal. **Put that figure here when it appears.**
+
+### What `check-release-binary.ps1` compares, exactly
+
+- **HAYSTACK:** every byte of `holler-pos.exe`, read as Latin-1.
+- **NEEDLES:** every hashed asset filename in `apps\pos\distssets` — the
+  `index-<hash>.js` entry chunk **and** the `index-<hash>.css` beside it. Vite
+  derives each name from a hash of that file's own content, so this is a
+  content comparison.
+- **PASS:** every needle present. **Not mtime, not a version string, not the
+  binary's SHA-256** — that last one says only that it is the same file as
+  last time, never what is inside it.
+- Mtime appears once more as a secondary ordering check, explicitly not
+  load-bearing, for the narrower case of a binary linked before a dist that
+  has since been rebuilt.
+
+Widened from one needle to every asset on 2026-09-16 and watched RED twice: a
+planted `index-PLANTEDFAKE1.js` in dist was refused, and **renaming only the
+CSS was refused too** — which the previous single-needle version would have
+passed.
+
+### The refusal that was asked for and is NOT there, with the measurement
+
+"Refuse if the binary contains `localhost:5173`" was proposed as a direct
+catch for the `cargo build --release` trap. It was measured against a
+**known-good** production binary before being written:
+
+```
+binary built 19:08 by `pnpm exec tauri build --no-bundle`
+contains the current dist entry chunk .......... True   (it is a good build)
+contains "localhost:5173" ...................... True
+```
+
+A correct production binary embeds the whole `tauri.conf.json`, `devUrl`
+included. That refusal would reject **every** good build, and the first thing
+anyone would do is bypass the check — worse than not having it. **Absence of a
+dev string is not evidence of a production build; presence of this frontend
+is.** Recorded in the script's header so it is not proposed a third time.

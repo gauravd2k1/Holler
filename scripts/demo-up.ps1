@@ -166,6 +166,22 @@ param(
     # which refuses if the binary is missing or older than apps\pos\dist.
     [switch]$Release,
 
+    # SKIP THE COMPILE AT STEP 6 -- but NOT the check that follows it.
+    #
+    # FOR THE MORNING OF THE DEMO. A release compile then is not acceptable:
+    # it takes minutes, it can fail on a scanner lock (LNK1104), and the thing
+    # it would produce has not been rehearsed on. -NoBuild runs the demo
+    # against the binary that Tuesday's rehearsal was actually verified on.
+    #
+    # IT IS NOT "SKIP THE VERIFICATION". check-release-binary.ps1 still runs
+    # and still refuses a binary that does not contain the current dist, so a
+    # stale binary is caught here rather than in front of the client. The
+    # skipped work is the compiling; the guarantee is unchanged.
+    #
+    # It refuses outright if there is no binary to check: "use the one from
+    # yesterday" needs a yesterday.
+    [switch]$NoBuild,
+
     # Where every print is written instead of being sent to a device
     # (HOLLER_PRINTER_FILE_SINK_DIR). Empty resolves to <repo>\.dev-prints.
     #
@@ -726,10 +742,21 @@ if ($WhatIf) {
 }
 
 # =====================================================================
-Write-Step 6 "rebuild the frontends$(if ($Release) { ' and the POS RELEASE BINARY' } else { '' })"
+Write-Step 6 "$(if ($NoBuild) { 'verify the existing build (-NoBuild: nothing is compiled)' } else { "rebuild the frontends$(if ($Release) { ' and the POS RELEASE BINARY' } else { '' })" })"
 # =====================================================================
 $captainDir = Join-Path $repoRoot "apps\captain"
-if ($WhatIf) {
+if ($NoBuild) {
+    # The captain page is served from disk, so "the build that was rehearsed
+    # on" includes this directory too. It is checked for existence and its age
+    # is printed, because an empty dist is a phone that loads nothing and the
+    # operator should see the date they are running.
+    $capIndex = Join-Path $captainDir "dist\index.html"
+    if (-not (Test-Path $capIndex)) {
+        Fail-WithAction "-NoBuild was given but $capIndex does not exist." `
+                        "There is nothing to run the demo on. Drop -NoBuild for this run, or build it: cd apps\captain; pnpm build."
+    }
+    Write-Ok "captain dist (NOT rebuilt): $((Get-Item $capIndex).LastWriteTime)"
+} elseif ($WhatIf) {
     Write-Note "-WhatIf: would run 'pnpm build' in $captainDir"
 } else {
     if (-not (Test-Path (Join-Path $captainDir "node_modules"))) {
@@ -777,7 +804,37 @@ if ($WhatIf) {
 # downstream depends on it. The BINARY build runs only under -Release, because
 # without it step 8 starts `tauri dev`, which compiles from source anyway.
 $posDir = Join-Path $repoRoot "apps\pos"
-if ($WhatIf) {
+if ($NoBuild) {
+    $posIndex = Join-Path $posDir "dist\index.html"
+    if (-not (Test-Path $posIndex)) {
+        Fail-WithAction "-NoBuild was given but $posIndex does not exist." `
+                        "There is no frontend to run. Drop -NoBuild for this run."
+    }
+    Write-Ok "POS dist (NOT rebuilt): $((Get-Item $posIndex).LastWriteTime)"
+    if ($Release) {
+        $releaseExe = Join-Path $posDir "src-tauri\target\release\holler-pos.exe"
+        if (-not (Test-Path $releaseExe)) {
+            Fail-WithAction "-NoBuild -Release was given but $releaseExe does not exist." `
+                            "There is no binary to run the demo on. Drop -NoBuild for this run and let step 6 build it."
+        }
+        Write-Ok "POS release binary (NOT rebuilt): $((Get-Item $releaseExe).LastWriteTime)"
+        # THE CHECK STILL RUNS. -NoBuild skips compiling, never verifying: a
+        # binary that does not carry the current dist is refused here rather
+        # than discovered in front of the client.
+        $checker = Join-Path $repoRoot "scripts\check-release-binary.ps1"
+        if (Test-Path $checker) {
+            & $checker -RepoRoot $repoRoot
+            if ($LASTEXITCODE -ne 0) {
+                Fail-WithAction "check-release-binary.ps1 refused the existing binary (exit $LASTEXITCODE)." `
+                                "Do NOT start the demo on it. Re-run WITHOUT -NoBuild so step 6 rebuilds and re-checks."
+            }
+            Write-Ok "the existing binary contains the current dist -- checked, not assumed"
+        } else {
+            Fail-WithAction "$checker is missing, so -NoBuild cannot verify anything." `
+                            "Restore the script, or re-run without -NoBuild."
+        }
+    }
+} elseif ($WhatIf) {
     Write-Note "-WhatIf: would run 'pnpm build' in $posDir"
     if ($Release) {
         Write-Note "-WhatIf: would run 'pnpm exec tauri build --no-bundle' in $posDir (NOT cargo build --release)"
@@ -800,6 +857,11 @@ if ($WhatIf) {
 
     if ($Release) {
         Write-Note "building the release binary -- this takes minutes on a cold target directory"
+        # TIMED AND PRINTED EVERY RUN. The wall time is the whole argument for
+        # -NoBuild on the demo morning, and an argument made from a remembered
+        # figure is not one. Whatever this prints at the next rehearsal is what
+        # goes in docs\demo-status.md.
+        $buildStarted = Get-Date
         Push-Location $posDir
         try {
             pnpm exec tauri build --no-bundle
@@ -813,7 +875,9 @@ if ($WhatIf) {
             Fail-WithAction "the release build reported success but $releaseExe does not exist." `
                             "Check tauri.conf.json's productName -- run-dev.ps1 -Release launches this exact path, and so does the firewall rule."
         }
-        Write-Ok "POS release binary built: $((Get-Item $releaseExe).LastWriteTime)"
+        $buildElapsed = (Get-Date) - $buildStarted
+        Write-Ok "POS release binary built in $([int]$buildElapsed.TotalMinutes)m $($buildElapsed.Seconds)s: $((Get-Item $releaseExe).LastWriteTime)"
+        Write-Note "RECORD THAT FIGURE in docs\demo-status.md -- it is why -NoBuild exists for the demo morning."
         # POSITIVE EVIDENCE THAT THIS FRONTEND IS INSIDE THAT BINARY, never the
         # absence of a dev string: a correct production binary still embeds the
         # whole tauri.conf.json, devUrl included, so a check keyed on
