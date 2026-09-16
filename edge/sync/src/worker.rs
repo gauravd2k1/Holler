@@ -26,6 +26,12 @@ use crate::route::resolve;
 /// a 32-bit target.
 const VERIFY_SINCE_VERSION: i64 = i32::MAX as i64;
 
+/// The `last_code` a row carries when this build has no route for its event
+/// type. Stable and machine-readable, like the cloud's `ErrorCode` values the
+/// same column otherwise holds — the till's banner shows this column, and a
+/// human-written sentence there would drift from the one in the reason.
+pub const UNROUTED_EVENT_CODE: &str = "no_route";
+
 /// Static identity of this edge node — set once at enrollment. Not derived
 /// from any outbox row: tenant_id in particular has no home in the frozen
 /// edge SQLite schema outside `app_user` (ADR-011 note in this crate's
@@ -130,9 +136,10 @@ pub struct BlockedAggregate {
 pub struct PumpReport {
     /// Outbox row ids marked published this call, in the order they were sent.
     pub published: Vec<String>,
-    /// Outbox rows skipped because no ingest route exists yet for their
-    /// event_type (e.g. `kot` rows before Milestone 2) — left pending,
-    /// not an error.
+    /// Rows this build has no route for. They are ALSO recorded as blocked
+    /// and shown on the till (D8a): the name is kept because "skipped" is
+    /// what the drain does with them, but a skipped row is no longer a silent
+    /// one. `gave_up` carries the same rows with their reason.
     pub unrouted_skipped: Vec<String>,
     /// Outbox rows skipped because their aggregate_type does not carry
     /// EDGE_TO_CLOUD authority (§50.1) — a data-integrity bug elsewhere, but
@@ -408,8 +415,74 @@ impl SyncWorker {
                 &event_json,
             ) {
                 Ok(r) => r,
-                Err(SyncError::UnroutedEvent { .. }) => {
+                // AN UNROUTABLE ROW IS RECORDED AND SHOWN, NOT SKIPPED IN
+                // SILENCE (D8a, 2026-09-16).
+                //
+                // It used to `continue` here: not sent, not published, not
+                // charged an attempt, and NOT recorded anywhere. So a
+                // `KOTStatusChanged` or an `OrderReady` — both of which the
+                // edge emits and `route.rs` does not map — simply accumulated
+                // in the local outbox for ever, with every surface reporting a
+                // healthy till. 78 such rows were measured on the live edge on
+                // 2026-09-07 and nothing on any screen said so. **A wedge
+                // would have been better than this, because a wedge is
+                // visible.**
+                //
+                // It is marked blocked IMMEDIATELY, with no retry budget,
+                // because no number of retries can invent a route: this is not
+                // the cloud refusing content, it is this binary having no path
+                // to send on. Spending five attempts first would only delay
+                // the same verdict and imply a recovery that cannot happen.
+                //
+                // AND IT DOES NOT BLOCK ITS AGGREGATE — deliberately, unlike
+                // every other blocked row here. A 409 means the cloud rejected
+                // THIS row's content and its successors likely depend on it,
+                // so holding them back is protection. An unroutable row is
+                // permanent by construction, so holding its aggregate would
+                // strand every later row of that order for ever and convert a
+                // reporting gap into a real outage — which is the defect being
+                // fixed, wearing a new hat. Out-of-order arrival is safe at
+                // the other end: since ADR-028 the cloud validates transitions
+                // against the state machine and refuses an illegal one rather
+                // than applying it.
+                //
+                // The routes themselves are gap A7 (D8b), still open, trigger
+                // "before the first pilot". This makes the gap SAYABLE; it
+                // does not close it.
+                Err(SyncError::UnroutedEvent {
+                    aggregate_type,
+                    event_type,
+                }) => {
+                    let now = Utc::now().to_rfc3339();
+                    let reason = format!(
+                        "this build has no route for a {event_type} event, so it can never be sent"
+                    );
+                    repo::record_outbox_failure(
+                        db.connection(),
+                        &self.config.outlet_id,
+                        &row.id,
+                        &aggregate_type,
+                        &row.aggregate_id,
+                        None,
+                        Some(UNROUTED_EVENT_CODE),
+                        &reason,
+                        &now,
+                    )?;
+                    repo::mark_outbox_blocked(
+                        db.connection(),
+                        &self.config.outlet_id,
+                        &row.id,
+                        &now,
+                    )?;
                     report.unrouted_skipped.push(row.id.clone());
+                    report.gave_up.push(BlockedAggregate {
+                        aggregate_type,
+                        aggregate_id: row.aggregate_id.clone(),
+                        outbox_id: row.id.clone(),
+                        last_status: None,
+                        last_code: Some(UNROUTED_EVENT_CODE.to_string()),
+                        reason,
+                    });
                     continue;
                 }
                 Err(SyncError::MalformedPayload { outbox_id, reason }) => {

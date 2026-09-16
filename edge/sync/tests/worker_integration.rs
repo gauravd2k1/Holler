@@ -23,7 +23,7 @@ use holler_edge_database::{model, repo, Db};
 use holler_edge_sync::client::HttpClient;
 use holler_edge_sync::worker::{
     StopReason, SyncWorker, WorkerConfig, MAX_OUTBOX_REPLAY_ATTEMPTS,
-    OUTBOX_ATTENTION_ATTEMPTS,
+    OUTBOX_ATTENTION_ATTEMPTS, UNROUTED_EVENT_CODE,
 };
 use tiny_http::{Response, Server};
 
@@ -1022,9 +1022,11 @@ fn seed_menu_and_station(db: &Db, outlet_id: &str) -> String {
 ///
 /// **So there is no 404/405 wedge on this path — and that is a finding, not a
 /// reassurance.** A wedge would at least surface in the till's blocked-row
-/// banner. These rows are invisible by construction: the 78 stranded rows
-/// measured on the live edge on 2026-09-07 (gap A7) are this mechanism,
-/// counted.
+/// banner, while these rows were invisible by construction: the 78 stranded
+/// rows measured on the live edge on 2026-09-07 (gap A7) are this mechanism,
+/// counted. **D8a made them visible** -- they are recorded and shown as
+/// blocked now -- but the routes themselves are still missing, which is D8b
+/// and stays open with the trigger "before the first pilot".
 ///
 /// PREPARING, SERVED, BILLED, PAID and CLOSED are absent here because **the
 /// edge never puts an order in any of them.** The only `UPDATE "order" SET
@@ -1178,12 +1180,20 @@ fn a_full_order_drains_to_an_empty_outbox_and_the_kitchen_events_never_leave() {
     );
     assert!(
         !report2.unrouted_skipped.is_empty(),
-        "the kitchen rows must be SKIPPED as unrouted - not blocked, not sent"
+        "the kitchen rows must be reported as unroutable"
     );
+    // SINCE D8a (2026-09-16) AN UNROUTABLE ROW IS SAYABLE: recorded and shown
+    // on the till rather than skipped in silence, which is what the paragraph
+    // above used to end with. It still does not hold back its aggregate's
+    // later rows -- a route that does not exist will not start existing on a
+    // retry, so blocking the aggregate would strand every later row for ever.
     assert!(
         report2.blocked_aggregates.is_empty(),
-        "an unrouted row is invisible, NOT blocked: that is gap A7, and it is why \
-         these rows never reach the till's blocked-row banner"
+        "an unroutable row must NOT hold back its aggregate's later rows"
+    );
+    assert!(
+        !report2.gave_up.is_empty(),
+        "every unroutable row must be given up on VISIBLY"
     );
 
     let stranded: Vec<String> = repo::list_unpublished_outbox(db.connection(), 50)
@@ -1197,4 +1207,163 @@ fn a_full_order_drains_to_an_empty_outbox_and_the_kitchen_events_never_leave() {
             && stranded.contains(&"KOTCreated".to_string()),
         "the kitchen's whole record stays at the outlet, permanently: {stranded:?}"
     );
+}
+
+/// D8a: AN UNROUTABLE ROW MUST BE SAYABLE.
+///
+/// The drain used to `continue` past an event type `route.rs` does not map:
+/// not sent, not published, not charged an attempt, and recorded nowhere. So
+/// `OrderReady` and `KOTStatusChanged` — which the edge emits every time a
+/// kitchen finishes a ticket — accumulated in the local outbox for ever while
+/// every surface reported a healthy till. 78 such rows were measured on the
+/// live edge on 2026-09-07 and no screen said so.
+///
+/// This drives the real emitters rather than hand-writing an outbox row: the
+/// kitchen bumps its ticket to READY, which stamps the order READY and emits
+/// `OrderReady`. Then it asserts the row is in
+/// `repo::list_blocked_outbox_rows` — **the exact query the till's banner
+/// reads** (`useBlockedOutboxRowsQuery` -> `list_blocked_outbox_rows`), not a
+/// field of the in-memory report, because a report nothing renders is the
+/// silence this fixes.
+#[test]
+fn an_unroutable_event_is_recorded_and_shown_rather_than_skipped_in_silence() {
+    let server = Server::http("127.0.0.1:0").expect("start test server");
+    let addr = server.server_addr();
+    let base_url = format!("http://{addr}");
+
+    // verify_enrollment, create, line, confirm, send-to-kitchen.
+    let handle = std::thread::spawn(move || {
+        for _ in 0..5 {
+            if let Some(req) = recv_before_deadline(&server) {
+                let _ = req.respond(Response::from_string("{}").with_status_code(201));
+            }
+        }
+    });
+
+    let mut db = Db::open_in_memory_for_tests().expect("open db");
+    seed_outlet_and_device(&db, "outlet-1", "device-1");
+    let menu_item_id = seed_menu_and_station(&db, "outlet-1");
+    seed_order_with_outbox(&mut db, "order-1", "outbox-create");
+    db.add_order_item_with_outbox(
+        &model::NewOrderItem {
+            id: "line-1".to_string(),
+            order_id: "order-1".to_string(),
+            menu_item_id,
+            variant_id: None,
+            quantity: 1,
+            unit_price_paise: 25000,
+            line_total_paise: 25000,
+            notes: None,
+            created_at: "2026-08-07T10:01:00Z".to_string(),
+        },
+        &[],
+        &model::OrderItemAddedMeta {
+            outbox_id: "outbox-line-1".to_string(),
+            occurred_at: "2026-08-07T10:01:00Z".to_string(),
+        },
+    )
+    .expect("a ticket needs a line to carry");
+    db.confirm_order_with_outbox(
+        "order-1",
+        &model::OrderConfirmedMeta {
+            outbox_id: "outbox-confirm".to_string(),
+            occurred_at: "2026-08-07T10:02:00Z".to_string(),
+            confirmed_at: "2026-08-07T10:02:00Z".to_string(),
+        },
+    )
+    .expect("confirm");
+    let kots = db
+        .send_order_to_kitchen_with_outbox(
+            "order-1",
+            &model::SendToKitchenMeta {
+                device_id: "device-1".to_string(),
+                occurred_at: "2026-08-07T10:03:00Z".to_string(),
+            },
+        )
+        .expect("send to kitchen");
+
+    let worker = SyncWorker::new(worker_config(base_url));
+    worker.pump_outbox(&mut db, 50).expect("first pump");
+    handle.join().unwrap();
+
+    // The kitchen works the ticket to READY. The last transition stamps the
+    // ORDER ready too, which is what emits OrderReady.
+    let kot_id = kots[0].id.clone();
+    for (i, status) in ["ACKNOWLEDGED", "PREPARING", "READY"].iter().enumerate() {
+        db.transition_kot_status_with_outbox(
+            &kot_id,
+            status,
+            &model::KotTransitionMeta {
+                status_history_id: format!("history-{i}"),
+                outbox_id: format!("outbox-kot-{i}"),
+                changed_by_device_id: "device-1".to_string(),
+                occurred_at: format!("2026-08-07T10:1{i}:00Z"),
+            },
+        )
+        .unwrap_or_else(|e| panic!("transition to {status}: {e:?}"));
+    }
+
+    // Same worker: nothing left is routable, so no request is made and the
+    // finished stand-in cloud is never needed (see the note on the drain test
+    // above).
+    let report = worker.pump_outbox(&mut db, 50).expect("second pump");
+    assert!(
+        report.published.is_empty(),
+        "nothing routable is left, so nothing may be published"
+    );
+
+    // THE ASSERTION THAT MATTERS: the till's own query returns them.
+    let shown = repo::list_blocked_outbox_rows(db.connection(), "outlet-1")
+        .expect("list blocked outbox rows");
+    let order_ready = shown
+        .iter()
+        .find(|b| b.outbox_id == kot_ready_outbox_id(&db, "order-1"))
+        .or_else(|| shown.iter().find(|b| b.aggregate_type == "order"));
+    let order_ready = order_ready.unwrap_or_else(|| {
+        panic!(
+            "OrderReady must appear on the banner, not vanish: blocked rows were {:?}",
+            shown
+                .iter()
+                .map(|b| (b.aggregate_type.clone(), b.last_code.clone()))
+                .collect::<Vec<_>>()
+        )
+    });
+    assert_eq!(
+        order_ready.last_code.as_deref(),
+        Some(UNROUTED_EVENT_CODE),
+        "the row must carry a stable machine-readable reason, not prose alone"
+    );
+    assert!(
+        order_ready.blocked_at.is_some(),
+        "an unroutable row is blocked IMMEDIATELY: no number of retries can invent a route"
+    );
+    assert_eq!(
+        order_ready.attempts, 1,
+        "it is charged exactly one attempt, not a spent budget implying a recovery that cannot happen"
+    );
+    assert!(
+        order_ready.last_error.contains("no route"),
+        "the reason a human reads must say what is wrong: {:?}",
+        order_ready.last_error
+    );
+
+    // The KOT rows are there too — every stranded stream, not just the one
+    // the order carries.
+    assert!(
+        shown.iter().any(|b| b.aggregate_type == "kot"),
+        "the kitchen's own rows must be shown as well: {:?}",
+        shown.iter().map(|b| b.aggregate_type.clone()).collect::<Vec<_>>()
+    );
+}
+
+/// The `OrderReady` outbox row's id, which this crate mints itself rather than
+/// taking from the caller (see `KotTransitionMeta`'s doc comment), so a test
+/// has to look it up rather than name it.
+fn kot_ready_outbox_id(db: &Db, order_id: &str) -> String {
+    repo::list_unpublished_outbox(db.connection(), 100)
+        .expect("list outbox")
+        .into_iter()
+        .find(|e| e.event_type == "OrderReady" && e.aggregate_id == order_id)
+        .map(|e| e.id)
+        .unwrap_or_default()
 }

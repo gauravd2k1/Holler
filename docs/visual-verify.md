@@ -58,6 +58,7 @@ UNVERIFIED. Never a claim.**
 | VV-008 | M6 item 6 | KDS — browser on a **second device over the hotspot** | Load the KDS, send a ticket from the till, bump it. | The ticket renders, the bump sticks, and **no raw UUID, dev label or internal note** is on screen. | OPEN | | | The KDS has never been observed on a second device |
 | VV-009 | `d805218` | POS — **Tauri release window**, Kitchen panel on an order | Bump the ticket to READY on the KDS. Return to the till and read the order's Kitchen view. | It reads READY. **Record whether a remount was needed** — that is the open question (D14), not an aside. | OPEN | | | |
 | VV-010 | pre-existing | POS — **Tauri release window**, window chrome | Look at the title bar and the taskbar icon. | A real title and a real icon. Today the icon is a 16×16 placeholder from the scaffold (D23). | OPEN | | | Expected FAIL until artwork exists |
+| VV-011 | D8a | POS — **Tauri release window**, sync banner | Send an order to the kitchen, then bump its ticket to READY on the KDS. Watch the till's banner. | The banner names the stranded kitchen records — a **Kitchen ticket** line and an **Order** line, each reading `no_route`. Before D8a these rows existed and NOTHING said so. **This is the gap being made sayable, not closed**: the rows still cannot reach the cloud (D8b/A7). | OPEN | | | Needs a build after D8a; not in the 12:27 binary |
 
 ## What is NOT in here
 
