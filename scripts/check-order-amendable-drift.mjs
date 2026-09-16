@@ -79,6 +79,17 @@ const surfaces = {
     /ORDER_ITEM_AMENDABLE_STATUSES:\s*\[&str;\s*\d+\]\s*=\s*\[([\s\S]*?)\]/,
     "edge/database/src/repo.rs",
   ),
+  // A FIFTH declaration, found on 2026-09-16 while answering an unrelated
+  // question about what the edge emits. The captain page uses it to decide
+  // which tables have an order a waiter can add a round to, so a set narrower
+  // than the append route's hands the phone an order id the route then
+  // rejects, which reads as a broken Send. It is the same rule and it belongs
+  // under the same check.
+  "Rust APPENDABLE_ORDER_STATUSES (apps/pos/src-tauri/src/captain.rs)": members(
+    read("apps/pos/src-tauri/src/captain.rs"),
+    /APPENDABLE_ORDER_STATUSES:\s*\[&str;\s*\d+\]\s*=\s*\[([\s\S]*?)\]/,
+    "apps/pos/src-tauri/src/captain.rs",
+  ),
   "OpenAPI /orders/{id}/items": members(
     read("packages/contracts/openapi/openapi.yaml"),
     /amendable:\s*\[([^\]]*)\]/,

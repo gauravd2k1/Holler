@@ -956,3 +956,245 @@ fn a_row_that_later_succeeds_clears_its_failure_record() {
         .unwrap()
         .is_empty());
 }
+
+/// Seeds one category/item and one station, and routes the item to it, so
+/// `send_order_to_kitchen_with_outbox` has a ticket to cut. Mirrors
+/// `edge/database`'s own `seed_menu`/`seed_station` helpers, which live in
+/// that crate's private test module and cannot be reached from here.
+fn seed_menu_and_station(db: &Db, outlet_id: &str) -> String {
+    repo::upsert_menu_category(
+        db.connection(),
+        &model::MenuCategory {
+            id: "category-1".to_string(),
+            outlet_id: outlet_id.to_string(),
+            name: "Mains".to_string(),
+            sort_order: 1,
+            config_version: 1,
+        },
+    )
+    .expect("seed category");
+    repo::upsert_menu_item(
+        db.connection(),
+        &model::MenuItem {
+            id: "item-1".to_string(),
+            outlet_id: outlet_id.to_string(),
+            category_id: "category-1".to_string(),
+            name: "Burger".to_string(),
+            base_price_paise: 25000,
+            is_available: true,
+            config_version: 1,
+            tax_profile_id: None,
+            hsn_sac: Some("9963".to_string()),
+        },
+    )
+    .expect("seed menu item");
+    repo::upsert_station(
+        db.connection(),
+        &model::Station {
+            id: "station-1".to_string(),
+            outlet_id: outlet_id.to_string(),
+            code: "HOT".to_string(),
+            name: "Hot Pass".to_string(),
+            sort_order: 0,
+            is_active: true,
+            config_version: 1,
+        },
+    )
+    .expect("seed station");
+    repo::replace_menu_item_stations(db.connection(), "item-1", &["station-1".to_string()], 1)
+        .expect("route item to station");
+    "item-1".to_string()
+}
+
+/// WHICH PARTS OF AN ORDER'S LIFE CAN ACTUALLY LEAVE THE OUTLET, answered by
+/// draining one rather than by reading `route.rs`.
+///
+/// The order half drains to nothing: create, line, confirm, send-to-kitchen,
+/// and a line added AFTER the kitchen already has the ticket (`#132-A`) all
+/// reach the cloud, and no `order` row is left unpublished.
+///
+/// The kitchen half does not leave at all, and the WAY it fails is the point.
+/// Bumping the KOT writes `KOTStatusChanged`, and the derived order-READY
+/// stamp writes `OrderReady`. `edge/sync/src/route.rs` maps neither, so
+/// `resolve` returns `UnroutedEvent` and `pump_outbox` **SKIPS** the row: not
+/// sent, not marked published, not charged an attempt, and NOT recorded as
+/// blocked. It accumulates silently and forever.
+///
+/// **So there is no 404/405 wedge on this path — and that is a finding, not a
+/// reassurance.** A wedge would at least surface in the till's blocked-row
+/// banner. These rows are invisible by construction: the 78 stranded rows
+/// measured on the live edge on 2026-09-07 (gap A7) are this mechanism,
+/// counted.
+///
+/// PREPARING, SERVED, BILLED, PAID and CLOSED are absent here because **the
+/// edge never puts an order in any of them.** The only `UPDATE "order" SET
+/// status` statements outside tests are CONFIRMED, SENT_TO_KITCHEN and READY
+/// (`edge/database/src/repo.rs`); PREPARING is a KOT status, not an order one;
+/// and no event type exists for the rest. Nothing is emitted, so nothing can be
+/// refused — which is why `MountIngest` stopping at send-to-kitchen is not a
+/// live wedge today.
+#[test]
+fn a_full_order_drains_to_an_empty_outbox_and_the_kitchen_events_never_leave() {
+    let server = Server::http("127.0.0.1:0").expect("start test server");
+    let addr = server.server_addr();
+    let base_url = format!("http://{addr}");
+
+    let seen_paths: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(vec![]));
+    let seen_paths_clone = seen_paths.clone();
+    // verify_enrollment, then one request per routable order event: create,
+    // line, confirm, send-to-kitchen, and the post-send line.
+    let handle = std::thread::spawn(move || {
+        for _ in 0..6 {
+            if let Some(req) = recv_before_deadline(&server) {
+                seen_paths_clone.lock().unwrap().push(req.url().to_string());
+                let _ = req.respond(Response::from_string("{}").with_status_code(201));
+            }
+        }
+    });
+
+    let mut db = Db::open_in_memory_for_tests().expect("open db");
+    seed_outlet_and_device(&db, "outlet-1", "device-1");
+    let menu_item_id = seed_menu_and_station(&db, "outlet-1");
+    seed_order_with_outbox(&mut db, "order-1", "outbox-create");
+
+    let line = |id: &str| model::NewOrderItem {
+        id: id.to_string(),
+        order_id: "order-1".to_string(),
+        menu_item_id: menu_item_id.clone(),
+        variant_id: None,
+        quantity: 1,
+        unit_price_paise: 25000,
+        line_total_paise: 25000,
+        notes: None,
+        created_at: "2026-08-07T10:01:00Z".to_string(),
+    };
+
+    db.add_order_item_with_outbox(
+        &line("line-1"),
+        &[],
+        &model::OrderItemAddedMeta {
+            outbox_id: "outbox-line-1".to_string(),
+            occurred_at: "2026-08-07T10:01:00Z".to_string(),
+        },
+    )
+    .expect("add the first line");
+    db.confirm_order_with_outbox(
+        "order-1",
+        &model::OrderConfirmedMeta {
+            outbox_id: "outbox-confirm".to_string(),
+            occurred_at: "2026-08-07T10:02:00Z".to_string(),
+            confirmed_at: "2026-08-07T10:02:00Z".to_string(),
+        },
+    )
+    .expect("confirm");
+    let kots = db
+        .send_order_to_kitchen_with_outbox(
+            "order-1",
+            &model::SendToKitchenMeta {
+                device_id: "device-1".to_string(),
+                occurred_at: "2026-08-07T10:03:00Z".to_string(),
+            },
+        )
+        .expect("send to kitchen");
+    assert_eq!(kots.len(), 1, "one station, one ticket");
+
+    // The second round: legal at the edge since #132-A, and the call the cloud
+    // refused until contracts 0.8.3.
+    db.add_order_item_with_outbox(
+        &line("line-2"),
+        &[],
+        &model::OrderItemAddedMeta {
+            outbox_id: "outbox-line-2".to_string(),
+            occurred_at: "2026-08-07T10:04:00Z".to_string(),
+        },
+    )
+    .expect("add a line after the kitchen already has the ticket");
+
+    let worker = SyncWorker::new(worker_config(base_url));
+    let report = worker.pump_outbox(&mut db, 50).expect("pump");
+    handle.join().unwrap();
+
+    assert!(report.stopped.is_none(), "nothing may stop this drain");
+    assert_eq!(
+        *seen_paths.lock().unwrap(),
+        vec![
+            VERIFY_PATH,
+            "/orders",
+            "/orders/order-1/items",
+            "/orders/order-1/confirm",
+            "/orders/order-1/send-to-kitchen",
+            "/orders/order-1/items",
+        ],
+        "every order event must reach the cloud, in the order the edge recorded them"
+    );
+
+    let pending_after_order = repo::list_unpublished_outbox(db.connection(), 50).unwrap();
+    assert!(
+        pending_after_order
+            .iter()
+            .all(|e| e.aggregate_type != "order"),
+        "no ORDER row may be left behind: {:?}",
+        pending_after_order
+            .iter()
+            .map(|e| (e.aggregate_type.clone(), e.event_type.clone()))
+            .collect::<Vec<_>>()
+    );
+
+    // Now the kitchen works the ticket to READY, which also stamps the ORDER
+    // ready and emits OrderReady.
+    let kot_id = kots[0].id.clone();
+    for (i, status) in ["ACKNOWLEDGED", "PREPARING", "READY"].iter().enumerate() {
+        db.transition_kot_status_with_outbox(
+            &kot_id,
+            status,
+            &model::KotTransitionMeta {
+                status_history_id: format!("history-{i}"),
+                outbox_id: format!("outbox-kot-{i}"),
+                changed_by_device_id: "device-1".to_string(),
+                occurred_at: format!("2026-08-07T10:1{i}:00Z"),
+            },
+        )
+        .unwrap_or_else(|e| panic!("transition to {status}: {e:?}"));
+    }
+    assert_eq!(
+        db.get_order("order-1").unwrap().unwrap().status,
+        "READY",
+        "all tickets READY derives an order-READY stamp"
+    );
+
+    // Drain again ON THE SAME WORKER. No request is expected at all: every
+    // remaining row is unroutable, and an unroutable row is never sent.
+    //
+    // The worker is reused deliberately. A FRESH worker re-runs
+    // `verify_enrollment`, which is a real request, and the stand-in cloud's
+    // responder thread has already finished — so a second worker would sit on
+    // its own HTTP read timeout for a minute and prove nothing about routing.
+    // The harness note at the top of this file is the same point from the
+    // other side: size the script to what the flow really sends.
+    let report2 = worker.pump_outbox(&mut db, 50).expect("second pump");
+    assert!(
+        report2.published.is_empty(),
+        "nothing routable is left, so nothing may be published"
+    );
+    assert!(
+        !report2.unrouted_skipped.is_empty(),
+        "the kitchen rows must be SKIPPED as unrouted - not blocked, not sent"
+    );
+    assert!(
+        report2.blocked_aggregates.is_empty(),
+        "an unrouted row is invisible, NOT blocked: that is gap A7, and it is why \
+         these rows never reach the till's blocked-row banner"
+    );
+
+    let stranded: Vec<String> = repo::list_unpublished_outbox(db.connection(), 50)
+        .unwrap()
+        .iter()
+        .map(|e| e.event_type.clone())
+        .collect();
+    assert!(
+        stranded.contains(&"OrderReady".to_string())
+            && stranded.contains(&"KOTStatusChanged".to_string())
+            && stranded.contains(&"KOTCreated".to_string()),
+        "the kitchen's whole record stays at the outlet, permanently: {stranded:?}"
+    );
+}
