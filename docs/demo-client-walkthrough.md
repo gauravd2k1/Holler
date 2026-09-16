@@ -13,12 +13,90 @@ This file does not replace the two you already have.
 | `docs/demo-script.md` | The checklist for starting everything up on the day | While you are setting up |
 | `docs/demo-client-walkthrough.md` (this file) | The demonstration itself: what you show and what you say | In the room |
 
+**Section 0 below comes before all of them.** Build a fresh app before you
+start anything, or you may spend the demonstration looking at last night's
+work.
+
 **One important difference from `docs/demo-wednesday.md`.** That plan puts the
 kitchen screen on a second laptop. This one puts it on a telephone. Please read
 section 1.2 before you decide to do it that way. The screen is built to work on
 a small display, and I have checked that in the code, but nobody has ever
 actually run it on a telephone. I would rather tell you now than let you find
 out in front of the client.
+
+---
+
+# 0. Build a fresh binary first — before anything else
+
+**Read this section before the setup checklist, every time.**
+
+The Holler window on your laptop is a compiled program. **The screens inside it
+are baked into that program when it is built**, not read from the code folder
+when it starts. So starting the app does not pick up the latest work — it shows
+you whatever the program contained on the day it was compiled.
+
+That is not a theory. On 16 September the app was started fresh at 11:39 and was
+showing a build from 00:40 that morning. Everything looked normal, nothing was
+broken, and three things that had been fixed in between were simply not in it.
+Two of the checks about to be made against that window would have been wrong,
+and nobody would have known why.
+
+**So: build first, then start. Every time.**
+
+## The one command
+
+`scripts\demo-up.ps1` now does the build for you, as step 6 of 10. When you
+pass `-Release` it also builds the app itself, checks the built program really
+contains the screens it just compiled, and refuses to carry on if it does not.
+
+```powershell
+cd C:\Code\Holler
+.\scripts\demo-up.ps1 -Release -Fresh -DbKeyHex "<the key from apps\pos\.env.dev>" -LanHost "<your hotspot IP>"
+```
+
+`-Fresh` also wipes and re-seeds the restaurant, which is what you want before a
+rehearsal or the demonstration itself. Leave it off if you only want to restart
+the stack on the data already there.
+
+**Expect the build to take several minutes the first time each day**, and to be
+quick after that. It is compiling. Let it finish; the script will not go on to
+start anything until it has.
+
+## If you would rather do it by hand
+
+Three commands, in this order. The order matters: the app is built last because
+it swallows the screens built in the step before it.
+
+```powershell
+cd C:\Code\Holler\apps\captain
+pnpm build
+
+cd C:\Code\Holler\apps\pos
+pnpm build
+
+pnpm exec tauri build --no-bundle
+```
+
+**Never use `cargo build --release` for this.** It looks like it works, it
+finishes, it prints `RELEASE`, and the window it produces will show *"can't
+reach this page"* instead of the till, because that command produces a
+development app that goes looking for a server that is not running. This
+actually shipped once and went unnoticed for three sessions. `pnpm exec tauri
+build` is the command that puts the screens inside the program.
+
+## How to tell what you are actually running
+
+Started-at and built-at are different things, and only the second one tells you
+whether your work is in there:
+
+```powershell
+Get-Process holler-pos | Select-Object Id, StartTime, @{n='BuiltAt';e={(Get-Item $_.Path).LastWriteTime}}
+```
+
+`StartTime` is when you opened it. **`BuiltAt` is the version you are looking
+at.** If `BuiltAt` is older than the last change you expect to see, close the
+window and build again — do not try to explain what is on the screen until
+those two agree.
 
 ---
 

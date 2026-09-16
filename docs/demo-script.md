@@ -93,6 +93,18 @@ binary serves its own embedded UI.
 and `.\scripts\demo-up.ps1 ... -Release` both launch this exact binary and
 print the path they resolved.
 
+**THEY ARE NOT THE SAME ABOUT BUILDING IT.** `demo-up.ps1 -Release` REBUILDS
+the frontend and the binary at step 6 every run, then checks the binary
+contains the dist it just built. `run-dev.ps1 -Release` does NOT build — it
+launches what is already there and only checks the binary is newer than
+`dist`, which both being stale together passes. A POS started at 11:39 on
+2026-09-16 was running a 00:40 build and looked entirely normal. **`BuiltAt`,
+not `StartTime`, is the version you are looking at:**
+
+```powershell
+Get-Process holler-pos | Select-Object Id, StartTime, @{n='BuiltAt';e={(Get-Item $_.Path).LastWriteTime}}
+```
+
 <details>
 <summary>FALLBACK ONLY — launching it by hand, if those scripts cannot run</summary>
 

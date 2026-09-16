@@ -726,7 +726,7 @@ if ($WhatIf) {
 }
 
 # =====================================================================
-Write-Step 6 "rebuild apps\captain\dist (the POS serves this directory from disk)"
+Write-Step 6 "rebuild the frontends$(if ($Release) { ' and the POS RELEASE BINARY' } else { '' })"
 # =====================================================================
 $captainDir = Join-Path $repoRoot "apps\captain"
 if ($WhatIf) {
@@ -751,6 +751,85 @@ if ($WhatIf) {
                         "Check apps\captain\vite.config.ts's outDir. The POS serves this exact path (captain.rs dist_dir())."
     }
     Write-Ok "captain dist built: $indexPath ($((Get-Item $indexPath).LastWriteTime))"
+}
+
+# --- the POS frontend, and under -Release the binary that embeds it ---------
+#
+# WHY THIS RUNS EVERY TIME (added 2026-09-16, after a rehearsal was read off a
+# binary built twelve hours earlier).
+#
+# `apps\pos\dist` is EMBEDDED IN THE TAURI BINARY at compile time
+# (tauri.conf.json's frontendDist), so a release binary is a photograph of the
+# frontend as it stood when it was built. Starting it proves nothing about the
+# code in the tree: `run-dev.ps1 -Release` deliberately LAUNCHES what already
+# exists and only checks the binary is newer than dist -- both stale together
+# passes that check happily. On 2026-09-16 a POS started at 11:39 was running
+# a 00:40 build, and three verification rows were about to be read off it.
+#
+# `cargo build --release` IS NOT A SUBSTITUTE and must never be used here: it
+# produces a DEV-MODE app in the release profile whose window fetches its UI
+# from build.devUrl (http://localhost:5173) instead of the frontend compiled
+# into it. Only `pnpm exec tauri build` sets the environment that embeds
+# frontendDist. That shipped once and survived three sessions of green checks
+# (CLAUDE.md, "THERE ARE FOUR RUNTIMES").
+#
+# The frontend build runs unconditionally because it is seconds and everything
+# downstream depends on it. The BINARY build runs only under -Release, because
+# without it step 8 starts `tauri dev`, which compiles from source anyway.
+$posDir = Join-Path $repoRoot "apps\pos"
+if ($WhatIf) {
+    Write-Note "-WhatIf: would run 'pnpm build' in $posDir"
+    if ($Release) {
+        Write-Note "-WhatIf: would run 'pnpm exec tauri build --no-bundle' in $posDir (NOT cargo build --release)"
+    }
+} else {
+    Push-Location $posDir
+    try {
+        pnpm build
+        if ($LASTEXITCODE -ne 0) {
+            Fail-WithAction "'pnpm build' in apps\pos exited $LASTEXITCODE." `
+                            "Read the tsc/vite output above. Nothing below can run on a frontend that does not build."
+        }
+    } finally { Pop-Location }
+    $posIndex = Join-Path $posDir "dist\index.html"
+    if (-not (Test-Path $posIndex)) {
+        Fail-WithAction "'pnpm build' reported success but $posIndex does not exist." `
+                        "Check apps\pos\vite.config.ts's outDir -- tauri.conf.json's frontendDist embeds this exact directory."
+    }
+    Write-Ok "POS dist built: $((Get-Item $posIndex).LastWriteTime)"
+
+    if ($Release) {
+        Write-Note "building the release binary -- this takes minutes on a cold target directory"
+        Push-Location $posDir
+        try {
+            pnpm exec tauri build --no-bundle
+            if ($LASTEXITCODE -ne 0) {
+                Fail-WithAction "'pnpm exec tauri build --no-bundle' exited $LASTEXITCODE." `
+                                "Read the cargo output above. If it is LNK1104 'cannot open file ...exe', that is the real-time scanner holding the freshly-linked binary -- re-run, it makes progress each time (CLAUDE.md)."
+            }
+        } finally { Pop-Location }
+        $releaseExe = Join-Path $posDir "src-tauri\target\release\holler-pos.exe"
+        if (-not (Test-Path $releaseExe)) {
+            Fail-WithAction "the release build reported success but $releaseExe does not exist." `
+                            "Check tauri.conf.json's productName -- run-dev.ps1 -Release launches this exact path, and so does the firewall rule."
+        }
+        Write-Ok "POS release binary built: $((Get-Item $releaseExe).LastWriteTime)"
+        # POSITIVE EVIDENCE THAT THIS FRONTEND IS INSIDE THAT BINARY, never the
+        # absence of a dev string: a correct production binary still embeds the
+        # whole tauri.conf.json, devUrl included, so a check keyed on
+        # "localhost:5173 is not present" passes the BROKEN binary and proves
+        # nothing. scripts\check-release-binary.ps1 requires the binary to
+        # CONTAIN the current dist entry chunk's hashed filename.
+        $checker = Join-Path $repoRoot "scripts\check-release-binary.ps1"
+        if (Test-Path $checker) {
+            & $checker -RepoRoot $repoRoot
+            if ($LASTEXITCODE -ne 0) {
+                Fail-WithAction "check-release-binary.ps1 says the binary does not contain the frontend just built (exit $LASTEXITCODE)." `
+                                "Do NOT start the demo on it. Re-run the build; if it persists, the build is not embedding frontendDist."
+            }
+            Write-Ok "the release binary contains THIS dist -- checked, not assumed"
+        }
+    }
 }
 
 # =====================================================================
