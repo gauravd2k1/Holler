@@ -1286,30 +1286,6 @@ fn main() -> ExitCode {
     }
 }
 
-/// Builds the shared catalogue — exactly the "Shared" list in
-/// `seed/README.md` — as a `serde_json::Value`, from the Rust seed structs
-/// above (the authoring source). This is the ONLY place that walks
-/// `SEED_CATEGORIES`/`SEED_INVENTORY_ITEMS`/`SEED_RECIPES`/
-/// `SEED_MODIFIER_DELTAS`/`SEED_SUPPLIER_ITEMS` — [`seed_menu`],
-/// [`seed_inventory`], [`seed_recipes`] and [`seed_modifier_deltas`] (called
-/// from [`seed`]) read the emitted/committed JSON right back, never these
-/// consts directly, so the edge and cloud stay fed by the same bytes
-/// (seed/README.md).
-///
-/// Every id is minted by the same pure `seq -> id` functions the emitted
-/// JSON's own ids come from, so re-emitting with unchanged inputs produces
-/// byte-identical output — the property `scripts/check-seed-drift.mjs`
-/// depends on.
-///
-/// NOTE on key order: `seed/README.md`'s "File format" section pins a key
-/// order for human readability. `serde_json::Value`'s map type sorts keys
-/// alphabetically on serialisation (this crate does not depend on
-/// `serde_json`'s `preserve_order` feature — `Cargo.toml` is out of this
-/// task's owned paths), so the emitted file's key order is alphabetical
-/// rather than the literal order in that document. The file is still valid
-/// JSON, still parses identically regardless of order, and re-emission is
-/// still byte-stable — the drift check's actual guarantee — but a reader
-/// diffing against that document's literal key order will see reordering.
 // ---------------------------------------------------------------------------
 // THE FLOOR AND THE KITCHEN HARDWARE, DESCRIBED ONCE (D10, 2026-09-16)
 //
@@ -1411,6 +1387,30 @@ fn seed_station_printers() -> Vec<(&'static str, &'static str)> {
     vec![(STATION_ID, PRINTER_KITCHEN_ID)]
 }
 
+/// Builds the shared catalogue — exactly the "Shared" list in
+/// `seed/README.md` — as a `serde_json::Value`, from the Rust seed structs
+/// above (the authoring source). This is the ONLY place that walks
+/// `SEED_CATEGORIES`/`SEED_INVENTORY_ITEMS`/`SEED_RECIPES`/
+/// `SEED_MODIFIER_DELTAS`/`SEED_SUPPLIER_ITEMS` — [`seed_menu`],
+/// [`seed_inventory`], [`seed_recipes`] and [`seed_modifier_deltas`] (called
+/// from [`seed`]) read the emitted/committed JSON right back, never these
+/// consts directly, so the edge and cloud stay fed by the same bytes
+/// (seed/README.md).
+///
+/// Every id is minted by the same pure `seq -> id` functions the emitted
+/// JSON's own ids come from, so re-emitting with unchanged inputs produces
+/// byte-identical output — the property `scripts/check-seed-drift.mjs`
+/// depends on.
+///
+/// NOTE on key order: `seed/README.md`'s "File format" section pins a key
+/// order for human readability. `serde_json::Value`'s map type sorts keys
+/// alphabetically on serialisation (this crate does not depend on
+/// `serde_json`'s `preserve_order` feature — `Cargo.toml` is out of this
+/// task's owned paths), so the emitted file's key order is alphabetical
+/// rather than the literal order in that document. The file is still valid
+/// JSON, still parses identically regardless of order, and re-emission is
+/// still byte-stable — the drift check's actual guarantee — but a reader
+/// diffing against that document's literal key order will see reordering.
 fn build_shared_catalogue(identity: &OutletIdentity) -> Result<Value, String> {
     // ---- menu: categories, items, variants, modifiers ----
     // Order matches seed_menu/seed(): the two legacy T0b fixtures (fixed ids,
