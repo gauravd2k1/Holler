@@ -3,6 +3,7 @@ package ordering
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -261,14 +262,38 @@ func TestAppendItem_DuplicateDeliveryIsIdempotentAndAppendOnly(t *testing.T) {
 	}
 }
 
-func TestAppendItem_RejectedOnceOrderLeftDraft(t *testing.T) {
-	svc, _ := newTestService()
+// TestAppendItem_RejectedOnceOrderLeftDraft is now
+// TestAppendItem_RejectedOncePastTheAmendableSet: the line is refused once the
+// order is past ORDER_ITEM_AMENDABLE_STATUSES, not once it is past DRAFT.
+// CONFIRMED, SENT_TO_KITCHEN and PREPARING are amendable at the EDGE (#132-A —
+// a second Send on the same table) and §50.1 makes that the edge's call, so
+// the cloud reads the set from contracts (0.8.3, ADR-028) instead of keeping
+// one of its own. READY is the first status on the far side of it.
+func TestAppendItem_RejectedOncePastTheAmendableSet(t *testing.T) {
+	svc, repo := newTestService()
 	if _, err := svc.IngestOrder(context.Background(), testTenantID, baseEnvelope(1), baseOrder()); err != nil {
 		t.Fatalf("IngestOrder: %v", err)
 	}
-	if _, err := svc.transition(context.Background(), testTenantID, baseEnvelope(2), testOrderID, contracts.OrderStatusConfirmed); err != nil {
-		t.Fatalf("transition to CONFIRMED: %v", err)
+	// Every amendable status must ACCEPT a line — the half a "rejected once"
+	// test cannot see, and the half the cloud got wrong.
+	for i, status := range contracts.OrderItemAmendableStatuses {
+		amendable := repo.orders[testOrderID]
+		amendable.Status = status
+		repo.orders[testOrderID] = amendable
+		item := contracts.OrderItem{
+			ID:             fmt.Sprintf("99999999-9999-7999-8999-00000000000%d", i),
+			MenuItemID:     "88888888-8888-7888-8888-888888888888",
+			Quantity:       1,
+			UnitPricePaise: 10000,
+			LineTotalPaise: 10000,
+		}
+		if _, err := svc.AppendItem(context.Background(), testTenantID, baseEnvelope(2), testOrderID, item); err != nil {
+			t.Fatalf("expected a line to be accepted while %s, got %v", status, err)
+		}
 	}
+	past := repo.orders[testOrderID]
+	past.Status = contracts.OrderStatusReady
+	repo.orders[testOrderID] = past
 
 	item := contracts.OrderItem{
 		ID:             "77777777-7777-7777-8777-777777777777",
@@ -279,7 +304,7 @@ func TestAppendItem_RejectedOnceOrderLeftDraft(t *testing.T) {
 	}
 	_, err := svc.AppendItem(context.Background(), testTenantID, baseEnvelope(3), testOrderID, item)
 	if !errors.Is(err, httpx.ErrConflict) {
-		t.Fatalf("expected ErrConflict appending to a non-DRAFT order, got %v", err)
+		t.Fatalf("expected ErrConflict appending to a READY order, got %v", err)
 	}
 }
 

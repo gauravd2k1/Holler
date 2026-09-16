@@ -1299,6 +1299,20 @@ pub(crate) fn require_draft_order(tx: &Transaction, order_id: &str) -> DbResult<
 /// edit of a bill already on its way out. Returns the order's `outlet_id` on
 /// success. Returns `DbError::NotFound` if the order does not exist,
 /// `DbError::OrderNotAmendable` if it exists but is in a terminal status.
+/// The statuses in which an order's lines may still be amended.
+///
+/// **One set, declared in `packages/contracts` and mirrored here** — TS
+/// `ORDER_ITEM_AMENDABLE_STATUSES` (`src/types/order.ts`) and Go
+/// `OrderItemAmendableStatuses` (`go/order.go`), contracts 0.8.3, ADR-028.
+/// This crate cannot import either, so `scripts/check-order-amendable-drift.mjs`
+/// compares this array against them and against openapi.yaml and fails the
+/// build on any disagreement. That check exists because these three
+/// declarations DID disagree — the cloud enforced DRAFT only — and nothing
+/// went red for months, since a separate defect kept cloud-side orders in
+/// DRAFT so the rule was never reached.
+pub(crate) const ORDER_ITEM_AMENDABLE_STATUSES: [&str; 4] =
+    ["DRAFT", "CONFIRMED", "SENT_TO_KITCHEN", "PREPARING"];
+
 pub(crate) fn require_amendable_for_item_changes(
     tx: &Transaction,
     order_id: &str,
@@ -1313,10 +1327,7 @@ pub(crate) fn require_amendable_for_item_changes(
     match row {
         None => Err(crate::error::DbError::NotFound("order")),
         Some((outlet_id, status))
-            if matches!(
-                status.as_str(),
-                "DRAFT" | "CONFIRMED" | "SENT_TO_KITCHEN" | "PREPARING"
-            ) =>
+            if ORDER_ITEM_AMENDABLE_STATUSES.contains(&status.as_str()) =>
         {
             Ok(outlet_id)
         }

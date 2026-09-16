@@ -114,8 +114,18 @@ paths:
   /orders/{id}/items:
     post:
       summary: >
-        Replay an item appended to a DRAFT order at the edge. Financial line
-        items are append-only (§51) — this never updates or removes a line.
+        Replay an item appended at the edge. Financial line items are
+        append-only (§51) — this never updates or removes a line.
+
+
+        AMENDABLE STATUSES (contracts 0.8.3, ADR-028), one set declared in
+        src/types/order.ts and mirrored in Go and in the edge's Rust:
+        amendable: [DRAFT, CONFIRMED, SENT_TO_KITCHEN, PREPARING].
+        This route was described and enforced as DRAFT-only until 0.8.3,
+        while the edge has allowed a line to be added through PREPARING since
+        #132-A — a second Send on the same table. The edge is the authority
+        for order transactions (§50.1), so the cloud replays what the outlet
+        did and does not get an amendable set of its own.
       parameters:
         - $ref: "#/components/parameters/OrderId"
       requestBody:
@@ -131,6 +141,13 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/CanonicalOrder"
+        "409":
+          description: >
+            The order is past the amendable set above — READY or later, or
+            CANCELLED. A refusal here is PERMANENT and the edge's outbox is
+            at-least-once, so every later row of this order queues behind it:
+            this status is for a line change that genuinely must not be
+            replayed, never for one the outlet legitimately made.
         "422":
           $ref: "#/components/responses/EnvelopeRouteMismatch"
 
@@ -468,7 +485,15 @@ paths:
               schema:
                 $ref: "#/components/schemas/CanonicalOrder"
         "409":
-          description: Illegal transition — the order was not in DRAFT
+          description: >
+            Illegal transition — the order was neither DRAFT nor already
+            CONFIRMED. Confirming an order that is ALREADY CONFIRMED returns
+            200 with the stored row unchanged (contracts 0.8.3, ADR-028): the
+            edge's outbox is at-least-once, so it redelivers a confirm whose
+            acknowledgement was lost, and there is no per-event version to
+            tell that redelivery from a fresh command. Refusing it would
+            wedge the order's queue permanently. confirmed_at is never
+            shifted by a redelivery.
         "422":
           $ref: "#/components/responses/EnvelopeRouteMismatch"
 
@@ -485,7 +510,12 @@ paths:
               $ref: "#/components/schemas/OrderCancelEnvelope"
       responses:
         "200":
-          description: Order cancelled
+          description: >
+            Order cancelled. Replaying a cancellation for an order that is
+            ALREADY CANCELLED returns 200 with the stored row unchanged
+            (contracts 0.8.3, ADR-028) — the edge's outbox is at-least-once
+            and redelivers a row whose acknowledgement was lost. A cancel
+            aimed at any OTHER terminal status is still an illegal transition.
           content:
             application/json:
               schema:

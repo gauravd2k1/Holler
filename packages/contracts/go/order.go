@@ -63,6 +63,34 @@ const (
 	OrderStatusCancelled      OrderStatus = "CANCELLED"
 )
 
+// OrderItemAmendableStatuses is the set of statuses in which an order's lines
+// may still be amended. Added at 0.8.3 (ADR-028). Mirrors
+// ORDER_ITEM_AMENDABLE_STATUSES in src/types/order.ts, which carries the full
+// reasoning; scripts/check-order-amendable-drift.mjs fails the build if this
+// list, that one, the edge's Rust match arm or openapi.yaml disagree.
+//
+// Adding a line after the order has gone to the kitchen is ordinary
+// restaurant work and the edge has allowed it since #132-A. The edge is the
+// authority for order transactions (§50.1): the cloud replays what the outlet
+// did and does not get an amendable set of its own.
+var OrderItemAmendableStatuses = []OrderStatus{
+	OrderStatusDraft,
+	OrderStatusConfirmed,
+	OrderStatusSentToKitchen,
+	OrderStatusPreparing,
+}
+
+// IsOrderItemAmendable reports whether status still permits a line to be
+// added, removed or resized.
+func IsOrderItemAmendable(status OrderStatus) bool {
+	for _, s := range OrderItemAmendableStatuses {
+		if s == status {
+			return true
+		}
+	}
+	return false
+}
+
 type PaymentStatus string
 
 const (

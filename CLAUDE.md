@@ -36,7 +36,8 @@ The split that matters: WSL2 hosts the **cloud** dependencies for local developm
 ## Coding rules
 - Strict typing, no `any`. Business logic outside UI components; DB logic outside HTTP handlers.
 - Never store a bare global builtin on an object field. `setTimeout`, `setInterval`, `fetch`, `WebSocket`, `crypto.*` are receiver-bound in browsers and throw `Illegal invocation` when detached — bind at capture or call them free. Node tolerates it, so no Node-based test will catch it, and **no linter catches it either** (`unbound-method` cannot see it: `lib.dom.d.ts` declares these as functions, not methods). The only guard is the real-browser smoke test (`docs/retro.md`, 2026-08-11).
-- **Build-green ≠ dev-works for the Tauri/web apps. Never report a frontend change as verified on `pnpm build` + `tsc` + unit tests alone.** Two incidents, both invisible to every green suite: the KDS detached-global crash (browser-only, `docs/retro.md` 2026-08-11) and the POS white screen (dev-server-only, 2026-08-20 — a stale `node_modules/.vite` prebundle; `optimizeDeps` is a dev-server mechanism that `vite build` never reads, so the build cannot fail on it). The dev server and the browser are each a distinct runtime from the build output, and a failure in either is invisible from the others. When a frontend change is claimed to work, say which runtime it was observed in. First move when a Tauri app renders blank: check `node_modules/.vite` against the mtime of what it was built from, and check the Network tab, not only the console. **THERE ARE FOUR RUNTIMES, NOT THREE, AND THE FOURTH IS THE ONE THAT SHIPS: the build output, the dev server, the browser, and the TAURI RELEASE WINDOW.** A third incident, 2026-09-15: `cargo build --release` does NOT produce a production Tauri app -- it produces a DEV-MODE app in the release profile, whose window fetches its UI from `build.devUrl` (`http://localhost:5173`) instead of the frontend compiled into it. Only `pnpm exec tauri build` sets the environment that embeds `frontendDist`. The binary opened a window, printed `build : RELEASE`, and showed "can't reach this page -- localhost refused to connect". **It had been that way since the first release build, through three sessions, and every check passed**: the file existed at the path the firewall rule named, it was newer than `dist`, its SHA-256 was recorded twice, `Get-Process` showed `targetelease`. **Every one of those passes on a binary that cannot draw a window** -- existence and identity checks standing in for a function check, unnoticed because each individually looks like diligence. The guard is `scripts/check-release-binary.ps1`, which `run-dev.ps1 -Release` runs before launching: it requires the binary to CONTAIN the current `dist` entry chunk's hashed filename. Note why it is that and not the obvious test -- a correct production binary still embeds the whole `tauri.conf.json`, `devUrl` included, so a check keyed on the presence of `localhost:5173` passes the BROKEN binary and proves nothing. **Positive evidence that THIS frontend is inside, never absence of a dev string.**
+- **Build-green ≠ dev-works for the Tauri/web apps. Never report a frontend change as verified on `pnpm build` + `tsc` + unit tests alone.** Two incidents, both invisible to every green suite: the KDS detached-global crash (browser-only, `docs/retro.md` 2026-08-11) and the POS white screen (dev-server-only, 2026-08-20 — a stale `node_modules/.vite` prebundle; `optimizeDeps` is a dev-server mechanism that `vite build` never reads, so the build cannot fail on it). The dev server and the browser are each a distinct runtime from the build output, and a failure in either is invisible from the others. When a frontend change is claimed to work, say which runtime it was observed in. First move when a Tauri app renders blank: check `node_modules/.vite` against the mtime of what it was built from, and check the Network tab, not only the console. **THERE ARE FOUR RUNTIMES, NOT THREE, AND THE FOURTH IS THE ONE THAT SHIPS: the build output, the dev server, the browser, and the TAURI RELEASE WINDOW.** A third incident, 2026-09-15: `cargo build --release` does NOT produce a production Tauri app -- it produces a DEV-MODE app in the release profile, whose window fetches its UI from `build.devUrl` (`http://localhost:5173`) instead of the frontend compiled into it. Only `pnpm exec tauri build` sets the environment that embeds `frontendDist`. The binary opened a window, printed `build : RELEASE`, and showed "can't reach this page -- localhost refused to connect". **It had been that way since the first release build, through three sessions, and every check passed**: the file existed at the path the firewall rule named, it was newer than `dist`, its SHA-256 was recorded twice, `Get-Process` showed `target
+elease`. **Every one of those passes on a binary that cannot draw a window** -- existence and identity checks standing in for a function check, unnoticed because each individually looks like diligence. The guard is `scripts/check-release-binary.ps1`, which `run-dev.ps1 -Release` runs before launching: it requires the binary to CONTAIN the current `dist` entry chunk's hashed filename. Note why it is that and not the obvious test -- a correct production binary still embeds the whole `tauri.conf.json`, `devUrl` included, so a check keyed on the presence of `localhost:5173` passes the BROKEN binary and proves nothing. **Positive evidence that THIS frontend is inside, never absence of a dev string.**
 - Provider-specific code (aggregators, payments, printers) behind interfaces — never leak into core domain.
 - No magic numbers, no hard-coded tax rates/restaurant IDs/URLs, no secrets committed.
 - Contracts (`packages/contracts/`) are edited only by the orchestrator/architect session — never by a builder agent.
@@ -55,7 +56,7 @@ The tree is what `ls` shows; `backend/internal/<context>` is one bounded context
 - POS: `pnpm test` / `pnpm tauri dev` inside `apps/pos/`.
 - CI: lint, format, unit, integration, contract-drift check, build, security scan.
 
-## Contracts status: FROZEN at v0.8.2 (M6 Phase C aggregator shapes ADR-022, `order.source` widening ADR-026, `GET /orders` documented ADR-027; migrations through sqlite 0035 / postgres 0035)
+## Contracts status: FROZEN at v0.8.3 (M6 Phase C aggregator shapes ADR-022, `order.source` widening ADR-026, `GET /orders` documented ADR-027, at-least-once order replay ADR-028; migrations through sqlite 0035 / postgres 0035)
 <!-- The version and migration numbers on the heading above are checked by
      scripts/check-milestone-marker.mjs against packages/contracts/package.json
      and the migration files on disk. Third staleness of this line (0.4.7,
@@ -196,6 +197,46 @@ from the spec the whole time, which is why a survey of `openapi.yaml` read
   reads a fixture authored with a `Z`. The guard added here asserts the
   MARSHALLED BYTES, never the `time.Time`, which compares equal under both
   spellings.
+
+**0.8.3** (ADR-028) changed no schema and no store. It added ONE constant per
+wire language and changed TWO observable HTTP behaviours, because **the cloud's
+order command rules assumed exactly-once ordered delivery and the edge's outbox
+is at-least-once.** Three rules bind every builder:
+- **`SyncEnvelope.version` SEQUENCES NOTHING.** The edge fills it from the LIVE
+  aggregate row when it sends an outbox row, so every event still queued for
+  one order carries the same number, and no per-event version exists to send
+  instead. A cloud rule of `version == current + 1` therefore failed BOTH ways
+  on the live stack: a transition arriving ahead was a permanent 409 that wedged
+  every later row of that order, and one arriving equal (the whole-service-
+  offline case) read as an already-applied replay and returned 200 **without
+  applying anything** — the order sat DRAFT in the cloud with no error, no
+  blocked row and no banner. The state machine is the whole guard now:
+  `current.Status == to` is idempotency, `validTransition` is legality, and the
+  stored version only moves forward. **Consequence: a redelivered confirm or
+  cancel is a 200, not a 409** — under at-least-once with no per-event version,
+  a lost acknowledgement is indistinguishable from a fresh command, and
+  refusing it strands everything behind it. A confirm is absorbed on the
+  EVIDENCE that it was applied (`confirmed_at` set), not on the current status,
+  because the order may legitimately have moved on. A terminal status that is
+  not the one being replayed is still refused.
+- **`ORDER_ITEM_AMENDABLE_STATUSES` = DRAFT, CONFIRMED, SENT_TO_KITCHEN,
+  PREPARING, DECLARED ONCE AND CONSUMED.** It is the EDGE's rule (§50.1); the
+  cloud replays what the outlet did and **does not get an amendable set of its
+  own**. It had three independent declarations — a Rust match arm, a Go
+  equality test, one word of English in `openapi.yaml` — and they disagreed for
+  months with every test green, because the version defect above kept every
+  cloud order in DRAFT so the cloud's stricter rule was never reached.
+  **DEFECT A MASKED DEFECT B.** `scripts/check-order-amendable-drift.mjs` fails
+  the build when any of the four surfaces disagrees, including on ORDER, and
+  when the cloud stops calling `contracts.IsOrderItemAmendable`.
+- **A SYNC TEST MUST DRIVE A COMPLETE ORDER LIFECYCLE, NOT ONE TRANSITION.**
+  Every single-transition test on both sides passed throughout both defects,
+  because each sets up the exact predecessor state it needs and makes one call.
+  Neither defect lives in one call. `TestOrderLifecycle_ReplayedThroughTheSync
+  Path` replays a whole edge-legal life the way the outbox sends it — every
+  envelope at the same version, a line appended after the kitchen has the
+  ticket, one redelivered row — and fails against a pre-fix service on each
+  defect independently.
 
 Two cross-cutting rules the 0.4.x line established the hard way: contract-shaped changes cascade across crates that do not share a cargo workspace (see `docs/retro.md` 2026-08-15), so run `make check-seams` after changing any `pub` signature in `edge/` or `apps/pos/src-tauri`; and a migration that exists on disk but is absent from `edge/database/src/migrations.rs`'s `MIGRATIONS` list **never applies** — 0009–0011 sat dead for exactly that reason, and 0005 before them.
 

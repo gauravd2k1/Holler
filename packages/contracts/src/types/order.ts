@@ -59,6 +59,43 @@ export const OrderStatusSchema = z.enum([
 ]);
 export type OrderStatus = z.infer<typeof OrderStatusSchema>;
 
+// THE STATUSES IN WHICH AN ORDER'S LINES MAY STILL BE AMENDED. Added at
+// 0.8.3 (ADR-028).
+//
+// Adding a line to an order that has already gone to the kitchen is the
+// normal way a restaurant works — a table orders another round, a waiter
+// sends a starter and a main separately — and the edge has allowed it since
+// `#132-A` (docs/spec/kitchen.md). The cloud allowed it only in DRAFT and
+// refused everything else with a permanent 409, which under an at-least-once
+// outbox means the order's whole queue wedges behind the refusal.
+//
+// **THIS SET IS DECLARED ONCE AND CONSUMED, NEVER RESTATED.** It had three
+// independent declarations — a Rust match arm at the edge, a Go equality test
+// in the cloud, and one word of English in openapi.yaml — and they disagreed
+// for months without anything going red, because the defect that hid it
+// (orders stuck in DRAFT cloud-side, fixed the same day) meant the cloud rule
+// was never reached. `scripts/check-order-amendable-drift.mjs` now fails the
+// build if any surface disagrees with this array.
+//
+// The edge is the authority for order transactions (§50.1), so this is the
+// EDGE's rule written down, not a negotiated middle: the cloud replays what
+// the outlet did and does not get an amendable set of its own.
+//
+// READY, SERVED, BILLED, PAID, CLOSED and CANCELLED are deliberately absent.
+// By then the correction belongs to a new order or an explicit reopen, not a
+// silent edit of a bill already on its way to the guest.
+export const ORDER_ITEM_AMENDABLE_STATUSES = [
+  "DRAFT",
+  "CONFIRMED",
+  "SENT_TO_KITCHEN",
+  "PREPARING",
+] as const satisfies readonly OrderStatus[];
+
+/** True when `status` still permits a line to be added, removed or resized. */
+export function isOrderItemAmendable(status: OrderStatus): boolean {
+  return (ORDER_ITEM_AMENDABLE_STATUSES as readonly OrderStatus[]).includes(status);
+}
+
 export const OrderItemModifierSchema = z.object({
   modifier_id: z.string().uuid(),
   group_name: z.string(),

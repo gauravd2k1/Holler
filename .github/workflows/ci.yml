@@ -192,6 +192,19 @@ jobs:
       # trusted.
       - name: order.source agrees across both stores and all three wire types
         run: node scripts/check-order-source-drift.mjs
+      # The statuses in which an order's LINES may still be amended are
+      # declared four times -- Zod, Go, the edge's Rust and one line of English
+      # in openapi.yaml -- and nothing could compare them. They DID disagree:
+      # the edge allowed a line through PREPARING (#132-A) while the cloud
+      # enforced DRAFT only, and every test on both sides passed, because a
+      # second defect kept cloud-side orders in DRAFT so the rule was never
+      # reached. Defect A masked defect B (contracts 0.8.3, ADR-028). The cost
+      # of a mismatch is a PERMANENT 409 against an at-least-once outbox, which
+      # wedges every later row of that order. Watched RED against each of the
+      # four surfaces in turn, and against a cloud that restates the rule
+      # instead of reading it.
+      - name: the order line-amendment rule agrees across contracts, cloud and edge
+        run: node scripts/check-order-amendable-drift.mjs
       # The Go guard in backend/cmd/api/syncconfig_guard_test.go proves the
       # cloud SENDS a config column. It cannot prove an outlet STORES it, and
       # at 0.6.0 four procurement families passed that guard, shipped in every

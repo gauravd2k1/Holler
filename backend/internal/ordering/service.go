@@ -123,8 +123,17 @@ func (s *Service) AppendItem(ctx context.Context, callerTenantID string, env con
 	if err != nil {
 		return StoredOrder{}, err
 	}
-	if current.Status != contracts.OrderStatusDraft {
-		return StoredOrder{}, fmt.Errorf("%w: items can only be appended to a DRAFT order, order is %q", httpx.ErrConflict, current.Status)
+	// THE AMENDABLE SET IS THE EDGE'S, AND IT IS READ FROM CONTRACTS, NEVER
+	// RESTATED HERE (contracts 0.8.3, ADR-028). This was `== DRAFT`, while
+	// the edge has allowed a line to be added through PREPARING since #132-A
+	// — a second Send on the same table, which is ordinary restaurant work.
+	// Under an at-least-once outbox that mismatch is not one refused line: the
+	// 409 is permanent, so every later row of that order queues behind it and
+	// the till shows a wedged aggregate. §50.1 makes the edge the authority
+	// for order transactions; the cloud replays what the outlet did and does
+	// not get an amendable set of its own.
+	if !contracts.IsOrderItemAmendable(current.Status) {
+		return StoredOrder{}, fmt.Errorf("%w: items can only be appended while an order is amendable (%v), order is %q", httpx.ErrConflict, contracts.OrderItemAmendableStatuses, current.Status)
 	}
 
 	if _, err := s.repo.AppendItem(ctx, callerTenantID, orderID, item); err != nil {
@@ -252,7 +261,17 @@ func (s *Service) Confirm(ctx context.Context, callerTenantID string, env contra
 	// Idempotent replay: the edge resent a confirmation this order has
 	// already taken. Return the current row rather than re-applying or
 	// shifting confirmed_at (see replayVersion).
-	if current.Status == contracts.OrderStatusConfirmed {
+	//
+	// THE TEST IS EVIDENCE THAT A CONFIRM WAS APPLIED, NOT THE CURRENT
+	// STATUS, because the order may legitimately have moved on since. A
+	// redelivered confirm reaching a SENT_TO_KITCHEN order is the same lost
+	// acknowledgement as one reaching a CONFIRMED order, and refusing it is
+	// the same permanent 409 that strands every row behind it. `confirmed_at`
+	// is that evidence: only this route sets it, and it outlives the status.
+	// The status is checked too, for a cloud row confirmed before the column
+	// was stamped by any production path (contracts 0.2.5 fixed that; rows
+	// predating it exist).
+	if current.Timestamps.ConfirmedAt != nil || current.Status == contracts.OrderStatusConfirmed {
 		return current, nil
 	}
 	if current.Status != contracts.OrderStatusDraft {
