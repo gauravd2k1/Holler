@@ -129,7 +129,7 @@ impl OutletIdentity {
         let text = String::from_utf8(bytes.clone())
             .map_err(|e| format!("outlet identity file {path:?} is not valid UTF-8: {e}"))?;
         let mut identity = Self::parse(&text, path)?;
-        identity.source_sha256 = sha256_hex(&bytes);
+        identity.source_sha256 = source_sha256_of(&text);
         Ok(identity)
     }
 
@@ -475,6 +475,35 @@ fn is_hhmm(s: &str) -> bool {
 /// Hand-rolled for the same reason the parser is: this crate has no hashing
 /// dependency and the digest is used to identify a config file in a log line,
 /// not to protect anything.
+/// The identity hash, over NEWLINE-NORMALISED content.
+///
+/// **The guard this feeds means "a catalogue emitted from a DIFFERENT
+/// RESTAURANT'S identity file". Line endings are not a different
+/// restaurant.** Hashing the raw bytes made the hash depend on how git
+/// happened to check the file out, so a catalogue emitted on an LF checkout
+/// could never match on a CRLF one — and both seeders then refuse with
+/// "was emitted from a different outlet identity file than this run was
+/// handed", which reads exactly like the real defect it is supposed to
+/// catch.
+///
+/// Measured on 2026-09-17, on one unmodified `seed/outlet.example.toml`:
+///
+/// ```text
+/// LF bytes   -> a29e82d47f67…   (what the committed catalogue carries)
+/// CRLF bytes -> b4417a7811eb…   (what the Windows CI runner computed)
+/// ```
+///
+/// Five `crash_durability` tests failed on that difference alone. It was
+/// invisible until the tests were pointed at the committed example file,
+/// which is what finally made this comparison run on CI at all.
+///
+/// Normalising `\r\n` to `\n` keeps every distinction the guard exists for —
+/// one changed byte anywhere in the content still changes the hash — while
+/// dropping the one distinction it must not make.
+fn source_sha256_of(text: &str) -> String {
+    sha256_hex(text.replace("\r\n", "\n").as_bytes())
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     const K: [u32; 64] = [
         0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
@@ -757,6 +786,29 @@ mod tests {
         assert_eq!(
             sha256_hex(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"),
             "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
+        );
+    }
+
+    /// D26/CRLF: the identity hash must not depend on how git checked the
+    /// file out. Falsified in both directions — the same content under two
+    /// line-ending conventions hashes the same, and one changed byte does
+    /// not.
+    #[test]
+    fn the_identity_hash_ignores_line_endings_and_nothing_else() {
+        let lf = "restaurant_name = \"Shinjuku Yakitori\"\ncity = \"Pune\"\n";
+        let crlf = lf.replace('\n', "\r\n");
+        assert_ne!(lf, crlf, "the two spellings must really differ as bytes");
+        assert_eq!(
+            source_sha256_of(lf),
+            source_sha256_of(&crlf),
+            "LF and CRLF of the SAME file are the same restaurant"
+        );
+
+        let changed = lf.replace("Pune", "Mumbai");
+        assert_ne!(
+            source_sha256_of(lf),
+            source_sha256_of(&changed),
+            "one changed byte is a different identity and must still be caught"
         );
     }
 

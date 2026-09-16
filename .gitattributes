@@ -11,3 +11,20 @@
 # Pinned narrowly rather than repo-wide: a blanket `* text=auto` would
 # renormalise every tracked file at once and bury this change in the diff.
 seed/demo-outlet.json text eol=lf
+
+# The identity files beside it, pinned for the same class of reason and one
+# more (added 2026-09-17).
+#
+# The hash in seed/demo-outlet.json's `outlet_source_sha256` is now taken over
+# NEWLINE-NORMALISED content, so the seeders no longer care how these are
+# checked out -- that guard means "a different restaurant", not "a different
+# line ending", and hashing raw bytes made five crash_durability tests fail on
+# a Windows runner against an LF-authored catalogue.
+#
+# This entry is NOT what fixes that. It is here so the REPOSITORY STATES ITS
+# LINE ENDINGS for the seed directory: without it, a file written by one tool
+# and rewritten by another shows as modified with an EMPTY `git diff`, which
+# costs somebody the minutes it takes to prove the content is identical. That
+# happened on 2026-09-17 with edge/database/src/procurement/receipt.rs.
+seed/*.toml text eol=lf
+seed/*.json text eol=lf
