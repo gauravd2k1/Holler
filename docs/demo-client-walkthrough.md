@@ -426,8 +426,11 @@ produced from exactly the same information the printer would be given.
 ## Part six: it knows what you used (about three minutes)
 
 **What you do:** on the till, open the stock screen. Show the ingredients that
-came down because of the sale you have just billed. Point out any item that is
-now running low.
+came down because of the sale you have just billed.
+
+**Read the next heading before you rehearse this part.** Most dishes on the
+menu have no recipe and will move nothing at all, and the "running low"
+warning will not appear from selling.
 
 **What to say:**
 
@@ -440,6 +443,81 @@ now running low.
 > used. The gap between those two figures is theft, waste and over generous
 > portions, and most owners only find out at the end of the month, if they find
 > out at all."
+
+### Order one of THESE dishes, or nothing will move
+
+**This is the single easiest way to spoil this part of the demonstration.**
+Eighteen of the dishes on the menu have recipes. The rest do not, and selling
+one of those changes no stock at all — correctly, and by design, but it looks
+like nothing happened.
+
+**Boneless Chicken Wings has no recipe.** Neither do most of the à la carte
+items. Order the wings during part six and the chicken figure will sit exactly
+where it was.
+
+**The recipe also belongs to the VARIANT, not to the dish.** Kimchi / Chicken
+takes chicken out. Kimchi / Veg takes corn and mushrooms out instead. Choose
+the wrong one on the till and the chicken will not move, which looks identical
+to the system not working.
+
+These are the dishes that move stock. Anything not on this list does not.
+
+| Dish | Choose this variant | What comes out of stock |
+|---|---|---|
+| **Kimchi** | **Chicken** | 180 g rice, **150 g chicken**, 80 g kimchi, 30 g bamboo shoots, 15 g spring onion, **1 egg**, plus a sauce batch |
+| **Thai Green Curry** | **Chicken** | 0.22 L coconut milk, **160 g chicken**, 50 g pak choi, 8 g thai basil, plus a sauce batch |
+| **Mala** | **Chicken** | 180 g rice, **150 g chicken**, 40 g bamboo shoots, 8 g chillies, plus a sauce batch |
+| **Laksa** | **Chicken** | 0.2 L coconut milk, **130 g chicken**, 120 g rice noodles, 1 egg |
+| Thai Green Curry | Prawn | 0.22 L coconut milk, 140 g prawns, 50 g pak choi, plus a sauce batch |
+| Thai Green Curry | Veg | 0.22 L coconut milk, 120 g tofu, 60 g pak choi, plus a sauce batch |
+| Kimchi | Veg: Corn and Mushrooms | 180 g rice, 70 g sweet corn, 60 g shiitake, 80 g kimchi, 15 g spring onion |
+| Tom Yum | Prawn | 120 g prawns, lemongrass, galangal, shiitake |
+| Pad Thai | Regular | 160 g rice noodles, 1 egg, peanuts, palm sugar, fish sauce, spring onion, 1 lime |
+| Som Tam | Regular | 220 g raw papaya, peanuts, 1 lime, palm sugar, fish sauce |
+| Stir Fried Hakka Noodles | Regular | 170 g hakka noodles, 50 g pak choi, soy, oil |
+| Yaki Udon | Regular | 200 g udon, 60 g shiitake, soy, sesame oil |
+| Burnt Garlic Corn And Spinach Fried Rice | Regular | 200 g rice, 60 g sweet corn, 50 g spinach, ginger-garlic |
+| Iced Tea | Regular | 8 g tea leaves, 15 g sugar, 1 lime |
+| Jasmine | Regular | 6 g tea leaves |
+| Aerated Water | Coke | 1 can |
+
+### What to order, and the numbers to point at
+
+**Order Kimchi / Chicken, two of them.** Open the stock screen before you bill
+and again afterwards. From a freshly reset restaurant:
+
+| Ingredient | Before | After |
+|---|---|---|
+| Chicken (Boneless, Diced) | 72,000 g | 71,700 g |
+| Jasmine Rice | 150,000 g | 149,640 g |
+| Kimchi | 24,000 g | 23,840 g |
+| Bamboo Shoots | 18,000 g | 17,940 g |
+| Spring Onions | 12,000 g | 11,970 g |
+| **Eggs** | **360** | **358** |
+
+**Point at the eggs.** Three hundred and sixty going to three hundred and
+fifty eight is a change anyone can see from across a room. Seventy two
+thousand grams going to seventy one thousand seven hundred is not, however
+correct it is.
+
+Kimchi / Chicken also pulls from a sauce made in batches, so the sauce's own
+ingredients come down as well. That is the "recipes inside recipes" point
+above, and you get it without having to set anything up.
+
+**The stock goes down when you CONFIRM the order**, in the same moment the sale
+is recorded — not when the kitchen gets it, and not when the customer pays.
+
+### About the "running low" warning
+
+**It will not appear just because you sold something.** The warning levels sit
+at roughly a sixth of what is in stock, so you would need to sell about ninety
+Som Tam, or a hundred and twenty Cokes, before one appeared. Do not plan on
+showing it by selling.
+
+If you want to show it, record some **wastage** on the stock screen instead —
+say 125 Coca-Cola cans out of the 144 in stock. The warning appears at once,
+and wastage is a real thing restaurants record every day, so it demonstrates
+two features rather than one.
 
 **Why this is difficult to build.**
 
