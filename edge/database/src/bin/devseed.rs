@@ -1310,6 +1310,80 @@ fn main() -> ExitCode {
 /// JSON, still parses identically regardless of order, and re-emission is
 /// still byte-stable — the drift check's actual guarantee — but a reader
 /// diffing against that document's literal key order will see reordering.
+// ---------------------------------------------------------------------------
+// THE FLOOR AND THE KITCHEN HARDWARE, DESCRIBED ONCE (D10, 2026-09-16)
+//
+// `restaurant_table`, `station`, `printer`, `station_printer` and
+// `printer_role` are CLOUD-OWNED CONFIG (ADR-011, ADR-014): the cloud is the
+// authority for all five and `GET /sync/config` ships all five. They were
+// nonetheless seeded only at the edge -- `seed/README.md` listed them under
+// "Edge only" -- so the cloud held ZERO rows of config it is authoritative
+// for, the config push for those families had never moved a row in either
+// direction, and an outlet ran on a floor plan and a kitchen layout the cloud
+// could not reproduce. Measured on the live stack as scenario-board
+// S-SYNC-11: `restaurant_table=0, station=0, printer=0`.
+//
+// These three functions are the single description both seeders read: the edge
+// writes them into SQLite and `build_shared_catalogue` writes them into
+// `seed/demo-outlet.json` for the cloud seeder. The two cannot drift by
+// construction, which is the rule the menu and the larder already follow.
+
+/// `(id, label, seat_count)` for every table in section "Main".
+///
+/// T1 and T2 KEEP THEIR FIXED LEGACY IDS -- `tests/e2e-scenario/harness` pins
+/// both by value -- and T3 upwards are minted from `restaurant_table_id`.
+/// Seat counts vary because a real floor does: a room where every table seats
+/// four is the same tell as a room with two tables in it.
+fn seed_restaurant_tables() -> Vec<(String, &'static str, i64)> {
+    vec![
+        (TABLE_1_ID.to_string(), "T1", 4),
+        (TABLE_2_ID.to_string(), "T2", 4),
+        (restaurant_table_id(3), "T3", 2),
+        (restaurant_table_id(4), "T4", 2),
+        (restaurant_table_id(5), "T5", 4),
+        (restaurant_table_id(6), "T6", 4),
+        (restaurant_table_id(7), "T7", 4),
+        (restaurant_table_id(8), "T8", 6),
+        (restaurant_table_id(9), "T9", 6),
+        (restaurant_table_id(10), "T10", 2),
+        (restaurant_table_id(11), "T11", 4),
+        (restaurant_table_id(12), "T12", 8),
+    ]
+}
+
+/// `(id, code, name, sort_order)`. The legacy `STATION_ID`/`MAIN_KITCHEN`
+/// fixture first -- `tests/e2e-scenario/harness` pins it -- then the stations
+/// the client menu's `station_code` values route through.
+fn seed_stations() -> Vec<(&'static str, &'static str, &'static str, i64)> {
+    vec![
+        (STATION_ID, STATION_CODE, "Main Kitchen", 1),
+        (STATION_KITCHEN_ID, STATION_KITCHEN_CODE, "Kitchen", 2),
+        (STATION_WOK_ID, STATION_WOK_CODE, "Wok", 3),
+        (STATION_SUSHI_ID, STATION_SUSHI_CODE, "Sushi Bar", 4),
+        (STATION_BAR_ID, STATION_BAR_CODE, "Bar", 5),
+        (STATION_DESSERT_ID, STATION_DESSERT_CODE, "Dessert", 6),
+        (STATION_DIMSUM_ID, STATION_DIMSUM_CODE, "Dimsum", 7),
+        (STATION_BEVERAGE_ID, STATION_BEVERAGE_CODE, "Beverage", 8),
+    ]
+}
+
+/// `(id, name, role)`. Addressed at `UNATTACHED_DEVICE_PATH` because no
+/// printer exists on a dev machine; the file sink replaces the transport
+/// before that address is ever opened. **A printer with no role row is a
+/// candidate for neither path** (contracts 0.4.7), so the role travels with
+/// the printer here rather than being inferred from its name anywhere.
+fn seed_printers() -> Vec<(&'static str, &'static str, &'static str)> {
+    vec![
+        (PRINTER_BILL_ID, "Dev Bill Printer", "BILL"),
+        (PRINTER_KITCHEN_ID, "Dev Kitchen Printer", "KITCHEN"),
+    ]
+}
+
+/// Which station's tickets go to which printer: `(station_id, printer_id)`.
+fn seed_station_printers() -> Vec<(&'static str, &'static str)> {
+    vec![(STATION_ID, PRINTER_KITCHEN_ID)]
+}
+
 fn build_shared_catalogue(identity: &OutletIdentity) -> Result<Value, String> {
     // ---- menu: categories, items, variants, modifiers ----
     // Order matches seed_menu/seed(): the two legacy T0b fixtures (fixed ids,
@@ -1817,6 +1891,53 @@ fn build_shared_catalogue(identity: &OutletIdentity) -> Result<Value, String> {
         }));
     }
 
+    // ---- the floor and the kitchen hardware (D10) ----
+    // Cloud-owned config the cloud held none of until 2026-09-16. Emitted
+    // from the same three functions the edge seeding path reads, so the
+    // description cannot fork.
+    let restaurant_tables: Vec<Value> = seed_restaurant_tables()
+        .into_iter()
+        .map(|(id, label, seat_count)| {
+            json!({
+                "id": id, "outlet_id": OUTLET_ID, "section": "Main",
+                "label": label, "seat_count": seat_count, "is_active": true
+            })
+        })
+        .collect();
+    let stations: Vec<Value> = seed_stations()
+        .into_iter()
+        .map(|(id, code, name, sort_order)| {
+            json!({
+                "id": id, "outlet_id": OUTLET_ID, "code": code, "name": name,
+                "sort_order": sort_order, "is_active": true
+            })
+        })
+        .collect();
+    let printers: Vec<Value> = seed_printers()
+        .into_iter()
+        .map(|(id, name, _role)| {
+            json!({
+                "id": id, "outlet_id": OUTLET_ID, "name": name,
+                "connection_kind": "ESCPOS_USB", "address": UNATTACHED_DEVICE_PATH,
+                "paper_width_mm": 80, "is_active": true
+            })
+        })
+        .collect();
+    // A ROLE ROW OF ITS OWN, not a column on the printer: one device can be
+    // both BILL and KITCHEN, and a printer with NO role row is a candidate for
+    // neither path (contracts 0.4.7). Absence must never read as "sure, print
+    // bills to it".
+    let printer_roles: Vec<Value> = seed_printers()
+        .into_iter()
+        .map(|(id, _name, role)| json!({ "printer_id": id, "role": role }))
+        .collect();
+    let station_printers: Vec<Value> = seed_station_printers()
+        .into_iter()
+        .map(|(station_id, printer_id)| {
+            json!({ "station_id": station_id, "printer_id": printer_id })
+        })
+        .collect();
+
     Ok(json!({
         // Bumped 1 -> 2 by the `outlet_identity` block and
         // `outlet_source_sha256` below. `backend/cmd/devseed/seedfile.go`
@@ -1878,6 +1999,19 @@ fn build_shared_catalogue(identity: &OutletIdentity) -> Result<Value, String> {
         "menu_items": menu_items,
         "menu_item_variants": menu_item_variants,
         "menu_item_modifiers": menu_item_modifiers,
+
+        // CLOUD-OWNED CONFIG THE CLOUD HELD NONE OF until 2026-09-16 (D10).
+        // The cloud is the authority for all five (ADR-011, ADR-014) and
+        // `GET /sync/config` ships all five, yet only the edge ever seeded
+        // them: S-SYNC-11 measured `restaurant_table=0, station=0,
+        // printer=0` on the live stack. `menu_item_station` is NOT here
+        // because it needs no new field -- the cloud seeder derives it from
+        // each item's existing `station_code`, which it used to discard.
+        "restaurant_tables": restaurant_tables,
+        "stations": stations,
+        "printers": printers,
+        "printer_roles": printer_roles,
+        "station_printers": station_printers,
         "inventory_items": inventory_items,
         "item_unit_conversions": item_unit_conversions,
         "recipes": recipes,
@@ -2112,20 +2246,7 @@ fn seed(
     //
     // Seat counts vary because a real floor does: a room where every table
     // seats four is the same tell as a room with two tables in it.
-    let tables: Vec<(String, &str, i64)> = vec![
-        (TABLE_1_ID.to_string(), "T1", 4),
-        (TABLE_2_ID.to_string(), "T2", 4),
-        (restaurant_table_id(3), "T3", 2),
-        (restaurant_table_id(4), "T4", 2),
-        (restaurant_table_id(5), "T5", 4),
-        (restaurant_table_id(6), "T6", 4),
-        (restaurant_table_id(7), "T7", 4),
-        (restaurant_table_id(8), "T8", 6),
-        (restaurant_table_id(9), "T9", 6),
-        (restaurant_table_id(10), "T10", 2),
-        (restaurant_table_id(11), "T11", 4),
-        (restaurant_table_id(12), "T12", 8),
-    ];
+    let tables = seed_restaurant_tables();
     for (id, label, seat_count) in &tables {
         repo::upsert_restaurant_table(
             conn,
@@ -2146,16 +2267,7 @@ fn seed(
     // catalogue. The legacy STATION_ID/"MAIN_KITCHEN" fixture first (fixed
     // id, pinned by tests/e2e-scenario/harness), then the five the spec
     // menu's `station_code` values route through.
-    for (id, code, name, sort_order) in [
-        (STATION_ID, STATION_CODE, "Main Kitchen", 1),
-        (STATION_KITCHEN_ID, STATION_KITCHEN_CODE, "Kitchen", 2),
-        (STATION_WOK_ID, STATION_WOK_CODE, "Wok", 3),
-        (STATION_SUSHI_ID, STATION_SUSHI_CODE, "Sushi Bar", 4),
-        (STATION_BAR_ID, STATION_BAR_CODE, "Bar", 5),
-        (STATION_DESSERT_ID, STATION_DESSERT_CODE, "Dessert", 6),
-        (STATION_DIMSUM_ID, STATION_DIMSUM_CODE, "Dimsum", 7),
-        (STATION_BEVERAGE_ID, STATION_BEVERAGE_CODE, "Beverage", 8),
-    ] {
+    for (id, code, name, sort_order) in seed_stations() {
         repo::upsert_station(
             conn,
             &Station {
@@ -2928,10 +3040,7 @@ fn seed_billing(
     // ESCPOS_USB pointed at a device that does not exist on a dev machine —
     // see UNATTACHED_DEVICE_PATH. With HOLLER_PRINTER_FILE_SINK_DIR set, the
     // transport is replaced before this address is ever opened.
-    for (id, name) in [
-        (PRINTER_BILL_ID, "Dev Bill Printer"),
-        (PRINTER_KITCHEN_ID, "Dev Kitchen Printer"),
-    ] {
+    for (id, name, _role) in seed_printers() {
         repo::upsert_printer(
             conn,
             &Printer {
@@ -2949,19 +3058,17 @@ fn seed_billing(
     // printer_role (contracts 0.4.7): a printer with no role row is a
     // candidate for neither path, so these two rows are what make
     // `print_invoice` resolve at all.
-    repo::replace_printer_roles(conn, PRINTER_BILL_ID, &["BILL".to_string()], CONFIG_VERSION)?;
-    repo::replace_printer_roles(
-        conn,
-        PRINTER_KITCHEN_ID,
-        &["KITCHEN".to_string()],
-        CONFIG_VERSION,
-    )?;
-    repo::replace_station_printers(
-        conn,
-        STATION_ID,
-        &[PRINTER_KITCHEN_ID.to_string()],
-        CONFIG_VERSION,
-    )?;
+    for (id, _name, role) in seed_printers() {
+        repo::replace_printer_roles(conn, id, &[role.to_string()], CONFIG_VERSION)?;
+    }
+    for (station_id, printer_id) in seed_station_printers() {
+        repo::replace_station_printers(
+            conn,
+            station_id,
+            &[printer_id.to_string()],
+            CONFIG_VERSION,
+        )?;
+    }
 
     println!("devseed: billing config seeded (HOLLER_SEED_BILLING=1)");
     println!(

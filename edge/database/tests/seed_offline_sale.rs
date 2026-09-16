@@ -47,9 +47,27 @@ fn key() -> EncryptionKey {
 }
 
 fn devseed(dir: &Path) {
+    // THE COMMITTED IDENTITY, NOT THE OPERATOR'S.
+    //
+    // `seed/outlet.toml` is gitignored and per-installation, and
+    // `seed/demo-outlet.json` is emitted from `seed/outlet.example.toml` (see
+    // `scripts/check-seed-drift.mjs`, which regenerates from the example).
+    // Defaulting to the operator's file made this test fail on every machine
+    // whose outlet.toml differs from the example — devseed refuses a
+    // catalogue emitted from a different identity, correctly — so what looked
+    // like a seed defect was this test reading a file that is not part of the
+    // repository. Observed 2026-09-16.
     let out = Command::new(env!("CARGO_BIN_EXE_devseed"))
         .env("HOLLER_EDGE_DATA_DIR", dir)
         .env("HOLLER_DB_KEY_HEX", KEY_HEX)
+        .env(
+            "HOLLER_OUTLET_FILE",
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("..")
+                .join("seed")
+                .join("outlet.example.toml"),
+        )
         .env(
             "HOLLER_SEED_PASSWORD_HASH",
             "$argon2id$v=19$m=65536,t=3,p=4$c2FsdHNhbHRzYWx0$0000000000000000000000000000000000000000000",

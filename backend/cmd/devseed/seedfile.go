@@ -62,6 +62,20 @@ type seedFile struct {
 	MenuItemVariants  []seedMenuItemVariant  `json:"menu_item_variants"`
 	MenuItemModifiers []seedMenuItemModifier `json:"menu_item_modifiers"`
 
+	// CLOUD-OWNED CONFIG THE CLOUD HELD NONE OF until 2026-09-16 (D10).
+	// restaurant_table, station, printer, printer_role and station_printer are
+	// all cloud-authoritative (ADR-011, ADR-014) and all five ship on
+	// GET /sync/config, yet only the edge ever seeded them: the live stack
+	// measured restaurant_table=0, station=0, printer=0 (S-SYNC-11). So the
+	// cloud served an empty bundle for five families it owns, and no outlet
+	// could ever have received its floor plan or its kitchen layout from the
+	// authority that is supposed to define them.
+	RestaurantTables []seedRestaurantTable `json:"restaurant_tables"`
+	Stations         []seedStation         `json:"stations"`
+	Printers         []seedPrinter         `json:"printers"`
+	PrinterRoles     []seedPrinterRole     `json:"printer_roles"`
+	StationPrinters  []seedStationPrinter  `json:"station_printers"`
+
 	InventoryItems      []seedInventoryItem      `json:"inventory_items"`
 	ItemUnitConversions []seedItemUnitConversion `json:"item_unit_conversions"`
 	Recipes             []seedRecipe             `json:"recipes"`
@@ -77,6 +91,47 @@ type seedFile struct {
 	// legal while the demo content is still being authored.
 	GoodsReceipt *seedGoodsReceipt      `json:"goods_receipt"`
 	OpeningStock []seedStockLedgerEntry `json:"opening_stock"`
+}
+
+type seedRestaurantTable struct {
+	ID        string `json:"id"`
+	OutletID  string `json:"outlet_id"`
+	Section   string `json:"section"`
+	Label     string `json:"label"`
+	SeatCount int    `json:"seat_count"`
+	IsActive  bool   `json:"is_active"`
+}
+
+type seedStation struct {
+	ID        string `json:"id"`
+	OutletID  string `json:"outlet_id"`
+	Code      string `json:"code"`
+	Name      string `json:"name"`
+	SortOrder int    `json:"sort_order"`
+	IsActive  bool   `json:"is_active"`
+}
+
+type seedPrinter struct {
+	ID             string `json:"id"`
+	OutletID       string `json:"outlet_id"`
+	Name           string `json:"name"`
+	ConnectionKind string `json:"connection_kind"`
+	Address        string `json:"address"`
+	PaperWidthMM   int    `json:"paper_width_mm"`
+	IsActive       bool   `json:"is_active"`
+}
+
+// A ROLE ROW, not a column on the printer: one device can be both BILL and
+// KITCHEN, and a printer with no role row is a candidate for neither path
+// (contracts 0.4.7).
+type seedPrinterRole struct {
+	PrinterID string `json:"printer_id"`
+	Role      string `json:"role"`
+}
+
+type seedStationPrinter struct {
+	StationID string `json:"station_id"`
+	PrinterID string `json:"printer_id"`
 }
 
 type seedTenant struct {

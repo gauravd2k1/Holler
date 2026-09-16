@@ -57,6 +57,22 @@
     { "id": "0191afff-0000-7000-8000-000000000013", "menu_item_id": "0191afff-0000-7000-8000-000000000011", "group_name": "Sugar", "option_name": "Extra Sugar", "price_delta_paise": 500, "min_selection": 0, "max_selection": 1 }
   ],
 
+  "restaurant_tables": [
+    { "id": "0191a000-0000-7000-8000-000000000021", "outlet_id": "0191a000-0000-7000-8000-00000000000a", "section": "Main", "label": "T1", "seat_count": 4, "is_active": true }
+  ],
+  "stations": [
+    { "id": "0191a000-0000-7000-8000-000000000031", "outlet_id": "0191a000-0000-7000-8000-00000000000a", "code": "MAIN_KITCHEN", "name": "Main Kitchen", "sort_order": 1, "is_active": true }
+  ],
+  "printers": [
+    { "id": "0191a000-0000-7000-8000-000000000047", "outlet_id": "0191a000-0000-7000-8000-00000000000a", "name": "Dev Kitchen Printer", "connection_kind": "ESCPOS_USB", "address": "/dev/null", "paper_width_mm": 80, "is_active": true }
+  ],
+  "printer_roles": [
+    { "printer_id": "0191a000-0000-7000-8000-000000000047", "role": "KITCHEN" }
+  ],
+  "station_printers": [
+    { "station_id": "0191a000-0000-7000-8000-000000000031", "printer_id": "0191a000-0000-7000-8000-000000000047" }
+  ],
+
   "inventory_items": [
     { "id": "0191afff-0000-7000-8000-000000000020", "outlet_id": "0191a000-0000-7000-8000-00000000000a", "sku": "INV-TEA-LEAF", "name": "Tea Leaf", "category": "Dry Goods", "dimension": "MASS", "reorder_level_micro": 1000000 }
   ],

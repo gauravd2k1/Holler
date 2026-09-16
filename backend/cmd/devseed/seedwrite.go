@@ -112,9 +112,11 @@ func seedCatalogueFromFile(ctx context.Context, pool postgres.Pool, sf *seedFile
 		}
 	}
 
-	// station_code is read above by the JSON decoder and deliberately
-	// discarded here: it feeds menu_item_station at the edge, and Postgres
-	// has no such table (seed/README.md).
+	// station_code used to be discarded here, under a comment saying
+	// "Postgres has no such table". It does: packages/contracts/postgres/0006
+	// creates menu_item_station, GET /sync/config ships item_stations, and the
+	// cloud was serving an empty array for a family it is authoritative for.
+	// It is written below, once the stations themselves exist.
 	for _, mi := range sf.MenuItems {
 		if _, err := pool.Exec(ctx,
 			`INSERT INTO menu_item (id, outlet_id, category_id, name, base_price_paise, is_available, tax_profile_id, hsn_sac, config_version)
@@ -215,6 +217,94 @@ func seedCatalogueFromFile(ctx context.Context, pool postgres.Pool, sf *seedFile
 			 ON CONFLICT (id) DO UPDATE SET quantity_micro = EXCLUDED.quantity_micro`,
 			md.ID, md.MenuItemModifierID, md.InventoryItemID, md.QuantityMicro); err != nil {
 			return fmt.Errorf("seeding modifier_ingredient_delta %s: %w", md.ID, err)
+		}
+	}
+
+	// ---- the floor and the kitchen hardware (D10, 2026-09-16) ------------
+	//
+	// Five families the cloud is the authority for and held ZERO rows of, plus
+	// menu_item_station derived from the station_code each item already
+	// carries. Order matters: stations and printers first, then the join rows
+	// that reference them.
+	for _, t := range sf.RestaurantTables {
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO restaurant_table (id, outlet_id, section, label, seat_count, is_active, config_version, created_at, updated_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, 1, now(), now())
+			 ON CONFLICT (id) DO UPDATE SET
+			   section = EXCLUDED.section, label = EXCLUDED.label,
+			   seat_count = EXCLUDED.seat_count, is_active = EXCLUDED.is_active`,
+			t.ID, t.OutletID, t.Section, t.Label, t.SeatCount, t.IsActive); err != nil {
+			return fmt.Errorf("seeding restaurant_table %s: %w", t.Label, err)
+		}
+	}
+
+	stationIDByCode := make(map[string]string, len(sf.Stations))
+	for _, st := range sf.Stations {
+		stationIDByCode[st.Code] = st.ID
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO station (id, outlet_id, code, name, sort_order, is_active, config_version)
+			 VALUES ($1, $2, $3, $4, $5, $6, 1)
+			 ON CONFLICT (id) DO UPDATE SET
+			   code = EXCLUDED.code, name = EXCLUDED.name,
+			   sort_order = EXCLUDED.sort_order, is_active = EXCLUDED.is_active`,
+			st.ID, st.OutletID, st.Code, st.Name, st.SortOrder, st.IsActive); err != nil {
+			return fmt.Errorf("seeding station %s: %w", st.Code, err)
+		}
+	}
+
+	// menu_item_station, derived from the station_code the item already
+	// carries. AN UNKNOWN CODE IS A LOUD FAILURE, not a skipped row: an item
+	// routed to a station nobody has heard of prints nowhere, and discovering
+	// that at a service is the whole reason this seeder exists.
+	for _, mi := range sf.MenuItems {
+		if mi.StationCode == "" {
+			continue
+		}
+		stationID, ok := stationIDByCode[mi.StationCode]
+		if !ok {
+			return fmt.Errorf(
+				"menu_item %s routes to station_code %q, which no station in this seed declares",
+				mi.Name, mi.StationCode)
+		}
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO menu_item_station (menu_item_id, station_id, config_version)
+			 VALUES ($1, $2, 1)
+			 ON CONFLICT (menu_item_id, station_id) DO NOTHING`,
+			mi.ID, stationID); err != nil {
+			return fmt.Errorf("seeding menu_item_station for %s: %w", mi.Name, err)
+		}
+	}
+
+	for _, pr := range sf.Printers {
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO printer (id, outlet_id, name, connection_kind, address, paper_width_mm, is_active, config_version)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, 1)
+			 ON CONFLICT (id) DO UPDATE SET
+			   name = EXCLUDED.name, connection_kind = EXCLUDED.connection_kind,
+			   address = EXCLUDED.address, paper_width_mm = EXCLUDED.paper_width_mm,
+			   is_active = EXCLUDED.is_active`,
+			pr.ID, pr.OutletID, pr.Name, pr.ConnectionKind, pr.Address, pr.PaperWidthMM, pr.IsActive); err != nil {
+			return fmt.Errorf("seeding printer %s: %w", pr.Name, err)
+		}
+	}
+
+	for _, role := range sf.PrinterRoles {
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO printer_role (printer_id, role, config_version)
+			 VALUES ($1, $2, 1)
+			 ON CONFLICT (printer_id, role) DO NOTHING`,
+			role.PrinterID, role.Role); err != nil {
+			return fmt.Errorf("seeding printer_role %s/%s: %w", role.PrinterID, role.Role, err)
+		}
+	}
+
+	for _, sp := range sf.StationPrinters {
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO station_printer (station_id, printer_id, config_version)
+			 VALUES ($1, $2, 1)
+			 ON CONFLICT (station_id, printer_id) DO NOTHING`,
+			sp.StationID, sp.PrinterID); err != nil {
+			return fmt.Errorf("seeding station_printer %s/%s: %w", sp.StationID, sp.PrinterID, err)
 		}
 	}
 

@@ -7878,7 +7878,37 @@
     "state_code": "27",
     "state_name": "Maharashtra"
   },
-  "outlet_source_sha256": "c47de2b35cd700f683f26a096ab3fb5da3a2b9715e169a1689fcb854da80e50d",
+  "outlet_source_sha256": "a29e82d47f67f1a18c910dc06e619619d7ca97855d166b69783d4199fe662fba",
+  "printer_roles": [
+    {
+      "printer_id": "0191a000-0000-7000-8000-000000000047",
+      "role": "BILL"
+    },
+    {
+      "printer_id": "0191a000-0000-7000-8000-000000000048",
+      "role": "KITCHEN"
+    }
+  ],
+  "printers": [
+    {
+      "address": "\\\\.\\COM_HOLLER_NO_PRINTER_ATTACHED",
+      "connection_kind": "ESCPOS_USB",
+      "id": "0191a000-0000-7000-8000-000000000047",
+      "is_active": true,
+      "name": "Dev Bill Printer",
+      "outlet_id": "0191a000-0000-7000-8000-00000000000a",
+      "paper_width_mm": 80
+    },
+    {
+      "address": "\\\\.\\COM_HOLLER_NO_PRINTER_ATTACHED",
+      "connection_kind": "ESCPOS_USB",
+      "id": "0191a000-0000-7000-8000-000000000048",
+      "is_active": true,
+      "name": "Dev Kitchen Printer",
+      "outlet_id": "0191a000-0000-7000-8000-00000000000a",
+      "paper_width_mm": 80
+    }
+  ],
   "recipe_ingredients": [
     {
       "id": "0191e830-0000-7000-8000-000000000001",
@@ -8689,7 +8719,177 @@
       "output_quantity_micro": 1000000
     }
   ],
+  "restaurant_tables": [
+    {
+      "id": "0191a000-0000-7000-8000-000000000020",
+      "is_active": true,
+      "label": "T1",
+      "outlet_id": "0191a000-0000-7000-8000-00000000000a",
+      "seat_count": 4,
+      "section": "Main"
+    },
+    {
+      "id": "0191a000-0000-7000-8000-000000000021",
+      "is_active": true,
+      "label": "T2",
+      "outlet_id": "0191a000-0000-7000-8000-00000000000a",
+      "seat_count": 4,
+      "section": "Main"
+    },
+    {
+      "id": "0191e900-0000-7000-8000-000000000003",
+      "is_active": true,
+      "label": "T3",
+      "outlet_id": "0191a000-0000-7000-8000-00000000000a",
+      "seat_count": 2,
+      "section": "Main"
+    },
+    {
+      "id": "0191e900-0000-7000-8000-000000000004",
+      "is_active": true,
+      "label": "T4",
+      "outlet_id": "0191a000-0000-7000-8000-00000000000a",
+      "seat_count": 2,
+      "section": "Main"
+    },
+    {
+      "id": "0191e900-0000-7000-8000-000000000005",
+      "is_active": true,
+      "label": "T5",
+      "outlet_id": "0191a000-0000-7000-8000-00000000000a",
+      "seat_count": 4,
+      "section": "Main"
+    },
+    {
+      "id": "0191e900-0000-7000-8000-000000000006",
+      "is_active": true,
+      "label": "T6",
+      "outlet_id": "0191a000-0000-7000-8000-00000000000a",
+      "seat_count": 4,
+      "section": "Main"
+    },
+    {
+      "id": "0191e900-0000-7000-8000-000000000007",
+      "is_active": true,
+      "label": "T7",
+      "outlet_id": "0191a000-0000-7000-8000-00000000000a",
+      "seat_count": 4,
+      "section": "Main"
+    },
+    {
+      "id": "0191e900-0000-7000-8000-000000000008",
+      "is_active": true,
+      "label": "T8",
+      "outlet_id": "0191a000-0000-7000-8000-00000000000a",
+      "seat_count": 6,
+      "section": "Main"
+    },
+    {
+      "id": "0191e900-0000-7000-8000-000000000009",
+      "is_active": true,
+      "label": "T9",
+      "outlet_id": "0191a000-0000-7000-8000-00000000000a",
+      "seat_count": 6,
+      "section": "Main"
+    },
+    {
+      "id": "0191e900-0000-7000-8000-00000000000a",
+      "is_active": true,
+      "label": "T10",
+      "outlet_id": "0191a000-0000-7000-8000-00000000000a",
+      "seat_count": 2,
+      "section": "Main"
+    },
+    {
+      "id": "0191e900-0000-7000-8000-00000000000b",
+      "is_active": true,
+      "label": "T11",
+      "outlet_id": "0191a000-0000-7000-8000-00000000000a",
+      "seat_count": 4,
+      "section": "Main"
+    },
+    {
+      "id": "0191e900-0000-7000-8000-00000000000c",
+      "is_active": true,
+      "label": "T12",
+      "outlet_id": "0191a000-0000-7000-8000-00000000000a",
+      "seat_count": 8,
+      "section": "Main"
+    }
+  ],
   "schema_version": 2,
+  "station_printers": [
+    {
+      "printer_id": "0191a000-0000-7000-8000-000000000048",
+      "station_id": "0191a000-0000-7000-8000-000000000030"
+    }
+  ],
+  "stations": [
+    {
+      "code": "MAIN_KITCHEN",
+      "id": "0191a000-0000-7000-8000-000000000030",
+      "is_active": true,
+      "name": "Main Kitchen",
+      "outlet_id": "0191a000-0000-7000-8000-00000000000a",
+      "sort_order": 1
+    },
+    {
+      "code": "KITCHEN",
+      "id": "0191e500-0000-7000-8000-000000000001",
+      "is_active": true,
+      "name": "Kitchen",
+      "outlet_id": "0191a000-0000-7000-8000-00000000000a",
+      "sort_order": 2
+    },
+    {
+      "code": "WOK",
+      "id": "0191e500-0000-7000-8000-000000000002",
+      "is_active": true,
+      "name": "Wok",
+      "outlet_id": "0191a000-0000-7000-8000-00000000000a",
+      "sort_order": 3
+    },
+    {
+      "code": "SUSHI_BAR",
+      "id": "0191e500-0000-7000-8000-000000000003",
+      "is_active": true,
+      "name": "Sushi Bar",
+      "outlet_id": "0191a000-0000-7000-8000-00000000000a",
+      "sort_order": 4
+    },
+    {
+      "code": "BAR",
+      "id": "0191e500-0000-7000-8000-000000000004",
+      "is_active": true,
+      "name": "Bar",
+      "outlet_id": "0191a000-0000-7000-8000-00000000000a",
+      "sort_order": 5
+    },
+    {
+      "code": "DESSERT",
+      "id": "0191e500-0000-7000-8000-000000000005",
+      "is_active": true,
+      "name": "Dessert",
+      "outlet_id": "0191a000-0000-7000-8000-00000000000a",
+      "sort_order": 6
+    },
+    {
+      "code": "DIMSUM",
+      "id": "0191e500-0000-7000-8000-000000000006",
+      "is_active": true,
+      "name": "Dimsum",
+      "outlet_id": "0191a000-0000-7000-8000-00000000000a",
+      "sort_order": 7
+    },
+    {
+      "code": "BEVERAGE",
+      "id": "0191e500-0000-7000-8000-000000000007",
+      "is_active": true,
+      "name": "Beverage",
+      "outlet_id": "0191a000-0000-7000-8000-00000000000a",
+      "sort_order": 8
+    }
+  ],
   "supplier_items": [
     {
       "id": "0191e860-0000-7000-8000-000000000001",

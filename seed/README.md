@@ -165,9 +165,27 @@ at all** — the edge flattens permissions into `app_user.permissions_json` — 
 (contracts 0.6.0).
 
 **Edge only** (stays in `edge/database/src/bin/devseed.rs`): `device`,
-`station`, `menu_item_station`, `printer`, `station_printer`, `printer_role`,
-`restaurant_table`, `invoice_series`, `outlet_fiscal_profile`,
-`discount_definition`, `app_user` with its cached Argon2id hashes, `sync_state`.
+`invoice_series`, `outlet_fiscal_profile`, `discount_definition`, `app_user`
+with its cached Argon2id hashes, `sync_state`.
+
+**MOVED INTO THE SHARED CATALOGUE ON 2026-09-16 (D10):** `restaurant_table`,
+`station`, `printer`, `printer_role`, `station_printer` — and
+`menu_item_station`, which needs no new field because the cloud seeder derives
+it from each item's existing `station_code` instead of discarding it.
+
+They were listed as edge-only above, and that was wrong in a way nothing could
+see. **All six are CLOUD-OWNED CONFIG** (ADR-011, ADR-014) and
+`GET /sync/config` ships all six, so the cloud was serving empty arrays for
+families it is the authority for: the live stack measured
+`restaurant_table=0, station=0, printer=0` (scenario board S-SYNC-11). An
+outlet ran on a floor plan and a kitchen layout the cloud could not reproduce,
+and because config apply **upserts without pruning**, a pull could neither add
+them nor remove them. The same shape as the inventory-config gap already filed.
+
+The description now lives in three functions in `devseed.rs`
+(`seed_restaurant_tables`, `seed_stations`, `seed_printers` +
+`seed_station_printers`) that BOTH the edge seeding path and
+`build_shared_catalogue` read, so the two stores cannot fork.
 
 ### The goods receipt is a deliberate exception — read this before touching it
 

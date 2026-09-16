@@ -52,6 +52,80 @@ func TestSeedCatalogueFromFile_WritesEveryTable(t *testing.T) {
 
 	runOnce("first run")
 
+	// THESE ASSERTIONS ARE ONLY FALSIFIABLE ON A FRESH DATABASE, and that is
+	// worth knowing before trusting a green run. Every insert here is
+	// ON CONFLICT DO NOTHING / DO UPDATE, so against a database that a
+	// previous run already seeded, deleting the writing code entirely still
+	// leaves the rows present and every assertion below still passes.
+	// Confirmed by planting exactly that on 2026-09-16: skipping the
+	// printer_role loop passed on a re-used database and failed on a fresh
+	// one. Point HOLLER_TEST_DATABASE_URL at a database you create and drop
+	// per run — which is what the scratch-database rule already requires.
+	//
+	// --- D10: the five cloud-owned families the cloud used to hold NONE of,
+	// plus menu_item_station derived from the item's station_code.
+	//
+	// ROW-FOR-ROW, not a count: a count passes on a row inserted with the
+	// wrong id, the wrong outlet or the wrong role, and "the printer exists"
+	// is exactly the shape of check that let a printer with no role row read
+	// as usable (contracts 0.4.7). ---
+	assertRow := func(label, query string, args ...any) {
+		t.Helper()
+		var n int
+		if err := pool.QueryRow(ctx, query, args...).Scan(&n); err != nil {
+			t.Fatalf("counting %s: %v", label, err)
+		}
+		if n != 1 {
+			t.Fatalf("expected exactly 1 %s row matching the fixture, got %d", label, n)
+		}
+	}
+
+	for _, tbl := range sf.RestaurantTables {
+		assertRow("restaurant_table",
+			`SELECT count(*) FROM restaurant_table
+			 WHERE id = $1 AND outlet_id = $2 AND section = $3 AND label = $4
+			   AND seat_count = $5 AND is_active = $6`,
+			tbl.ID, tbl.OutletID, tbl.Section, tbl.Label, tbl.SeatCount, tbl.IsActive)
+	}
+	for _, st := range sf.Stations {
+		assertRow("station",
+			`SELECT count(*) FROM station
+			 WHERE id = $1 AND outlet_id = $2 AND code = $3 AND name = $4
+			   AND sort_order = $5 AND is_active = $6`,
+			st.ID, st.OutletID, st.Code, st.Name, st.SortOrder, st.IsActive)
+	}
+	for _, pr := range sf.Printers {
+		assertRow("printer",
+			`SELECT count(*) FROM printer
+			 WHERE id = $1 AND outlet_id = $2 AND name = $3 AND connection_kind = $4
+			   AND address = $5 AND paper_width_mm = $6 AND is_active = $7`,
+			pr.ID, pr.OutletID, pr.Name, pr.ConnectionKind, pr.Address, pr.PaperWidthMM, pr.IsActive)
+	}
+	for _, role := range sf.PrinterRoles {
+		assertRow("printer_role",
+			`SELECT count(*) FROM printer_role WHERE printer_id = $1 AND role = $2`,
+			role.PrinterID, role.Role)
+	}
+	for _, sp := range sf.StationPrinters {
+		assertRow("station_printer",
+			`SELECT count(*) FROM station_printer WHERE station_id = $1 AND printer_id = $2`,
+			sp.StationID, sp.PrinterID)
+	}
+	// menu_item_station is DERIVED from station_code, which the cloud seeder
+	// used to discard under a comment claiming Postgres had no such table.
+	stationIDByCode := map[string]string{}
+	for _, st := range sf.Stations {
+		stationIDByCode[st.Code] = st.ID
+	}
+	for _, mi := range sf.MenuItems {
+		if mi.StationCode == "" {
+			continue
+		}
+		assertRow("menu_item_station",
+			`SELECT count(*) FROM menu_item_station WHERE menu_item_id = $1 AND station_id = $2`,
+			mi.ID, stationIDByCode[mi.StationCode])
+	}
+
 	// --- Assert rows exist before asserting anything about their content
 	// (the "fixtures did not insert" rule) ---
 
