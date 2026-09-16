@@ -1313,15 +1313,23 @@ fn an_unroutable_event_is_recorded_and_shown_rather_than_skipped_in_silence() {
     );
 
     // THE ASSERTION THAT MATTERS: the till's own query returns them.
-    let shown = repo::list_blocked_outbox_rows(db.connection(), "outlet-1")
-        .expect("list blocked outbox rows");
+    //
+    // It is the MUTED "kept locally" query, not the attention list. D8a put
+    // these rows in the attention list first, and one demo order was enough to
+    // show why that is only half an answer — the banner goes red and keeps
+    // growing with rows nobody can act on. They are counted apart now
+    // (`an_unroutable_row_is_counted_apart_from_the_rows_a_person_must_act_on`
+    // pins the split itself); this test pins that they REACH a list at all,
+    // which is the thing that was missing entirely.
+    let shown = repo::list_unroutable_outbox_rows(db.connection(), "outlet-1")
+        .expect("list the kept-locally rows");
     let order_ready = shown
         .iter()
         .find(|b| b.outbox_id == kot_ready_outbox_id(&db, "order-1"))
         .or_else(|| shown.iter().find(|b| b.aggregate_type == "order"));
     let order_ready = order_ready.unwrap_or_else(|| {
         panic!(
-            "OrderReady must appear on the banner, not vanish: blocked rows were {:?}",
+            "OrderReady must be counted, not vanish: kept-locally rows were {:?}",
             shown
                 .iter()
                 .map(|b| (b.aggregate_type.clone(), b.last_code.clone()))
@@ -1351,8 +1359,22 @@ fn an_unroutable_event_is_recorded_and_shown_rather_than_skipped_in_silence() {
     // the order carries.
     assert!(
         shown.iter().any(|b| b.aggregate_type == "kot"),
-        "the kitchen's own rows must be shown as well: {:?}",
+        "the kitchen's own rows must be counted as well: {:?}",
         shown.iter().map(|b| b.aggregate_type.clone()).collect::<Vec<_>>()
+    );
+
+    // AND THE ATTENTION LIST STAYS EMPTY. Nothing here was refused by the
+    // cloud, so nothing here is anybody's to act on — the banner must not go
+    // red because a kitchen finished a ticket.
+    let attention = repo::list_blocked_outbox_rows(db.connection(), "outlet-1")
+        .expect("list the attention rows");
+    assert!(
+        attention.is_empty(),
+        "a finished kitchen ticket must not put a row in the attention list: {:?}",
+        attention
+            .iter()
+            .map(|b| (b.aggregate_type.clone(), b.last_code.clone()))
+            .collect::<Vec<_>>()
     );
 }
 
@@ -1366,4 +1388,106 @@ fn kot_ready_outbox_id(db: &Db, order_id: &str) -> String {
         .find(|e| e.event_type == "OrderReady" && e.aggregate_id == order_id)
         .map(|e| e.id)
         .unwrap_or_default()
+}
+
+/// THE TWO LISTS ARE SEPARATED BY CODE, AND THE ATTENTION LIST MUST HOLD ONLY
+/// WHAT A PERSON CAN ACT ON.
+///
+/// Both rows below are blocked. One was refused by the cloud with a 409 — a
+/// specific order stuck for a specific reason, which somebody has to look at.
+/// The other has no route in this build (gap A7), which every kitchen ticket
+/// at every outlet produces, for ever, at a rate nobody at the till can
+/// influence.
+///
+/// D8a put both in one list, and one demo order was enough to show why that is
+/// only half an answer: the banner goes red and keeps growing, and the row
+/// that matters is buried under rows nobody can do anything about. An alarm
+/// that is always on is not an alarm.
+///
+/// The split is on `last_code`, NOT on aggregate type — a `kot` row refused
+/// with a 422 is a real failure and belongs in the attention list, while an
+/// `order` row carrying `OrderReady` does not.
+#[test]
+fn an_unroutable_row_is_counted_apart_from_the_rows_a_person_must_act_on() {
+    let mut db = Db::open_in_memory_for_tests().expect("open");
+    seed_outlet_and_device(&db, "outlet-1", "device-1");
+    // `sync_outbox_block.outbox_id` is a foreign key into `local_outbox`, so
+    // both rows have to be REAL outbox rows. A block record for an outbox id
+    // that does not exist is not a state the edge can reach, and a test that
+    // fabricated one would be proving the split against data the schema
+    // forbids.
+    seed_order_with_outbox(&mut db, "order-1", "outbox-refused");
+    seed_order_with_outbox(&mut db, "order-2", "outbox-unroutable");
+
+    // A row the cloud refused: 409, permanent, someone must look at it.
+    repo::record_outbox_failure(
+        db.connection(),
+        "outlet-1",
+        "outbox-refused",
+        "order",
+        "order-1",
+        Some(409),
+        Some("conflict"),
+        "cloud rejected the envelope with status 409",
+        "2026-09-16T10:00:00Z",
+    )
+    .expect("record the refusal");
+    repo::mark_outbox_blocked(db.connection(), "outlet-1", "outbox-refused", "2026-09-16T10:00:01Z")
+        .expect("block the refused row");
+
+    // A row this build cannot route at all.
+    repo::record_outbox_failure(
+        db.connection(),
+        "outlet-1",
+        "outbox-unroutable",
+        "kot",
+        "kot-1",
+        None,
+        Some(repo::UNROUTED_EVENT_CODE),
+        "this build has no route for a KOTStatusChanged event, so it can never be sent",
+        "2026-09-16T10:00:02Z",
+    )
+    .expect("record the unroutable row");
+    repo::mark_outbox_blocked(
+        db.connection(),
+        "outlet-1",
+        "outbox-unroutable",
+        "2026-09-16T10:00:03Z",
+    )
+    .expect("block the unroutable row");
+
+    let attention = repo::list_blocked_outbox_rows(db.connection(), "outlet-1")
+        .expect("list the attention rows");
+    assert_eq!(
+        attention.len(),
+        1,
+        "the attention list must hold exactly the row a person can act on, got {:?}",
+        attention
+            .iter()
+            .map(|b| (b.outbox_id.clone(), b.last_code.clone()))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(attention[0].outbox_id, "outbox-refused");
+
+    let kept = repo::list_unroutable_outbox_rows(db.connection(), "outlet-1")
+        .expect("list the kept-locally rows");
+    assert_eq!(
+        kept.len(),
+        1,
+        "the unroutable row must still be COUNTED — it is muted, not hidden: {:?}",
+        kept.iter().map(|b| b.outbox_id.clone()).collect::<Vec<_>>()
+    );
+    assert_eq!(kept[0].outbox_id, "outbox-unroutable");
+
+    // Neither list may ever hold the other's row: a row in both would be
+    // counted twice on the till and would put the muted class back in the
+    // alarm.
+    assert!(
+        attention.iter().all(|b| b.last_code.as_deref() != Some(repo::UNROUTED_EVENT_CODE)),
+        "no unroutable row may appear in the attention list"
+    );
+    assert!(
+        kept.iter().all(|b| b.last_code.as_deref() == Some(repo::UNROUTED_EVENT_CODE)),
+        "nothing but unroutable rows may appear in the kept-locally count"
+    );
 }

@@ -4,6 +4,7 @@ import {
   useMenuItemsQuery,
   useOrdersQuery,
   usePersistentlyFailingOutboxRowsQuery,
+  useUnroutableOutboxRowsQuery,
 } from "../lib/queries";
 import type { SyncOutboxBlock } from "../lib/tauri";
 
@@ -112,14 +113,33 @@ function OutboxRowDetail({ row }: { row: SyncOutboxBlock }) {
   );
 }
 
+// THREE CONDITIONS, AND THE THIRD IS NOT AN ALARM.
+//
+// `no_route` rows (gap A7) are every kitchen ticket at every outlet, for ever,
+// at a rate nobody at the till can influence. They were added to this banner
+// on 2026-09-16 so the gap could be SEEN at all — before that they were
+// skipped in silence — and putting them in the attention list immediately
+// showed why that is only half the answer: after one demo order the banner is
+// red and growing, and the one row a person could act on is buried under rows
+// nobody can.
+//
+// So they get a muted count and their own words: nothing is wrong, nothing is
+// lost, and there is nothing to do. **They also do not keep the banner open.**
+// A till with only `no_route` rows is a till with nothing to report, and the
+// all-synced state has to mean that or it means nothing.
 export function SyncBlockedBanner() {
   const [expanded, setExpanded] = useState(true);
   const [failingExpanded, setFailingExpanded] = useState(true);
   const blockedQuery = useBlockedOutboxRowsQuery();
   const failingQuery = usePersistentlyFailingOutboxRowsQuery();
+  const unroutableQuery = useUnroutableOutboxRowsQuery();
 
   const blocked = blockedQuery.data ?? [];
   const failing = failingQuery.data ?? [];
+  const unroutable = unroutableQuery.data ?? [];
+  // The empty state ignores `unroutable` DELIBERATELY: those rows are not a
+  // condition anyone is being asked to notice, and a banner that never goes
+  // away stops being read.
   if (blocked.length === 0 && failing.length === 0) return null;
 
   return (
@@ -166,6 +186,14 @@ export function SyncBlockedBanner() {
               <OutboxRowDetail key={row.outbox_id} row={row} />
             ))}
           </ul>
+        </div>
+      )}
+      {unroutable.length > 0 && (
+        <div className="sync-unroutable-group">
+          <span className="sync-unroutable-summary">
+            {unroutable.length} record{unroutable.length === 1 ? "" : "s"} kept locally — the
+            cloud has no route for {unroutable.length === 1 ? "it" : "them"} yet. Nothing to do.
+          </span>
         </div>
       )}
     </div>

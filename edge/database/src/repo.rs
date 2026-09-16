@@ -6802,8 +6802,36 @@ pub fn outbox_row_is_blocked(
     Ok(blocked.is_some())
 }
 
-/// Every general-outbox row this outlet has GIVEN UP on — the human-visible
-/// half of the per-row retry bound.
+/// The `last_code` a row carries when this build has no route for its event
+/// type, so it can never be sent by this binary at all.
+///
+/// It lives in this crate rather than in `edge/sync` because both the writer
+/// (the sync worker) and the READERS (the two queries below, and the till
+/// through them) need the same spelling, and `edge/sync` depends on this crate
+/// rather than the other way round. A second literal somewhere would put a row
+/// in the wrong list on the day it drifted, which is the whole thing these two
+/// queries exist to keep apart.
+pub const UNROUTED_EVENT_CODE: &str = "no_route";
+
+/// Every general-outbox row this outlet has GIVEN UP on AND THAT SOMEBODY
+/// NEEDS TO ACT ON — the human-visible half of the per-row retry bound.
+///
+/// **Rows with no route are deliberately excluded** and are served by
+/// [`list_unroutable_outbox_rows`] instead. The two are different messages:
+///
+///   - A row in THIS list was refused by the cloud, or could not be built. It
+///     is a specific order or tender that is stuck for a specific reason, and
+///     a person can usually do something about it. It is the attention list.
+///   - A row with `UNROUTED_EVENT_CODE` is stuck because THIS BUILD has no
+///     route for its event type (gap A7). Every kitchen ticket at every outlet
+///     produces them, for ever, at a rate nobody can influence. Left in the
+///     attention list they would bury the one row that matters under a hundred
+///     that nobody can act on — an alarm that is always on is not an alarm,
+///     which is the `clear_outbox_failure` reasoning applied to a whole class.
+///
+/// The exclusion is by CODE, not by aggregate type: a `kot` row refused with a
+/// 422 is a real failure and belongs in the attention list, while an `order`
+/// row carrying `OrderReady` does not.
 pub fn list_blocked_outbox_rows(
     conn: &Connection,
     outlet_id: &str,
@@ -6811,6 +6839,26 @@ pub fn list_blocked_outbox_rows(
     query_outbox_blocks(
         conn,
         "WHERE outlet_id = ?1 AND blocked_at IS NOT NULL \
+           AND (last_code IS NULL OR last_code != 'no_route') \
+         ORDER BY blocked_at ASC, outbox_id ASC",
+        outlet_id,
+    )
+}
+
+/// Rows this build has no route for: kept locally, complete, and going
+/// nowhere until the routes land (gap A7).
+///
+/// Shown as a MUTED COUNT rather than an alarm. Nothing is lost — the rows are
+/// in the outbox and will drain when a build with their routes arrives (the
+/// A7 acceptance requires exactly that of the routes when they land) — and no
+/// action by anyone at the outlet changes the number.
+pub fn list_unroutable_outbox_rows(
+    conn: &Connection,
+    outlet_id: &str,
+) -> DbResult<Vec<crate::model::SyncOutboxBlock>> {
+    query_outbox_blocks(
+        conn,
+        "WHERE outlet_id = ?1 AND blocked_at IS NOT NULL AND last_code = 'no_route' \
          ORDER BY blocked_at ASC, outbox_id ASC",
         outlet_id,
     )

@@ -980,7 +980,8 @@
   line-height: var(--leading-normal);
 }
 .sync-blocked-group,
-.sync-failing-group {
+.sync-failing-group,
+.sync-unroutable-group {
   display: flex;
   align-items: center;
   gap: var(--space-4);
@@ -1026,6 +1027,16 @@
 }
 .sync-failing-summary {
   opacity: 0.85;
+}
+/* MUTED ON PURPOSE, and smaller than everything above it. These rows are gap
+   A7: every kitchen ticket produces one, nothing at the till changes the
+   number, and nobody is being asked to act. Given the same weight as a
+   blocked order they would bury it -- a banner that is always red is not a
+   banner. It is a note, so it reads like one. */
+.sync-unroutable-summary {
+  opacity: 0.7;
+  font-size: var(--text-base);
+  font-weight: 400;
 }
 
 /* Till latency readout. Ctrl+Alt+P only -- see components/PerfOverlay.tsx.

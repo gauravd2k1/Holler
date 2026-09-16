@@ -164,6 +164,41 @@ table tab (ADR-025) and for any aggregate beyond `order` replaying at all. An
 outlet running a pilot today would keep every invoice and every payment on one
 disk indefinitely.
 
+#### ACCEPTANCE, ADDED 2026-09-16 WHEN D8a MADE THESE ROWS VISIBLE
+
+D8a stopped the drain skipping an unroutable row in silence: it is now recorded
+with `last_code = 'no_route'`, marked blocked immediately, and shown on the
+till as a muted "kept locally" count (`repo::list_unroutable_outbox_rows`).
+That changed what "A7 is done" has to mean, so the criterion is written down
+now rather than discovered later:
+
+1. **THE ROWS ALREADY MARKED `no_route` MUST DRAIN ONCE THE ROUTES LAND.** They
+   are blocked rows, and a blocked row is never retried — that is the point of
+   blocking. So a build that adds the missing routes and does nothing else
+   would ship with every historical kitchen ticket permanently stuck, on every
+   outlet, with the muted count frozen at whatever it had reached. **The 78
+   rows measured on 2026-09-07 are the ones this would strand.**
+
+2. **THE MECHANISM IS RE-EVALUATION AT PUMP START, NOT A MIGRATION.** On each
+   pump, before draining, clear the block on every row whose `last_code` is
+   `no_route` and whose event type this build CAN now route. Keyed on what the
+   running binary can route, not on a version number or a one-shot upgrade
+   step: a row is unroutable relative to a binary, so the binary is the only
+   thing that can say the condition has passed. It is also self-correcting if
+   a route is added and then reverted.
+
+3. **NOTHING ELSE MAY BE UNBLOCKED BY IT.** A row blocked after a 409 spent a
+   real retry budget against a real refusal, and clearing that would put the
+   outlet back in the retry loop the budget exists to stop. The re-evaluation
+   matches on `last_code = 'no_route'` and on nothing else.
+
+**Falsifier for when this is built:** mark a `KOTStatusChanged` row `no_route`
+against a build with no KOT route, confirm it is blocked and in the muted
+count, then run the pump on a build that HAS the route and assert the row
+drains and the muted count falls to zero. A test that only proves new rows
+route is green on a build that strands every old one.
+
+
 ---
 
 ## A-bis. Key management — where the edge database key lives, and who can change it

@@ -830,6 +830,21 @@ export async function listBlockedOutboxRows(): Promise<SyncOutboxBlock[]> {
   }
 }
 
+/** Rows this build has no route for: kept locally, complete, going nowhere
+ * until the routes land (gap A7). Shown as a MUTED COUNT, never in the
+ * attention list — every kitchen ticket produces one, nothing anyone at the
+ * outlet does changes the number, and a banner that is always red is not a
+ * banner.
+ * `apps/pos/src-tauri/src/commands/inventory.rs` `list_unroutable_outbox_rows`. */
+export async function listUnroutableOutboxRows(): Promise<SyncOutboxBlock[]> {
+  try {
+    const raw = await invoke<unknown[]>("list_unroutable_outbox_rows");
+    return raw.map((b) => SyncOutboxBlockSchema.parse(b));
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
+
 /** Rows still being retried that have been failing for a while — surfaced
  * WITHOUT being abandoned. A transient failure never spends the retry budget
  * (giving up on good rows during an outage is data loss dressed as

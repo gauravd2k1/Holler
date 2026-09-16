@@ -30,7 +30,12 @@ const VERIFY_SINCE_VERSION: i64 = i32::MAX as i64;
 /// type. Stable and machine-readable, like the cloud's `ErrorCode` values the
 /// same column otherwise holds — the till's banner shows this column, and a
 /// human-written sentence there would drift from the one in the reason.
-pub const UNROUTED_EVENT_CODE: &str = "no_route";
+///
+/// RE-EXPORTED, NOT DECLARED HERE. The two queries that separate the
+/// attention list from the muted "kept locally" count filter on this exact
+/// string, and they live in `edge/database`; a second literal in this crate
+/// would put rows in the wrong list on the day it drifted.
+pub use holler_edge_database::repo::UNROUTED_EVENT_CODE;
 
 /// Static identity of this edge node — set once at enrollment. Not derived
 /// from any outbox row: tenant_id in particular has no home in the frozen

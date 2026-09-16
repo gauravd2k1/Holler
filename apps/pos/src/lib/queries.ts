@@ -9,6 +9,7 @@ import {
   listCurrentStock,
   listDiscountDefinitions,
   listBlockedOutboxRows,
+  listUnroutableOutboxRows,
   listFailedPrintJobs,
   listPersistentlyFailingOutboxRows,
   listInvoicesForOrder,
@@ -48,6 +49,7 @@ export const queryKeys = {
   stockDeductionGaps: ["stock-deduction-gaps"] as const,
   blockedReplays: ["blocked-replays"] as const,
   blockedOutboxRows: ["blocked-outbox-rows"] as const,
+  unroutableOutboxRows: ["unroutable-outbox-rows"] as const,
   persistentlyFailingOutboxRows: ["persistently-failing-outbox-rows"] as const,
   stockCount: (stockCountId: string) => ["stock-count", stockCountId] as const,
   stockCountLines: (stockCountId: string) => ["stock-count-lines", stockCountId] as const,
@@ -122,6 +124,16 @@ export function useBlockedOutboxRowsQuery() {
   return useQuery({
     queryKey: queryKeys.blockedOutboxRows,
     queryFn: listBlockedOutboxRows,
+    refetchInterval: 15000,
+  });
+}
+
+/** Rows kept locally because this build has no route for their event type
+ * (gap A7). A muted count on the till, never the attention list. */
+export function useUnroutableOutboxRowsQuery() {
+  return useQuery({
+    queryKey: queryKeys.unroutableOutboxRows,
+    queryFn: listUnroutableOutboxRows,
     refetchInterval: 15000,
   });
 }

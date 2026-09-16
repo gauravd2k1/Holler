@@ -130,6 +130,23 @@ pub fn list_blocked_outbox_rows_impl(state: &AppState) -> AppResult<Vec<SyncOutb
     Ok(blocked.into_iter().map(SyncOutboxBlock::from).collect())
 }
 
+/// Rows this build has no route for: kept locally, complete, and going
+/// nowhere until the routes land (gap A7).
+///
+/// SEPARATE FROM THE ATTENTION LIST ON PURPOSE. Every kitchen ticket at every
+/// outlet produces `KOTStatusChanged`, and every finished order an
+/// `OrderReady`; none of them has a route in this build, and nothing anyone at
+/// the outlet does changes that. Left among the rows a person can act on they
+/// would bury the one that matters under a hundred that nobody can, and a
+/// banner that is always red is not a banner. The till shows this as a muted
+/// count, not an alarm.
+pub fn list_unroutable_outbox_rows_impl(state: &AppState) -> AppResult<Vec<SyncOutboxBlock>> {
+    let db = lock_db(state)?;
+    let unroutable =
+        holler_edge_database::repo::list_unroutable_outbox_rows(db.connection(), &state.outlet_id)?;
+    Ok(unroutable.into_iter().map(SyncOutboxBlock::from).collect())
+}
+
 /// Rows still being retried that have failed repeatedly — surfaced WITHOUT
 /// being abandoned.
 ///
@@ -288,6 +305,11 @@ pub fn list_blocked_replays(state: State<'_, AppState>) -> AppResult<Vec<SyncRep
 #[tauri::command]
 pub fn list_blocked_outbox_rows(state: State<'_, AppState>) -> AppResult<Vec<SyncOutboxBlock>> {
     list_blocked_outbox_rows_impl(&state)
+}
+
+#[tauri::command]
+pub fn list_unroutable_outbox_rows(state: State<'_, AppState>) -> AppResult<Vec<SyncOutboxBlock>> {
+    list_unroutable_outbox_rows_impl(&state)
 }
 
 #[tauri::command]
