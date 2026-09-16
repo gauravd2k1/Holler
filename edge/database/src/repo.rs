@@ -1326,9 +1326,7 @@ pub(crate) fn require_amendable_for_item_changes(
         .optional()?;
     match row {
         None => Err(crate::error::DbError::NotFound("order")),
-        Some((outlet_id, status))
-            if ORDER_ITEM_AMENDABLE_STATUSES.contains(&status.as_str()) =>
-        {
+        Some((outlet_id, status)) if ORDER_ITEM_AMENDABLE_STATUSES.contains(&status.as_str()) => {
             Ok(outlet_id)
         }
         Some((_, status)) => Err(crate::error::DbError::OrderNotAmendable {

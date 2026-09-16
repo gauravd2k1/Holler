@@ -341,7 +341,11 @@ impl OutletIdentity {
     pub fn resolved_logo_path(&self) -> Option<PathBuf> {
         let rel = self.logo_path.as_ref()?;
         let p = PathBuf::from(rel);
-        Some(if p.is_absolute() { p } else { repo_root().join(p) })
+        Some(if p.is_absolute() {
+            p
+        } else {
+            repo_root().join(p)
+        })
     }
 }
 
@@ -439,9 +443,7 @@ fn is_invoice_prefix_shaped(s: &str) -> bool {
     let Some(letters) = s.strip_suffix('/') else {
         return false;
     };
-    !letters.is_empty()
-        && letters.len() <= 4
-        && letters.bytes().all(|b| b.is_ascii_uppercase())
+    !letters.is_empty() && letters.len() <= 4 && letters.bytes().all(|b| b.is_ascii_uppercase())
 }
 
 fn is_vpa_shaped(s: &str) -> bool {
@@ -589,16 +591,12 @@ mod tests {
             "the mutation {mutation:?} did not apply — the example file changed \
              and this test is now asserting nothing"
         );
-        OutletIdentity::parse(&text, &origin())
-            .expect_err("this mutation must be rejected")
+        OutletIdentity::parse(&text, &origin()).expect_err("this mutation must be rejected")
     }
 
     #[test]
     fn a_gstin_of_the_wrong_shape_is_rejected_by_name() {
-        let err = rejected(
-            "gstin = \"27AAAAA0000A1Z5\"",
-            "gstin = \"27AAAAA0000A1Z\"",
-        );
+        let err = rejected("gstin = \"27AAAAA0000A1Z5\"", "gstin = \"27AAAAA0000A1Z\"");
         assert!(err.contains("`gstin`"), "{err}");
         assert!(err.contains("15 characters"), "{err}");
     }
@@ -657,7 +655,13 @@ mod tests {
 
     #[test]
     fn a_malformed_upi_vpa_is_rejected_by_name() {
-        for bad in ["nobody", "a@b@c", "@okicici", "someone@", "some one@okicici"] {
+        for bad in [
+            "nobody",
+            "a@b@c",
+            "@okicici",
+            "someone@",
+            "some one@okicici",
+        ] {
             let text = example().replace(
                 "# upi_vpa = \"someone@okicici\"",
                 &format!("upi_vpa = \"{bad}\""),

@@ -704,7 +704,12 @@ pub const CLIENT_CATEGORIES: &[(&str, i64, &[SeedItem])] = &[
                 tax_profile_id: TAX_PROFILE_FOOD5_ID,
                 hsn_sac: "9963",
                 station_code: "WOK",
-                variants: &[("Veg", 0), ("Chicken", 5000), ("Prawn", 9000), ("Lamb", 9000)],
+                variants: &[
+                    ("Veg", 0),
+                    ("Chicken", 5000),
+                    ("Prawn", 9000),
+                    ("Lamb", 9000),
+                ],
                 modifier_groups: &[],
             },
             SeedItem {
@@ -713,7 +718,12 @@ pub const CLIENT_CATEGORIES: &[(&str, i64, &[SeedItem])] = &[
                 tax_profile_id: TAX_PROFILE_FOOD5_ID,
                 hsn_sac: "9963",
                 station_code: "WOK",
-                variants: &[("Veg", 0), ("Chicken", 5000), ("Prawn", 9000), ("Lamb", 9000)],
+                variants: &[
+                    ("Veg", 0),
+                    ("Chicken", 5000),
+                    ("Prawn", 9000),
+                    ("Lamb", 9000),
+                ],
                 modifier_groups: &[],
             },
             SeedItem {
@@ -722,7 +732,12 @@ pub const CLIENT_CATEGORIES: &[(&str, i64, &[SeedItem])] = &[
                 tax_profile_id: TAX_PROFILE_FOOD5_ID,
                 hsn_sac: "9963",
                 station_code: "WOK",
-                variants: &[("Veg", 0), ("Chicken", 5000), ("Prawn", 9000), ("Lamb", 9000)],
+                variants: &[
+                    ("Veg", 0),
+                    ("Chicken", 5000),
+                    ("Prawn", 9000),
+                    ("Lamb", 9000),
+                ],
                 modifier_groups: &[],
             },
             SeedItem {
@@ -731,7 +746,12 @@ pub const CLIENT_CATEGORIES: &[(&str, i64, &[SeedItem])] = &[
                 tax_profile_id: TAX_PROFILE_FOOD5_ID,
                 hsn_sac: "9963",
                 station_code: "WOK",
-                variants: &[("Veg", 0), ("Chicken", 5000), ("Prawn", 9000), ("Lamb", 9000)],
+                variants: &[
+                    ("Veg", 0),
+                    ("Chicken", 5000),
+                    ("Prawn", 9000),
+                    ("Lamb", 9000),
+                ],
                 modifier_groups: &[],
             },
         ],
@@ -927,7 +947,14 @@ pub const CLIENT_CATEGORIES: &[(&str, i64, &[SeedItem])] = &[
                 hsn_sac: "9963",
                 station_code: "WOK",
                 variants: &[("Basmati", 0), ("Jasmine", 7000)],
-                modifier_groups: &[("Add-on", &[("Add Chicken", 7500), ("Add Prawns", 9500), ("Add Mixed Meat", 9500)])],
+                modifier_groups: &[(
+                    "Add-on",
+                    &[
+                        ("Add Chicken", 7500),
+                        ("Add Prawns", 9500),
+                        ("Add Mixed Meat", 9500),
+                    ],
+                )],
             },
             SeedItem {
                 name: "Burnt Garlic Corn And Spinach Fried Rice",
@@ -936,7 +963,14 @@ pub const CLIENT_CATEGORIES: &[(&str, i64, &[SeedItem])] = &[
                 hsn_sac: "9963",
                 station_code: "WOK",
                 variants: &[("Regular", 0)],
-                modifier_groups: &[("Add-on", &[("Add Chicken", 7500), ("Add Prawns", 9500), ("Add Mixed Meat", 9500)])],
+                modifier_groups: &[(
+                    "Add-on",
+                    &[
+                        ("Add Chicken", 7500),
+                        ("Add Prawns", 9500),
+                        ("Add Mixed Meat", 9500),
+                    ],
+                )],
             },
             SeedItem {
                 name: "Sichuan Butter Fried Rice",
@@ -945,7 +979,14 @@ pub const CLIENT_CATEGORIES: &[(&str, i64, &[SeedItem])] = &[
                 hsn_sac: "9963",
                 station_code: "WOK",
                 variants: &[("Regular", 0)],
-                modifier_groups: &[("Add-on", &[("Add Chicken", 7500), ("Add Prawns", 9500), ("Add Mixed Meat", 9500)])],
+                modifier_groups: &[(
+                    "Add-on",
+                    &[
+                        ("Add Chicken", 7500),
+                        ("Add Prawns", 9500),
+                        ("Add Mixed Meat", 9500),
+                    ],
+                )],
             },
             SeedItem {
                 name: "Blue Fried Rice",
@@ -954,7 +995,14 @@ pub const CLIENT_CATEGORIES: &[(&str, i64, &[SeedItem])] = &[
                 hsn_sac: "9963",
                 station_code: "WOK",
                 variants: &[("Regular", 0)],
-                modifier_groups: &[("Add-on", &[("Add Chicken", 7500), ("Add Prawns", 9500), ("Add Mixed Meat", 9500)])],
+                modifier_groups: &[(
+                    "Add-on",
+                    &[
+                        ("Add Chicken", 7500),
+                        ("Add Prawns", 9500),
+                        ("Add Mixed Meat", 9500),
+                    ],
+                )],
             },
             SeedItem {
                 name: "Stir Fried Hakka Noodles",
@@ -963,7 +1011,14 @@ pub const CLIENT_CATEGORIES: &[(&str, i64, &[SeedItem])] = &[
                 hsn_sac: "9963",
                 station_code: "WOK",
                 variants: &[("Regular", 0)],
-                modifier_groups: &[("Add-on", &[("Add Chicken", 7500), ("Add Prawns", 9500), ("Add Mixed Meat", 9500)])],
+                modifier_groups: &[(
+                    "Add-on",
+                    &[
+                        ("Add Chicken", 7500),
+                        ("Add Prawns", 9500),
+                        ("Add Mixed Meat", 9500),
+                    ],
+                )],
             },
             SeedItem {
                 name: "Yaki Udon",
@@ -972,7 +1027,14 @@ pub const CLIENT_CATEGORIES: &[(&str, i64, &[SeedItem])] = &[
                 hsn_sac: "9963",
                 station_code: "WOK",
                 variants: &[("Regular", 0)],
-                modifier_groups: &[("Add-on", &[("Add Chicken", 7500), ("Add Prawns", 9500), ("Add Mixed Meat", 9500)])],
+                modifier_groups: &[(
+                    "Add-on",
+                    &[
+                        ("Add Chicken", 7500),
+                        ("Add Prawns", 9500),
+                        ("Add Mixed Meat", 9500),
+                    ],
+                )],
             },
             SeedItem {
                 name: "Pad Thai",
@@ -981,7 +1043,14 @@ pub const CLIENT_CATEGORIES: &[(&str, i64, &[SeedItem])] = &[
                 hsn_sac: "9963",
                 station_code: "WOK",
                 variants: &[("Regular", 0)],
-                modifier_groups: &[("Add-on", &[("Add Chicken", 7500), ("Add Prawns", 9500), ("Add Mixed Meat", 9500)])],
+                modifier_groups: &[(
+                    "Add-on",
+                    &[
+                        ("Add Chicken", 7500),
+                        ("Add Prawns", 9500),
+                        ("Add Mixed Meat", 9500),
+                    ],
+                )],
             },
         ],
     ),
@@ -995,7 +1064,13 @@ pub const CLIENT_CATEGORIES: &[(&str, i64, &[SeedItem])] = &[
                 tax_profile_id: TAX_PROFILE_FOOD5_ID,
                 hsn_sac: "9963",
                 station_code: "WOK",
-                variants: &[("Veg: Corn and Mushrooms", 0), ("Chicken", 10000), ("Lamb", 15000), ("Prawn", 20000), ("Belgian Pork", 23000)],
+                variants: &[
+                    ("Veg: Corn and Mushrooms", 0),
+                    ("Chicken", 10000),
+                    ("Lamb", 15000),
+                    ("Prawn", 20000),
+                    ("Belgian Pork", 23000),
+                ],
                 modifier_groups: &[],
             },
             SeedItem {
@@ -1004,7 +1079,13 @@ pub const CLIENT_CATEGORIES: &[(&str, i64, &[SeedItem])] = &[
                 tax_profile_id: TAX_PROFILE_FOOD5_ID,
                 hsn_sac: "9963",
                 station_code: "WOK",
-                variants: &[("Veg: Tofu and Mushrooms", 0), ("Chicken", 10000), ("Lamb", 15000), ("Prawn", 20000), ("Belgian Pork", 23000)],
+                variants: &[
+                    ("Veg: Tofu and Mushrooms", 0),
+                    ("Chicken", 10000),
+                    ("Lamb", 15000),
+                    ("Prawn", 20000),
+                    ("Belgian Pork", 23000),
+                ],
                 modifier_groups: &[],
             },
             SeedItem {
@@ -1013,7 +1094,13 @@ pub const CLIENT_CATEGORIES: &[(&str, i64, &[SeedItem])] = &[
                 tax_profile_id: TAX_PROFILE_FOOD5_ID,
                 hsn_sac: "9963",
                 station_code: "WOK",
-                variants: &[("Veg: Asparagus", 0), ("Chicken", 10000), ("Lamb", 15000), ("Prawn", 20000), ("Belgian Pork", 23000)],
+                variants: &[
+                    ("Veg: Asparagus", 0),
+                    ("Chicken", 10000),
+                    ("Lamb", 15000),
+                    ("Prawn", 20000),
+                    ("Belgian Pork", 23000),
+                ],
                 modifier_groups: &[],
             },
             SeedItem {
@@ -1022,7 +1109,13 @@ pub const CLIENT_CATEGORIES: &[(&str, i64, &[SeedItem])] = &[
                 tax_profile_id: TAX_PROFILE_FOOD5_ID,
                 hsn_sac: "9963",
                 station_code: "WOK",
-                variants: &[("Veg: Mushroom", 0), ("Chicken", 10000), ("Lamb", 15000), ("Prawn", 20000), ("Belgian Pork", 23000)],
+                variants: &[
+                    ("Veg: Mushroom", 0),
+                    ("Chicken", 10000),
+                    ("Lamb", 15000),
+                    ("Prawn", 20000),
+                    ("Belgian Pork", 23000),
+                ],
                 modifier_groups: &[],
             },
             SeedItem {
@@ -1031,7 +1124,13 @@ pub const CLIENT_CATEGORIES: &[(&str, i64, &[SeedItem])] = &[
                 tax_profile_id: TAX_PROFILE_FOOD5_ID,
                 hsn_sac: "9963",
                 station_code: "WOK",
-                variants: &[("Veg: Corn", 0), ("Chicken", 10000), ("Lamb", 15000), ("Prawn", 20000), ("Belgian Pork", 23000)],
+                variants: &[
+                    ("Veg: Corn", 0),
+                    ("Chicken", 10000),
+                    ("Lamb", 15000),
+                    ("Prawn", 20000),
+                    ("Belgian Pork", 23000),
+                ],
                 modifier_groups: &[],
             },
         ],
@@ -1046,7 +1145,12 @@ pub const CLIENT_CATEGORIES: &[(&str, i64, &[SeedItem])] = &[
                 tax_profile_id: TAX_PROFILE_FOOD5_ID,
                 hsn_sac: "9963",
                 station_code: "WOK",
-                variants: &[("Veg", 0), ("Chicken", 5000), ("Prawn", 10000), ("Lamb", 10000)],
+                variants: &[
+                    ("Veg", 0),
+                    ("Chicken", 5000),
+                    ("Prawn", 10000),
+                    ("Lamb", 10000),
+                ],
                 modifier_groups: &[],
             },
             SeedItem {
@@ -1055,7 +1159,12 @@ pub const CLIENT_CATEGORIES: &[(&str, i64, &[SeedItem])] = &[
                 tax_profile_id: TAX_PROFILE_FOOD5_ID,
                 hsn_sac: "9963",
                 station_code: "WOK",
-                variants: &[("Veg", 0), ("Chicken", 8000), ("Prawn", 10000), ("Lamb", 10000)],
+                variants: &[
+                    ("Veg", 0),
+                    ("Chicken", 8000),
+                    ("Prawn", 10000),
+                    ("Lamb", 10000),
+                ],
                 modifier_groups: &[],
             },
             SeedItem {
@@ -1064,7 +1173,12 @@ pub const CLIENT_CATEGORIES: &[(&str, i64, &[SeedItem])] = &[
                 tax_profile_id: TAX_PROFILE_FOOD5_ID,
                 hsn_sac: "9963",
                 station_code: "WOK",
-                variants: &[("Veg", 0), ("Chicken", 8000), ("Prawn", 10000), ("Lamb", 10000)],
+                variants: &[
+                    ("Veg", 0),
+                    ("Chicken", 8000),
+                    ("Prawn", 10000),
+                    ("Lamb", 10000),
+                ],
                 modifier_groups: &[],
             },
         ],
@@ -1277,7 +1391,14 @@ pub const CLIENT_CATEGORIES: &[(&str, i64, &[SeedItem])] = &[
                 tax_profile_id: TAX_PROFILE_FOOD5_ID,
                 hsn_sac: "9963",
                 station_code: "BEVERAGE",
-                variants: &[("Apple Juice", 0), ("Orange Juice", 0), ("Cranberry Juice", 0), ("Pineapple Juice", 0), ("Grape Juice", 0), ("Mango Juice", 0)],
+                variants: &[
+                    ("Apple Juice", 0),
+                    ("Orange Juice", 0),
+                    ("Cranberry Juice", 0),
+                    ("Pineapple Juice", 0),
+                    ("Grape Juice", 0),
+                    ("Mango Juice", 0),
+                ],
                 modifier_groups: &[],
             },
             SeedItem {
@@ -2665,47 +2786,41 @@ pub const CLIENT_CATEGORIES: &[(&str, i64, &[SeedItem])] = &[
     (
         "Rose Wine (Imported)",
         42,
-        &[
-            SeedItem {
-                name: "Mateus Rose",
-                price_paise: 479500,
-                tax_profile_id: TAX_PROFILE_ALCOHOL_VAT_ID,
-                hsn_sac: "9963",
-                station_code: "BAR",
-                variants: &[("Regular", 0)],
-                modifier_groups: &[],
-            },
-        ],
+        &[SeedItem {
+            name: "Mateus Rose",
+            price_paise: 479500,
+            tax_profile_id: TAX_PROFILE_ALCOHOL_VAT_ID,
+            hsn_sac: "9963",
+            station_code: "BAR",
+            variants: &[("Regular", 0)],
+            modifier_groups: &[],
+        }],
     ),
     (
         "Champagne (Imported)",
         43,
-        &[
-            SeedItem {
-                name: "Moet Et Chandon",
-                price_paise: 1499500,
-                tax_profile_id: TAX_PROFILE_ALCOHOL_VAT_ID,
-                hsn_sac: "9963",
-                station_code: "BAR",
-                variants: &[("Regular", 0)],
-                modifier_groups: &[],
-            },
-        ],
+        &[SeedItem {
+            name: "Moet Et Chandon",
+            price_paise: 1499500,
+            tax_profile_id: TAX_PROFILE_ALCOHOL_VAT_ID,
+            hsn_sac: "9963",
+            station_code: "BAR",
+            variants: &[("Regular", 0)],
+            modifier_groups: &[],
+        }],
     ),
     (
         "Sparkling Wine (Indian)",
         44,
-        &[
-            SeedItem {
-                name: "Sula Brut",
-                price_paise: 189500,
-                tax_profile_id: TAX_PROFILE_ALCOHOL_VAT_ID,
-                hsn_sac: "9963",
-                station_code: "BAR",
-                variants: &[("Regular", 0)],
-                modifier_groups: &[],
-            },
-        ],
+        &[SeedItem {
+            name: "Sula Brut",
+            price_paise: 189500,
+            tax_profile_id: TAX_PROFILE_ALCOHOL_VAT_ID,
+            hsn_sac: "9963",
+            station_code: "BAR",
+            variants: &[("Regular", 0)],
+            modifier_groups: &[],
+        }],
     ),
     (
         "White Wines (Indian)",
@@ -2776,16 +2891,14 @@ pub const CLIENT_CATEGORIES: &[(&str, i64, &[SeedItem])] = &[
     (
         "Rose Wine (Indian)",
         47,
-        &[
-            SeedItem {
-                name: "The Source Grenache",
-                price_paise: 169500,
-                tax_profile_id: TAX_PROFILE_ALCOHOL_VAT_ID,
-                hsn_sac: "9963",
-                station_code: "BAR",
-                variants: &[("Regular", 0)],
-                modifier_groups: &[],
-            },
-        ],
+        &[SeedItem {
+            name: "The Source Grenache",
+            price_paise: 169500,
+            tax_profile_id: TAX_PROFILE_ALCOHOL_VAT_ID,
+            hsn_sac: "9963",
+            station_code: "BAR",
+            variants: &[("Regular", 0)],
+            modifier_groups: &[],
+        }],
     ),
 ];

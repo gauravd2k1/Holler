@@ -225,7 +225,6 @@ pub fn wipe_plaintext_and_wal_shm(db_path: &Path) -> DbResult<()> {
     Ok(())
 }
 
-
 /// Every SQLite database begins with this exact 16-byte header, including the
 /// trailing NUL (SQLite file-format spec §1.3).
 const SQLITE_MAGIC: &[u8; 16] = b"SQLite format 3\0";
@@ -727,8 +726,14 @@ mod unreadable_leftover_tests {
         // The sealed file is BYTE-IDENTICAL: recovery must never reseal over
         // the real database with bytes it could not read.
         assert_eq!(fs::read(&sealed).expect("sealed still there"), sealed_bytes);
-        assert!(!plain.exists(), "the unreadable leftover must be moved aside");
-        assert!(!marker_path(&plain).exists(), "the stale marker must be cleared");
+        assert!(
+            !plain.exists(),
+            "the unreadable leftover must be moved aside"
+        );
+        assert!(
+            !marker_path(&plain).exists(),
+            "the stale marker must be cleared"
+        );
 
         // NOTHING WAS DELETED. The bytes are still on disk under a new name.
         let quarantined: Vec<_> = fs::read_dir(dir.path())
@@ -737,9 +742,16 @@ mod unreadable_leftover_tests {
             .map(|e| e.file_name().to_string_lossy().to_string())
             .filter(|n| n.contains(".unreadable-"))
             .collect();
-        assert_eq!(quarantined.len(), 1, "expected one quarantined file, got {quarantined:?}");
+        assert_eq!(
+            quarantined.len(),
+            1,
+            "expected one quarantined file, got {quarantined:?}"
+        );
         let kept = fs::read(dir.path().join(&quarantined[0])).expect("quarantined file readable");
-        assert_eq!(kept, sealed_bytes, "the quarantined bytes must be preserved exactly");
+        assert_eq!(
+            kept, sealed_bytes,
+            "the quarantined bytes must be preserved exactly"
+        );
     }
 
     /// With no sealed file there is nothing to fall back to, so refusing is
@@ -758,7 +770,10 @@ mod unreadable_leftover_tests {
             format!("{err:?}").contains("not a SQLite database"),
             "the error must name the actual problem, got {err:?}"
         );
-        assert!(plain.exists(), "nothing may be moved or deleted on this path");
+        assert!(
+            plain.exists(),
+            "nothing may be moved or deleted on this path"
+        );
     }
 
     /// The ordinary crash leftover still recovers. A guard that only ever goes
@@ -779,8 +794,10 @@ mod unreadable_leftover_tests {
         {
             let conn = Connection::open(&plain).expect("open");
             pragma::configure_connection(&conn).expect("pragmas");
-            conn.execute_batch("CREATE TABLE t (id INTEGER PRIMARY KEY); INSERT INTO t VALUES (1);")
-                .expect("seed");
+            conn.execute_batch(
+                "CREATE TABLE t (id INTEGER PRIMARY KEY); INSERT INTO t VALUES (1);",
+            )
+            .expect("seed");
         }
         seal_file(&plain, &sealed, &key).expect("seal");
         let old_sealed = fs::read(&sealed).expect("read");
@@ -789,13 +806,20 @@ mod unreadable_leftover_tests {
         {
             let conn = Connection::open(&plain).expect("reopen");
             pragma::configure_connection(&conn).expect("pragmas");
-            conn.execute_batch("INSERT INTO t VALUES (2);").expect("second row");
+            conn.execute_batch("INSERT INTO t VALUES (2);")
+                .expect("second row");
         }
 
         recover_crash_leftovers(&sealed, &plain, &key).expect("recovery");
 
         let resealed = fs::read(&sealed).expect("read");
-        assert_ne!(resealed, old_sealed, "the newer committed state must be folded in");
-        assert!(!plain.exists(), "the leftover is wiped once its data is safely sealed");
+        assert_ne!(
+            resealed, old_sealed,
+            "the newer committed state must be folded in"
+        );
+        assert!(
+            !plain.exists(),
+            "the leftover is wiped once its data is safely sealed"
+        );
     }
 }

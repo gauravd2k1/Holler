@@ -255,7 +255,13 @@ struct HttpResponse {
 /// track's owned paths (CLAUDE.md: only the `tiny_http` promotion in
 /// Cargo.toml). `Connection: close` lets a plain `read_to_end` capture the
 /// whole response without needing to track `Content-Length`.
-fn http_request(addr: SocketAddr, method: &str, path: &str, token: Option<&str>, body: Option<&str>) -> HttpResponse {
+fn http_request(
+    addr: SocketAddr,
+    method: &str,
+    path: &str,
+    token: Option<&str>,
+    body: Option<&str>,
+) -> HttpResponse {
     let mut stream = TcpStream::connect(addr).expect("connect to captain listener");
     // 30s, not 5. EVERY captain request re-verifies the device credential with
     // Argon2id at 64 MiB / t=2, which is deliberately expensive, and this suite
@@ -268,9 +274,8 @@ fn http_request(addr: SocketAddr, method: &str, path: &str, token: Option<&str>,
         .expect("set read timeout");
 
     let body_bytes = body.unwrap_or("").as_bytes();
-    let mut request = format!(
-        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n"
-    );
+    let mut request =
+        format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n");
     if let Some(t) = token {
         request.push_str(&format!("Authorization: Bearer {t}\r\n"));
     }
@@ -836,7 +841,10 @@ fn a_second_round_on_one_table_appends_to_the_open_order_instead_of_opening_a_se
             .iter()
             .map(|i| {
                 (
-                    i["order_item_id"].as_str().expect("order_item_id").to_string(),
+                    i["order_item_id"]
+                        .as_str()
+                        .expect("order_item_id")
+                        .to_string(),
                     i["quantity"].as_i64().expect("quantity"),
                 )
             })
@@ -972,7 +980,10 @@ fn two_tables_report_their_own_open_orders_and_never_each_others() {
     // With only table-1 open, table-2 must still read null — a query missing
     // its table filter passes the first assertion and fails this one.
     let mid = http_request(addr, "GET", "/api/tables", Some(&token), None);
-    assert_eq!(mid.body["tables"].as_array().expect("tables array").len(), 2);
+    assert_eq!(
+        mid.body["tables"].as_array().expect("tables array").len(),
+        2
+    );
     assert_eq!(find(&mid.body, "table-1")["open_order_id"], order_one);
     assert_eq!(
         find(&mid.body, "table-2")["open_order_id"],

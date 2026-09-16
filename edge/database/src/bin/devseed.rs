@@ -2294,7 +2294,10 @@ fn seed(
             },
         )?;
     }
-    println!("devseed: seed tables — {} tables in section Main", tables.len());
+    println!(
+        "devseed: seed tables — {} tables in section Main",
+        tables.len()
+    );
 
     // Stations are EDGE ONLY (seed/README.md) -- never in the shared
     // catalogue. The legacy STATION_ID/"MAIN_KITCHEN" fixture first (fixed
@@ -3529,11 +3532,9 @@ mod t1b_seed_resolves_tests {
         // FSSAI line printed on a bill is worse than no line.
         assert_eq!(
             identity.fssai,
-            conn.query_row(
-                "SELECT fssai_number FROM outlet_fiscal_profile",
-                [],
-                |r| r.get::<_, Option<String>>(0)
-            )
+            conn.query_row("SELECT fssai_number FROM outlet_fiscal_profile", [], |r| {
+                r.get::<_, Option<String>>(0)
+            })
             .expect("fssai_number"),
             "seed/outlet.toml `fssai`"
         );

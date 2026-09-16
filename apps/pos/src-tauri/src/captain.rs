@@ -233,8 +233,7 @@ struct TablesResponse {
 /// reads on the phone as a broken Send rather than as a table that has moved
 /// on. READY and SERVED are deliberately outside it: the kitchen is done, and
 /// a further round is a new order.
-const APPENDABLE_ORDER_STATUSES: [&str; 4] =
-    ["DRAFT", "CONFIRMED", "SENT_TO_KITCHEN", "PREPARING"];
+const APPENDABLE_ORDER_STATUSES: [&str; 4] = ["DRAFT", "CONFIRMED", "SENT_TO_KITCHEN", "PREPARING"];
 
 fn handle_tables(state: &AppState) -> ApiResult {
     let tables = list_tables_impl(state).map_err(|e| (500, e))?;
@@ -642,7 +641,10 @@ fn unauthorized(message: impl Into<String>) -> (u16, AppError) {
 /// cloud": requiring a cloud URL to authenticate would make this route
 /// depend on the uplink, which ADR-013 forbids for every LAN-facing surface
 /// in this process.
-fn authenticate(request: &Request, state: &AppState) -> Result<DeviceCredentialCache, (u16, AppError)> {
+fn authenticate(
+    request: &Request,
+    state: &AppState,
+) -> Result<DeviceCredentialCache, (u16, AppError)> {
     let token = bearer_token(request)
         .ok_or_else(|| unauthorized("missing or malformed Authorization header"))?;
     let Some((credential_id, secret)) = split_token(&token) else {
@@ -651,8 +653,11 @@ fn authenticate(request: &Request, state: &AppState) -> Result<DeviceCredentialC
 
     let row = {
         let db = lock_db(state)?;
-        holler_edge_database::repo::get_device_credential_cache_by_id(db.connection(), credential_id)
-            .map_err(|e| storage_error(e.into()))?
+        holler_edge_database::repo::get_device_credential_cache_by_id(
+            db.connection(),
+            credential_id,
+        )
+        .map_err(|e| storage_error(e.into()))?
     };
     let Some(row) = row else {
         return Err(unauthorized("device credential not cached locally"));
@@ -704,7 +709,9 @@ fn bearer_token(request: &Request) -> Option<String> {
 
 // -------------------------------------------------------------- helpers --
 
-fn lock_db(state: &AppState) -> Result<std::sync::MutexGuard<'_, holler_edge_database::Db>, (u16, AppError)> {
+fn lock_db(
+    state: &AppState,
+) -> Result<std::sync::MutexGuard<'_, holler_edge_database::Db>, (u16, AppError)> {
     state.db.lock().map_err(|_| {
         (
             500,
@@ -750,7 +757,9 @@ fn json_response(status: u16, body: &impl Serialize) -> ApiResult {
 }
 
 fn error_response(status: u16, err: &AppError) -> Response<Cursor<Vec<u8>>> {
-    let bytes = serde_json::to_vec(err).unwrap_or_else(|_| b"{\"code\":\"SERIALIZATION_ERROR\",\"message\":\"could not encode error\"}".to_vec());
+    let bytes = serde_json::to_vec(err).unwrap_or_else(|_| {
+        b"{\"code\":\"SERIALIZATION_ERROR\",\"message\":\"could not encode error\"}".to_vec()
+    });
     Response::from_data(bytes)
         .with_status_code(status)
         .with_header(json_content_type())
@@ -767,7 +776,11 @@ fn json_content_type() -> Header {
 /// the pair screen has no token yet when it first loads
 /// (docs/captain-api.md "Authentication").
 fn serve_static(dist: &Path, path: &str) -> Response<Cursor<Vec<u8>>> {
-    let rel = if path == "/" { "index.html" } else { path.trim_start_matches('/') };
+    let rel = if path == "/" {
+        "index.html"
+    } else {
+        path.trim_start_matches('/')
+    };
 
     // Refuse path traversal outright rather than relying on the filesystem
     // to reject it — a captain page is served over plaintext HTTP on a flat

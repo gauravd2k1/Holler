@@ -310,7 +310,11 @@ impl SyncWorker {
     /// interleave with an outbox pump or a config apply against the same
     /// connection.
     pub fn pull_aggregator_orders(&self, db: &mut Db) -> SyncResult<usize> {
-        crate::aggregator::pull_and_apply_aggregator_orders(db, &self.client, &self.config.outlet_id)
+        crate::aggregator::pull_and_apply_aggregator_orders(
+            db,
+            &self.client,
+            &self.config.outlet_id,
+        )
     }
 
     /// Confirms this worker's `device_token` is a currently-valid credential

@@ -22,8 +22,8 @@ use std::time::Duration;
 use holler_edge_database::{model, repo, Db};
 use holler_edge_sync::client::HttpClient;
 use holler_edge_sync::worker::{
-    StopReason, SyncWorker, WorkerConfig, MAX_OUTBOX_REPLAY_ATTEMPTS,
-    OUTBOX_ATTENTION_ATTEMPTS, UNROUTED_EVENT_CODE,
+    StopReason, SyncWorker, WorkerConfig, MAX_OUTBOX_REPLAY_ATTEMPTS, OUTBOX_ATTENTION_ATTEMPTS,
+    UNROUTED_EVENT_CODE,
 };
 use tiny_http::{Response, Server};
 
@@ -584,7 +584,11 @@ fn a_422_missing_reference_holds_the_row_rather_than_dropping_it() {
     // until A3 lands the wasteful option is the correct one.
     let second = worker.pump_outbox(&mut db, 10).expect("second pump");
     handle.join().unwrap();
-    assert_eq!(second.blocked_aggregates.len(), 1, "refused again, still not dropped");
+    assert_eq!(
+        second.blocked_aggregates.len(),
+        1,
+        "refused again, still not dropped"
+    );
     // The status on the SECOND refusal, kept because the pre-A2 version of
     // this test asserted it and dropping it would let a second refusal of a
     // different class pass unnoticed. `stopped` cannot carry it any more, so
@@ -754,7 +758,6 @@ fn a_blocked_aggregate_holds_back_its_own_later_events() {
     assert_eq!(ids, vec!["outbox-1".to_string(), "outbox-3".to_string()]);
 }
 
-
 /// M6 A3 — the retry budget, and the durable record that makes spending it
 /// survivable.
 ///
@@ -844,10 +847,15 @@ fn a_permanently_refused_row_spends_its_budget_then_becomes_visible() {
 
     // And the drain stops paying for it: the next pump skips the row rather
     // than spending another request on an answer it has had five times.
-    let after = worker.pump_outbox(&mut db, 10).expect("pump after giving up");
+    let after = worker
+        .pump_outbox(&mut db, 10)
+        .expect("pump after giving up");
     handle.join().unwrap();
     assert_eq!(after.already_blocked, vec!["outbox-1".to_string()]);
-    assert!(after.gave_up.is_empty(), "giving up is reported once, not every pump");
+    assert!(
+        after.gave_up.is_empty(),
+        "giving up is reported once, not every pump"
+    );
 
     // Never deleted. The row and its order are still there to be repaired.
     let pending = repo::list_unpublished_outbox(db.connection(), 10).unwrap();
@@ -885,7 +893,10 @@ fn a_transient_failure_counts_forever_and_blocks_never() {
     let worker = SyncWorker::new(worker_config(base_url));
     for _ in 0..MAX_OUTBOX_REPLAY_ATTEMPTS + 2 {
         let report = worker.pump_outbox(&mut db, 10).expect("pump");
-        assert!(report.gave_up.is_empty(), "a 5xx is the cloud being unwell, not this row");
+        assert!(
+            report.gave_up.is_empty(),
+            "a 5xx is the cloud being unwell, not this row"
+        );
         assert_eq!(report.stopped, Some(StopReason::Rejected { status: 503 }));
     }
     handle.join().unwrap();
@@ -1360,7 +1371,10 @@ fn an_unroutable_event_is_recorded_and_shown_rather_than_skipped_in_silence() {
     assert!(
         shown.iter().any(|b| b.aggregate_type == "kot"),
         "the kitchen's own rows must be counted as well: {:?}",
-        shown.iter().map(|b| b.aggregate_type.clone()).collect::<Vec<_>>()
+        shown
+            .iter()
+            .map(|b| b.aggregate_type.clone())
+            .collect::<Vec<_>>()
     );
 
     // AND THE ATTENTION LIST STAYS EMPTY. Nothing here was refused by the
@@ -1432,8 +1446,13 @@ fn an_unroutable_row_is_counted_apart_from_the_rows_a_person_must_act_on() {
         "2026-09-16T10:00:00Z",
     )
     .expect("record the refusal");
-    repo::mark_outbox_blocked(db.connection(), "outlet-1", "outbox-refused", "2026-09-16T10:00:01Z")
-        .expect("block the refused row");
+    repo::mark_outbox_blocked(
+        db.connection(),
+        "outlet-1",
+        "outbox-refused",
+        "2026-09-16T10:00:01Z",
+    )
+    .expect("block the refused row");
 
     // A row this build cannot route at all.
     repo::record_outbox_failure(
@@ -1483,11 +1502,14 @@ fn an_unroutable_row_is_counted_apart_from_the_rows_a_person_must_act_on() {
     // counted twice on the till and would put the muted class back in the
     // alarm.
     assert!(
-        attention.iter().all(|b| b.last_code.as_deref() != Some(repo::UNROUTED_EVENT_CODE)),
+        attention
+            .iter()
+            .all(|b| b.last_code.as_deref() != Some(repo::UNROUTED_EVENT_CODE)),
         "no unroutable row may appear in the attention list"
     );
     assert!(
-        kept.iter().all(|b| b.last_code.as_deref() == Some(repo::UNROUTED_EVENT_CODE)),
+        kept.iter()
+            .all(|b| b.last_code.as_deref() == Some(repo::UNROUTED_EVENT_CODE)),
         "nothing but unroutable rows may appear in the kept-locally count"
     );
 }

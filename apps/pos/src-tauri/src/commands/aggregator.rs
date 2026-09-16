@@ -281,8 +281,10 @@ pub fn accept_aggregator_order_impl(
         message: format!("order {order_id} not found immediately after create"),
     })?;
     let persisted_items = holler_edge_database::repo::list_order_items(db.connection(), &order_id)?;
-    let modifiers_map =
-        holler_edge_database::repo::list_order_item_modifiers_for_order(db.connection(), &order_id)?;
+    let modifiers_map = holler_edge_database::repo::list_order_item_modifiers_for_order(
+        db.connection(),
+        &order_id,
+    )?;
 
     Ok(AcceptedAggregatorOrder {
         order: CanonicalOrder::from_order_and_items(

@@ -1377,8 +1377,12 @@ mod tests {
                 .expect("renders");
         std::env::remove_var("HOLLER_OUTLET_LOGO_PATH");
 
-        let outlet_at = html.find("class=\"outlet-mark\"").expect("outlet mark renders");
-        let holler_at = html.find("alt=\"Holler\"").expect("holler mark still renders");
+        let outlet_at = html
+            .find("class=\"outlet-mark\"")
+            .expect("outlet mark renders");
+        let holler_at = html
+            .find("alt=\"Holler\"")
+            .expect("holler mark still renders");
         assert!(
             outlet_at < holler_at,
             "the restaurant's mark comes first: {html}"

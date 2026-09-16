@@ -25,9 +25,9 @@
 //! and neither busy-loops — scheduling the next attempt is the caller's
 //! responsibility, using [`backoff::backoff_ms`].
 
+pub mod aggregator;
 pub mod backoff;
 pub mod client;
-pub mod aggregator;
 pub mod config;
 pub mod envelope;
 pub mod error;

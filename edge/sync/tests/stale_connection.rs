@@ -56,7 +56,9 @@ fn read_whole_request(stream: &mut TcpStream) {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 1024];
     loop {
-        let Ok(n) = stream.read(&mut chunk) else { return };
+        let Ok(n) = stream.read(&mut chunk) else {
+            return;
+        };
         if n == 0 {
             return;
         }

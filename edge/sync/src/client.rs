@@ -155,7 +155,6 @@ impl HttpClient {
     }
 }
 
-
 /// Reads the `code` out of the cloud's error envelope (`{"code": "...",
 /// "message": "..."}`).
 ///

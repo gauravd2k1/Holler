@@ -1707,7 +1707,10 @@ mod tests {
             .connection()
             .query_row("SELECT count(*) FROM device", [], |r| r.get(0))
             .expect("count");
-        assert_eq!(count, 0, "no credentials in the bundle must mean no device rows written");
+        assert_eq!(
+            count, 0,
+            "no credentials in the bundle must mean no device rows written"
+        );
     }
 
     /// T29, assertion 4 — re-applying the same bundle twice is idempotent:
@@ -1775,7 +1778,10 @@ mod tests {
                 |r| r.get(0),
             )
             .expect("count");
-        assert_eq!(count, 1, "re-applying the same bundle must not duplicate the device row");
+        assert_eq!(
+            count, 1,
+            "re-applying the same bundle must not duplicate the device row"
+        );
     }
 
     /// The point of the whole fix: a menu item shipped on `/sync/config`

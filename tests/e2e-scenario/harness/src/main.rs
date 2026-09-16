@@ -446,8 +446,8 @@ fn build_template(root: &Path) -> PathBuf {
     // menu item or a scenario that quietly exercises one station.
     // Read through the repo, never raw SQL (ADR-003) -- the same rule that
     // governs every other augmentation in this function.
-    let second_station = repo::get_station(conn, STATION_2_ID)
-        .expect("querying for devseed's second station");
+    let second_station =
+        repo::get_station(conn, STATION_2_ID).expect("querying for devseed's second station");
     assert!(
         second_station
             .is_some_and(|s| s.outlet_id == devseed_ids::OUTLET_ID && s.code == STATION_2_CODE),
