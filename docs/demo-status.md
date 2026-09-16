@@ -1809,6 +1809,7 @@ Severity is against the SIX-STEP DEMO PATH, not against a pilot.
 | D21 | **The sync banner is sized per outbox row, not per order** — one order with four queued events reads as four problems, and the banner took about 28% of the till window | **OPEN** — `docs/backlog.md`, cosmetic |
 | D22 | **A6: no exit path seals the edge database.** Neither a window close nor Ctrl+C fires `RunEvent::Exit`, so a plaintext `edge.db` is left beside the `.enc` | **OPEN** — pilot blocker, excluded from demo scope |
 | D23 | **The POS icon is a 16×16 placeholder** from the original scaffold | **OPEN** — needs artwork, which no builder can produce |
+| D25 | **The KDS carries its own KOT forward flow** (`apps/kds/src/domain/kotTransitions.ts`), unchecked against the edge's table — the same defect class as the till's copy that D14 removed | A cook pressing a button the edge refuses, or a ticket sitting with no button at all if a state is ever added | **FIXED** — it cannot be deleted the way the till's was (the KDS is a browser page on a phone, with no Tauri command to call), so it is COMPARED instead: `check-kitchen-event-drift.mjs` checks the chain against the edge's table in both directions |
 | D24 | **`make` is not on PATH in the agent's shell**, so `make check-seams` — which CLAUDE.md instructs agents to run — fails as "command not found" rather than running. The three `cargo check` lines behind it work | **OPEN, tooling** |
 
 ### Not defects, recorded so they are not re-found
