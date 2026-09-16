@@ -56,9 +56,36 @@ UNVERIFIED. Never a claim.**
 | VV-006 | `c246a9d` | Invoice screen — **Tauri release window** — and the rendered receipt PDF | Bill an order split cash + UPI. Open the PDF the print writes. | The UPI QR is present on **both**, and both name the same payee. | OPEN | | | |
 | VV-007 | `807552c` | POS — **Tauri release window**, till header and bill | Sign in and look at the header; bill an order and read the receipt. | The restaurant name, address and GSTIN come from `seed/outlet.toml` and agree on every surface. **`logo_path` stays unset** — a set one has never been rendered. | OPEN | | | |
 | VV-008 | M6 item 6 | KDS — browser on a **second device over the hotspot** | Load the KDS, send a ticket from the till, bump it. | The ticket renders, the bump sticks, and **no raw UUID, dev label or internal note** is on screen. | OPEN | | | The KDS has never been observed on a second device |
-| VV-009 | `d805218` | POS — **Tauri release window**, Kitchen panel on an order | Bump the ticket to READY on the KDS. Return to the till and read the order's Kitchen view. | It reads READY. **Record whether a remount was needed** — that is the open question (D14), not an aside. | OPEN | | | |
+| VV-009 | `d805218` | POS — **Tauri release window**, Kitchen panel on an order | Bump the ticket to READY on the KDS. Return to the till and read the order's Kitchen view. | It reads READY. **Record whether a remount was needed** — that is the open question (D14), not an aside. | **FAIL** | `docs/evidence/VV-009.png` (NOT YET IN THE REPO — see note) | Operator | 2026-09-16 |
+| VV-012 | D14 part 1 | POS — **Tauri release window**, Kitchen panel left OPEN | With the panel open and untouched, acknowledge ticket #1 on the KDS. Do not switch panels, do not alt-tab. | The status changes **on its own**, within a second or two. **No remount.** Alt-tabbing is not a valid way to run this — `refetchOnWindowFocus` is false, so a focus change refetches nothing and proves nothing. | OPEN | | | |
+| VV-013 | D14 part 2 | POS — **Tauri release window**, Kitchen panel | Force a stale view: with the panel open, acknowledge on the KDS, then **immediately** press the till's own action for that ticket. | If a rejection happens at all, the row is **already corrected** when the error appears and the offending button is gone. The error must never sit beside the stale status that caused it. | OPEN | | | Hard to force once VV-012 works — that is the point; this path is the backstop for when live update fails |
+| VV-014 | D14 part 3 | POS — **Tauri release window**, Kitchen panel | Look at a ticket in each status. | Buttons read as **verbs** — Acknowledge, Start preparing, Mark ready, Mark served, Cancel ticket — never as statuses. Only moves legal from the current status are offered. The status badge is **coloured AND worded**, never colour alone. | OPEN | | | |
 | VV-010 | pre-existing | POS — **Tauri release window**, window chrome | Look at the title bar and the taskbar icon. | A real title and a real icon. Today the icon is a 16×16 placeholder from the scaffold (D23). | OPEN | | | Expected FAIL until artwork exists |
 | VV-011 | D8a + the split | POS — **Tauri release window**, sync banner | Send an order to the kitchen, then bump its ticket to READY on the KDS. Watch the banner through the whole demo story. | A muted line reads **"N records kept locally — the cloud has no route for them yet. Nothing to do."** and **the attention list stays EMPTY** — no red count, no growing list of rows nobody can act on. If a real failure happens as well, the attention list holds exactly that row and the muted count carries the rest. | OPEN | | | Needs a build after this commit; not in the 12:27 binary |
+
+## A note on VV-009
+
+**Recorded as FAIL on the operator's observation, 2026-09-16:** the KDS
+acknowledged ticket #1; the till's Kitchen panel still showed **New** and still
+offered **"Acknowledged"**; pressing it produced *"This ticket cannot move to
+that status from where it is now."* — the edge refusing a move the screen had
+offered from stale state.
+
+**TWO THINGS ABOUT THIS ROW ARE NOT SETTLED, and it must not be read as closed
+until they are.**
+
+1. **`docs/evidence/VV-009.png` is not in the repository.** The register's own
+   rule is that a row closes only with a screenshot path that exists. The path
+   is recorded here because it was cited; the file has to land.
+2. **The reading after remounting was reported with both options still in it**
+   — "[Acknowledged → stale-until-remount | New → stale-after-remount]". Which
+   one it was decides whether a remount repairs the view at all, and that is a
+   different defect from the one fixed. **The fix does not depend on it**: part
+   1 makes the view live so a remount is never needed, and part 2 repairs the
+   view on any rejection whatever the cause. But the observation itself is
+   incomplete and is written down as incomplete rather than resolved by
+   guessing.
+
 
 ## What is NOT in here
 

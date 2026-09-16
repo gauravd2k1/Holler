@@ -9,6 +9,7 @@ import {
   listCurrentStock,
   listDiscountDefinitions,
   listBlockedOutboxRows,
+  listKotStatusTransitions,
   listUnroutableOutboxRows,
   listFailedPrintJobs,
   listPersistentlyFailingOutboxRows,
@@ -49,6 +50,7 @@ export const queryKeys = {
   stockDeductionGaps: ["stock-deduction-gaps"] as const,
   blockedReplays: ["blocked-replays"] as const,
   blockedOutboxRows: ["blocked-outbox-rows"] as const,
+  kotStatusTransitions: ["kot-status-transitions"] as const,
   unroutableOutboxRows: ["unroutable-outbox-rows"] as const,
   persistentlyFailingOutboxRows: ["persistently-failing-outbox-rows"] as const,
   stockCount: (stockCountId: string) => ["stock-count", stockCountId] as const,
@@ -125,6 +127,18 @@ export function useBlockedOutboxRowsQuery() {
     queryKey: queryKeys.blockedOutboxRows,
     queryFn: listBlockedOutboxRows,
     refetchInterval: 15000,
+  });
+}
+
+/** The KOT state machine, read from the edge. `staleTime: Infinity` because
+ * it is a compiled-in table: it cannot change while this binary runs, and
+ * re-fetching it on every panel open would be asking the same question of a
+ * constant. */
+export function useKotStatusTransitionsQuery() {
+  return useQuery({
+    queryKey: queryKeys.kotStatusTransitions,
+    queryFn: listKotStatusTransitions,
+    staleTime: Infinity,
   });
 }
 

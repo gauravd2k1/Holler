@@ -216,6 +216,16 @@ jobs:
       # places.
       - name: destructive runs may only name a scratch database
         run: node scripts/check-scratch-db-guard.mjs
+      # The till listens to its own kitchen hub over a Tauri event whose name
+      # is spelled in Rust and in TypeScript. A mismatch does not throw, does
+      # not warn and does not fail a build -- `listen` just never fires -- so
+      # the failure mode of the fix is indistinguishable from the defect it
+      # fixes (a stale kitchen status on the till). This also pins that the KOT
+      # transition table is READ from the edge rather than copied back into the
+      # UI, which is how the UI came to offer a move the edge refused. Watched
+      # RED on a drifted name and on a replanted table.
+      - name: the till and the edge agree on the kitchen event and its state machine
+        run: node scripts/check-kitchen-event-drift.mjs
       # The Go guard in backend/cmd/api/syncconfig_guard_test.go proves the
       # cloud SENDS a config column. It cannot prove an outlet STORES it, and
       # at 0.6.0 four procurement families passed that guard, shipped in every

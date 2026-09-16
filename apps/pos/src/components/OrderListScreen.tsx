@@ -1,13 +1,15 @@
-import { Fragment, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import type { Kot, KotStatus } from "@holler/contracts";
 import {
   useKotsForOrderQuery,
+  useKotStatusTransitionsQuery,
   useOrdersQuery,
   useStationsQuery,
   queryKeys,
 } from "../lib/queries";
+import { onKitchenChanged } from "../lib/kitchenEvents";
 import { formatPaiseAsRupees } from "../domain/money";
 import { confirmOrder, sendOrderToKitchen, transitionKotStatus } from "../lib/tauri";
 import { hasPermission } from "../domain/permissions";
@@ -17,6 +19,9 @@ import {
   canOfferKotTransition,
   kitchenErrorMessage,
   kotStatusLabel,
+  kotStatusToneClass,
+  kotTransitionActionLabel,
+  buildKotTransitionTable,
   legalNextKotStatuses,
   orderStatusLabel,
   stationsForKots,
@@ -283,11 +288,44 @@ function KotsPanel({
 }) {
   const queryClient = useQueryClient();
   const kotsQuery = useKotsForOrderQuery(orderId);
+  const transitionsQuery = useKotStatusTransitionsQuery();
   const [transitioningId, setTransitioningId] = useState<string | null>(null);
   const [transitionError, setTransitionError] = useState<string | null>(null);
 
   const kots = kotsQuery.data ?? [];
   const stations = stationsForKots(kots);
+  const transitionTable = transitionsQuery.data
+    ? buildKotTransitionTable(transitionsQuery.data)
+    : undefined;
+
+  // D14 PART 1: THE TILL HEARS THE KITCHEN.
+  //
+  // The KDS bumps a ticket, the LAN hub inside this process broadcasts it, and
+  // the Rust side forwards it here. Before this, nothing did: this query has
+  // no `refetchInterval` and `App.tsx` sets `refetchOnWindowFocus: false`, so
+  // the only way to a fresh value was unmounting and remounting the panel.
+  // Observed in VV-009 — the KDS acknowledged ticket #1 and the till went on
+  // showing New, and offering a button the edge then refused.
+  //
+  // Invalidate, never patch from the payload: the event carries an id and the
+  // row is re-read through the same command as always.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void onKitchenChanged(() => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.kots(orderId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.orders });
+    }).then((fn) => {
+      // The effect may have been torn down while `listen` was in flight;
+      // without this the listener outlives the panel and leaks one per open.
+      if (cancelled) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [orderId, queryClient]);
 
   async function handleTransition(kot: Kot, newStatus: KotStatus) {
     if (!canOfferKotTransition(principal)) return;
@@ -298,6 +336,22 @@ function KotsPanel({
       await queryClient.invalidateQueries({ queryKey: queryKeys.kots(orderId) });
       await queryClient.invalidateQueries({ queryKey: queryKeys.orders });
     } catch (err) {
+      // D14 PART 2: A REFUSED MOVE MEANS THIS VIEW IS STALE, SO RE-READ
+      // BEFORE SAYING ANYTHING.
+      //
+      // The edge refuses a transition it considers illegal from the status it
+      // holds. If this screen offered that move, this screen's idea of the
+      // status is wrong — which is the whole of VV-009. Re-fetching first
+      // means the operator reads the error beside the CORRECTED row and the
+      // button that caused it is already gone.
+      //
+      // STRUCTURAL, AND IT COVERS THE CASE WHERE PART 1 FAILS. If the live
+      // update never arrives — the hub thread died, the event name drifted,
+      // the window was not ready — this path still repairs the view on the
+      // first press. Two independent mechanisms for one guarantee, the weaker
+      // of which needs no infrastructure at all.
+      await queryClient.invalidateQueries({ queryKey: queryKeys.kots(orderId) });
+      await queryClient.refetchQueries({ queryKey: queryKeys.kots(orderId) });
       setTransitionError(kitchenErrorMessage(err));
     } finally {
       setTransitioningId(null);
@@ -336,16 +390,28 @@ function KotsPanel({
                   named in `edge/printer/src/template.rs`. */}
               <td>#{kot.sequence}</td>
               <td>{stationNameByCode.get(kot.station) ?? kot.station}</td>
-              {/* Non-colour-only status: plain text label plus the
-                  timestamp that grounds it (docs/spec/kitchen.md §KDS). */}
-              <td>{kotStatusLabel(kot.status)}</td>
+              {/* Colour is ADDED to the words, never substituted for them
+                  (docs/spec/kitchen.md §KDS: never colour-only, always show
+                  time/status too). The badge carries the label; the Updated
+                  column beside it grounds the claim in a time. */}
+              <td>
+                <span className={kotStatusToneClass(kot.status)}>
+                  {kotStatusLabel(kot.status)}
+                </span>
+              </td>
               <td>
                 {kot.items.map((i) => `${i.quantity}x ${i.name}`).join(", ")}
               </td>
               <td>{formatIST(kot.updated_at)}</td>
               <td>
+                {/* D14 PART 3: VERBS, AND ONLY THE MOVES THE EDGE ALLOWS.
+                    The list comes from `list_kot_status_transitions`, which
+                    reads the edge's own table — this screen no longer keeps a
+                    copy to drift from. While that query is still loading the
+                    table is undefined and NO buttons render, because a button
+                    offered on a guess is what VV-009 caught. */}
                 {canOfferKotTransition(principal) &&
-                  legalNextKotStatuses(kot.status).map((next) => (
+                  legalNextKotStatuses(transitionTable, kot.status).map((next) => (
                     <button
                       key={next}
                       type="button"
@@ -353,7 +419,7 @@ function KotsPanel({
                       disabled={transitioningId === kot.id}
                       onClick={() => void handleTransition(kot, next)}
                     >
-                      {transitioningId === kot.id ? "…" : kotStatusLabel(next)}
+                      {transitioningId === kot.id ? "…" : kotTransitionActionLabel(next)}
                     </button>
                   ))}
               </td>

@@ -12,7 +12,13 @@ pub mod ids;
 pub mod state;
 
 use state::{periodic_drain_interval, run_periodic_drain_loop, AppState, SHUTDOWN_DRAIN_BUDGET};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
+
+/// The event the till's own window listens on to learn that a kitchen ticket
+/// moved. Its name is shared with `apps/pos/src/lib/kitchenEvents.ts`; a
+/// mismatch is a silent no-op, which is why both sides name the constant
+/// rather than a literal at the call site.
+pub const KITCHEN_CHANGED_EVENT: &str = "holler://kitchen-changed";
 
 /// Builds and runs the Tauri application. Split out of `main.rs` so
 /// integration-style tests in this crate can construct the same command set
@@ -30,6 +36,59 @@ pub fn run() {
                      set HOLLER_OUTLET_ID, HOLLER_DEVICE_ID and HOLLER_DB_KEY_HEX"
                 )
             });
+            // D14: THE TILL LISTENS TO ITS OWN KITCHEN HUB.
+            //
+            // The KDS bumps a ticket over the LAN, the hub broadcasts the new
+            // state to every LAN subscriber, and the till -- which hosts that
+            // hub inside this very process -- heard none of it, because it was
+            // never a subscriber. `useKotsForOrderQuery` has no
+            // `refetchInterval` and `refetchOnWindowFocus` is false, so the
+            // only route to a fresh value was REMOUNTING the panel.
+            //
+            // Observed (VV-009): the KDS acknowledged ticket #1, the till's
+            // Kitchen panel still read New and still offered "Acknowledged",
+            // and pressing it produced "This ticket cannot move to that status
+            // from where it is now" -- the edge refusing a move the screen had
+            // offered from stale state.
+            //
+            // The fix subscribes as an ORDINARY HUB CLIENT and forwards each
+            // frame to the webview as a Tauri event. Deliberately not a
+            // polling interval: the hub already knows the moment a ticket
+            // moves, and a poll would be a second mechanism with its own
+            // latency that still says nothing when it is the one that breaks.
+            // The payload carries no ticket contents -- the frontend
+            // invalidates and re-reads through the same command as always, so
+            // there is exactly one path by which a KOT reaches a screen.
+            if let Some(hub) = state.hub.clone() {
+                let outlet_id = state.outlet_id.clone();
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    // `None` station: the till watches every station, unlike a
+                    // KDS screen which may be filtered to one.
+                    let subscription = hub.subscribe(&outlet_id, None);
+                    // Ends when the hub is dropped at process exit, which
+                    // closes the sender and breaks this loop.
+                    while let Ok(message) = subscription.receiver.recv() {
+                        let kot_id = match &message {
+                            holler_edge_device::contract::KdsLanMessage::KotUpserted {
+                                kot, ..
+                            } => Some(kot.id.clone()),
+                            holler_edge_device::contract::KdsLanMessage::KotRemoved {
+                                kot_id,
+                                ..
+                            } => Some(kot_id.clone()),
+                            _ => None,
+                        };
+                        if let Some(kot_id) = kot_id {
+                            // A failed emit is not worth stopping for: the
+                            // window may simply not be there yet. The panel
+                            // still refreshes when it is next opened.
+                            let _ = handle.emit(KITCHEN_CHANGED_EVENT, kot_id);
+                        }
+                    }
+                });
+            }
+
             app.manage(state);
 
             // M6 A5: THE PERIODIC SYNC PUMP.
@@ -92,6 +151,7 @@ pub fn run() {
             commands::orders::remove_order_item,
             commands::orders::update_order_shape,
             commands::orders::confirm_order,
+            commands::kitchen::list_kot_status_transitions,
             commands::kitchen::send_order_to_kitchen,
             commands::kitchen::cancel_kitchen_items,
             commands::kitchen::list_kots_for_order,

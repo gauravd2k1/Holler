@@ -3050,6 +3050,28 @@ const LEGAL_KOT_TRANSITIONS: &[(&str, &[&str])] = &[
     ("READY", &["SERVED"]),
 ];
 
+/// The KOT state machine, as DATA, for any surface that must offer only the
+/// moves the edge will accept.
+///
+/// **THIS IS THE ONLY COPY.** The till used to carry its own
+/// `LEGAL_KOT_TRANSITIONS` in TypeScript with a comment promising it mirrored
+/// this one, which is a promise nothing could check — and the UI offering a
+/// move the edge then refuses is precisely the D14 defect: the operator
+/// pressed "Acknowledged" on a ticket the kitchen had already acknowledged
+/// and got "This ticket cannot move to that status from where it is now."
+/// A second table would have made that wrong in a second way.
+pub fn legal_kot_transitions() -> Vec<(String, Vec<String>)> {
+    LEGAL_KOT_TRANSITIONS
+        .iter()
+        .map(|(from, tos)| {
+            (
+                (*from).to_string(),
+                tos.iter().map(|t| (*t).to_string()).collect(),
+            )
+        })
+        .collect()
+}
+
 pub(crate) fn is_legal_kot_transition(from: &str, to: &str) -> bool {
     LEGAL_KOT_TRANSITIONS
         .iter()

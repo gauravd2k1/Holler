@@ -4,21 +4,78 @@
 import type { AuthenticatedPrincipal, Kot, KotStatus, OrderStatus } from "@holler/contracts";
 import { hasPermission } from "./permissions";
 
-/** Mirrors `edge/database/src/repo.rs`'s `LEGAL_KOT_TRANSITIONS` exactly —
- * the UI must never offer a transition the edge will reject. NEW ->
- * ACKNOWLEDGED -> PREPARING -> READY -> SERVED, CANCELLED from any
- * non-terminal status. */
-const LEGAL_KOT_TRANSITIONS: Record<KotStatus, readonly KotStatus[]> = {
-  NEW: ["ACKNOWLEDGED", "CANCELLED"],
-  ACKNOWLEDGED: ["PREPARING", "CANCELLED"],
-  PREPARING: ["READY", "CANCELLED"],
-  READY: ["SERVED"],
-  SERVED: [],
-  CANCELLED: [],
-};
+/** The edge's transition table, as the UI consumes it. Built from what
+ * `list_kot_status_transitions` returns — there is no copy of the table in
+ * this file any more.
+ *
+ * THERE USED TO BE ONE, with a comment promising it "mirrors
+ * `edge/database/src/repo.rs`'s `LEGAL_KOT_TRANSITIONS` exactly". Nothing
+ * could check that promise, and a UI that offers a move the edge refuses is
+ * the D14 defect seen from the other side: VV-009 watched the till offer
+ * "Acknowledged" for a ticket the kitchen had already acknowledged and get
+ * "This ticket cannot move to that status from where it is now." */
+export type KotTransitionTable = ReadonlyMap<KotStatus, readonly KotStatus[]>;
 
-export function legalNextKotStatuses(status: KotStatus): readonly KotStatus[] {
-  return LEGAL_KOT_TRANSITIONS[status];
+export function buildKotTransitionTable(
+  pairs: readonly (readonly [string, readonly string[]])[],
+): KotTransitionTable {
+  return new Map(
+    pairs.map(([from, tos]) => [from as KotStatus, tos as readonly KotStatus[]]),
+  );
+}
+
+/** The moves legal from `status`, according to the edge.
+ *
+ * An ABSENT table yields NO moves, deliberately. Until the edge has answered,
+ * this screen cannot know which buttons are safe to offer, and offering one
+ * on a guess is exactly what produced the rejection in VV-009. A terminal
+ * status legitimately has no entry, and returns nothing for the same
+ * reason. */
+export function legalNextKotStatuses(
+  table: KotTransitionTable | undefined,
+  status: KotStatus,
+): readonly KotStatus[] {
+  return table?.get(status) ?? [];
+}
+
+/** The verb a person presses, as opposed to the state the ticket lands in.
+ * A button labelled "Acknowledged" describes a status; a button labelled
+ * "Acknowledge" describes what pressing it does. */
+export function kotTransitionActionLabel(status: KotStatus): string {
+  switch (status) {
+    case "ACKNOWLEDGED":
+      return "Acknowledge";
+    case "PREPARING":
+      return "Start preparing";
+    case "READY":
+      return "Mark ready";
+    case "SERVED":
+      return "Mark served";
+    case "CANCELLED":
+      return "Cancel ticket";
+    case "NEW":
+      return "Reopen";
+  }
+}
+
+/** The CSS modifier for a status badge. Colour is ADDED to the text label,
+ * never substituted for it (docs/spec/kitchen.md §KDS: "never colour-only,
+ * always show time/status too") — `kotStatusLabel` still renders inside. */
+export function kotStatusToneClass(status: KotStatus): string {
+  switch (status) {
+    case "NEW":
+      return "kot-status kot-status--new";
+    case "ACKNOWLEDGED":
+      return "kot-status kot-status--acknowledged";
+    case "PREPARING":
+      return "kot-status kot-status--preparing";
+    case "READY":
+      return "kot-status kot-status--ready";
+    case "SERVED":
+      return "kot-status kot-status--served";
+    case "CANCELLED":
+      return "kot-status kot-status--cancelled";
+  }
 }
 
 export function canOfferKotTransition(

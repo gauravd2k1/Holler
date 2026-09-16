@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { AuthenticatedPrincipal, Kot, OrderStatus } from "@holler/contracts";
 import {
+  buildKotTransitionTable,
   canOfferKotTransition,
   canOfferSendToKitchen,
   kitchenErrorMessage,
   kotStatusLabel,
+  kotStatusToneClass,
+  kotTransitionActionLabel,
   legalNextKotStatuses,
   orderStatusLabel,
   stationsForKots,
@@ -39,13 +42,72 @@ function kot(overrides: Partial<Kot> = {}): Kot {
 }
 
 describe("legalNextKotStatuses", () => {
-  it("mirrors edge/database's LEGAL_KOT_TRANSITIONS exactly", () => {
-    expect(legalNextKotStatuses("NEW")).toEqual(["ACKNOWLEDGED", "CANCELLED"]);
-    expect(legalNextKotStatuses("ACKNOWLEDGED")).toEqual(["PREPARING", "CANCELLED"]);
-    expect(legalNextKotStatuses("PREPARING")).toEqual(["READY", "CANCELLED"]);
-    expect(legalNextKotStatuses("READY")).toEqual(["SERVED"]);
-    expect(legalNextKotStatuses("SERVED")).toEqual([]);
-    expect(legalNextKotStatuses("CANCELLED")).toEqual([]);
+  // The edge's own table, as `list_kot_status_transitions` returns it. This
+  // fixture stands in for the command; it is NOT a second copy of the rule —
+  // nothing in `src/` declares these pairs any more, and the screen renders
+  // whatever the edge sends.
+  const fromTheEdge = buildKotTransitionTable([
+    ["NEW", ["ACKNOWLEDGED", "CANCELLED"]],
+    ["ACKNOWLEDGED", ["PREPARING", "CANCELLED"]],
+    ["PREPARING", ["READY", "CANCELLED"]],
+    ["READY", ["SERVED"]],
+  ]);
+
+  it("offers exactly what the edge sent", () => {
+    expect(legalNextKotStatuses(fromTheEdge, "NEW")).toEqual(["ACKNOWLEDGED", "CANCELLED"]);
+    expect(legalNextKotStatuses(fromTheEdge, "ACKNOWLEDGED")).toEqual(["PREPARING", "CANCELLED"]);
+    expect(legalNextKotStatuses(fromTheEdge, "PREPARING")).toEqual(["READY", "CANCELLED"]);
+    expect(legalNextKotStatuses(fromTheEdge, "READY")).toEqual(["SERVED"]);
+  });
+
+  it("offers NOTHING for a status the edge did not mention", () => {
+    // Terminal statuses are absent from the edge's table rather than present
+    // and empty, and a screen must not invent a move for them.
+    expect(legalNextKotStatuses(fromTheEdge, "SERVED")).toEqual([]);
+    expect(legalNextKotStatuses(fromTheEdge, "CANCELLED")).toEqual([]);
+  });
+
+  it("offers NOTHING at all before the edge has answered", () => {
+    // THE POINT OF THE WHOLE CHANGE. A button rendered from a guess is what
+    // VV-009 caught: the till offered "Acknowledged" for a ticket the kitchen
+    // had already acknowledged, and the edge refused it. No table, no buttons.
+    for (const status of ["NEW", "ACKNOWLEDGED", "PREPARING", "READY"] as const) {
+      expect(legalNextKotStatuses(undefined, status)).toEqual([]);
+    }
+  });
+});
+
+describe("kotTransitionActionLabel", () => {
+  it("labels every action as a verb, never as the status it lands in", () => {
+    // "Acknowledged" describes a state; "Acknowledge" describes what pressing
+    // the button does. The operator pressed one labelled as a state in VV-009.
+    expect(kotTransitionActionLabel("ACKNOWLEDGED")).toBe("Acknowledge");
+    expect(kotTransitionActionLabel("PREPARING")).toBe("Start preparing");
+    expect(kotTransitionActionLabel("READY")).toBe("Mark ready");
+    expect(kotTransitionActionLabel("SERVED")).toBe("Mark served");
+    expect(kotTransitionActionLabel("CANCELLED")).toBe("Cancel ticket");
+  });
+
+  it("never returns the status label itself for a forward move", () => {
+    for (const status of ["ACKNOWLEDGED", "PREPARING", "READY", "SERVED"] as const) {
+      expect(kotTransitionActionLabel(status)).not.toBe(kotStatusLabel(status));
+    }
+  });
+});
+
+describe("kotStatusToneClass", () => {
+  it("gives every status its own class, and none of them stands alone", () => {
+    const seen = new Set<string>();
+    for (const status of ["NEW", "ACKNOWLEDGED", "PREPARING", "READY", "SERVED", "CANCELLED"] as const) {
+      const cls = kotStatusToneClass(status);
+      // Colour is ADDED to the words, never substituted for them
+      // (docs/spec/kitchen.md §KDS), so the base class that carries the text
+      // styling must always be present alongside the per-status modifier.
+      expect(cls.startsWith("kot-status ")).toBe(true);
+      expect(seen.has(cls)).toBe(false);
+      seen.add(cls);
+    }
+    expect(seen.size).toBe(6);
   });
 });
 

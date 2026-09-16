@@ -436,6 +436,24 @@ pub fn retry_failed_print_jobs_impl(state: &AppState) -> AppResult<Vec<FailedPri
     Ok(failed.into_iter().map(FailedPrintJob::from).collect())
 }
 
+/// The KOT state machine the EDGE enforces, served to the UI so a screen can
+/// only ever offer a move that will be accepted.
+///
+/// Read from `repo::legal_kot_transitions()`, never restated here. The till
+/// carried its own TypeScript copy until 2026-09-16 and it was already a
+/// second source of truth waiting to drift; VV-009 caught the UI offering
+/// "Acknowledged" for a ticket the kitchen had already acknowledged, which is
+/// the same failure from the other direction (stale STATE rather than a stale
+/// TABLE, but the same wrong button).
+pub fn list_kot_status_transitions_impl() -> Vec<(String, Vec<String>)> {
+    holler_edge_database::repo::legal_kot_transitions()
+}
+
+#[tauri::command]
+pub fn list_kot_status_transitions() -> Vec<(String, Vec<String>)> {
+    list_kot_status_transitions_impl()
+}
+
 #[tauri::command]
 pub fn send_order_to_kitchen(state: State<'_, AppState>, order_id: String) -> AppResult<Vec<Kot>> {
     send_order_to_kitchen_impl(&state, &order_id)

@@ -355,6 +355,21 @@ export async function transitionKotStatus(
   }
 }
 
+/** The KOT state machine the EDGE enforces, read from it rather than restated
+ * here. Returned as pairs so the shape is obvious on the wire; the UI turns it
+ * into a lookup.
+ *
+ * The till used to carry its own copy in `domain/kitchen.ts` with a comment
+ * promising it mirrored the Rust one — a promise nothing could check.
+ * `apps/pos/src-tauri/src/commands/kitchen.rs` `list_kot_status_transitions`. */
+export async function listKotStatusTransitions(): Promise<[string, string[]][]> {
+  try {
+    return await invoke<[string, string[]][]>("list_kot_status_transitions");
+  } catch (err) {
+    throw toCommandError(err);
+  }
+}
+
 export async function listStations(): Promise<Station[]> {
   try {
     const raw = await invoke<unknown[]>("list_stations");
