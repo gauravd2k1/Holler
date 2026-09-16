@@ -510,6 +510,19 @@ Established by inspection, not recall — cite the file, not this summary:
   fails the build if `cmd/api` ever imports `testdb`. Filed as pilot-readiness
   B7; the agreed shape is an explicit migrate command with a backup step and an
   API that refuses to start on an unrecognised ledger, before the first pilot.
+- **ONE CARGO TEST SHELL AT A TIME, AND KILL THE ORPHANS BEFORE RE-RUNNING.**
+  `LNK1104: cannot open file ...exe` is the scanner holding a freshly-linked
+  binary and re-running makes progress — but **a second concurrent `cargo
+  test` turns that into a deadlock this rule exists to stop.** A stopped shell
+  does NOT take its children with it: killing the tool's shell leaves `cargo`
+  and the test binary running, the test binary keeps the `.exe` open, and
+  every retry then fails at the link step for ever. It cost three wasted
+  re-runs and roughly forty minutes on 2026-09-16. Before re-running a Rust
+  test: `Get-Process cargo,rustc -ErrorAction SilentlyContinue` and
+  `Get-Process | Where-Object { $_.ProcessName -like '<testname>*' }`, kill
+  what is there, THEN run — one shell, in the foreground, never two in
+  parallel. **Check `StartTime` before killing anything**, the same rule the
+  ports carry: the operator's processes are on this box too.
 - **NO TEST OR PROBE MAY START, STOP OR BIND ANYTHING ON 8080, 9310, 9320, THE
   ADMIN PORT (5175) OR THE POS DEV PORT (5173). Scratch ports and scratch
   databases only.** In force from 2026-09-12 until the demo. **The rule is not

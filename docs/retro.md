@@ -1849,3 +1849,25 @@ The operator then reasoned from the broader claim to a conclusion that followed 
 1. **Report a guard as: what it refuses, WHERE, and in WHICH SHELL.** Three parts with three scopes is three sentences, not one summary. "It holds everywhere" is a claim about the weakest part, not the strongest.
 2. **A deliberately narrow scope is stated as deliberate.** `demo-reset`'s agent-only refusal is a decision — the operator must keep being able to reset their own database — and an entry that does not say so invites a later session to "finish" it.
 3. **When an instruction arrives whose premise is a claim of yours, check the claim before executing it.** The rename would have been four files of churn, and the repository would have said no in one command.
+
+
+---
+
+## 2026-09-16 (third entry) — newer-than-dist passed when both were stale
+
+**Severity:** low here, high in the shape. Nothing was lost; three visual-verification rows were about to be read off the wrong binary and would have been recorded as fact.
+
+### What happened
+
+The operator started the POS fresh and said so. The process had indeed started fifteen minutes earlier — and the executable it started had been built twelve hours before that, at 00:40. Every commit of the session was missing from the window, and the window looked entirely normal.
+
+`run-dev.ps1 -Release` deliberately launches the binary that already exists and checks only that it is **newer than `apps\pos\dist`**. Both were from 00:40, so the check passed. **A comparison between two stale things is satisfied.**
+
+Starting an app does not rebuild it, and `apps\pos\dist` is embedded in the Tauri binary at compile time, so a release binary is a photograph of the frontend as it stood when it was compiled. Process start time says nothing about it.
+
+### Rules
+
+1. **A FRESHNESS CHECK MUST COMPARE CONTENT, NOT TIMESTAMPS.** Two artefacts that are stale together satisfy every ordering rule between them. `check-release-binary.ps1` compares the CONTENT — every hashed asset filename in `distssets`, each name being Vite's hash of that file's own bytes, required to be present inside the executable. The mtime rule survives only as a labelled secondary check for the narrower case of a binary linked before a rebuilt dist.
+2. **`StartTime` is not `BuiltAt`.** When reporting which version is running, report the file's `LastWriteTime`, never the process's start time. `Get-Process holler-pos | Select-Object StartTime, @{n='BuiltAt';e={(Get-Item $_.Path).LastWriteTime}}` is in the walkthrough and the demo script for exactly this.
+3. **Build in the script that starts the stack, not in the operator's memory.** `demo-up.ps1` now rebuilds and re-verifies every run, and `-NoBuild` skips the compiling while still running the verification, so the one path that does less still cannot start a stale binary.
+4. **The absence of a bad string is not evidence of a good build.** The obvious catch for this class — refuse if the binary contains `localhost:5173` — was measured against a known-good production binary and found present there too, because a correct build embeds the whole `tauri.conf.json`. Positive evidence that THIS frontend is inside, always; never the absence of a dev marker.
