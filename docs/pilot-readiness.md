@@ -461,10 +461,12 @@ off everywhere.
   right behaviour and it is worth keeping; the gap is that nobody finds out
   until the process is already down.
 
-The likely shape is a separate migrate command run deliberately, with the API
-refusing to start against a database whose ledger it does not recognise rather
-than migrating it. **That is a decision, not a cleanup**, which is why it is
-filed here and not fixed.
+**SHAPE AGREED BY THE OPERATOR, 2026-09-16, for the ADR when it is written:**
+an explicit migrate command run deliberately, **with a backup step**, and an
+API that **refuses to start against a database whose ledger it does not
+recognise** rather than migrating it. Trigger: before the first pilot. **No
+work now** — this is recorded so the decision does not have to be made twice,
+not so it can be started early.
 
 ---
 

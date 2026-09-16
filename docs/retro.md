@@ -1823,3 +1823,29 @@ The two-sided half is worse. The edge's tests proved the edge's rule, the cloud'
 2. **A RULE DECLARED IN TWO LANGUAGES IS TWO RULES UNTIL SOMETHING COMPARES THEM.** Where a shared declaration is impossible — TypeScript, Go and a Rust crate that imports neither — the drift check IS the joint, and the consuming side must READ the set rather than restate it (`scripts/check-order-amendable-drift.mjs` fails on both). This is the `check-order-source-drift.mjs` lesson applied to a behavioural rule rather than an enum.
 3. **WHEN A FIX UNBLOCKS A PATH, ASK WHAT ELSE THAT PATH HAS NEVER REACHED.** Defect A was a masking defect: it kept a whole region of the state machine unvisited. The same shape has now happened three times in this repository — `7e88d1c` started sending real variants to a cloud that had none, fixing M4's criterion 1 uncovered M6 C3's FK, and this. **The fix is the moment to go looking, not the moment to close the ticket.**
 4. **AT-LEAST-ONCE DELIVERY MAKES A PERMANENT REFUSAL A DESIGN DECISION, NOT AN ERROR PATH.** A 409 is never retried and strands everything behind it. Before returning one, ask whether the edge could legitimately have produced this call — a redelivery whose acknowledgement was lost, a row sent after the aggregate moved on. If it could, absorb it and prove the absorption is idempotent (ADR-028).
+
+---
+
+## 2026-09-16 (second entry) — a guard reported with a wider scope than it has
+
+**Severity:** low, and caught by the operator reading the report rather than the code. Nothing was destroyed; the record was simply wrong in a way that would have cost someone a bad assumption later.
+
+### What happened
+
+The scratch-database rule landed in three parts, and the session report summarised it as "the Go suite refuses a non-scratch database in every shell" alongside "demo-reset refuses it" — leaving the reader to conclude the whole rule was unconditional. It is not:
+
+- `go test` refuses in **every** shell. True as reported.
+- `demo-reset.ps1`'s scratch-name refusal is **`CLAUDECODE`-only, by design** — the operator's own reset targets `holler` and must keep working.
+- What is unconditional in `demo-reset.ps1` is the **target derivation**: `-PostgresDb` comes from `-DatabaseUrl`, and a disagreement is refused.
+
+The operator then reasoned from the broader claim to a conclusion that followed from it and not from the code — that the demo database had to be renamed to `holler_scratch_demo` or D12 could not be observed — and issued an instruction to rename it across four files. The rename was stopped by going back to the script and running it with `CLAUDECODE` removed, which did not refuse.
+
+### Why it is worth an entry
+
+**A guard's SCOPE is part of what it does, and a summary that widens it is a false report even when every individual sentence is true.** Each statement in the original report was accurate in isolation; the composition implied a fourth thing that was not. The cost here was one instruction issued on a false premise and caught in minutes. The same shape with a destructive guard — believing a refusal covers a case it does not — is the failure mode the guard exists to prevent, arriving through the documentation instead of the code.
+
+### Rules
+
+1. **Report a guard as: what it refuses, WHERE, and in WHICH SHELL.** Three parts with three scopes is three sentences, not one summary. "It holds everywhere" is a claim about the weakest part, not the strongest.
+2. **A deliberately narrow scope is stated as deliberate.** `demo-reset`'s agent-only refusal is a decision — the operator must keep being able to reset their own database — and an entry that does not say so invites a later session to "finish" it.
+3. **When an instruction arrives whose premise is a claim of yours, check the claim before executing it.** The rename would have been four files of churn, and the repository would have said no in one command.

@@ -479,6 +479,37 @@ Established by inspection, not recall — cite the file, not this summary:
   the operator's stack on live ports and have no scratch mode. The guard is
   dot-sourced, so a missing guard file stops the script rather than silently
   disabling it. A human shell has no `CLAUDECODE` and is unaffected.
+  **THE SCRATCH-DATABASE RULE HAS THREE PARTS WITH DIFFERENT SCOPES, and
+  saying "it holds in every shell" is wrong about two of them (corrected
+  2026-09-16):**
+  - **`go test` refuses a non-scratch database in EVERY shell, agent or
+    human.** `testdb.RequireDatabaseURL` fails the test unless
+    `HOLLER_TEST_DATABASE_URL` names a `holler_scratch_*` database. The suite
+    migrates and seeds whatever it is pointed at; run against the shared dev
+    database it overwrote `owner@holler.test` and `cashier@holler.test` with
+    fixture hashes and the till then refused a CORRECT password with a 401
+    indistinguishable from a wrong one. **Create and drop your own
+    `holler_scratch_*` database** -- `docs/RESUME.md` has the line, and the one
+    it used to have named `/holler`.
+  - **`demo-reset.ps1`'s scratch-name refusal is `CLAUDECODE`-ONLY, BY
+    DESIGN.** The operator's own demo reset targets `holler` and must keep
+    working. An agent gets a refusal; a human shell does not, and that is not
+    an oversight to be "fixed" later.
+  - **UNCONDITIONAL in every shell is the TARGET DERIVATION:** `-PostgresDb` is
+    derived from `-DatabaseUrl`, and a caller passing both with different names
+    is refused rather than reconciled. That is the half that fixes the real
+    defect -- the destructive `DROP SCHEMA` read one parameter while every
+    seeder read the other, so a scratch `-DatabaseUrl` alone left the drop
+    aimed at `holler`.
+
+  One rule, spelled in PowerShell and in Go because the callers share no
+  language, joined by `scripts/check-scratch-db-guard.mjs`. **The production
+  migration path is exempt BY CONSTRUCTION, never by a flag:** the only thing
+  that migrates a real cloud database is the API starting up
+  (`backend/cmd/api/main.go`), which cannot reach either guard, and that check
+  fails the build if `cmd/api` ever imports `testdb`. Filed as pilot-readiness
+  B7; the agreed shape is an explicit migrate command with a backup step and an
+  API that refuses to start on an unrecognised ledger, before the first pilot.
 - **NO TEST OR PROBE MAY START, STOP OR BIND ANYTHING ON 8080, 9310, 9320, THE
   ADMIN PORT (5175) OR THE POS DEV PORT (5173). Scratch ports and scratch
   databases only.** In force from 2026-09-12 until the demo. **The rule is not
