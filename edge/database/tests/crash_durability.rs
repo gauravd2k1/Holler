@@ -348,14 +348,44 @@ fn ledger_rows_for_grn(db: &Db) -> i64 {
 /// counter itself rolled back with the receipt: a consumed-but-unused number
 /// would make the next receipt jump, and a gap in the series must only ever
 /// mean "a receipt was rolled back", never "two receipts share a number".
-fn grn_sequence_next_value(db: &Db) -> i64 {
+/// **How many GRN numbers this outlet has consumed in total**, across every
+/// business date.
+///
+/// D27, and it took two attempts to get the granularity right — both recorded
+/// because each wrong version looked correct.
+///
+/// 1. It read `MAX(next_value)` across the whole table with no filter, while
+///    every helper beside it scopes to `GRN_ID`, and compared against a
+///    hard-coded 0. The dev seed issues a REAL receipt through
+///    `Db::record_goods_receipt`, so the counter was already advanced and the
+///    assertion failed with "an uncommitted receipt must not consume a GRN
+///    number". It had not. The seed had happened.
+/// 2. Filtering to the outlet and comparing `before + 1` was still wrong:
+///    `grn_sequence` is keyed `(outlet_id, business_date)`, so the seeded
+///    receipt and the receipt under test sit on DIFFERENT DATES in different
+///    rows, each at 1. A maximum cannot see a second row appear.
+///
+/// The property is about consumption, so this sums it: an aborted receipt
+/// leaves the total untouched, and a committed one raises it by exactly one —
+/// whether that is a new date's row appearing at 1 or an existing row stepping
+/// up. Both hold however much the seed grows, which is what the first two
+/// versions could not say.
+fn grn_numbers_consumed(db: &Db, outlet_id: &str) -> i64 {
     db.connection()
         .query_row(
-            "SELECT COALESCE(MAX(next_value), 0) FROM grn_sequence",
-            [],
+            "SELECT COALESCE(SUM(next_value), 0) FROM grn_sequence WHERE outlet_id = ?1",
+            [outlet_id],
             |r| r.get(0),
         )
         .expect("read grn_sequence")
+}
+
+/// The outlet the seed created, read rather than assumed â€” the same lookup
+/// `crashpoint` itself does.
+fn seeded_outlet_id(db: &Db) -> String {
+    db.connection()
+        .query_row("SELECT id FROM outlet LIMIT 1", [], |r| r.get(0))
+        .expect("the seed must contain an outlet")
 }
 
 /// A PROBE, added 2026-09-16 to settle what the counter reads BEFORE any
@@ -365,10 +395,11 @@ fn grn_sequence_next_value(db: &Db) -> i64 {
 fn the_seed_itself_advances_the_grn_counter_before_any_crash() {
     let (_tmp, dir) = seeded_dir();
     let db = open(&dir);
-    let seeded = grn_sequence_next_value(&db);
+    let outlet_id = seeded_outlet_id(&db);
+    let seeded = grn_numbers_consumed(&db, &outlet_id);
     assert_eq!(
         seeded, 1,
-        "the seeded receipt advances the counter; a test asserting 0 after a          crash is asserting that the SEED did not happen"
+        "the seeded receipt consumes exactly one GRN number; a test asserting          0 after a crash is asserting that the SEED did not happen"
     );
 }
 
@@ -378,6 +409,15 @@ fn the_seed_itself_advances_the_grn_counter_before_any_crash() {
 #[test]
 fn grn_and_ledger_agree_after_the_process_dies_mid_receipt() {
     let (_guard, dir) = seeded_dir();
+
+    // MEASURED BEFORE THE CRASH, because the seed's own receipt has already
+    // advanced this counter and the property under test is that the aborted
+    // one does NOT advance it further (D27).
+    let counter_before = {
+        let db = open(&dir);
+        let outlet_id = seeded_outlet_id(&db);
+        grn_numbers_consumed(&db, &outlet_id)
+    };
 
     let status = run_crashpoint_target(&dir, "--grn", Some("after_grn_before_ledger"));
 
@@ -406,9 +446,10 @@ fn grn_and_ledger_agree_after_the_process_dies_mid_receipt() {
         0,
         "no stock may exist for a receipt that did not commit"
     );
+    let outlet_id = seeded_outlet_id(&db);
     assert_eq!(
-        grn_sequence_next_value(&db),
-        0,
+        grn_numbers_consumed(&db, &outlet_id),
+        counter_before,
         "the counter advance rides in the same transaction: an uncommitted \
          receipt must not consume a GRN number"
     );
@@ -421,6 +462,14 @@ fn grn_and_ledger_agree_after_the_process_dies_mid_receipt() {
 #[test]
 fn without_the_crash_point_the_same_receipt_commits_and_posts_stock() {
     let (_guard, dir) = seeded_dir();
+
+    // Measured before, for the same reason the crash case measures it: the
+    // seed's own receipt has already advanced this counter (D27).
+    let counter_before = {
+        let db = open(&dir);
+        let outlet_id = seeded_outlet_id(&db);
+        grn_numbers_consumed(&db, &outlet_id)
+    };
 
     let status = run_crashpoint_target(&dir, "--grn", None);
     assert!(
@@ -437,9 +486,10 @@ fn without_the_crash_point_the_same_receipt_commits_and_posts_stock() {
         "a committed receipt posts its PURCHASE entry — without this the \
          crash assertion above would hold vacuously"
     );
+    let outlet_id = seeded_outlet_id(&db);
     assert_eq!(
-        grn_sequence_next_value(&db),
-        1,
-        "1-based, and advanced exactly once by the one receipt that committed"
+        grn_numbers_consumed(&db, &outlet_id),
+        counter_before + 1,
+        "advanced exactly once by the one receipt that committed — measured          against what was there before, not against a hard-coded 1 that the          next seed change would turn into a phantom defect"
     );
 }

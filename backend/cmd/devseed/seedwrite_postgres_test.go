@@ -38,6 +38,40 @@ func TestSeedCatalogueFromFile_WritesEveryTable(t *testing.T) {
 		t.Fatalf("loadSeedFile: %v", err)
 	}
 
+	// THE ROWS THIS TEST ASSERTS ON ARE DELETED FIRST, SO DELETING THE WRITING
+	// CODE FAILS IT ON ANY DATABASE.
+	//
+	// Every insert below is ON CONFLICT DO NOTHING / DO UPDATE, so against a
+	// database a previous run already seeded, removing a whole write loop left
+	// the rows in place and every assertion still passed. Confirmed by
+	// planting exactly that on 2026-09-16: skipping the printer_role loop
+	// passed on a re-used database and failed only on a fresh one. A test that
+	// is falsifiable only on a database nobody guarantees is a test that
+	// reports on its environment.
+	//
+	// Truncated rather than documented (which is what the first version did).
+	// CASCADE, and in dependency order anyway, because these carry foreign
+	// keys between them. This touches only the families this test asserts on —
+	// it is not a database reset, and the tests' own tenant/brand/outlet rows
+	// above it survive.
+	truncate := func() {
+		t.Helper()
+		for _, table := range []string{
+			"menu_item_station",
+			"station_printer",
+			"printer_role",
+			"printer",
+			"station",
+			"restaurant_table",
+			"device",
+		} {
+			if _, err := pool.Exec(ctx, "TRUNCATE TABLE "+table+" CASCADE"); err != nil {
+				t.Fatalf("truncating %s: %v", table, err)
+			}
+		}
+	}
+	truncate()
+
 	runOnce := func(label string) {
 		if err := seedCatalogueFromFile(ctx, pool, sf); err != nil {
 			t.Fatalf("%s: seedCatalogueFromFile: %v", label, err)
@@ -52,16 +86,6 @@ func TestSeedCatalogueFromFile_WritesEveryTable(t *testing.T) {
 
 	runOnce("first run")
 
-	// THESE ASSERTIONS ARE ONLY FALSIFIABLE ON A FRESH DATABASE, and that is
-	// worth knowing before trusting a green run. Every insert here is
-	// ON CONFLICT DO NOTHING / DO UPDATE, so against a database that a
-	// previous run already seeded, deleting the writing code entirely still
-	// leaves the rows present and every assertion below still passes.
-	// Confirmed by planting exactly that on 2026-09-16: skipping the
-	// printer_role loop passed on a re-used database and failed on a fresh
-	// one. Point HOLLER_TEST_DATABASE_URL at a database you create and drop
-	// per run — which is what the scratch-database rule already requires.
-	//
 	// --- D10: the five cloud-owned families the cloud used to hold NONE of,
 	// plus menu_item_station derived from the item's station_code.
 	//
