@@ -375,8 +375,18 @@ repeated.
    145 as line 1a. **RECORD WHAT WAS OBSERVED, NOT WHAT WAS EXPECTED**, either
    way: this step exists to find out which of the two it is, and writing down
    the expectation is how the answer gets lost.
+4d. **Look at the till's own screens in the TAURI RELEASE WINDOW and read
+   two things back.** Both are code changes made on 2026-09-16 and neither has
+   been seen anywhere but the build output and the dev server, which CLAUDE.md
+   counts as two of four runtimes: (a) the **order list** and the **sync
+   banner** must print an order number as `#A2`, never `##A2` — the `#` is part
+   of the minted value and two POS surfaces were adding a second one; (b) with
+   the cloud stopped and restarted (demo step 4), the **banner must empty** and
+   the order must reach the admin **out of DRAFT**. The second is the
+   at-least-once replay fix (ADR-028) observed end to end rather than in a Go
+   test. **Report what the screen said, not what the fix intends.**
 5. Repeat from a clean reset **three times** — that is the cut-off condition,
-   not one success. Steps 1–4c each time; step 0 is not repeated.
+   not one success. Steps 1–4d each time; step 0 is not repeated.
 6. Two phones, two tables, concurrently.
 7. WiFi off and on mid-cart. **Expected: duplicate LINES, not a duplicate
    order** (`3b80a48`). Neither appearing contradicts the code — stop and
@@ -397,6 +407,17 @@ repeated.
   nothing was written down rather than a number being invented. Monday's perf
   row in `docs/demo-status.md` is still empty, and **over 1s on the phone is a
   demo blocker**.
+- **The two POS edits of 2026-09-16 have NOT been seen in the Tauri release
+  window** — the `##A2` double prefix and the post-reconnect banner/admin
+  state. Build output and dev server only; run-list step 4d is where they get
+  observed. An agent cannot do it: `run-dev.ps1` refuses under `CLAUDECODE`,
+  and a Tauri window launched from a tool with redirected stdio never appears.
+- **`seed/demo-outlet.json` is modified in the working tree and
+  `edge/database`'s `seed_offline_sale` test fails because of it** — devseed
+  refuses, naming a catalogue/identity sha mismatch and telling you to re-emit
+  with `cargo run --bin devseed -- --emit-json ../../seed/demo-outlet.json`.
+  The edit predates the 2026-09-16 session and was left alone; every other
+  `edge/database` test passes.
 - **The `seed/outlet.toml` refusal path has still never fired** on the real
   scripts — read-verified only (white-label §4.2, unchanged by this session).
 - **`logo_path` stays unset**, so the bill renders byte-identically to the

@@ -1791,3 +1791,35 @@ watched fail.
 That is the M6 C3 pattern again: **a fix for one defect can uncover another with
 nothing announcing it.** Dead code hides its own bugs — the day it stops being
 dead, they are new.
+
+---
+
+## 2026-09-16 — Defect A masked defect B, and every single-transition test passed through both
+
+**Severity:** medium (caught before the client demo, which was deferred the same day). Five outbox rows permanently stranded on the live till; three orders held in the cloud as DRAFT after the outlet had sent them to the kitchen and billed them.
+
+### What happened
+
+Both defects sat in the cloud's ordering context and both came from one wrong assumption: that order replay is **exactly-once and ordered**. The edge's outbox is at-least-once, delivers no per-event sequence, and holds every later row of an aggregate behind a refused one.
+
+**Defect A.** The cloud required a transition's `SyncEnvelope.version` to equal `current + 1`. That field is filled from the **live aggregate row at send time**, so every event still queued for one order carries the same number. A transition arriving ahead was a permanent 409 that wedged the order's queue; a transition arriving equal — the whole-service-offline case — read as an already-applied replay and returned 200 **without applying anything**, leaving the order DRAFT in the cloud with no error, no blocked row and no banner.
+
+**Defect B.** The edge has allowed a line to be added through `PREPARING` since `#132-A`; the cloud allowed `DRAFT` only, and `openapi.yaml` said the same. That is the second Send on a table — ordinary work, and the captain page's whole purpose.
+
+**Defect A hid defect B for months.** Every cloud-side order was stuck in DRAFT, so the cloud's stricter line rule was never reached. Fixing A is what would have exposed B: in front of the client, as a wedged queue in the sync banner on the demo's first table.
+
+### Why nothing was red
+
+Every single-transition test on both sides passed throughout. That is not an accident of coverage — it is what single-transition tests do. Each one **sets up the exact predecessor state it needs and then makes one call**, so it constructs by hand precisely the version the envelope "should" carry, and it reaches only the statuses its own setup produced. Neither defect lives in one call:
+
+- A version read from the live row only takes a wrong value once **several events are queued** for one order.
+- A rule that is unreachable in DRAFT is only reached by a run that gets the order **out of** DRAFT and then appends.
+
+The two-sided half is worse. The edge's tests proved the edge's rule, the cloud's tests proved the cloud's rule, both were green, and **nothing in the repository compared the two rules to each other.** The set was declared three times — a Rust match arm, a Go equality test, one word of English in the OpenAPI summary — in three languages that cannot import one another.
+
+### Rules
+
+1. **A SYNC TEST MUST DRIVE A COMPLETE ORDER LIFECYCLE, NOT ONE TRANSITION.** Replay it the way the outbox sends it — every envelope at the same version, a line appended after the kitchen already has the ticket, at least one redelivered row — and assert the cloud ends in the state the edge is in. `TestOrderLifecycle_ReplayedThroughTheSyncPath` fails against a pre-fix service on each defect independently; no single-transition test sees either.
+2. **A RULE DECLARED IN TWO LANGUAGES IS TWO RULES UNTIL SOMETHING COMPARES THEM.** Where a shared declaration is impossible — TypeScript, Go and a Rust crate that imports neither — the drift check IS the joint, and the consuming side must READ the set rather than restate it (`scripts/check-order-amendable-drift.mjs` fails on both). This is the `check-order-source-drift.mjs` lesson applied to a behavioural rule rather than an enum.
+3. **WHEN A FIX UNBLOCKS A PATH, ASK WHAT ELSE THAT PATH HAS NEVER REACHED.** Defect A was a masking defect: it kept a whole region of the state machine unvisited. The same shape has now happened three times in this repository — `7e88d1c` started sending real variants to a cloud that had none, fixing M4's criterion 1 uncovered M6 C3's FK, and this. **The fix is the moment to go looking, not the moment to close the ticket.**
+4. **AT-LEAST-ONCE DELIVERY MAKES A PERMANENT REFUSAL A DESIGN DECISION, NOT AN ERROR PATH.** A 409 is never retried and strands everything behind it. Before returning one, ask whether the edge could legitimately have produced this call — a redelivery whose acknowledgement was lost, a row sent after the aggregate moved on. If it could, absorb it and prove the absorption is idempotent (ADR-028).
