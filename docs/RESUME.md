@@ -1,4 +1,172 @@
-# RESTART HERE — session ended 2026-09-16, HEAD `09178cc`, tree clean and pushed
+# RESTART HERE — session ended 2026-09-17, HEAD `89c235a`, tree clean and pushed
+
+**THE DEMO IS DEFERRED to the week of 2026-09-21.** Scope, the six steps and
+the excludes are unchanged. Until the demo week, work is **defect repair on the
+six-step path**.
+
+Read in this order: **`docs/demo-status.md` → "THE OPEN-DEFECT REGISTER"**
+(D1–D27), then **`docs/visual-verify.md`** (a gate, not a log), then
+`docs/demo-kickoff.md`.
+
+## CI STATUS OF HEAD — READ THIS BEFORE CLAIMING ANYTHING IS GREEN
+
+**`89c235a`: run in flight when the session ended.** On `b3060ad`, the commit
+before it, **12 jobs green, 2 red**, with `crash-durability`, `e2e-scenario`,
+`edge` and `rust-seams` still running:
+
+| Job | State on `b3060ad` | Why |
+|---|---|---|
+| `backend` | **GREEN** (was red) | fixed `29e3ead` |
+| `contracts` | **GREEN** (was red) | fixed `29e3ead` |
+| `edge` | was green on `2bed8f6` | fixed `7d5daea` |
+| `edge-style` | **RED** | clippy `empty_line_after_doc_comments` — **fixed in `89c235a`, unverified on CI** |
+| `cloud-replay` | **RED** | **fix 5, not started.** `entry_seq` collision, described in full below |
+| `crash-durability` | unknown on `b3060ad` | was red on `2bed8f6` for the CRLF identity hash — **fixed in `b3060ad`, unverified on CI** |
+| `e2e-scenario` | unknown on `b3060ad` | fixed `a1d0d25`, then hit the same CRLF hash — `b3060ad` should clear it |
+
+**First command tomorrow: `gh run list --limit 1`, then the per-job view.** CI
+had zero successes in forty runs until this session; do not infer from local
+green.
+
+## WHAT LANDED TONIGHT
+
+- `b3060ad` — **the identity hash ignores line endings.** It was over raw
+  bytes, so an LF-authored catalogue could never match on a Windows runner
+  (`a29e82d47f67` vs `b4417a7811eb` for the same unmodified file), and five
+  `crash_durability` tests failed reporting a restaurant mismatch that did not
+  exist. Also pins `seed/*.toml` and `seed/*.json` to `eol=lf` — not for the
+  hash, but so the repo states its line endings.
+- `89c235a` — `build_shared_catalogue`'s doc comment sits next to its function
+  again. D10's block had been inserted between them; that was `edge-style`'s
+  failure.
+- **Fix 5: NOT STARTED. No part of it exists in the tree.** Nothing was
+  stashed, nothing dropped, working tree is HEAD.
+
+## FIX 5 — THE PLAN, VERBATIM, SO IT IS NOT RE-DERIVED
+
+**The defect, confirmed by draining on 2026-09-16:** the demo cloud holds
+seeded `entry_seq` 1–45 for the demo outlet, the demo edge's counter starts at
+1, and **the first replayed stock movement 409s onto the banner on stage**.
+Reproduced locally: `stopped=Some(Rejected { status: 409 })`.
+
+**Root cause per §50.1:** `entry_seq` is edge-owned. The cloud seeder minting
+it from its own high-water mark is split authority on the ledger.
+
+**The fix, as ruled:**
+
+1. **Opening-stock AND GRN ledger rows carry `entry_seq` in the shared
+   catalogue.** GRN rows are treated exactly like opening stock — **same row
+   ids and same seqs in both stores**.
+2. **The seeded `goods_receipt` row itself is identical in both stores (same
+   id)**, so the 7 ledger lines reference a receipt the edge holds too.
+3. **Both stores write the same 1–45.**
+4. **The edge's counter starts at seeded+1.**
+5. **The cloud seeder NEVER assigns a seq.** `seedStockLedgerEntries`'s
+   `MAX(entry_seq)+1` fallback is the split-authority path, so it is **deleted**
+   rather than corrected — the same ruling as `devseed`'s `DATABASE_URL`
+   default.
+6. **Row-for-row test covers the ledger rows too.**
+7. **`cloud-replay` asserts the wastage entry is seeded+1.**
+8. **The 0.5.8 1-based rule gets its own test on an outlet with NO seeded
+   ledger.** Option 2 (starting the test's edge counter above the cloud's mark)
+   was **rejected**: it deletes the assertion 0.5.8 exists to protect.
+9. **Pilot item filed:** the cloud never assigns `entry_seq` for any outlet;
+   ledger import for a real outlet goes through the edge or carries
+   edge-assigned seqs, **enforced by a check, not a README**.
+10. **Retro line lands with the fix:** *"A plant that doesn't turn the test red
+    proved nothing. Watch the plant fail before trusting the restore."*
+
+**Falsification, required before reporting it done:** drain one wastage entry
+against a freshly seeded cloud → **200, `entry_seq` = 46, banner attention list
+empty**. Then **plant the old cloud-side seq assignment back → 409**.
+
+### Measured facts — do not re-measure, these are from a fresh scratch seed
+
+```
+stock_ledger_entry, demo outlet: 45 rows, entry_seq 1–45
+  GOODS_RECEIPT     7 rows, seq 1–7
+  COUNT_ADJUSTMENT 38 rows, seq 8–45
+goods_receipt_note: 0191a000-0000-7000-8000-000000000051, GRN/20260809/0001
+```
+
+**THE LIVE `holler` DATABASE IS ALREADY IN THE COLLIDING STATE** — 45 rows, seq
+1–45, same outlet. This is not hypothetical for the rebuild Gaurav is running.
+
+**Both seeders:**
+
+| Side | File:line |
+|---|---|
+| Emitter (catalogue) | `edge/database/src/bin/devseed.rs:2067` `"goods_receipt"`, `:2068` `"opening_stock"` |
+| Edge writer | `edge/database/src/bin/devseed.rs:2734` `write_goods_receipt`, `:2816` `write_opening_stock` |
+| Cloud writer | `backend/cmd/devseed/seedwrite.go:434` `seedStockLedgerEntries` — **the fallback to delete** |
+| Cloud callers | `seedwrite.go:377` (opening stock), `:421` (GRN lines) |
+
+## THE QUEUE AFTER FIX 5
+
+1. **D12 — observation only.** After the operator's reset, no order in admin
+   shows a non-zero total with zero lines. That is VV-004.
+2. **`docs/demo-script.md` step 5 wording** — say stock is shown **on the
+   till**, not in admin. D9/D8b are not this demo (operator ruling).
+3. **D24 — `check-seams` without `make`.** `make` is not on PATH in an agent
+   shell, so the CLAUDE.md instruction to run it silently does nothing. Needs a
+   script or a package.json target.
+4. **M6 partial/unobserved sweep** — anything in the boundary report marked
+   partial or unobserved gets an executed test or a VV row. C2 stays parked.
+5. **Rehearsals** — three from a clean reset, each timed, then the recording.
+
+## FOR GAURAV — OPERATOR ITEMS
+
+**After fix 5 lands, reset and reseed the live cloud.** The exact sequence is
+written at the end of this session's report and belongs here once it has been
+run once; until fix 5 lands, a reseed reproduces the colliding state.
+
+```powershell
+# 1. bring the stack up (Docker Desktop does not autostart)
+docker compose up -d postgres redis nats
+
+# 2. full reset + reseed, cloud AND edge, from the demo seed
+$env:HOLLER_DB_KEY_HEX = '<the key from apps\pos\.env.dev>'
+.\scripts\demo-reset.ps1 -Force
+
+# 3. start everything, REBUILDING the POS (step 6 does this now)
+.\scripts\demo-up.ps1 -Release -Fresh -DbKeyHex $env:HOLLER_DB_KEY_HEX -LanHost <hotspot-ip>
+```
+
+**`-NoBuild` exists for the demo morning** — it skips the compile but still
+runs `check-release-binary.ps1` and refuses a stale binary.
+
+**VV rows waiting on a person.** An agent cannot close any of them:
+
+| Row | What to look at |
+|---|---|
+| VV-012/013/014 | Kitchen panel: live status without a remount, error-after-refetch, verb buttons + coloured badge |
+| VV-011 | Sync banner: muted "kept locally" line, attention list EMPTY |
+| VV-015 | Admin Orders names the device — "Dev Till 1" |
+| VV-001–004 | Banner empties after cloud restart; order not DRAFT in admin; `#A2` not `##A2`; no order with a total and no lines |
+| VV-009 | **Closed FAIL** on `docs/evidence/VV-009.png` — the remount variant was never observed and is superseded by `97bc3dc` |
+
+**Every one of these needs a build from `89c235a` or later.** `StartTime` is
+not `BuiltAt`:
+
+```powershell
+Get-Process holler-pos | Select-Object Id, StartTime, @{n='BuiltAt';e={(Get-Item $_.Path).LastWriteTime}}
+```
+
+## THREE THINGS THAT WILL OTHERWISE COST AN HOUR
+
+- **One cargo test shell at a time.** A stopped tool shell does not kill its
+  `cargo` children; the surviving test binary holds the `.exe` and every retry
+  fails `LNK1104` for ever. Kill orphans first, run one shell in the foreground.
+- **Backend tests need a scratch database you create yourself** — the suite
+  refuses `holler` in every shell:
+  `docker exec holler-postgres-1 psql -U holler -d postgres -c "CREATE DATABASE holler_scratch_local;"`
+- **A plant that does not turn the test red proved nothing.** Two plants failed
+  to land today and reported passes; both are now applied by scripts that
+  assert the substitution first.
+
+---
+
+# Resume state — 2026-09-16 (superseded by the block above)
 
 **THE DEMO IS DEFERRED to the week of 2026-09-21.** Scope, the six steps and
 the excludes are unchanged; only the dates moved, and `apps/captain`'s Monday
