@@ -168,8 +168,14 @@ export function OrderListScreen() {
                 {/* Human-facing display number only — never the row's UUID
                     (CLAUDE.md §Money/time/identifiers). display_number is
                     nullable only for pre-0.4.0 legacy rows; "unnumbered" is
-                    shown rather than falling back to the id. */}
-                <td>{order.display_number !== null ? `#${order.display_number}` : "unnumbered"}</td>
+                    shown rather than falling back to the id.
+
+                    RENDERED AS STORED. The `#` is part of the minted value
+                    (`format_order_display_number`, edge/database/src/repo.rs
+                    returns "#A184"), so adding one here produced "##A184" on
+                    screen. The admin console and the captain page print the
+                    column raw for that reason. */}
+                <td>{order.display_number !== null ? order.display_number : "unnumbered"}</td>
                 {/* NOT the raw enum. DINE_IN on a screen is a variable name;
                     the status column beside it has read as plain language
                     since M2 and this column was still shouting. Same helper,

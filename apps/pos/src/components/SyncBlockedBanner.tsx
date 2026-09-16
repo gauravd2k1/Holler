@@ -54,7 +54,10 @@ function useRowDescription(row: SyncOutboxBlock): string {
       const first = menuItemName(order.items[0].menu_item_id);
       itemSummary = `${first} +${order.items.length - 1} more`;
     }
-    return `${label} #${orderNumber} — ${itemSummary}`;
+    // `orderNumber` is rendered as stored: the `#` is part of the minted
+    // value (`format_order_display_number`, edge/database/src/repo.rs), so
+    // prefixing another one here read as "Order ##A2" on the till.
+    return `${label} ${orderNumber} — ${itemSummary}`;
   }, [row.aggregate_type, row.aggregate_id, ordersQuery.data, menuItemsQuery.data]);
 }
 

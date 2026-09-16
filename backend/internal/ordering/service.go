@@ -133,6 +133,49 @@ func (s *Service) AppendItem(ctx context.Context, callerTenantID string, env con
 	return s.repo.GetByID(ctx, callerTenantID, orderID)
 }
 
+// replayVersion resolves the version a replayed transition stores.
+//
+// WHY A REPLAY IS NOT VERSION-SEQUENCED. `SyncEnvelope.version` is read from
+// the LIVE edge aggregate row at the moment the outbox row is sent
+// (edge/sync/src/worker.rs `load_aggregate_envelope_fields`), not stamped on
+// the event when it was recorded. Every event still queued for one order
+// therefore ships the SAME version — whatever the edge row has reached by
+// then — and the edge carries no per-event version to send instead
+// (local_outbox has no version column and the frozen OutboxEvent envelope has
+// no field for one, packages/contracts sqlite/0001_init.sql +
+// src/types/events.ts).
+//
+// So a cloud-side `version == current+1` rule was testing a number that
+// cannot hold that property, and it failed in two directions, both observed
+// on the live stack on 2026-09-16:
+//
+//   - The order synced while online, then more lines were added: the
+//     transition arrived with a version several ahead, was refused 409
+//     PERMANENTLY, and every later row of that aggregate stayed behind it
+//     (per-aggregate ordering, M6 A2). Three orders wedged, five outbox rows
+//     blocked.
+//   - The order was taken entirely offline: create and transitions all
+//     shipped the same version, the transition read as `version <=
+//     current` — an already-applied replay — and was swallowed with 200. The
+//     order sat DRAFT in the cloud forever, silently, with its items present.
+//
+// docs/spec/sync.md's conflict policy for the order aggregate is "state
+// machine + command validation", and openapi.yaml documents the transition
+// routes' 409 as an illegal transition — never as a version gap. The state
+// machine is therefore the whole guard: `current.Status == to` is the
+// idempotency test (it is the thing a duplicate delivery cannot change), and
+// validTransition is the legality test.
+//
+// The stored version still only moves FORWARD, so nothing downstream that
+// treats it as monotonic regresses: take the edge's number when it is ahead,
+// otherwise step by one.
+func replayVersion(envVersion, currentVersion int) int {
+	if envVersion > currentVersion {
+		return envVersion
+	}
+	return currentVersion + 1
+}
+
 // transition is the shared implementation behind SendToKitchen and Cancel:
 // both are pure state-machine moves in Milestone 1 (KOT generation is
 // Milestone 2; payment capture is out of scope entirely).
@@ -153,20 +196,18 @@ func (s *Service) transition(ctx context.Context, callerTenantID string, env con
 		return StoredOrder{}, err
 	}
 
-	// Idempotent replay: the edge resent an envelope whose version this
-	// order already carries (or is behind). Return the current row rather
-	// than re-applying or erroring.
-	if env.Version <= current.Version {
+	// Idempotent replay: the edge resent a transition this order has
+	// already taken. Return the current row rather than re-applying, and
+	// never as an error — the state, not the envelope's version, is what
+	// says whether this move has happened (see replayVersion).
+	if current.Status == to {
 		return current, nil
-	}
-	if env.Version != current.Version+1 {
-		return StoredOrder{}, fmt.Errorf("%w: envelope version %d is not the next version after %d", httpx.ErrConflict, env.Version, current.Version)
 	}
 	if !validTransition(current.Status, to) {
 		return StoredOrder{}, fmt.Errorf("%w: cannot move order from %q to %q", ErrIllegalTransition, current.Status, to)
 	}
 
-	stored, applied, err := s.repo.UpdateStatus(ctx, callerTenantID, orderID, current.Version, env.Version, to)
+	stored, applied, err := s.repo.UpdateStatus(ctx, callerTenantID, orderID, current.Version, replayVersion(env.Version, current.Version), to)
 	if err != nil {
 		return StoredOrder{}, err
 	}
@@ -208,14 +249,11 @@ func (s *Service) Confirm(ctx context.Context, callerTenantID string, env contra
 		return StoredOrder{}, err
 	}
 
-	// Idempotent replay: the edge resent an envelope whose version this
-	// order already carries (or is behind). Return the current row rather
-	// than re-applying or shifting confirmed_at.
-	if env.Version <= current.Version {
+	// Idempotent replay: the edge resent a confirmation this order has
+	// already taken. Return the current row rather than re-applying or
+	// shifting confirmed_at (see replayVersion).
+	if current.Status == contracts.OrderStatusConfirmed {
 		return current, nil
-	}
-	if env.Version != current.Version+1 {
-		return StoredOrder{}, fmt.Errorf("%w: envelope version %d is not the next version after %d", httpx.ErrConflict, env.Version, current.Version)
 	}
 	if current.Status != contracts.OrderStatusDraft {
 		return StoredOrder{}, fmt.Errorf("%w: order must be DRAFT to confirm, is %q", httpx.ErrConflict, current.Status)
@@ -224,7 +262,7 @@ func (s *Service) Confirm(ctx context.Context, callerTenantID string, env contra
 		return StoredOrder{}, fmt.Errorf("%w: cannot move order from %q to %q", ErrIllegalTransition, current.Status, contracts.OrderStatusConfirmed)
 	}
 
-	stored, applied, err := s.repo.ConfirmOrder(ctx, callerTenantID, orderID, current.Version, env.Version, confirmedAt)
+	stored, applied, err := s.repo.ConfirmOrder(ctx, callerTenantID, orderID, current.Version, replayVersion(env.Version, current.Version), confirmedAt)
 	if err != nil {
 		return StoredOrder{}, err
 	}

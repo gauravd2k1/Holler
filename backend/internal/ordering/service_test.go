@@ -324,7 +324,7 @@ func TestSendToKitchen_RejectsIllegalTransitionFromDraft(t *testing.T) {
 }
 
 func TestCancel_RequiresReasonAndRejectsAfterClosed(t *testing.T) {
-	svc, _ := newTestService()
+	svc, repo := newTestService()
 	if _, err := svc.IngestOrder(context.Background(), testTenantID, baseEnvelope(1), baseOrder()); err != nil {
 		t.Fatalf("IngestOrder: %v", err)
 	}
@@ -341,8 +341,27 @@ func TestCancel_RequiresReasonAndRejectsAfterClosed(t *testing.T) {
 		t.Fatalf("expected CANCELLED, got %s", stored.Status)
 	}
 
-	if _, err := svc.Cancel(context.Background(), testTenantID, baseEnvelope(3), testOrderID, "again"); !errors.Is(err, ErrIllegalTransition) {
-		t.Fatalf("expected ErrIllegalTransition cancelling an already-CANCELLED order, got %v", err)
+	// Cancelling an already-CANCELLED order is an IDEMPOTENT REPLAY, not an
+	// illegal transition. Before 2026-09-16 the two were told apart by the
+	// envelope's version, which cannot carry that meaning: the edge reads it
+	// from the live aggregate row when it sends, so every queued event of one
+	// order ships the same number (see replayVersion). The status is the only
+	// key that survives a lost ack, and an edge retrying a cancel it already
+	// delivered must not be refused forever.
+	stored, err = svc.Cancel(context.Background(), testTenantID, baseEnvelope(3), testOrderID, "again")
+	if err != nil {
+		t.Fatalf("expected a redelivered cancel to succeed idempotently, got %v", err)
+	}
+	if stored.Status != contracts.OrderStatusCancelled {
+		t.Fatalf("expected order to remain CANCELLED after redelivery, got %s", stored.Status)
+	}
+
+	// A terminal status that is NOT the one being replayed is still refused.
+	closed := repo.orders[testOrderID]
+	closed.Status = contracts.OrderStatusClosed
+	repo.orders[testOrderID] = closed
+	if _, err := svc.Cancel(context.Background(), testTenantID, baseEnvelope(4), testOrderID, "too late"); !errors.Is(err, ErrIllegalTransition) {
+		t.Fatalf("expected ErrIllegalTransition cancelling a CLOSED order, got %v", err)
 	}
 }
 
@@ -371,8 +390,13 @@ func TestConfirm_HappyPath(t *testing.T) {
 // TestConfirm_RejectsNonDraftStatuses proves every non-DRAFT status is a 409
 // (httpx.ErrConflict), not a silently applied transition.
 func TestConfirm_RejectsNonDraftStatuses(t *testing.T) {
+	// CONFIRMED is deliberately ABSENT: confirming an order that is already
+	// CONFIRMED is the edge redelivering a confirm whose ack it lost, and it
+	// returns the stored row unchanged (TestConfirm_IdempotentReplay...).
+	// The envelope version used to tell those apart and cannot — the edge
+	// reads it from the live aggregate row at send time, so every queued
+	// event of one order carries the same number (see replayVersion).
 	nonDraft := []contracts.OrderStatus{
-		contracts.OrderStatusConfirmed,
 		contracts.OrderStatusSentToKitchen,
 		contracts.OrderStatusPreparing,
 		contracts.OrderStatusReady,
@@ -427,6 +451,73 @@ func TestConfirm_IdempotentReplayLeavesOneConfirmationAndUnchangedTimestamp(t *t
 	if stored.Timestamps.ConfirmedAt == nil || !stored.Timestamps.ConfirmedAt.Equal(confirmedAt) {
 		t.Fatalf("expected confirmed_at to remain %v after replay, got %v", confirmedAt, stored.Timestamps.ConfirmedAt)
 	}
+}
+
+// TestTransition_EnvelopeVersionNeverBlocksOrSwallowsAReplay is the
+// falsifier for the defect found on the live stack on 2026-09-16: five
+// outbox rows permanently blocked on `conflict (HTTP 409)`, and three orders
+// sitting DRAFT in Postgres while the till showed them sent.
+//
+// It reproduces the two shapes the edge actually produces, and it FAILS on
+// the pre-fix service in both — the first with ErrConflict, the second by
+// leaving the order DRAFT while returning no error at all. Neither shape is
+// exotic: the version is read from the live edge aggregate row when the
+// outbox row is sent, so it is whatever the order had reached by then, not
+// what it had when the event was recorded.
+func TestTransition_EnvelopeVersionNeverBlocksOrSwallowsAReplay(t *testing.T) {
+	// Shape 1 — SYNCED ONLINE, THEN MORE LINES ADDED. The create landed at
+	// version 1; six lines were then added locally, so the confirm and the
+	// send both ship version 7. The old rule demanded exactly 2 and refused
+	// everything after it, forever.
+	t.Run("version ahead of the cloud's is applied, not refused", func(t *testing.T) {
+		svc, _ := newTestService()
+		if _, err := svc.IngestOrder(context.Background(), testTenantID, baseEnvelope(1), baseOrder()); err != nil {
+			t.Fatalf("IngestOrder: %v", err)
+		}
+		confirmedAt := time.Date(2026, 9, 16, 7, 6, 24, 0, time.UTC)
+		if _, err := svc.Confirm(context.Background(), testTenantID, baseEnvelope(7), testOrderID, confirmedAt); err != nil {
+			t.Fatalf("Confirm with a version ahead of the cloud's: %v", err)
+		}
+		stored, err := svc.SendToKitchen(context.Background(), testTenantID, baseEnvelope(7), testOrderID)
+		if err != nil {
+			t.Fatalf("SendToKitchen with a version ahead of the cloud's: %v", err)
+		}
+		if stored.Status != contracts.OrderStatusSentToKitchen {
+			t.Fatalf("expected SENT_TO_KITCHEN, got %s", stored.Status)
+		}
+	})
+
+	// Shape 2 — TAKEN ENTIRELY OFFLINE. Nothing synced until the uplink came
+	// back, so the create and both transitions ship the SAME version. The old
+	// rule read that as an already-applied replay and returned 200 without
+	// applying anything: the order stayed DRAFT in the cloud with its items
+	// present, and no banner, no blocked row and no error said so.
+	t.Run("version equal to the cloud's still applies the transition", func(t *testing.T) {
+		svc, _ := newTestService()
+		if _, err := svc.IngestOrder(context.Background(), testTenantID, baseEnvelope(4), baseOrder()); err != nil {
+			t.Fatalf("IngestOrder: %v", err)
+		}
+		confirmedAt := time.Date(2026, 9, 16, 7, 6, 24, 0, time.UTC)
+		confirmed, err := svc.Confirm(context.Background(), testTenantID, baseEnvelope(4), testOrderID, confirmedAt)
+		if err != nil {
+			t.Fatalf("Confirm at the create's own version: %v", err)
+		}
+		if confirmed.Status != contracts.OrderStatusConfirmed {
+			t.Fatalf("expected CONFIRMED, got %s — the transition was swallowed", confirmed.Status)
+		}
+		stored, err := svc.SendToKitchen(context.Background(), testTenantID, baseEnvelope(4), testOrderID)
+		if err != nil {
+			t.Fatalf("SendToKitchen at the create's own version: %v", err)
+		}
+		if stored.Status != contracts.OrderStatusSentToKitchen {
+			t.Fatalf("expected SENT_TO_KITCHEN, got %s — the transition was swallowed", stored.Status)
+		}
+		// The stored version only ever moves forward, so anything reading it
+		// as monotonic is unaffected by accepting an equal one.
+		if stored.Version <= confirmed.Version {
+			t.Fatalf("expected the stored version to advance past %d, got %d", confirmed.Version, stored.Version)
+		}
+	})
 }
 
 func TestGetOrder_TenantScoped_CrossTenantIsNotFound(t *testing.T) {
