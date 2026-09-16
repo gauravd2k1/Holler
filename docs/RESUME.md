@@ -1312,9 +1312,22 @@ Set real levels before any rollout or demo.
   (~4,100 lines); it survived only because the working tree still held it.
 - **Postgres is not running by default.** Docker Desktop must be started
   manually, then `docker compose up -d postgres`. Backend tests need
-  `HOLLER_TEST_DATABASE_URL=postgres://holler:holler_dev@127.0.0.1:5432/holler?sslmode=disable`
-  — and **`HOLLER_SKIP_PG_TESTS=1` hides real failures**: it masked four
-  `internal/payments` tests that T7a's `billing.manage` check broke.
+  `HOLLER_TEST_DATABASE_URL`, and **it must name a database called
+  `holler_scratch_*`, which you create and drop yourself** — the suite now
+  refuses anything else (2026-09-16):
+
+  ```powershell
+  docker exec holler-postgres-1 psql -U holler -d postgres -c "CREATE DATABASE holler_scratch_local;"
+  $env:HOLLER_TEST_DATABASE_URL = "postgres://holler:holler_dev@127.0.0.1:5432/holler_scratch_local?sslmode=disable"
+  ```
+
+  **This line used to say `/holler`, and following it cost a working dev
+  stack.** The suite migrates and seeds whatever it is pointed at, so it
+  overwrote `owner@holler.test` and `cashier@holler.test` with fixture hashes
+  and the till then refused a CORRECT password with a 401 indistinguishable
+  from a wrong one. Also **`HOLLER_SKIP_PG_TESTS=1` hides real failures**: it
+  masked four `internal/payments` tests that T7a's `billing.manage` check
+  broke.
 - **`LNK1104: cannot open file ...exe` is McAfee, not your code.** Re-run; two or
   three retries reach green.
 - **The POS's pnpm store can hold a STALE `@holler/contracts`** — a hard copy

@@ -33,6 +33,7 @@ func RequireDatabaseURL(t *testing.T) string {
 
 	dbURL := os.Getenv("HOLLER_TEST_DATABASE_URL")
 	if dbURL != "" {
+		requireScratchDatabase(t, dbURL)
 		return dbURL
 	}
 
@@ -48,6 +49,66 @@ func RequireDatabaseURL(t *testing.T) string {
 		"environment, export HOLLER_SKIP_PG_TESTS=1. An unset variable no " +
 		"longer skips silently: see backend/internal/platform/testdb.")
 	return ""
+}
+
+// ScratchDatabasePrefix is the only name a database may have if this suite is
+// allowed to touch it.
+//
+// WHY A SUITE REFUSES A DATABASE RATHER THAN TRUSTING THE CALLER. Every
+// Postgres-backed test here migrates the schema and seeds fixtures. Run against
+// the shared dev database - which is what docs/RESUME.md used to tell you to do
+// - it overwrote owner@holler.test and cashier@holler.test with fixture
+// hashes, so the till and the admin console then refused a CORRECT password.
+// The 401 was misread first as a credential fault and then as the rate
+// limiter, and the only way back was the operator's reset. Nothing in the
+// suite was broken and nothing said anything; a working dev stack was simply
+// gone.
+//
+// This is the same rule scripts/agent-guard.ps1 enforces for demo-reset.ps1,
+// and it is spelled there too because that script has no Go anywhere near it.
+// scripts/check-scratch-db-guard.mjs fails the build if the two spellings
+// disagree.
+//
+// It applies to every shell, not only an agent's. The operator has no more
+// reason to migrate fixtures over their own dev database than an agent does,
+// and the incident that produced this rule was not an agent's.
+const ScratchDatabasePrefix = "holler_scratch_"
+
+// databaseNameFromURL returns the database a postgres URL names: the last path
+// segment, query string removed. An empty return means "no name found", and
+// the caller treats that as a refusal rather than as permission - a URL this
+// cannot parse is not a URL it can clear.
+func databaseNameFromURL(dbURL string) string {
+	withoutQuery, _, _ := strings.Cut(dbURL, "?")
+	withoutQuery = strings.TrimRight(withoutQuery, "/")
+	idx := strings.LastIndex(withoutQuery, "/")
+	if idx < 0 || idx == len(withoutQuery)-1 {
+		return ""
+	}
+	return withoutQuery[idx+1:]
+}
+
+// requireScratchDatabase fails the test - loudly, before a single migration
+// runs - when HOLLER_TEST_DATABASE_URL names anything but a scratch database.
+func requireScratchDatabase(t *testing.T, dbURL string) {
+	t.Helper()
+
+	name := databaseNameFromURL(dbURL)
+	if strings.HasPrefix(strings.ToLower(name), ScratchDatabasePrefix) {
+		return
+	}
+	shown := name
+	if shown == "" {
+		shown = "<no database name in the URL>"
+	}
+	t.Fatalf("HOLLER_TEST_DATABASE_URL names database %q, which is not a scratch "+
+		"database. This suite MIGRATES AND SEEDS whatever it is pointed at: run "+
+		"against a working database it overwrites owner@holler.test and "+
+		"cashier@holler.test with fixture hashes, and the till then refuses a "+
+		"correct password with a 401 that reads exactly like a wrong one. Use a "+
+		"database named %q..., which you create and drop yourself, e.g. "+
+		"postgres://holler:holler_dev@localhost:5432/%sci?sslmode=disable",
+		shown, ScratchDatabasePrefix, ScratchDatabasePrefix)
 }
 
 func truthy(v string) bool {

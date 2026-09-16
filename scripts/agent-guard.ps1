@@ -110,6 +110,65 @@ function Assert-AgentSafePaths {
     Write-Host "             data: $DataDirValue" -ForegroundColor DarkGray
 }
 
+# ---------------------------------------------------------------------------
+# THE SCRATCH-DATABASE RULE
+#
+# A run that DROPS a schema, or that migrates and seeds one, may only ever name
+# a database whose name begins with the scratch prefix below. Two separate
+# incidents made this structural rather than instructional:
+#
+#   - demo-reset.ps1 took -DatabaseUrl and -PostgresDb as independent
+#     parameters, and the destructive DROP SCHEMA read -PostgresDb while every
+#     seeder read -DatabaseUrl. A scratch -DatabaseUrl on its own therefore
+#     left the drop aimed at 'holler'. Seen in a -WhatIf banner announcing
+#     exactly that.
+#   - The Go suite run with HOLLER_TEST_DATABASE_URL pointed at the shared dev
+#     database overwrote owner@holler.test and cashier@holler.test with fixture
+#     hashes, so the till and the console then refused a CORRECT password. The
+#     401 was misread as a credential fault and then as the rate limiter.
+#
+# Both are the same shape as the -BackendPort 8099 incident in CLAUDE.md: a
+# scratch target named in one argument that the dangerous step never reads. The
+# name of the database is the one thing every one of those steps does read, so
+# it is where the rule goes.
+#
+# THE SAME RULE IS SPELLED IN GO, in backend/internal/platform/testdb, because
+# that suite has no PowerShell anywhere near it.
+# scripts/check-scratch-db-guard.mjs fails the build if the two spellings
+# disagree - the ADR-028 joint, applied to a guard instead of an enum.
+$script:ScratchDatabasePrefix = "holler_scratch_"
+
+# The database name out of a postgres URL: the last path segment, with any
+# query string removed. Returns "" when there is no name to find, and a caller
+# treats that as a refusal rather than as permission - a URL this cannot parse
+# is not a URL this can clear.
+function Get-DatabaseNameFromUrl {
+    param([string]$Url)
+    if ([string]::IsNullOrWhiteSpace($Url)) { return "" }
+    $withoutQuery = ($Url -split '\?')[0]
+    $segments = $withoutQuery.TrimEnd('/') -split '/'
+    if ($segments.Length -lt 2) { return "" }
+    return $segments[-1]
+}
+
+function Test-IsScratchDatabaseName {
+    param([string]$Name)
+    if ([string]::IsNullOrWhiteSpace($Name)) { return $false }
+    return $Name.StartsWith($script:ScratchDatabasePrefix, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+# For a destructive or schema-writing run under an agent shell. A human shell
+# is unaffected: the operator's own demo reset targets 'holler' and must.
+function Assert-ScratchDatabaseTarget {
+    param([string]$ScriptName, [string]$DatabaseName, [string]$Where)
+    if (-not (Test-IsAgentShell)) { return }
+    if (Test-IsScratchDatabaseName -Name $DatabaseName) { return }
+    $shown = if ([string]::IsNullOrWhiteSpace($DatabaseName)) { "<unparseable>" } else { $DatabaseName }
+    Deny-AgentRun -ScriptName $ScriptName `
+        -Problem "$Where names database '$shown', which is not a scratch database." `
+        -WhatToDo "Name a database starting '$script:ScratchDatabasePrefix' (create and drop it yourself), or ask the operator to run this."
+}
+
 # For scripts whose only purpose is starting the operator's live stack.
 function Assert-NotAgentShell {
     param([string]$ScriptName, [string]$Ports)

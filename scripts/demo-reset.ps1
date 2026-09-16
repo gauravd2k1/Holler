@@ -78,24 +78,26 @@ param(
     # <project>-<service>-<index>; the project name is this repo directory's
     # name lowercased ("holler"), the same value scripts\dev-bootstrap.ps1
     # already hardcodes for its device-lookup psql call.
-    # RUN WITH THESE DEFAULTS. -DatabaseUrl and -PostgresDb are separate
-    # parameters that can name DIFFERENT databases, and nothing reconciles
-    # them: the seeders below read -DatabaseUrl, while the destructive
-    # DROP SCHEMA reads -PostgresDb. So passing a scratch -DatabaseUrl on its
-    # own leaves the drop aimed at 'holler' -- observed in a -WhatIf banner
-    # announcing it would drop the 'holler' schema while every seeder argument
-    # pointed at a scratch database.
+    # -PostgresDb IS DERIVED FROM -DatabaseUrl and is not an independent
+    # target any more (fixed 2026-09-16).
     #
-    # Same family as the -BackendPort 8099 incident in CLAUDE.md: an argument
-    # that names a scratch target which the destructive step never reads.
-    # Filed in docs/backlog.md and NOT fixed here on purpose -- this script is
-    # on the six-step demo path and a change to its drop logic is not a
-    # pre-demo edit. Until then the safe rule is: change both, or change
-    # neither.
+    # They used to be separate parameters naming possibly DIFFERENT databases
+    # with nothing reconciling them: the seeders read -DatabaseUrl while the
+    # destructive DROP SCHEMA read -PostgresDb, so a scratch -DatabaseUrl on
+    # its own left the drop aimed at 'holler'. That was seen in a -WhatIf
+    # banner announcing it would drop the 'holler' schema while every seeder
+    # argument pointed at a scratch database, and it is the same shape as the
+    # -BackendPort 8099 incident in CLAUDE.md: a scratch target named in an
+    # argument the dangerous step never reads.
+    #
+    # -PostgresDb remains accepted so an existing invocation does not break,
+    # but it must AGREE with the URL. A disagreement is refused outright rather
+    # than resolved in either direction: whichever one this script picked would
+    # be right half the time and destructive the other half.
     [string]$DatabaseUrl = "postgres://holler:holler_dev@localhost:5432/holler?sslmode=disable",
     [string]$PostgresContainer = "holler-postgres-1",
     [string]$PostgresUser = "holler",
-    [string]$PostgresDb = "holler",
+    [string]$PostgresDb = "",
 
     # DEVELOPMENT signing key, matching dev-up.ps1's default. Backend config
     # has no default by design (a missing secret is a startup error there);
@@ -126,6 +128,27 @@ $repoRoot = if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
 } else {
     $RepoRoot
 }
+
+# ONE TARGET, DERIVED FROM THE URL THE SEEDERS ACTUALLY USE. Done before the
+# destructive banner, so the banner names the database that will really be
+# dropped rather than a parameter nobody reconciled.
+$urlDatabase = Get-DatabaseNameFromUrl -Url $DatabaseUrl
+if ([string]::IsNullOrWhiteSpace($urlDatabase)) {
+    Write-Host "REFUSED: -DatabaseUrl '$DatabaseUrl' has no database name in it." -ForegroundColor Red
+    Write-Host "  NOTHING WAS CHANGED." -ForegroundColor Red
+    exit 1
+}
+if ($PSBoundParameters.ContainsKey('PostgresDb') -and $PostgresDb -ne $urlDatabase) {
+    Write-Host "REFUSED: -PostgresDb '$PostgresDb' names a different database from -DatabaseUrl ('$urlDatabase')." -ForegroundColor Red
+    Write-Host "  The drop would hit one and the seeders the other. NOTHING WAS CHANGED." -ForegroundColor Red
+    Write-Host "  Pass -DatabaseUrl alone; -PostgresDb is derived from it." -ForegroundColor Yellow
+    exit 1
+}
+$PostgresDb = $urlDatabase
+
+Assert-ScratchDatabaseTarget -ScriptName "demo-reset.ps1" `
+    -DatabaseName $PostgresDb `
+    -Where "-DatabaseUrl"
 
 Assert-AgentSafePaths -ScriptName "demo-reset.ps1" `
     -BoundParameters $PSBoundParameters `
