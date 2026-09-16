@@ -358,6 +358,20 @@ fn grn_sequence_next_value(db: &Db) -> i64 {
         .expect("read grn_sequence")
 }
 
+/// A PROBE, added 2026-09-16 to settle what the counter reads BEFORE any
+/// crash: the dev seed issues a real goods receipt through
+/// `Db::record_goods_receipt`, which advances `grn_sequence`.
+#[test]
+fn the_seed_itself_advances_the_grn_counter_before_any_crash() {
+    let (_tmp, dir) = seeded_dir();
+    let db = open(&dir);
+    let seeded = grn_sequence_next_value(&db);
+    assert_eq!(
+        seeded, 1,
+        "the seeded receipt advances the counter; a test asserting 0 after a          crash is asserting that the SEED did not happen"
+    );
+}
+
 /// THE CRITERION. The process dies inside the receipt transaction, after the
 /// `goods_receipt_note` and its gaps are written and before a single
 /// `PURCHASE` entry is posted.
