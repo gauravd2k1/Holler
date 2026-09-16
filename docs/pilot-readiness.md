@@ -422,6 +422,50 @@ to suspect if it is.
 | **`dev-up.ps1` runs the bootstrap before starting the backend, so a cold stack comes up with sync disabled** | NO | S | Also triggers before the next sync-dependent acceptance run |
 | **A wall-clock assertion in `stale_connection.rs:160` fails under load** | NO | S | A flaky suite is how a real regression gets waved through |
 
+
+### B7. Nothing migrates the production cloud database except the API starting up · **Blocks pilot: NO, but it is the next thing to decide** · **Size: M**
+
+**Established 2026-09-16 while making the scratch-database rule structural.**
+The question asked was "what migrates the real cloud database at pilot, and is
+it exempt from the new rule by a separate path rather than a bypass flag?" The
+answer to the second half is yes, cleanly. The answer to the first half is the
+item.
+
+**The only thing that applies `packages/contracts/postgres/*.sql` to a real
+database is the API process starting up** — `backend/cmd/api/main.go:54` calls
+`postgres.Migrate(ctx, pool, cfg.ContractsDir)` against `cfg.DatabaseURL`,
+ledgered in `schema_migration` under a transaction-scoped advisory lock. There
+is no migration binary, no reviewed migration step, no dry run, and no down
+path. `cmd/devseed` calls the same function for dev seeding; nothing else does.
+
+**It is exempt by construction, not by a flag, and that is now pinned.**
+`testdb.RequireDatabaseURL` — which carries the scratch rule — is reachable
+only from `_test.go` files; `cmd/api` does not import `testdb` in any non-test
+file, and `scripts/check-scratch-db-guard.mjs` fails the build if it ever does.
+The PowerShell half of the rule lives in `scripts/agent-guard.ps1` and is
+dot-sourced by scripts, so no Go binary can reach it either. **There is no
+bypass flag anywhere, and none should be added**: the moment the production
+path needs to *opt out* of the guard, the guard is one boolean away from being
+off everywhere.
+
+**What to decide before an outlet's cloud is real.** Migrate-on-startup means:
+
+- **Any API process that starts can migrate production**, including an older
+  binary rolled back after a bad deploy, which will happily apply whatever it
+  carries. Ordering is by filename and the ledger is per-file, so a rollback is
+  not modelled at all.
+- **No backup is taken and none is possible to require from inside that call.**
+  The advisory lock stops two processes racing; it does nothing about a
+  migration that is simply wrong.
+- **A failed migration is `log.Fatalf`** — the API does not start. That is the
+  right behaviour and it is worth keeping; the gap is that nobody finds out
+  until the process is already down.
+
+The likely shape is a separate migrate command run deliberately, with the API
+refusing to start against a database whose ledger it does not recognise rather
+than migrating it. **That is a decision, not a cleanup**, which is why it is
+filed here and not fixed.
+
 ---
 
 ## C. The Phase B carries

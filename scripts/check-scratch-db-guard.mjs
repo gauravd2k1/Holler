@@ -71,6 +71,28 @@ if (!/Assert-ScratchDatabaseTarget/.test(reset)) {
   failures.push("scripts/demo-reset.ps1 does not call Assert-ScratchDatabaseTarget");
 }
 
+// THE PRODUCTION MIGRATION PATH MUST STAY EXEMPT BY CONSTRUCTION, NEVER BY A
+// FLAG. The only thing that applies the contract migrations to a real database
+// is the API starting up (backend/cmd/api/main.go -> postgres.Migrate), and it
+// is clear of this rule because it cannot reach the guard at all: testdb is
+// imported only from _test.go files. If a non-test file in cmd/api ever
+// imports it, the production path is one boolean away from being able to turn
+// the guard off everywhere, which is the failure this whole rule exists to
+// prevent. Filed as pilot-readiness B7.
+for (const file of ["backend/cmd/api/main.go", "backend/cmd/api/router.go"]) {
+  let source;
+  try {
+    source = read(file);
+  } catch {
+    continue; // a file that does not exist cannot import anything
+  }
+  if (/platform\/testdb/.test(source)) {
+    failures.push(
+      `${file} imports platform/testdb. The production migration path must be exempt from the scratch rule BY CONSTRUCTION — because it cannot reach the guard — never by a bypass flag.`,
+    );
+  }
+}
+
 // CI must not point the suite at a non-scratch database.
 const ci = read(".github/workflows/ci.yml");
 for (const m of ci.matchAll(/HOLLER_TEST_DATABASE_URL:\s*(\S+)/g)) {
