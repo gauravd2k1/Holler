@@ -1577,9 +1577,13 @@ database, and the fail-fast CI job shape that hid four pushes of verdicts.
 counter reset; `formatter_never_repeats_past_the_old_wrap_point` drives past the
 old collision point (25975).
 
-**Contracts are FROZEN at v0.8.2**, cross-checked against
-`packages/contracts/package.json` by `scripts/check-milestone-marker.mjs` — which
-caught this very line claiming 0.6.2 after the bump, and failed CI for it.
+**Contracts are FROZEN at v0.8.3** (ADR-028 — at-least-once order replay, and
+the line-amendment set declared once), cross-checked against
+`packages/contracts/package.json` by `scripts/check-milestone-marker.mjs` —
+which caught this very line claiming 0.6.2 after one bump, and 0.8.2 after the
+next. **That second catch sat in a red CI for eleven commits** before anyone
+read it, which is the point of the CI rule now in CLAUDE.md: a guard that fires
+into a wall of pre-existing red is a guard nobody hears.
 
 ---
 

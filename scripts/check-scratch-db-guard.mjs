@@ -104,6 +104,41 @@ for (const m of ci.matchAll(/HOLLER_TEST_DATABASE_URL:\s*(\S+)/g)) {
   }
 }
 
+// EVERY CI STEP THAT SEEDS OR MIGRATES NAMES ITS DATABASE.
+//
+// The rule above stops a run naming the WRONG database. This stops one naming
+// NONE, which is the same hazard by omission: `cmd/devseed` used to fall back
+// to ...localhost:5432/holler, so CI's migrate step went on connecting to a
+// database that had just been renamed out from under it, and the backend job
+// failed for eleven commits while that failure sat in a wall of red. D13's
+// shape again -- a target named in one place that the step doing the work
+// never reads.
+//
+// devseed now refuses without DATABASE_URL, so a workflow step that runs it
+// without setting one fails at the step. This check moves that discovery from
+// a CI run to a push.
+const ciSteps = read(".github/workflows/ci.yml").split(/\n      - name: /).slice(1);
+for (const step of ciSteps) {
+  // COMMENTS DO NOT RUN. The first version of this matched
+  // `cargo run --bin devseed` inside a comment and reported two innocent
+  // `cargo check` / `cargo build` steps. A check that reads prose as behaviour
+  // produces exactly the noise that teaches people to ignore it.
+  const executable = step
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*#/.test(line))
+    .join("\n");
+  const runsSeeder = /go run \.\/cmd\/devseed|cargo run [^\n]*--bin devseed/.test(executable);
+  if (!runsSeeder) continue;
+  // --emit-json writes a file and opens no database.
+  if (/--emit-json/.test(executable)) continue;
+  const stepName = step.split("\n")[0].trim();
+  if (!/DATABASE_URL:/.test(step)) {
+    failures.push(
+      `.github/workflows/ci.yml step "${stepName}" runs the seeder without setting DATABASE_URL. devseed has no default any more -- the one it had named the live \`holler\` database -- so this step names no database and refuses.`,
+    );
+  }
+}
+
 if (failures.length > 0) {
   console.error("scratch-database guard check FAILED:\n");
   for (const f of failures) console.error(`  - ${f}`);

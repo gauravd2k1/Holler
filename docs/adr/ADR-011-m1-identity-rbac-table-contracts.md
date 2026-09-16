@@ -196,3 +196,33 @@ The generic transition routes carry no payload, so there was no way to replay a 
 ### Sequencing
 
 `OrderConfirmed` sits in the drift check's `NOT_YET_EMITTED` with a stated reason until the edge emits it, so CI stays green across the gap; that entry is deleted by the commit that starts emitting it. The work spans five parts — contracts, `edge/database` (transition, stamp and event in one transaction), the Tauri command, the POS wiring, and the backend ingest route — because a timestamp the edge stamps but the cloud cannot receive would be no better than the column that nothing stamped.
+
+
+---
+
+## Addendum, 2026-09-16 â€” the cloud held none of these rows, and the seed said so on purpose (D10, D11)
+
+**This ADR was right and the seeding was not.** `restaurant_table` (this ADR),
+`station`, `menu_item_station`, `printer`, `station_printer`, `printer_role`
+(ADR-014) and `device` (ADR-017) are cloud-owned config. `GET /sync/config`
+ships every one of them, and the cloud held **zero rows of all seven**.
+
+`seed/README.md` listed them under **"Edge only"** â€” a decision, not an
+oversight, and one that contradicted the authority rule these ADRs set. The
+live stack measured it: `restaurant_table=0, station=0, printer=0`, and four
+orders whose `device_id` resolved to nothing (scenario board S-SYNC-11,
+S-SYNC-13). An outlet ran on a floor plan, a kitchen layout and a device
+identity that the cloud could not reproduce, and because config apply
+**upserts without pruning**, a pull could neither add them nor remove them.
+
+**Corrected in `26392a9` and `e640f3d`:** all seven are in the shared
+catalogue, described once and read by both seeders, and `seed/README.md` is
+fixed. `device` is seeded **UNENROLLED with no `device_credential`** â€”
+`postgres/0008` explicitly allows a row registered ahead of install, and an
+unenrolled row makes attribution resolvable while granting nothing.
+
+**What this addendum does NOT settle**, stated so it is not read as settled:
+deletion. Nothing prunes a config row that disappears from the bundle, so a
+station or a printer withdrawn in the cloud stays at every till that ever saw
+it â€” the same gap already filed for `menu_item` in `docs/backlog.md`, now with
+six more tables behind it. Trigger: before the first pilot.

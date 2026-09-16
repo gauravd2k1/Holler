@@ -95,6 +95,13 @@ jobs:
       # plus development-only fixture rows that are harmless alongside the
       # tests' own fixtures (fresh UUIDs, ON CONFLICT upserts).
       - name: migrate
+        # DATABASE_URL IS SET EXPLICITLY. devseed has no default any more --
+        # the one it had named the live `holler` database -- and this step
+        # broke silently when the workflow's database was renamed to
+        # holler_scratch_ci while nothing told devseed. A step that seeds or
+        # migrates names its database or does not run.
+        env:
+          DATABASE_URL: postgres://holler:holler_dev@localhost:5432/holler_scratch_ci?sslmode=disable
         run: cd backend && go run ./cmd/devseed
       - name: test
         run: cd backend && node ../scripts/assert-tests-ran.mjs go -- go test -count=1 ./...
