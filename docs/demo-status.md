@@ -1758,3 +1758,69 @@ stored. **Counts:** POS 259 tests executed via `assert-tests-ran.mjs`,
 nor the Tauri release window has been looked at since these two edits, so per
 CLAUDE.md's four-runtimes rule this is not yet verified on the screen the
 client sees.
+
+
+## THE OPEN-DEFECT REGISTER FOR THE DEMO SESSIONS — compiled 2026-09-16
+
+**One row per defect found in any demo-build session, with a commit or the word
+OPEN.** Compiled from the scenario board (`docs/demo-scenarios.xlsx`: 61 PASS,
+11 FAIL, 2 NOT TESTABLE), this file's own findings, `docs/RESUME.md`'s open
+items and `docs/backlog.md`. **Where the board and the repository disagree, the
+repository wins and the row says so** — three board FAILs are already fixed and
+are recorded here as fixed rather than left to be re-found.
+
+Severity is against the SIX-STEP DEMO PATH, not against a pilot.
+
+### Fixed
+
+| # | Defect | Where it was found | Commit |
+|---|---|---|---|
+| D1 | **Order transitions rejected 409 forever, or accepted and silently not applied.** The envelope's version is read from the live aggregate row at send time, so it cannot be sequenced. Five rows stranded, three orders left DRAFT in the cloud after the outlet had sent and billed them | Till screenshot, 2026-09-16 07:06 IST, confirmed against live Postgres | `1c0de90`, rule moved into contracts by `df977f8` |
+| D2 | **The cloud kept its own DRAFT-only line-amendment rule** while the edge allows a line through PREPARING (`#132-A`). The second Send on a table was a permanent 409 and a wedged queue. Masked by D1, which kept every cloud order in DRAFT | Escalated from D1's fix | `df977f8` (contracts 0.8.3, ADR-028) |
+| D3 | **`Order ##A2`** — `display_number` is minted with its `#` and two POS surfaces added a second | Same screenshot | `1c0de90` |
+| D4 | **`seed/demo-outlet.json` dirty in the tree**, hand-edited rather than re-emitted: `address_line1` read "Baner" while `outlet_source_sha256` still carried the committed "Camp" file's hash. `edge/database`'s `seed_offline_sale` test failed on it | `cargo test` in `edge/database` | `a0c8cc7` (re-emitted; **if Baner is wanted, `seed/outlet.toml` says so and the catalogue is re-emitted from it**) |
+| D5 | **A fifth, uncompared copy of the amendable set** in `captain.rs`. A set narrower than the append route's hands the phone an order id the route then rejects | Found while answering the outbox question | `a0c8cc7` (now the 5th surface in the drift check) |
+| D6 | S-ADM-08 **Orders screen NOT BUILT** | Scenario board | **Already fixed** — `apps/admin/src/components/OrdersScreen.tsx`, first tab in `App.tsx`. Board row is stale |
+| D7 | S-CAP-06 / S-SYNC-08 **12 of 43 items carry no variant**, so a replayed line violated the variant FK | Scenario board | **Already fixed in the seed** — `seed/demo-outlet.json` now holds 281 items, **0 without a variant**. The live cloud database still holds the old rows until a `-Force` reset runs (D18) |
+
+### Open — on the six-step path
+
+| # | Defect | Severity | State |
+|---|---|---|---|
+| D8 | **A7: every aggregate except `order` is stranded at the outlet.** `edge/sync/src/route.rs` maps only `order` and `table_session`, so `kot`, `KOTStatusChanged`, `OrderReady`, `invoice`, `payment`, `stock_count` and `cash_shift` rows are SKIPPED — **not sent, not published, not charged an attempt, and NOT recorded as blocked**, so they never reach the till's banner either. Proven by draining a full order (`a0c8cc7`); 78 rows measured live on 2026-09-07 | **Demo step 5** shows stock variance and step 4's story is order-only. The order stream itself is unaffected | **OPEN** — carried out of M6 Phase A, excluded from demo scope by the kickoff |
+| D9 | **S-ADM-09: no stock or variance screen in the admin console.** No inventory route in `apps/admin/src/lib/api.ts` either, and D8 means the rows would not be in the cloud to show | **Demo step 5 has no surface** | **OPEN** |
+| D10 | **S-SYNC-11: the cloud holds none of the config it is authoritative for** — `restaurant_table`, `station`, `printer` are all 0 rows. They exist only in the edge dev seed, and config apply **upserts without pruning**, so a pull can neither add nor remove them. The cloud seeder writes none of the three | Nothing on the six steps reads them cloud-side, but "the cloud owns config" is a claim the demo makes out loud | **OPEN** |
+| D11 | **S-SYNC-13: the till's own device has no cloud `device` row.** `devseed` mints it straight into edge SQLite and nothing enrols it, so every till-authored order replays unattributable — 4 orders did not resolve | The admin Orders screen cannot name the device that took an order | **OPEN** |
+| D12 | **S-SYNC-10: orders in the cloud carrying a total and no lines** — 21 of them. This is D1+D2+D7 seen from the cloud side; the order row and its line rows are separate outbox entries | **The back office shows an order for ₹300 with nothing in it** | **Cause fixed (D1/D2/D7); the stale rows remain until a reset.** Needs re-observation after the operator's `-Force` reset |
+| D13 | **`demo-reset.ps1` aims its destructive `DROP SCHEMA` at `-PostgresDb` while every seeder argument reads `-DatabaseUrl`.** A scratch `-DatabaseUrl` alone leaves the drop pointed at `holler` | **Can destroy the operator's database during a rehearsal.** Same family as the `-BackendPort 8099` incident in CLAUDE.md | **OPEN** — deliberately not touched two days before the demo; safe to fix now that the demo moved |
+| D14 | **The till shows a stale kitchen status** until its Kitchen panel is remounted. Nothing pushes a KOT status from the LAN hub into the till's UI and `useKotsForOrderQuery` has no `refetchInterval` | Step 1 ends on the KDS bump; the till is where a client may look next | **OPEN** — `docs/backlog.md` row 145; run-list step 4c decides whether it is this or a cache-invalidation defect |
+
+### Open — off the six-step path
+
+| # | Defect | State |
+|---|---|---|
+| D15 | **S-CAP-20: a device paired BEFORE the credential fix stays permanently broken.** `ListEdgeCredentials` returns only credentials whose own `config_version` exceeds the edge cursor, so an already-pulled credential is never re-sent and the new insert loop never sees it. No backfill | **OPEN** — operator re-enrols; a backfill is the real fix |
+| D16 | **S-BE-09: a rate-limited login is indistinguishable from a wrong password** and recovery is only by waiting. ADR-012 chose the identical body deliberately, so this is a UX gap, not a security defect. The demo budget was widened; the admin console's copy warns | **OPEN by design, mitigated** |
+| D17 | **S-API-02: `PATCH /menu/items/{itemId}` answers 400 `invalid_input` for an identity field** where contracts 0.7.0 describes 422. The load-bearing half — never a silent ignore — is correct | **OPEN, low** |
+| D18 | **The cloud seeder cannot renumber ids in place** — a seed change that shifts `menu_variant_id(seq)` hits `idx_menu_item_variant_one_default`, because the seeder upserts without pruning. Safe only through `demo-reset.ps1 -Force` | **OPEN, understood** — it fails loudly, which is why it is not a blocker |
+| D19 | **Running the Go suite against the shared dev database overwrites `owner@holler.test`/`cashier@holler.test` with fixture hashes**, so the till and console 401 for a correct password afterwards | **OPEN, operational trap.** Recorded so the 401 is not misread again |
+| D20 | **Appended lines record no author.** Attribution is captured at order-create and send only, so a second round sent by a different waiter mints a ticket naming that waiter while the lines carry nobody | **OPEN** — needs a column, so a contract change; not demo scope |
+| D21 | **The sync banner is sized per outbox row, not per order** — one order with four queued events reads as four problems, and the banner took about 28% of the till window | **OPEN** — `docs/backlog.md`, cosmetic |
+| D22 | **A6: no exit path seals the edge database.** Neither a window close nor Ctrl+C fires `RunEvent::Exit`, so a plaintext `edge.db` is left beside the `.enc` | **OPEN** — pilot blocker, excluded from demo scope |
+| D23 | **The POS icon is a 16×16 placeholder** from the original scaffold | **OPEN** — needs artwork, which no builder can produce |
+| D24 | **`make` is not on PATH in the agent's shell**, so `make check-seams` — which CLAUDE.md instructs agents to run — fails as "command not found" rather than running. The three `cargo check` lines behind it work | **OPEN, tooling.** Ran the three directly instead; all clean |
+
+### Not defects, recorded so they are not re-found
+
+- **Nothing wedges past send-to-kitchen.** `MountIngest` stops at
+  send-to-kitchen, but **the edge never puts an order in PREPARING, SERVED,
+  BILLED, PAID or CLOSED** — the only non-test `UPDATE "order" SET status`
+  statements are CONFIRMED, SENT_TO_KITCHEN and READY, PREPARING is a KOT
+  status, and no event type exists for the rest. Nothing is emitted, so nothing
+  can be refused. The one order-level event that IS emitted and cannot be sent,
+  `OrderReady`, is D8's silent-skip path, not a 404/405. Proven by drain, not by
+  reading the router.
+- **`make check-seams` is clean** on all three manifests after the ADR-028 work.
+- **S-CUI-06 and S-SYNC-06 are NOT TESTABLE**, not failures: no item in the
+  catalogue is snoozed, and the edge database is encrypted at rest with no read
+  surface from outside the POS process.
