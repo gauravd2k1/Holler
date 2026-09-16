@@ -423,6 +423,17 @@ fn build_template(root: &Path) -> PathBuf {
         .env("HOLLER_EDGE_DATA_DIR", &template_dir)
         .env("HOLLER_DB_KEY_HEX", FIXED_KEY_HEX)
         .env("HOLLER_SEED_PASSWORD_HASH", DUMMY_PASSWORD_HASH)
+        // THE COMMITTED IDENTITY, NEVER THE INSTALLATION'S. `seed/outlet.toml`
+        // is gitignored and per-installation, so it does not exist on a clean
+        // checkout: this job had been failing in CI with "outlet identity file
+        // ... could not be read (os error 2)" while nobody looked. Third
+        // occurrence of that class -- see `edge/database/tests/` for the other
+        // two and `scripts/check-tests-need-no-gitignored-files.mjs` for the
+        // guard.
+        .env(
+            "HOLLER_OUTLET_FILE",
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../seed/outlet.example.toml"),
+        )
         .status()
         .expect("spawn devseed");
     assert!(status.success(), "devseed failed with status {status:?}");

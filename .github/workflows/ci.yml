@@ -283,12 +283,21 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: edge/database -> target
+      # EVERY RUST MANIFEST, not just edge/*. apps/pos/src-tauri and the two
+      # tests/ harnesses were formatted by nothing and checked by nothing, so
+      # they could drift indefinitely without failing a thing — a rule with
+      # nothing enforcing it, which is the shape this repository keeps finding.
+      # All seven were swept to zero diffs in 2a6c41d before this step was
+      # widened, so adding them costs nothing today and stops the next sweep.
       - name: fmt
         run: |
           cd edge/database && cargo fmt --check
           cd ../sync && cargo fmt --check
           cd ../printer && cargo fmt --check
           cd ../device && cargo fmt --check
+          cd ../../apps/pos/src-tauri && cargo fmt --check
+          cd ../../../tests/e2e-scenario/harness && cargo fmt --check
+          cd ../../integration/kds-lan-bridge && cargo fmt --check
       # `--all-targets` does NOT mean all targets: a target with
       # `required-features` is invisible without the feature, so the criterion-6
       # test would compile for the first time in the `cloud-replay` job, where a

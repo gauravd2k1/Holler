@@ -79,7 +79,17 @@ for (const file of files) {
   // HOLLER_OUTLET_FILE and must not be nagged into setting a variable it does
   // not read — a check that demands a meaningless line teaches people to add
   // meaningless lines.
-  if (/CARGO_BIN_EXE_devseed/.test(source)) {
+  //
+  // TWO WAYS TO RUN IT, and the first version knew only one. The e2e harness
+  // spawns `cargo run --bin devseed` rather than using CARGO_BIN_EXE, so it
+  // sailed through this check while failing in CI for exactly the reason the
+  // check exists. Proved by removing its identity line and watching this pass.
+  // A check that covers one of two call shapes is a check that reports on the
+  // shape its author happened to have in mind.
+  const runsRustDevseed =
+    /CARGO_BIN_EXE_devseed/.test(source) ||
+    /--bin[\s\S]{0,40}devseed/.test(source);
+  if (runsRustDevseed) {
     // ONLY THE MECHANISMS DEVSEED ACTUALLY READS (outlet_identity::resolve_path):
     // the env var or the flag. Merely MENTIONING outlet.example.toml is not
     // enough and used to be accepted — deleting the `.env(HOLLER_OUTLET_FILE)`
