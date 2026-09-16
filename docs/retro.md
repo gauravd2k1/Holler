@@ -1871,3 +1871,29 @@ Starting an app does not rebuild it, and `apps\pos\dist` is embedded in the Taur
 2. **`StartTime` is not `BuiltAt`.** When reporting which version is running, report the file's `LastWriteTime`, never the process's start time. `Get-Process holler-pos | Select-Object StartTime, @{n='BuiltAt';e={(Get-Item $_.Path).LastWriteTime}}` is in the walkthrough and the demo script for exactly this.
 3. **Build in the script that starts the stack, not in the operator's memory.** `demo-up.ps1` now rebuilds and re-verifies every run, and `-NoBuild` skips the compiling while still running the verification, so the one path that does less still cannot start a stale binary.
 4. **The absence of a bad string is not evidence of a good build.** The obvious catch for this class — refuse if the binary contains `localhost:5173` — was measured against a known-good production binary and found present there too, because a correct build embeds the whole `tauri.conf.json`. Positive evidence that THIS frontend is inside, always; never the absence of a dev marker.
+
+
+---
+
+## 2026-09-16 (fourth entry) — never looked at CI once in a session; local green is not green
+
+**Severity:** medium. Twelve commits pushed, each reported with named passing checks, onto a CI that had **zero successful runs in its last forty**. The wall predated the session and nothing in the session noticed it.
+
+### What happened
+
+Every commit ran the checks its own change touched, and each was reported honestly and specifically. **No report claimed "all checks pass" without having run them.** And CI was red throughout, for reasons none of those local runs could see. Asked directly, the honest answer was worse than the question assumed: red in that window, red before it, red now.
+
+One failure was `crash_durability` — four tests that cannot run on a clean checkout because they default to `seed/outlet.toml`, which is **gitignored**. They had failed with `outlet identity file ... could not be read (os error 2)` on every CI run. Fixing that one line revealed a **real defect underneath**: an aborted receipt leaves the GRN counter advanced, so an uncommitted receipt consumes a GRN number. That was unobservable for as long as the test could not start.
+
+### Why it is worth an entry
+
+**A test that cannot run is not a test that passes, and a CI nobody reads is not a gate.** Both halves were already written down here — "a suite that runs nothing must be as loud as a suite that fails", with three scripts enforcing it — and both were defeated by not looking at the place the result appears.
+
+The local-green habit is the seductive part: every individual claim was true. What was missing was the one command that says whether any of it holds on a checkout.
+
+### Rules
+
+1. **Every report opens with the CI status of HEAD**, one line from `gh run list --limit 1`. Now in CLAUDE.md.
+2. **A handoff may not claim a clean tree while CI is red.** "Tree clean and pushed" describes the working directory and says nothing about whether the push builds.
+3. **A test may only depend on files the repository contains.** Third occurrence of the class — `.env.dev`, `seed_offline_sale`, `crash_durability` — so it is now `scripts/check-tests-need-no-gitignored-files.mjs` rather than a third fix. A file that exists on the author's machine and nowhere else is green locally, red for everyone, and invisible on a red CI.
+4. **When a test starts running for the first time, read what it says before believing the fix.** The value of fixing `crash_durability` was not a green test; it was a durability defect that had been impossible to see.

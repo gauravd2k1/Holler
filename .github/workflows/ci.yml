@@ -226,6 +226,16 @@ jobs:
       # RED on a drifted name and on a replanted table.
       - name: the till and the edge agree on the kitchen event and its state machine
         run: node scripts/check-kitchen-event-drift.mjs
+      # A TEST MAY ONLY DEPEND ON FILES THE REPOSITORY CONTAINS. Third
+      # occurrence of one class: a "scratch" run that overwrote the operator's
+      # real .env.dev, seed_offline_sale defaulting to the gitignored
+      # seed/outlet.toml, and crash_durability doing the same -- the last of
+      # which had been failing in CI on every clean checkout while nobody
+      # looked. The shape is a file that exists on the author's machine and
+      # nowhere else: green locally, red for everyone, invisible on a CI no
+      # one reads.
+      - name: no test depends on a gitignored path
+        run: node scripts/check-tests-need-no-gitignored-files.mjs
       # The Go guard in backend/cmd/api/syncconfig_guard_test.go proves the
       # cloud SENDS a config column. It cannot prove an outlet STORES it, and
       # at 0.6.0 four procurement families passed that guard, shipped in every

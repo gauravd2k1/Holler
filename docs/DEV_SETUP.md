@@ -408,3 +408,21 @@ Milestone 2 builds on, not for this acceptance run.
 | KDS never receives a snapshot even though it connected | `VITE_KDS_LAN_URL`'s host is wrong for this network (common on a laptop with a VPN/Docker virtual adapter — `dev-bootstrap.ps1`'s IP guess can pick the wrong one). Check `ipconfig` on the POS machine and fix the host in `apps\kds\.env.dev`. |
 | `kds-lan-server: KDS LAN server failed to bind ... address in use` (or the POS logs the same) | Something else is already bound to `:9310` — most likely the standalone `kds-lan-server` bin and `run-dev.ps1`'s embedded server both running at once. Stop one; see "the one rule" in the Milestone 2 section. |
 | Send-to-kitchen does not reach the KDS, but the KDS is connected and showed a snapshot | The order's item is not routed to a station (`menu_item_station` has no row for it) — `send_order_to_kitchen` then produces zero KOTs, so there is nothing to notify. The seeded "Masala Chai"/"Veg Thali" items are both routed to `MAIN_KITCHEN`; a custom item needs the same. |
+
+## Install the pre-push hook (one command, do it once)
+
+```powershell
+git config core.hooksPath .githooks
+```
+
+`.githooks/pre-push` runs the seven fast drift checks before a push leaves the
+machine. They take seconds and catch a whole class — a seed file that no longer
+matches its emitter, a state machine declared twice, a test reaching for a
+gitignored path.
+
+**It is not a substitute for CI, and it says so when it passes.** It runs no
+compiler and no test suite: a hook that takes four minutes is a hook people
+bypass, and `--no-verify` once becomes `--no-verify` always. **Read CI after
+every push** — `gh run list --limit 1` — because CI after the push is a
+notification, not a gate, and a wall of pre-existing red hides a new failure
+completely. That is not hypothetical: see `docs/retro.md`, 2026-09-16.

@@ -1,0 +1,35 @@
+#!/bin/sh
+# THE CHECKS THAT ARE CHEAP AND CATCH A WHOLE CLASS, RUN BEFORE THE PUSH.
+#
+# WHY A HOOK AND NOT "REMEMBER TO RUN THEM". On 2026-09-16 a session pushed
+# twelve commits, reported named passing checks for each, and never looked at
+# CI -- which was red on every run in its visible history. One of those
+# commits also left `check-seed-drift` red for six commits, because it was the
+# one check the session happened not to run.
+#
+# CI AFTER THE PUSH IS A NOTIFICATION, NOT A GATE. It reports minutes later,
+# into a place that has to be opened, and a wall of pre-existing red hides a
+# new failure completely. These run in seconds, before the push exists.
+#
+# DELIBERATELY ONLY THE FAST STATIC CHECKS. No cargo, no go test, no vitest:
+# a hook that takes four minutes is a hook people bypass, and `--no-verify`
+# once becomes `--no-verify` always. Compilation and tests stay CI's job.
+#
+# To install: git config core.hooksPath .githooks
+# To bypass for one push, knowing what it means: git push --no-verify
+
+set -e
+
+echo "pre-push: running the drift checks..."
+
+node scripts/check-seed-drift.mjs
+node scripts/check-order-amendable-drift.mjs
+node scripts/check-kitchen-event-drift.mjs
+node scripts/check-scratch-db-guard.mjs
+node scripts/check-tests-need-no-gitignored-files.mjs
+node scripts/check-order-source-drift.mjs
+node scripts/check-event-type-drift.mjs
+
+echo "pre-push: drift checks OK."
+echo "pre-push: REMINDER -- these are static checks only. They say nothing about"
+echo "          whether the build or the tests pass. Read CI: gh run list --limit 1"

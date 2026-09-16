@@ -59,10 +59,33 @@ fn open(dir: &Path) -> Db {
 /// an outlet would have — rather than a fixture shaped to suit the test.
 /// Criterion 1 makes that a requirement for the offline sale; there is no
 /// reason for the crash test to be seeded any differently.
+/// `seed/outlet.example.toml` — the committed, reproducible outlet identity.
+///
+/// Every test that runs `devseed` must name this: the real `seed/outlet.toml`
+/// is gitignored and per-installation, `seed/demo-outlet.json` is emitted from
+/// the example, and devseed refuses a catalogue emitted from a different
+/// identity — correctly.
+fn committed_outlet_identity() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("seed")
+        .join("outlet.example.toml")
+}
+
 fn devseed(dir: &Path) {
     let out = Command::new(env!("CARGO_BIN_EXE_devseed"))
         .env("HOLLER_EDGE_DATA_DIR", dir)
         .env("HOLLER_DB_KEY_HEX", KEY_HEX)
+        // THE COMMITTED IDENTITY, NEVER THE INSTALLATION'S.
+        //
+        // `seed/outlet.toml` is GITIGNORED and per-installation, so it does
+        // not exist on a clean checkout: these four tests had been failing in
+        // CI with "outlet identity file ... could not be read (os error 2)",
+        // and nobody looked. A test may only depend on files the repository
+        // actually contains. See `seed_offline_sale.rs` for the same fix and
+        // `docs/retro.md` 2026-09-16 for the class.
+        .env("HOLLER_OUTLET_FILE", committed_outlet_identity())
         // Never verified here (that needs HOLLER_SEED_PASSWORD, which is what
         // devseed's own offline-login check uses); it only has to be stored.
         .env(
