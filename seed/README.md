@@ -164,9 +164,22 @@ at all** — the edge flattens permissions into `app_user.permissions_json` — 
 `po_approval_limit_paise` is Postgres-only by necessity and by design
 (contracts 0.6.0).
 
-**Edge only** (stays in `edge/database/src/bin/devseed.rs`): `device`,
-`invoice_series`, `outlet_fiscal_profile`, `discount_definition`, `app_user`
-with its cached Argon2id hashes, `sync_state`.
+**Edge only** (stays in `edge/database/src/bin/devseed.rs`): `invoice_series`,
+`outlet_fiscal_profile`, `discount_definition`, `app_user` with its cached
+Argon2id hashes, `sync_state`.
+
+**`device` MOVED INTO THE SHARED CATALOGUE ON 2026-09-16 (D11), UNENROLLED AND
+WITHOUT A CREDENTIAL.** The till minted its row straight into edge SQLite and
+nothing ever registered it with the backend, so every till-authored order
+replayed to a cloud with no row to join to: four orders on the live stack
+resolve to nothing (scenario board S-SYNC-13) and the admin Orders screen
+cannot name who took an order. `postgres/0008` says in as many words that a
+device row may exist unenrolled — "an admin registered it ahead of install; it
+simply cannot sync until it holds a credential" — and that is exactly what is
+seeded. **`enrolled_at` stays NULL and no `device_credential` is written**: an
+unenrolled row grants nothing, and the plaintext token is returned once at
+enrollment and never read back. The WAITER device is deliberately absent, being
+created by a real enrollment at `demo-up.ps1` step 7.
 
 **MOVED INTO THE SHARED CATALOGUE ON 2026-09-16 (D10):** `restaurant_table`,
 `station`, `printer`, `printer_role`, `station_printer` — and

@@ -80,6 +80,22 @@ func TestSeedCatalogueFromFile_WritesEveryTable(t *testing.T) {
 		}
 	}
 
+	// D11: the device row, seeded UNENROLLED. Both halves are asserted — the
+	// row is present AND it carries no enrollment — because a seeded
+	// enrolled_at would be a claim that a handshake happened.
+	for _, d := range sf.Devices {
+		assertRow("device",
+			`SELECT count(*) FROM device
+			 WHERE id = $1 AND outlet_id = $2 AND kind = $3 AND name = $4
+			   AND enrolled_at IS NULL AND revoked_at IS NULL`,
+			d.ID, d.OutletID, d.Kind, d.Name)
+		assertRow("device with no credential",
+			`SELECT count(*) FROM device d
+			 WHERE d.id = $1
+			   AND NOT EXISTS (SELECT 1 FROM device_credential c WHERE c.device_id = d.id)`,
+			d.ID)
+	}
+
 	for _, tbl := range sf.RestaurantTables {
 		assertRow("restaurant_table",
 			`SELECT count(*) FROM restaurant_table

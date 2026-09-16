@@ -220,6 +220,26 @@ func seedCatalogueFromFile(ctx context.Context, pool postgres.Pool, sf *seedFile
 		}
 	}
 
+	// ---- the devices this outlet runs on (D11, 2026-09-16) --------------
+	//
+	// enrolled_at IS DELIBERATELY LEFT NULL and NO device_credential is
+	// written. postgres/0008: "A device row may exist unenrolled (an admin
+	// registered it ahead of install); it simply cannot sync until it holds a
+	// credential." That is exactly this case — the cloud needs the row so a
+	// replayed order can be attributed to something, and seeding a credential
+	// would both be a lie about enrollment and put a token where the contract
+	// says one is returned once and never read back.
+	for _, d := range sf.Devices {
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO device (id, outlet_id, kind, name)
+			 VALUES ($1, $2, $3, $4)
+			 ON CONFLICT (id) DO UPDATE SET
+			   kind = EXCLUDED.kind, name = EXCLUDED.name, updated_at = now()`,
+			d.ID, d.OutletID, d.Kind, d.Name); err != nil {
+			return fmt.Errorf("seeding device %s: %w", d.Name, err)
+		}
+	}
+
 	// ---- the floor and the kitchen hardware (D10, 2026-09-16) ------------
 	//
 	// Five families the cloud is the authority for and held ZERO rows of, plus

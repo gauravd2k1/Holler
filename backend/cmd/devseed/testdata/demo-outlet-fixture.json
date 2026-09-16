@@ -57,6 +57,10 @@
     { "id": "0191afff-0000-7000-8000-000000000013", "menu_item_id": "0191afff-0000-7000-8000-000000000011", "group_name": "Sugar", "option_name": "Extra Sugar", "price_delta_paise": 500, "min_selection": 0, "max_selection": 1 }
   ],
 
+  "devices": [
+    { "id": "0191a000-0000-7000-8000-00000000000b", "outlet_id": "0191a000-0000-7000-8000-00000000000a", "kind": "POS", "name": "Dev Till 1" }
+  ],
+
   "restaurant_tables": [
     { "id": "0191a000-0000-7000-8000-000000000021", "outlet_id": "0191a000-0000-7000-8000-00000000000a", "section": "Main", "label": "T1", "seat_count": 4, "is_active": true }
   ],

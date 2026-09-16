@@ -13,6 +13,20 @@
       "outlet_id": "0191a000-0000-7000-8000-00000000000a"
     }
   ],
+  "devices": [
+    {
+      "id": "0191a000-0000-7000-8000-00000000000b",
+      "kind": "POS",
+      "name": "Dev Till 1",
+      "outlet_id": "0191a000-0000-7000-8000-00000000000a"
+    },
+    {
+      "id": "0191a000-0000-7000-8000-00000000000d",
+      "kind": "KDS",
+      "name": "Dev Kitchen Screen 1",
+      "outlet_id": "0191a000-0000-7000-8000-00000000000a"
+    }
+  ],
   "generated_by": "edge/database/src/bin/devseed.rs --emit-json",
   "goods_receipt": {
     "business_date": "2026-08-09",

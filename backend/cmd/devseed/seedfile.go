@@ -70,6 +70,15 @@ type seedFile struct {
 	// cloud served an empty bundle for five families it owns, and no outlet
 	// could ever have received its floor plan or its kitchen layout from the
 	// authority that is supposed to define them.
+	// CLOUD-OWNED IDENTITY, SEEDED WITHOUT A CREDENTIAL (D11). The till minted
+	// its device row straight into edge SQLite and nothing registered it with
+	// the backend, so till-authored orders replayed to a cloud with no row to
+	// join to — four orders on the live stack resolve to nothing (S-SYNC-13)
+	// and the admin Orders screen cannot name who took an order. postgres/0008
+	// says a device row may exist UNENROLLED; that is what this seeds, with no
+	// device_credential anywhere near it.
+	Devices []seedDevice `json:"devices"`
+
 	RestaurantTables []seedRestaurantTable `json:"restaurant_tables"`
 	Stations         []seedStation         `json:"stations"`
 	Printers         []seedPrinter         `json:"printers"`
@@ -91,6 +100,13 @@ type seedFile struct {
 	// legal while the demo content is still being authored.
 	GoodsReceipt *seedGoodsReceipt      `json:"goods_receipt"`
 	OpeningStock []seedStockLedgerEntry `json:"opening_stock"`
+}
+
+type seedDevice struct {
+	ID       string `json:"id"`
+	OutletID string `json:"outlet_id"`
+	Kind     string `json:"kind"`
+	Name     string `json:"name"`
 }
 
 type seedRestaurantTable struct {
