@@ -1,4 +1,112 @@
-# RESTART HERE — session ended 2026-09-15 02:00, HEAD `f0741b1`, tree clean and pushed
+# RESTART HERE — session ended 2026-09-16, HEAD `09178cc`, tree clean and pushed
+
+**THE DEMO IS DEFERRED to the week of 2026-09-21.** Scope, the six steps and
+the excludes are unchanged; only the dates moved, and `apps/captain`'s Monday
+18:00 IST cut-off moved with them. Until the demo week, work is **defect repair
+on the six-step path** — not presentability, not rehearsals.
+
+Read in this order: `docs/demo-kickoff.md` (deferral note at the top),
+**`docs/demo-status.md` → "THE OPEN-DEFECT REGISTER"**, then
+**`docs/visual-verify.md`**, which is a gate and not a log.
+
+## WHAT THIS SESSION DID, IN ONE LINE EACH
+
+- `1c0de90` `df977f8` — **order replay was broken both ways.** The envelope's
+  version is read from the live aggregate row at send time, so it sequences
+  nothing: a transition arriving ahead was a permanent 409 that wedged the
+  order's queue, and one arriving equal (the offline case) returned 200 and
+  applied nothing, leaving orders DRAFT in the cloud with no error and no
+  banner. The state machine is the whole guard now. **Contracts 0.8.3,
+  ADR-028.**
+- `df977f8` — `ORDER_ITEM_AMENDABLE_STATUSES` declared once and consumed in
+  five places, with `scripts/check-order-amendable-drift.mjs` as the joint. The
+  cloud's DRAFT-only rule was about to wedge the second Send on every table.
+- `b328f21` `bece32f` — **an unroutable outbox row is no longer skipped in
+  silence** (D8a). Recorded as `no_route`, blocked immediately, and shown as a
+  **muted "kept locally" count**, apart from the attention list, which stays
+  empty. A7 itself is untouched.
+- `3fe5ed5` `94cb4ea` — **the scratch-database rule.** `go test` refuses any
+  database not named `holler_scratch_*` in **every** shell; `demo-reset.ps1`'s
+  scratch refusal is `CLAUDECODE`-only **by design**; what is unconditional
+  there is that `-PostgresDb` is derived from `-DatabaseUrl`.
+- `256d6f7` `d34cf6b` — **`demo-up.ps1` builds every run**, and `-NoBuild`
+  skips the compile while still running `check-release-binary.ps1`.
+- `e8a56fc` — the walkthrough now says which dishes move stock.
+- `a0bb61e` `09178cc` — record corrections and three retro entries.
+
+## THE FIRST THING TO DO
+
+**Nothing in the code. Read `docs/visual-verify.md` and see which rows the
+operator has cleared.** Eleven rows are open; three of them (VV-001, VV-002,
+VV-003) are this session's order-replay and `##A2` work and have never been
+looked at in the Tauri release window. **An agent cannot close a row** —
+`run-dev.ps1` refuses under `CLAUDECODE` and a Tauri window launched with
+redirected stdio never appears. Add a row and say UNVERIFIED; never a claim.
+
+## THE NEXT PIECE OF WORK, AND ITS PRECONDITION
+
+**D14 — the till shows a stale kitchen status until its Kitchen panel is
+remounted.** The operator was asked for the VV-009 observation and **it had not
+arrived when this session ended. Do not start D14 blind.** The answer decides
+the fix and there are three possibilities:
+
+1. reads READY immediately → no defect, close the row;
+2. stale until the panel is collapsed and re-expanded → known staleness, the
+   fix is a refetch policy;
+3. **still stale after a real re-open → a cache-invalidation defect**, a
+   different fix entirely.
+
+`useKotsForOrderQuery` has no `refetchInterval` (`apps/pos/src/lib/queries.ts`)
+and nothing pushes a KOT status from the LAN hub into the till's UI. Note
+`App.tsx:13` sets `refetchOnWindowFocus: false`, so **a reading taken by
+alt-tabbing proves nothing** and must not be accepted as the observation.
+
+## THE QUEUE THE OPERATOR SET, IN ORDER
+
+1. ~~D13 + D19~~ done · 2. ~~D8a~~ done · **3. D14 (blocked on VV-009)** ·
+4. **D10** — the cloud holds 0 `restaurant_table`, 0 `station`, 0 `printer`;
+find the gap in the emitter or the cloud seeder, fix it, and extend the
+row-for-row CI test to those tables · 5. **D11** — the till's own device has no
+cloud `device` row, so till-authored orders replay unattributable; seed it the
+way the phone's is · 6. **D12** — observation only, VV-004.
+
+**D9 and D8b are NOT for this demo** (operator ruling): step 5 is shown on the
+till, not in admin, and the demo does not claim cloud inventory.
+**`docs/demo-script.md` step 5 still needs updating to say so** — that is
+outstanding. **If step 5 turns out to be unshowable on the till at all, stop
+and tell the operator before building anything.**
+
+**D20** (appended-line author) is a contract change → pilot backlog, no work
+now. **D24** — the `check-seams` target needs to run without `make`, which is
+not on PATH in an agent shell; a script or a package.json target, so it stops
+being skipped.
+
+## THREE THINGS THAT WILL OTHERWISE COST AN HOUR
+
+- **`StartTime` is not `BuiltAt`.** A POS started fresh at 11:39 was running a
+  00:40 build, and `run-dev.ps1 -Release`'s newer-than-dist check passed it
+  because both were stale. Always report the file's `LastWriteTime`:
+  `Get-Process holler-pos | Select-Object StartTime, @{n='BuiltAt';e={(Get-Item $_.Path).LastWriteTime}}`
+- **One cargo test shell at a time.** A stopped tool shell does NOT kill its
+  `cargo` children; the surviving test binary holds the `.exe` open and every
+  retry fails `LNK1104` for ever. Kill orphans first, run one shell in the
+  foreground. This cost three re-runs and ~40 minutes.
+- **Backend tests need a scratch database you create yourself.** The suite
+  refuses `holler` now, in every shell, because pointing it there overwrites
+  the dev login hashes and the till then refuses a correct password:
+  `docker exec holler-postgres-1 psql -U holler -d postgres -c "CREATE DATABASE holler_scratch_local;"`
+
+## STATE OF THE OPERATOR'S STACK AT HANDOFF
+
+Backend `api` and `holler-pos` were both running, rebuilt during the session —
+the binary checked at 19:08 carries the current dist and the release check
+passes on it. **It does not contain `bece32f`'s banner split**, so VV-011 needs
+a fresh build before it can be read. Postgres/redis/nats are up in Docker. No
+scratch databases are left behind; both were dropped.
+
+---
+
+# Resume state — 2026-09-15 (superseded by the block above)
 
 **Demo is WEDNESDAY, at the client's restaurant.** The plan is
 **`docs/demo-wednesday.md`** and it is the first thing to read — cast of
