@@ -1,4 +1,213 @@
-# RESTART HERE — session ended 2026-09-17, HEAD `89c235a`, tree clean and pushed
+# RESTART HERE — session ended 2026-09-17 evening, HEAD `045b68e`, tree clean and pushed
+
+**THE DEMO DID NOT RUN. The rehearsal was in progress when the machine was shut
+down.** Nothing was cancelled and nothing failed on stage — the operator was
+mid-setup. Do not read any part of this file as a demo verdict.
+
+## CI STATUS OF HEAD — READ BEFORE CLAIMING ANYTHING IS GREEN
+
+**`045b68e`: 14 of 16 jobs green. Two red — `backend` and `e2e-scenario`.**
+
+| Job | State | Why |
+|---|---|---|
+| `edge-style` | **GREEN** (was red all session) | fixed `56a6950` |
+| `cloud-replay` | **GREEN** (was red all session) | fixed `ca9ac49` — this was fix 5 |
+| `e2e-scenario` | **RED, KNOWN, SCOPED OUT** | harness fixture collision, diagnosed in full below. Not the taxed bill path |
+| `backend` | **RED, NEW ON THIS RUN, CAUSE UNKNOWN** | see below — treat as unresolved |
+
+**`backend` needs a first look next session.** It was **green on `aa79396`**, and
+`045b68e` touched only `apps/pos/**` and `docs/**`, which that job does not
+build. The failure:
+
+```
+--- FAIL: TestSyncConfig_DeviceCredentialsFlowThroughRealPostgres (1.06s)
+    device_credentials_sync_test.go:203: GET /sync/config after enroll: expected 200, got 401
+```
+
+Enroll returns 201, the very next `GET /sync/config` returns 401. **A POS-only
+commit cannot cause that**, so the live hypotheses are a flaky/ordering
+condition in that test, or something intermittent that `aa79396` happened to
+miss. **The query that settles it: re-run the `backend` job on `045b68e`
+unchanged.** Green on a re-run means flaky; red again means it is real and
+predates this commit. Recorded as UNRESOLVED rather than guessed at.
+
+## WHAT LANDED THIS SESSION, IN ORDER
+
+| Commit | What |
+|---|---|
+| `56a6950` | `edge-style` clippy red: `result_large_err` on `ureq::Error` in the sync client's transport retry. Boxed; every match arm unchanged |
+| `ca9ac49` | **FIX 5.** The cloud seeds no `stock_ledger_entry` rows; the outlet replays them |
+| `aa79396` | The seeded-ledger assertion counts one outlet, not the whole table |
+| `79b6d82` | Demo-day dates, the on-stage known list, the VV rows for the night |
+| `9c110d7` | `dev-bootstrap` names the database it seeds; the scratch-db guard sees PowerShell callers |
+| `a3e92e4` | **`docs/demo-runbook.md`** — one file, cold laptop to finished demo |
+| `5c42bab` | The firewall `$subnet` is the hotspot adapter's network, not the machine IP |
+| `3d3b659` | Every credential in one table; the admin console's start and origin |
+| `46c176a` | The admin "Failed to fetch" is the browser, and the day-of answer is another browser |
+| `491a071` | **`docs/operator-guide.md`** — four scenarios the client can self-operate from |
+| `045b68e` | **POS menu screen: whole-menu search, internal sections hidden, rail 160px to 220px** |
+
+### Fix 5 was ruled OPTION 2, not the option the plan recorded
+
+**Read this before touching the seeders.** The plan in the older resume block
+below says both stores write the same 1–45. The operator re-ruled it on the
+finding below, and the ruling that shipped is: **the cloud seeds no ledger rows
+at all.**
+
+The collision was never the sequence — both stores already minted 1–45 in the
+same order. It was the **row ids**. Ledger ingest is idempotent **by id** and
+checks it *before* contiguity (`backend/internal/inventory/service.go:330`), so
+the edge's replay of its own seeded rows missed on id, INSERTed, and hit
+`UNIQUE (outlet_id, entry_seq)`.
+
+**The seeded goods receipt DOCUMENT stays, and must.**
+`stock_ledger_entry.source_grn_id` is a real FK to `goods_receipt_note(id)`
+(`packages/contracts/postgres/0028_m5_procurement.sql:361`) and the receipt's
+movements are the **first** marks replayed, so a cloud without the document
+fails the replay on `entry_seq` 1 for a new reason. It cannot arrive by replay
+instead: the edge seeder calls `Db::record_goods_receipt`, not the
+`_with_outbox` variant, so it writes no outbox row and `pump_procurement` never
+sees it. `source_stock_count_id` carries **no** FK (`postgres/0024:37`), which is
+why the 38 opening-stock rows need nothing seeded despite `stock_count` being
+unroutable (A7).
+
+**Consequence to expect: a freshly seeded cloud holds an EMPTY ledger until the
+till replays into it.** That is intended, not a missing step. If 45 rows are
+present *before* the till has drained, fix 5 has regressed.
+
+## THE FIRST THING TO DO NEXT SESSION
+
+**Nothing in the code. Three VV rows are waiting on a person, and an agent
+cannot close any of them.** The binary they need is already built and verified.
+
+`docs/visual-verify.md` → **VV-017, VV-018, VV-019**, all `OPEN`, all from
+`045b68e`:
+
+- **VV-017** — select **Sushi Platter** in the left rail (a section with no Thai
+  dish in it), type `Thai` in **Search menu…**. Results must appear **from other
+  sections**, each card showing its **section name under the dish name**. Clear
+  the box: back to Sushi Platter's two items with **no section labels**. The
+  steps start on Sushi Platter deliberately — that exact sequence returned
+  **nothing** before this commit, so passing it falsifies the old behaviour
+  rather than merely exercising the new one.
+- **VV-018** — scroll the rail top to bottom: **no "(internal -- not sold)"
+  category** anywhere.
+- **VV-019** — `Tartar & Carpaccio`, `Wok Poultry & Meat`, `Sushi Roll (4pc)`
+  read in full, **no ellipsis**, cart width unchanged.
+
+**All three are invisible to every suite** — 264 POS tests, `tsc`, `eslint` and
+`pnpm build` pass either way. The Tauri window is the only judge.
+
+**VV-016** (the fix-5 drain) is also open and is the one that proves fix 5 on
+real hardware: after a clean `-Fresh` run, 45 ledger rows must arrive in the
+cloud **carrying the edge's row ids**, attention list empty; then one wastage on
+the till lands at **`entry_seq` 46**.
+
+## THE BINARY IS BUILT AND VERIFIED — DO NOT REBUILD TO START
+
+```
+C:\Code\Holler\apps\pos\src-tauri\target\release\holler-pos.exe
+built 2026-09-17 17:17:54
+```
+
+`scripts\check-release-binary.ps1` passed on **content**: it found
+`index-COLAtMd0.css` and `index-D3y1FBCZ.js` — this build's own chunks — inside
+the executable. Start with `-NoBuild`, which skips the compile and still runs
+that check:
+
+```powershell
+$env:HOLLER_DB_KEY_HEX = (Select-String -Path apps\pos\.env.dev -Pattern '^HOLLER_DB_KEY_HEX=(.+)$').Matches[0].Groups[1].Value
+$env:HOLLER_DB_KEY_HEX.Length          # must be 64
+.\scripts\demo-up.ps1 -Release -NoBuild -DbKeyHex $env:HOLLER_DB_KEY_HEX -LanHost <hotspot-ip>
+```
+
+**No `-Fresh`** keeps the seeded state. Add `-Fresh` only to reset cloud + edge.
+
+### THE KEY DIES WITH THE TERMINAL — this cost a run today
+
+`$env:HOLLER_DB_KEY_HEX` does not survive a new PowerShell window, and
+`demo-up` then fails at step `[5/10]` with the bootstrap's "no default key"
+refusal. **The refusal's own advice — mint a new key — is WRONG on a machine
+that already has a sealed database**, which is every machine after the first
+bootstrap. Read the existing key back with the `Select-String` line above.
+Nothing is damaged when this fires: the script refuses before touching disk.
+
+## STATE OF THE MACHINE AT SHUTDOWN
+
+- Docker `holler-postgres-1`, `holler-redis-1` and `holler-nats-1` were **up and
+  healthy**; the edge and cloud both hold the demo seed. **No seed or reset was
+  run today** — the database is whatever the last `-Fresh` left, plus the day's
+  rehearsal.
+- POS, KDS, captain and the backend were all **down**. The **admin dev server
+  was still running** on 5175 (`pnpm dev`, started by hand).
+- A POS process survived its window being closed (the known no-exit-handler gap)
+  and had to be stopped so `tauri build` could overwrite the binary. Expect a
+  plaintext `edge.db` beside the `.enc`; that is A6 and happens on every run of
+  this build.
+
+## OPEN ITEMS, NOT STARTED
+
+**Post-demo, agreed with the operator:**
+
+1. **A real "not sold" flag on the category.** `045b68e` hides the two internal
+   sections by **matching the word "internal" in the name** — a stopgap,
+   commented as one in `PosScreen.tsx`. A category renamed without that word
+   silently returns to a customer-facing screen. The rule belongs on the row.
+2. **Hide zero-rate (bar) categories behind a setting.** 16 categories and 100+
+   drinks are one scroll away on the till, and the standing rule is *never bill
+   a bar item*, because alcohol sits on a zero-rate profile and prints ₹0 tax.
+   Nothing in code enforces it today.
+3. **The e2e harness should reuse devseed's compliance version** instead of
+   minting a second — that is the whole `e2e-scenario` failure, below.
+4. **`demo-reset.ps1` must pass `PORT` from `-BackendPort`**, and the guard
+   should plant `-BackendPort 8099` and assert 8080 stays free. Today
+   `-BackendPort` is used only to kill and check the port, never to tell the API
+   which one to bind, so `demo-reset` binds 8080 whatever it is asked for.
+5. **Retro line:** check `StartTime` against your own history before assigning
+   blame for a bound port.
+
+### `e2e-scenario` — diagnosed, deliberately NOT fixed
+
+All 33 failures are one identical error, and it is **not** an arithmetic
+mismatch — `issue_invoice` is **rejected**, so the invariant is marked false at
+`tests/e2e-scenario/orchestrator/src/runner.ts:756`:
+
+```
+no tax rules for profile 0191c000-...-0002 under compliance version 0191a000-...-0040
+```
+
+`0191c000-…-0002` is the **harness's own** tax profile
+(`tests/e2e-scenario/harness/src/main.rs:86`) with its rules pinned to the
+harness's own compliance version `…-0001`; `0191a000-…-0040` is **devseed's**.
+The harness mints a *second* compliance version for the outlet, so
+`resolve_compliance_version` picks devseed's, under which the harness's profile
+has no rules. The harness's own comment — *"devseed itself seeds no tax_profile
+… row"* — is stale; `seed_billing` does now.
+
+**Not the zero-rate bar items** (`devseed.rs:2936-2940` gives
+`TAX_PROFILE_ALCOHOL_VAT_ID` real rules at **0 bps** — rules present, rate zero)
+and **not reachable by a printed bill** (`devseed.rs:2931-2934` states the
+invariant: one compliance version, four profiles hanging off it).
+
+## THE SEARCH DEFECT, AND WHY IT MATTERS BEYOND ITSELF
+
+The till's search filtered **the selected category only**. Typing a dish name
+returned nothing unless the cashier had already guessed its section — which is
+the question search exists to answer.
+
+**It was not a regression.** `git blame` puts those lines on `ccca59f`,
+2026-08-07. **The data changed, not the code:** the seed held **43 items in 10
+categories** until 2026-09-11; the client's own menu (`ab7ddef`, 2026-09-12)
+made it **281 items in 48**. At ~4 items a section the scoping is invisible; at
+48 sections it misses almost every time.
+
+Worth carrying: **a limitation that appears only at production scale, found by
+the first person to use the feature the way a real user would.** The fixture hid
+it for five weeks and every suite stayed green throughout.
+
+---
+
+# Resume state — 2026-09-17 morning, HEAD `89c235a` (SUPERSEDED by the block above)
 
 **THE DEMO IS DEFERRED to the week of 2026-09-21.** Scope, the six steps and
 the excludes are unchanged. Until the demo week, work is **defect repair on the
