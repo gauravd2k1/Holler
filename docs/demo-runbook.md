@@ -113,10 +113,46 @@ rules and refuses to create them (`scripts/demo-up.ps1:495-507`): creating a
 rule needs elevation, and a script that silently opens ports on your laptop is
 worse than one that tells you which are shut.
 
-**Run PowerShell as Administrator:**
+#### What `$subnet` is, and what it is not
+
+`-RemoteAddress` says **which machines are allowed to connect in**, so `$subnet`
+must be the network **the phones and the second laptop get their addresses on**
+— which is the network of the **hotspot adapter**, not of this machine
+generally.
+
+- It is derived from the **hotspot (or demo router) adapter's** IPv4 address —
+  the one `lan-ip.ps1` ranks first — with the last octet replaced by `0` and a
+  `/24` suffix. Hotspot adapter `192.168.137.1` → `192.168.137.0/24`.
+- It is **not your machine's "main" IP**. The WiFi or Ethernet lease
+  (`192.168.0.x`, `10.x.x.x`) is the adapter facing your *upstream* network. Put
+  that subnet here and every phone on the hotspot is refused, because none of
+  them has an address in it.
+- It is **not a single host address**. `192.168.137.1/24` or a bare
+  `192.168.137.1` allows one machine, not the phones.
+- It is **never the WSL/Hyper-V switch** (`172.28.x.x`).
+
+If you are on a physical demo router instead of the hotspot, use **that**
+adapter's subnet by the same rule.
+
+**Derive it rather than typing it**, so it cannot disagree with the address the
+rest of the run uses:
 
 ```powershell
-$subnet = "192.168.137.0/24"      # the hotspot subnet; see section 2
+$ip = & .\scripts\lan-ip.ps1 -Bare          # the same ranked pick demo-up uses
+$subnet = ($ip -replace '\.\d+$', '.0') + '/24'
+$subnet                                      # sanity-check: 192.168.137.0/24
+```
+
+**Turn the hotspot on BEFORE you run that.** With the hotspot down there is no
+hotspot adapter to rank, so it returns your ordinary WiFi lease and you get a
+subnet for the wrong network — which then refuses every phone. Run against a
+live hotspot and confirm the value starts `192.168.137.` before using it.
+
+**Run PowerShell as Administrator** (the `$subnet` line below is the literal
+form, if you would rather type it):
+
+```powershell
+$subnet = "192.168.137.0/24"      # the HOTSPOT ADAPTER's subnet -- see above
 
 New-NetFirewallRule -DisplayName "Holler demo - KDS LAN WS 9310"  -Direction Inbound -Action Allow -Protocol TCP -LocalPort 9310 -Profile Private -RemoteAddress $subnet
 New-NetFirewallRule -DisplayName "Holler demo - Captain HTTP 9320" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 9320 -Profile Private -RemoteAddress $subnet
@@ -502,6 +538,7 @@ the state the client will see.
 |---|---|---|
 | KDS loads, never connects | Stale `VITE_KDS_LAN_URL`, or wrong `-LanHost` | Delete that line from `apps\kds\.env.dev`; re-run with the address `lan-ip.ps1` ranks first |
 | Phone cannot open any URL | Firewall, or phone on mobile data / another network | Section 1.3 rules; turn mobile data off; confirm the phone is on the hotspot |
+| Phones refused even though the firewall rules exist | `-RemoteAddress` names the wrong network — usually your WiFi lease's subnet instead of the **hotspot adapter's**, often because the rules were added with the hotspot off | `Get-NetFirewallRule -DisplayName "Holler demo -*" \| Get-NetFirewallAddressFilter` and compare against the phone's own IP. Remove and re-add with the right `$subnet` |
 | "That device token was rejected" | The 60-second config pull, **or** a typo | Wait for the till window to print `config pull applied a new bundle`, then retry. Section 5.2 |
 | `demo-up` stops at a step | It stopped on purpose | Read the reason and the next action it printed. Do not re-run blindly |
 | Till shows no menu / a dev fixture name | `seed\outlet.toml` or the seed did not apply | Re-run with `-Fresh` |
