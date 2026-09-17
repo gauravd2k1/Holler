@@ -47,7 +47,12 @@
   --text-base: 0.9375rem; /* 15px */
   height: 100vh;
   display: grid;
-  grid-template-columns: 160px 1fr 380px;
+  /* 220px, not 160px. The rail ellipsises rather than wraps (see
+     .pos-categories button), and at 160px that clipped 13 of the client's 48
+     category names -- "Tartar & Car...", "Wok Poultry...", "Non Veg Ta...".
+     220px clears the longest one actually sold (23 chars, "Sparkling Wine
+     (Indian)"). The width comes out of the item grid's 1fr, never the cart. */
+  grid-template-columns: 220px 1fr 380px;
   /* "banners" is `auto`-sized and collapses to zero height when every
      banner inside it renders null — the common case. Without a reserved
      row, PrintFailureBanner/SyncBlockedBanner/LowStockBanner (siblings with
@@ -278,6 +283,21 @@
   color: inherit;
   text-align: left;
   cursor: pointer;
+}
+/* The section a search result came from. Rendered ONLY while the box holds a
+   term, so the card keeps its two-row shape in the default view and this rule
+   never applies there. `margin-right: auto` keeps it left-aligned against the
+   name rather than being spread by the card's space-between. */
+.pos-menu-item-category {
+  margin-right: auto;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  /* Same reason as the rail: a wrapped section name changes the card height
+     and reflows the grid mid-search. */
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .pos-menu-item:hover:not(:disabled) {
   background: var(--color-surface);

@@ -90,17 +90,60 @@ export function PosScreen() {
   }, [menuItemsQuery.isSuccess]);
 
   const groups = useMemo(
-    () => groupItemsByCategory(menuItems, menuCategories),
+    () => {
+      const all = groupItemsByCategory(menuItems, menuCategories);
+      // INTERNAL CATEGORIES ARE NOT SOLD AND MUST NOT REACH A CUSTOMER-FACING
+      // SCREEN. The client catalogue carries "Kitchen Prep (internal -- not
+      // sold)" and "Test fixtures (internal -- not sold)", which a cashier
+      // scrolling the rail reads as part of the menu.
+      //
+      // A NAME MATCH IS A STOPGAP AND IS KNOWN TO BE ONE: it is here because
+      // hiding these tonight must not require re-emitting the catalogue or
+      // resetting the outlet. The real fix is a "not sold" flag on the
+      // category in the contract, so the rule is carried by the row rather
+      // than inferred from how someone spelled its name -- a category renamed
+      // without the word "internal" silently comes back.
+      return all.filter((g) => !/\(internal/i.test(g.categoryName));
+    },
     [menuItems, menuCategories],
   );
   const activeGroup = groups.find((g) => g.categoryId === activeCategoryId) ?? groups[0] ?? null;
 
-  const visibleItems: MenuItem[] = useMemo(() => {
-    const source = activeGroup?.items ?? [];
+  /** True while the box holds a term, i.e. while results may span sections. */
+  const searching = search.trim() !== "";
+
+  /** A result to render: the item, plus the category it came from.
+   *
+   * The category travels with the item because a search now spans all of
+   * them, and two sections legitimately hold dishes with the same name --
+   * "Non Veg" is a Sushi Platter and a Tapas. Without the section on the card
+   * those two results are indistinguishable, and the cashier rings up a
+   * ₹1895 platter meaning a ₹450 tapas. */
+  const visibleItems: { item: MenuItem; categoryName: string }[] = useMemo(() => {
     const term = search.trim().toLowerCase();
-    if (!term) return source;
-    return source.filter((item) => item.name.toLowerCase().includes(term));
-  }, [activeGroup, search]);
+    // EMPTY BOX: the chosen category, exactly as before. Typing is what
+    // widens the search, so the rail still governs the default view and a
+    // cashier who never uses the box sees no change at all.
+    if (!term) {
+      return (activeGroup?.items ?? []).map((item) => ({
+        item,
+        categoryName: activeGroup?.categoryName ?? "",
+      }));
+    }
+    // A TERM SEARCHES THE WHOLE MENU, not the selected category. Scoping the
+    // search to the active category made it useless at the client's real
+    // scale: at 43 items in 10 categories a cashier was usually already in
+    // the right section, but at 281 items in 48 it means typing a dish name
+    // returns nothing unless you have already guessed where it lives --
+    // which is the question the search was there to answer.
+    // docs/spec/ordering.md: search is a TOP-bar control beside order type
+    // and table, and the cashier "operates from muscle memory (search, ...)".
+    return groups.flatMap((g) =>
+      g.items
+        .filter((item) => item.name.toLowerCase().includes(term))
+        .map((item) => ({ item, categoryName: g.categoryName })),
+    );
+  }, [groups, activeGroup, search]);
 
   const subtotalPaise = cartSubtotalPaise(lines);
   const sendEnabled = canCreateOrder && canSendOrder(orderType, tableId, lines) && !cartPending;
@@ -335,7 +378,7 @@ export function PosScreen() {
 
       <section className="pos-menu-grid">
         {(menuItemsQuery.isLoading || !hydrated) && <p>Loading menu…</p>}
-        {visibleItems.map((item) => (
+        {visibleItems.map(({ item, categoryName }) => (
           <div key={item.id} className="pos-menu-item-cell">
             <button
               type="button"
@@ -351,6 +394,10 @@ export function PosScreen() {
               }
             >
               <span className="name">{item.name}</span>
+              {/* Only while searching. In the default view every card on
+                  screen is from the chosen category, so the label would
+                  repeat the rail on all of them and say nothing. */}
+              {searching && <span className="pos-menu-item-category">{categoryName}</span>}
               <span className="price money">{formatPaiseAsRupees(item.base_price_paise)}</span>
             </button>
             <button

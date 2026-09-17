@@ -63,12 +63,27 @@ rehearsal. Run them inside the three clean runs
 | VV-014 | 1 | Buttons are **verbs**, only legal moves offered, badge coloured **and** worded |
 | VV-015 | 5 | Admin Orders names the device — **"Dev Till 1"** |
 | **VV-016** | **fix 5** | **See below — the drain.** |
+| **VV-017** | 1 | Search finds a dish from **any** section, each result labelled with its section |
+| **VV-018** | 1 | No "(internal -- not sold)" category anywhere in the rail |
+| **VV-019** | 1 | The rail's longest category names read in full, no `…` |
 
 **VV-012/013/014 are D14, which is FIXED (`97bc3dc`) and has never been seen in
 the Tauri release window.** Expect it to work; the remount workaround in
 `docs/demo-script.md` → "Known on stage" is the fallback, not the expectation.
 The open-defect register's D14 row still reads OPEN and is stale — it was
 compiled about two hours before the fix landed.
+
+### VV-017/018/019 — the till's menu screen
+
+Three changes in one commit, one rebuild. **All three are CSS or render-path
+changes that no test suite can see** — the POS unit suite (264 tests), `tsc`
+and `eslint` all pass either way, which is exactly why they need a row each.
+
+| ID | Commit | Open | Steps | Pass condition | Status | Evidence | Verified by | Date |
+|---|---|---|---|---|---|---|---|---|
+| VV-017 | this commit | POS — **Tauri release window**, main ordering screen | Select **Sushi Platter** in the left rail (a section with no Thai dish in it). Type `Thai` into **Search menu…**. | Results appear **from other sections** — `Thai Grilled Chicken Salad`, `Pad Thai` and so on — **not an empty grid**. Each card shows its **section name under the dish name**. Clear the box: the grid returns to Sushi Platter's own two items and **no section label is shown on them**. | OPEN | | | Before this commit the search filtered the SELECTED category only, so this exact sequence returned nothing. Falsified by the operator on the live till, 2026-09-17 |
+| VV-018 | this commit | POS — **Tauri release window**, category rail | Scroll the left rail from top to bottom. | **No category named "… (internal -- not sold)" appears** — neither `Kitchen Prep` nor `Test fixtures`. Every other section still appears and still opens. | OPEN | | | Hidden by a NAME MATCH in PosScreen, deliberately, so tonight needs no re-emit or reset. A category renamed without the word "internal" comes back — the real fix is a flag on the row, filed post-demo |
+| VV-019 | this commit | POS — **Tauri release window**, category rail | Read the rail's longest names: `Tartar & Carpaccio`, `Wok Poultry & Meat`, `Non Veg Tapas`, `Sushi Roll (4pc)`. | Each reads in full, **with no `…`**. The item grid and the cart are unchanged in width and nothing below the rail is clipped. | OPEN | | | 160px → 220px. 13 of 48 names were clipped at 160px; the longest sold name is 23 chars |
 
 ### VV-016 — the fix-5 drain (`ca9ac49`, `aa79396`)
 

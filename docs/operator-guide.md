@@ -26,15 +26,40 @@ a bar line prints a tax of ₹0 on the bill. Food only.
 
 ## A. One table, from first item to printed bill
 
+**What this confirms:** that a single order survives, unchanged and correctly
+priced, across four separate pieces of software — the till, the kitchen screen,
+the printer and the back office — with the money arithmetic done once, in one
+place, and everything else reading the same answer.
+
+**What it exercises underneath:**
+
+| Step | The capability it demonstrates |
+|---|---|
+| Choosing a table, adding items | The order is built against a **table session**, so a table is occupied by one order, not by whatever a cashier remembers |
+| **Send** | The order is written down locally and a **kitchen ticket is cut for the right station**, routed by which dishes are on it |
+| The ticket reaching the Kitchen Display | The kitchen screen is fed **directly by the till over the local network**, not via the internet — this is why the kitchen keeps working in scenario C |
+| **Accept / Start preparing / Mark ready** | The ticket's life is a **controlled sequence**: the screen only ever offers the moves that are legal from where the ticket is |
+| The till's Kitchen panel following along | The till **subscribes to the kitchen**, so a cashier asked "is table 3 ready?" reads the answer instead of walking |
+| **Issue Bill** | **GST is computed once, on the till**, per line and per tax component, rounded once, with the rounding difference shown as Round off. No other screen recalculates it |
+| The UPI QR | The QR is generated for **this bill's exact amount** and the outlet's own payee — nothing is typed in by hand |
+| **Record Payment(s)** | Tenders are **recorded separately from the bill**, which is what makes a split across cash and UPI possible, and what makes a correction an added entry rather than an edit |
+| **Print Bill** | A **compliant GST document**: the outlet's legal name, address and GST number, per-line tax and a bill number from the outlet's own numbering series |
+| The order appearing in the back office | The outlet **replays to the cloud on its own**, and the back office can name **which till** took the order |
+
 1. On the till, go to the main ordering screen. If you are on another screen,
     press **Back to POS** at the top right.
-    *You see the menu, with category buttons along the top.*
+    *You see the menu. Categories run down the left side in a scrolling list;
+    the dishes in the selected one fill the middle; the cart is on the right.*
 2. In the top bar, leave the order type on **Dine In**.
     *The Dine In button appears pressed in.*
 3. In the **Table** dropdown, choose **Main / T3**.
     *The dropdown now reads "Main / T3" instead of "Choose table".*
 4. Type `Thai` into the **Search menu…** box at the top.
-    *The menu grid narrows to matching dishes.*
+    *Matching dishes appear from **every** section, not only the one selected
+    on the left — you do not need to find the category first. Each result
+    shows the section it came from under its name, so two dishes with the same
+    name from different sections can be told apart. Clear the box and the
+    grid returns to the category selected on the left.*
 5. Press **Thai Grilled Chicken Salad**.
     *It is added to the cart on the right, showing ₹475.00. If the dish asks
     "Choose a size", pick one first.*
@@ -86,6 +111,21 @@ a bar line prints a tax of ₹0 on the bill. Food only.
 
 ## B. Taking an order on a waiter's phone
 
+**What this confirms:** that a waiter taking orders at the table is the *same
+order* as the one on the till — not a parallel system that has to be reconciled
+— and that a second round joins the first instead of becoming a duplicate.
+
+**What it exercises underneath:**
+
+| Step | The capability it demonstrates |
+|---|---|
+| **Pair** with a token | The phone is an **enrolled device with its own identity**, not an anonymous browser. Orders can be attributed to the waiter who took them |
+| The phone reaching **Tables** | The token was **verified against the till**, offline, with no internet involved |
+| Ordering and pressing **Send** | The phone is a **client of the till**, which remains the only thing that owns the order. There is no second copy to reconcile |
+| The second round joining the same order | **Items can be appended to an order the kitchen already has.** A table that orders in three rounds is one bill, not three |
+| A **second ticket** carrying only the new dish | The kitchen is told **what changed**, not the whole order again — a cook does not re-make round one |
+| One order on the till | The till and the phone are **one system with one source of truth**, which is the difference between this and a separate tablet app |
+
 1. On the phone, open the ordering page (the address ends in **:9320**).
     *The screen reads **Pair this phone**.*
 2. Paste the pairing token into the box and press **Pair**.
@@ -126,6 +166,22 @@ a bar line prints a tax of ₹0 on the bill. Food only.
 The till keeps working with no internet. Orders, kitchen tickets and bills all
 carry on; they are sent to the back office once the connection returns.
 
+**What this confirms:** that the restaurant is **not dependent on its internet
+connection to trade**. A dropped line is an inconvenience for reporting, never a
+stopped service — which is the single most important claim the product makes,
+because it is the one most restaurant software fails.
+
+**What it exercises underneath:**
+
+| Step | The capability it demonstrates |
+|---|---|
+| Taking the order with WiFi off | The outlet **holds its own database**. Ordering, pricing, tax and billing are all local; the cloud is not in the path of a sale |
+| The Kitchen Display still receiving | The kitchen link is **the local network, not the internet** — the two failures are unrelated by design |
+| The banner appearing | The till **says what it is holding**, with a count. Nothing is silently dropped, and the operator is never guessing |
+| The banner emptying by itself | The outlet **retries on its own schedule** and catches up in order. No one re-keys anything |
+| The order arriving in the back office | The catch-up is **exact, not approximate**: the order that reaches the cloud is the one that was taken, with the same number |
+| Billing while offline (optional) | **Invoice numbers are issued by the outlet**, so a GST bill can be printed with the line down and cannot collide with one issued elsewhere |
+
 1. **Turn the laptop's WiFi off.**
 2. On the till, take an order as in section A: choose **Main / T3**, add
     **Thai Grilled Chicken Salad**, press **Send**.
@@ -151,6 +207,26 @@ carry on; they are sent to the back office once the connection returns.
 ---
 
 ## D. Back office and stock
+
+**What this confirms:** that what was bought, what is held and what was thrown
+away are one connected record — so "where did the money go" has an answer that
+does not depend on anyone's notebook.
+
+**What it exercises underneath:**
+
+| Step | The capability it demonstrates |
+|---|---|
+| Suppliers with pack sizes and last price | The system knows goods are bought in **cases and crates** but consumed in grams and pieces, and holds the conversion per supplier item |
+| A goods receipt with its lines | **What was received is recorded as received**, including what the person actually typed alongside the converted quantity — so a delivery entered wrongly can be traced rather than argued about |
+| The note that this is the cloud's copy | The **outlet is the authority** on its own receipts; the back office holds a replica and says so, instead of quietly showing a different number |
+| Current Stock with a reorder level | Stock is **derived from everything that moved it**, not a number someone edits. The reorder level is what drives low-stock warnings |
+| Recording wastage | Loss is **captured at the moment it happens**, by the person who saw it, with a reason — the figure that is otherwise invented at month end |
+| The quantity falling by exactly one | Every movement is **an entry in a ledger**, so the current figure can always be explained by the entries behind it |
+| An empty attention list afterwards | The entry **reached the cloud** and the outlet has nothing stuck |
+
+> Stock is never allowed to block a sale. If an ingredient runs below zero the
+> system records it and serves the customer — a negative figure is a signal to
+> investigate, not an error to stop trading over.
 
 ### Suppliers
 
