@@ -44,7 +44,47 @@ UNVERIFIED. Never a claim.**
 | `FAIL` | Observed and wrong. A new row is added for the fix. |
 | `UNVERIFIABLE` | No person can currently open the runtime it needs (no hardware, no device). Says why. |
 
+## TONIGHT — 2026-09-17. The rows that gate the demo.
+
+**These ten and no others.** Every other row in the register is **post-demo**:
+not cut, not failed, simply not in tonight's path and not to be chased during a
+rehearsal. Run them inside the three clean runs
+(`demo-up.ps1 -Release -Fresh …`), not as a separate pass.
+
+| Row | Gates which step | One-line pass condition |
+|---|---|---|
+| VV-001 | 4 | Banner empties after the cloud restarts; no `conflict (HTTP 409)` ever appears |
+| VV-002 | 4, 5 | The order is in admin Orders and is **not** DRAFT |
+| VV-003 | 1, 5 | `#A2`, never `##A2` |
+| VV-004 | 5 | No order with a total and **zero lines** |
+| VV-011 | 1, 4 | Muted "kept locally" line present; **attention list EMPTY** |
+| VV-012 | 1 | Kitchen panel open and untouched: the till's status changes **on its own** after a KDS bump |
+| VV-013 | 1 | A refused move shows its error with the row **already corrected** |
+| VV-014 | 1 | Buttons are **verbs**, only legal moves offered, badge coloured **and** worded |
+| VV-015 | 5 | Admin Orders names the device — **"Dev Till 1"** |
+| **VV-016** | **fix 5** | **See below — the drain.** |
+
+**VV-012/013/014 are D14, which is FIXED (`97bc3dc`) and has never been seen in
+the Tauri release window.** Expect it to work; the remount workaround in
+`docs/demo-script.md` → "Known on stage" is the fallback, not the expectation.
+The open-defect register's D14 row still reads OPEN and is stale — it was
+compiled about two hours before the fix landed.
+
+### VV-016 — the fix-5 drain (`ca9ac49`, `aa79396`)
+
+| ID | Commit | Open | Steps | Pass condition | Status | Evidence | Verified by | Date |
+|---|---|---|---|---|---|---|---|---|
+| VV-016 | `ca9ac49`, `aa79396` | POS — **Tauri release window**, sync banner; plus the cloud database | **A. After a clean `demo-up.ps1 -Release -Fresh …`**, let the till drain. Then, in the cloud: `SELECT count(*), min(entry_seq), max(entry_seq) FROM stock_ledger_entry WHERE outlet_id = '<demo outlet>';` **B.** Record one wastage on the till. Let it drain. Re-run the query. | **A: 45 rows, `entry_seq` 1–45, carrying the EDGE's row ids** — a freshly seeded cloud starts with **zero** ledger rows and every one of the 45 arrives by replay. Banner: **attention list EMPTY**, `no_route` count only. **B: 46 rows, max `entry_seq` = 46**, attention list still EMPTY. **No `conflict (HTTP 409)` at any point.** | OPEN | | | The defect this replaces: cloud and edge each held the same 45 movements under DIFFERENT ids, so the till's first replay missed on id, INSERTed, and hit `UNIQUE (outlet_id, entry_seq)` — a 409 on stage before any real movement existed |
+
+**An empty cloud ledger immediately after seeding is the INTENDED state**, not a
+missing step. If the query in A returns 45 rows *before* the till has drained,
+something is seeding them cloud-side again and fix 5 has regressed.
+
+---
+
 ## The register
+
+**Everything below that is not in tonight's ten is POST-DEMO.**
 
 | ID | Commit | Open | Steps | Pass condition | Status | Evidence | Verified by | Date |
 |---|---|---|---|---|---|---|---|---|

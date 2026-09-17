@@ -1760,6 +1760,101 @@ CLAUDE.md's four-runtimes rule this is not yet verified on the screen the
 client sees.
 
 
+## DEMO DAY: 2026-09-17, THIS EVENING. CODE FREEZE IS IN FORCE.
+
+From the freeze onward **nothing lands except a revert or a one-line stage fix
+with the operator's explicit approval.** The cut-off is **three clean runs from
+a clean reset before leaving** — three runs each beginning at
+`demo-up.ps1 -Fresh`, not three attempts.
+
+**`docs/demo-script.md` → "Known on stage" is the on-stage list**, and it is the
+only one that matters during a run. Everything in it is expected, has a
+workaround, and is not a reason to stop or to debug in front of the client.
+
+Landed on 2026-09-17, before the freeze:
+
+| Commit | What |
+|---|---|
+| `56a6950` | `edge-style` clippy red — `result_large_err` on `ureq::Error` in the sync client's transport retry. Boxed, every match arm unchanged |
+| `ca9ac49` | **Fix 5.** The cloud seeds no `stock_ledger_entry` rows; the outlet replays them. `seedStockLedgerEntries` and both call sites deleted |
+| `aa79396` | The seeded-ledger assertion counts one outlet, not the whole table — `go test ./...` shares one database across packages |
+
+**Fix 5 was ruled option 2, not the option the plan recorded.** The collision was
+never the sequence — both stores already minted 1–45 in the same order. It was
+the **row ids**: ledger ingest is idempotent by id and checks it before
+contiguity (`backend/internal/inventory/service.go:330`), so the edge's replay
+of its own seeded rows missed on id, INSERTed, and hit
+`UNIQUE (outlet_id, entry_seq)`. The ledger is edge-authoritative (§50.1), so
+the cloud does not author those rows at all. **The seeded goods receipt DOCUMENT
+stays** — `stock_ledger_entry.source_grn_id` is a real FK to
+`goods_receipt_note(id)` (`packages/contracts/postgres/0028_m5_procurement.sql:361`)
+and the receipt's movements are the first marks replayed, so a cloud without it
+fails the replay on `entry_seq` 1 for a new reason.
+
+**Consequence to expect on stage: a freshly seeded cloud holds an EMPTY ledger
+until the till replays into it.** That is intended, not a missing seed step.
+
+### `e2e-scenario` invariant 9 — read 2026-09-17, NOT FIXED, out of scope
+
+All 33 failures are one identical error, and it is **not** a reconciliation
+mismatch — `issue_invoice` is **rejected**, so the invariant is marked false at
+`tests/e2e-scenario/orchestrator/src/runner.ts:756`, never at an arithmetic
+branch:
+
+```
+{"code":"INVALID_INPUT","message":"no tax rules for profile 0191c000-0000-7000-8000-000000000002 under compliance version 0191a000-0000-7000-8000-000000000040"}
+```
+
+It is a **test-harness fixture collision**, and it can touch neither the demo's
+taxed path nor the zero-rate bar items:
+
+- `0191c000-…-0002` is the **harness's own** tax profile
+  (`tests/e2e-scenario/harness/src/main.rs:86`), with its rules pinned to the
+  harness's own compliance version `0191c000-…-0001`. `0191a000-…-0040` is
+  **devseed's**. The harness mints a *second* compliance version for the outlet,
+  so `resolve_compliance_version` picks devseed's, under which the harness's
+  profile has no rules. The harness's own comment — *"devseed itself seeds no
+  tax_profile … row"* — is stale; `seed_billing` does now.
+- **Not the zero-rate bar items.** `devseed.rs:2936-2940` gives
+  `TAX_PROFILE_ALCOHOL_VAT_ID` real `tax_rule` rows at **0 bps**: rules present,
+  rate zero. "No tax rules" cannot describe it.
+- **Not reachable by a printed bill.** `devseed.rs:2931-2934` states the
+  invariant: *"Reusing COMPLIANCE_VERSION_ID here rather than minting a second
+  compliance_version is what keeps `tax::resolve_compliance_version`
+  unambiguous for this outlet: one compliance version, four tax profiles hanging
+  off it."* A clean demo reset produces exactly that.
+
+### D14 — row 1797 is STALE. D14 is FIXED, and has never been looked at.
+
+**Row D14 below says OPEN. It is wrong**, and it is wrong only because it was
+compiled on 2026-09-16 roughly two hours before `97bc3dc` landed at 20:58.
+D14 is fixed in three parts:
+
+1. **Live update.** The LAN hub that broadcasts a bumped ticket to every KDS
+   lives inside the POS process, and the till is now a subscriber: a thread
+   forwards each frame to the webview as a Tauri event and the Kitchen panel
+   invalidates on it (`apps/pos/src/lib/kitchenEvents.ts`,
+   `KITCHEN_CHANGED_EVENT`, wired in `apps/pos/src-tauri/src/lib.rs`, drift-
+   checked by `scripts/check-kitchen-event-drift.mjs`).
+2. **Repair on refusal** — a rejected move corrects the row before the error is
+   shown.
+3. **Legal moves only**, as verbs, with a badge that is coloured *and* worded.
+
+**A METHOD NOTE WORTH MORE THAN THE ROW.** This was first re-read here as "still
+OPEN" on the evidence that `useKotsForOrderQuery` has no `refetchInterval`. That
+probe cannot see this fix and never could: the commit says so in as many words —
+*"Not a polling interval: the hub already knows the moment a ticket moves."*
+**Absence of the mechanism you imagined is not evidence of absence of the fix.**
+The same shape as the release-binary incident in CLAUDE.md: a check that passes
+or fails for reasons unrelated to the thing it claims to measure.
+
+**What is actually true: FIXED IN CODE, NEVER OBSERVED IN THE TAURI RELEASE
+WINDOW.** VV-012, VV-013 and VV-014 are exactly that observation and all three
+are still `OPEN`. Treat it as unverified tonight, not as broken — the workaround
+(remount the panel) is in "Known on stage" as a fallback, not as the expectation.
+
+---
+
 ## THE OPEN-DEFECT REGISTER FOR THE DEMO SESSIONS — compiled 2026-09-16
 
 **One row per defect found in any demo-build session, with a commit or the word

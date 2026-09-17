@@ -3,12 +3,24 @@
 **Work item 7 of `docs/demo-kickoff.md`.** This file is what gets read aloud and
 followed click by click on the day.
 
+**DEMO DAY IS TODAY, 2026-09-17, THIS EVENING. THE TREE IS UNDER CODE FREEZE.**
+From the freeze onward nothing lands except a revert or a one-line stage fix
+with the operator's explicit approval.
+
+**CUT-OFF: three clean runs from a clean reset before leaving.** Not three runs
+— three runs each starting from `demo-up.ps1 -Fresh`. A step that only works on
+the second attempt has not passed, and a run that was not started from a reset
+proves nothing about the state the client will see.
+
 **STATUS: the day-of checklist below is written and current. THE SIX STEPS ARE
-NOT WRITTEN YET** — they are drafted **Monday evening, from the operator's phone
-runs**, because each needs its exact clicks, its expected screen and its
-fallback written from an observed run rather than from memory. **Tuesday is
-rehearsals and the recording only.** Do not read the absence of a step as a step
-that passed.
+NOT WRITTEN YET** — they are drafted **from the operator's phone runs**, because
+each needs its exact clicks, its expected screen and its fallback written from
+an observed run rather than from memory. Do not read the absence of a step as a
+step that passed.
+
+**Read "Known on stage" below before the first rehearsal.** Everything in it is
+expected behaviour with a known workaround; none of it is a reason to stop a
+run or to start debugging in front of the client.
 
 ---
 
@@ -190,6 +202,54 @@ valid; a binary anywhere else does not, and the failure is silent.
    ```
 3. **The phone**: join the hotspot, open the captain URL `demo-up` printed, paste
    the pair token it printed.
+
+#### 0.1a The full build + seed sequence, in order
+
+**Do NOT run `docker compose` or `demo-reset.ps1` yourself before this.**
+`demo-up.ps1 -Fresh` runs **both** — `docker compose up -d postgres redis nats`
+at step `[2/10]` (`scripts/demo-up.ps1:549`) and `demo-reset.ps1 -Force` at step
+`[3/10]` (`:582`). Running either by hand first resets the stack **twice**: it
+costs several minutes and the second reset discards the first.
+
+```powershell
+# 1. Hotspot up first -- the till's LAN address is read from whatever network
+#    exists when the bootstrap runs, and written into apps\kds\.env.dev.
+
+# 2. The edge key. Yours; apps\pos\.env.dev is deny-ruled to agents.
+$env:HOLLER_DB_KEY_HEX = '<64-hex-key from apps\pos\.env.dev>'
+
+# 3. Close the till, or demo-reset refuses and names the pid.
+Get-Process holler-pos -ErrorAction SilentlyContinue    # expect nothing
+
+# 4. THE ONE COMMAND. Brings up docker, resets cloud + edge, bootstraps,
+#    builds the captain page, enrols the WAITER device, starts POS and KDS.
+.\scripts\demo-up.ps1 -Release -Fresh -DbKeyHex $env:HOLLER_DB_KEY_HEX -LanHost <hotspot-ip>
+
+# 5. Prove the RUNNING binary is the one just built. StartTime is not BuiltAt:
+#    a process started a minute ago can be running a binary from yesterday.
+Get-Process holler-pos | Select-Object Id, StartTime, @{n='BuiltAt';e={(Get-Item $_.Path).LastWriteTime}}
+
+# 6. The phone: join the hotspot, open the captain URL demo-up printed,
+#    paste the pair token it printed. A NEW token every run -- the WAITER
+#    credential is rotated deliberately.
+
+# 7. The KDS: demo-up starts it. Confirm a ticket lands on it before the client
+#    is in the room, not during step 1.
+```
+
+**Day-of variant, once the three clean runs are done:** swap `-Release` for
+`-Release -NoBuild`. It skips the compile only — `check-release-binary.ps1`
+**still runs** and refuses a stale binary, so `-NoBuild` cannot serve yesterday's
+UI by accident. Use it to save the build minutes between the last rehearsal and
+the client, never to skip a rebuild after a code change.
+
+**What this build contains, confirmed against HEAD:**
+
+| Fix | In HEAD? | Where |
+|---|---|---|
+| Sync banner split — muted "kept locally" count apart from the attention list | **YES** | `apps/pos/src/components/SyncBlockedBanner.tsx:194` (`b328f21`, `bece32f`) |
+| Fix 5 — the cloud seeds no ledger rows, so the till's replay does not 409 | **YES** | `ca9ac49`, `aa79396` |
+| **D14 — the till's stale kitchen status** | **YES, but NEVER VISUALLY VERIFIED** | `97bc3dc`, three parts. Live update is a LAN hub subscription forwarded as a Tauri event (`apps/pos/src/lib/kitchenEvents.ts`), **not** a polling interval — so grepping for `refetchInterval` finds nothing and proves nothing. VV-012/013/014 are the rows that close it |
 
 `scripts\demo-up.ps1` is the one command. It runs the preflight, the reset
 (`-Fresh`), the backend, the bootstrap, the captain build, the WAITER
@@ -406,6 +466,92 @@ Join the hotspot, open the captain page, pair with the WAITER token.
 > on the ticket: void it on the till.** The real fix is `client_order_id` on
 > both write routes and is filed in `docs/pilot-readiness.md` §0 for before the
 > first pilot — deliberately not done before the demo.
+
+---
+
+## Known on stage — read before the first rehearsal
+
+Everything here is **expected**, has a workaround, and is not a reason to stop a
+run or to debug in front of the client. The rule that covers all of it: **carry
+on, note the row, look afterwards.** Debugging live is what turns one odd screen
+into a dead demo.
+
+### The sync banner
+
+**A "kept locally" count is EXPECTED and is not an error.** The till keeps
+kitchen tickets and stock counts locally because this build has no route to send
+them (A7 — `edge/sync/src/route.rs` maps only `order` and `table_session`). The
+banner shows them as a **muted count**, deliberately apart from the attention
+list. Nothing is lost and nothing is broken.
+
+- **Muted "N records kept locally"** — expected on every run. Say "those are
+  kitchen and stock-count records kept on the till" if asked. Carry on.
+- **The attention list must be EMPTY.** That is the line that matters.
+- **If a red attention line appears: DO NOT RETRY, and do not press anything to
+  clear it.** Note the order id and the reason, carry on with the next step, and
+  hand the note over afterwards. A retry in front of the client spends time and
+  changes nothing — the row is already blocked and the banner is already telling
+  the truth.
+
+### Captain (the phone)
+
+- **A send error on the phone: check the KDS BEFORE re-tapping Send.** The order
+  may well have reached the kitchen and only the phone's confirmation was lost.
+  Re-tapping blind is how one order becomes two tickets in front of the client.
+  - Ticket on the KDS → the send worked. Move on.
+  - No ticket → tap Send once more.
+  - Two tickets → **void on the till**, not on the phone. The captain has no
+    bill screen and no void (deliberate, reduced scope).
+- **The phone needs a fresh pair token after EVERY `demo-up` run.** The WAITER
+  credential is rotated on every run by design. An old token fails to pair; that
+  is not a defect (D15 is the reason the rotation exists).
+
+### Billing
+
+- **NEVER bill a bar item.** Alcohol sits on a **zero-rate** tax profile — VAT
+  is inexpressible under the frozen contract — so a bar line prints a tax figure
+  of **0** that is correct and looks wrong. Order food only. This is a content
+  rule, not a bug to fix tonight.
+
+### The till after the kitchen bumps a ticket — D14, FIXED BUT NEVER SEEN
+
+**D14 is fixed in this build (`97bc3dc`) and has never been observed in the
+Tauri release window.** The till subscribes to its own LAN kitchen hub and the
+Kitchen panel invalidates on each frame (`apps/pos/src/lib/kitchenEvents.ts`) —
+deliberately **not** a polling interval, so there is no interval to wait out.
+The open-defect register still says D14 is OPEN; it was compiled about two hours
+before the fix landed and is stale on this row.
+
+**Expected:** with the Kitchen panel open and untouched, bumping on the KDS
+changes the till's status **on its own, within a second or two**.
+
+- **Alt-tabbing does not test it and does not fix it.** `refetchOnWindowFocus`
+  is false, so a focus change refetches nothing.
+- **If the status does NOT update on its own:** remount the panel — navigate
+  away and back — and carry on. Note it; do not debug it live.
+- **Verify this in rehearsal, not on stage** (VV-012/013/014). If rehearsal
+  shows it stale, end step 1 on the **KDS bump** and do not invite the client to
+  look at the till for confirmation.
+
+### Other register rows a step can touch
+
+| Row | What you would see | On stage |
+|---|---|---|
+| **D12** | An order in admin with a total and **no lines** | Cause fixed; only stale rows show it. A clean `-Fresh` reset clears them — which is why the cut-off is three runs *from a reset* |
+| **D21** | The banner sized per outbox row, so one order with four queued events reads as four problems, taking ~28% of the window | Cosmetic, expected. Do not resize anything |
+| **D16** | A login that fails with a correct password | Rate limiting, indistinguishable from a wrong password **by design** (ADR-012). `demo-up` widens the budget to 50. Wait, do not re-type faster |
+| **D23** | The POS icon is a 16×16 placeholder | Expected. Needs artwork |
+| **D22 / A6** | — | No exit path seals the edge database, so a plaintext `edge.db` is left beside the `.enc` on close. Harmless tonight; do not take a backup and assume it is current |
+| **D18** | The cloud seeder failing loudly on a variant index | Only if a seed change ships without `-Force`. It fails loudly rather than silently, which is why it is not a blocker |
+
+### What is NOT in the demo, so do not go looking
+
+- **Stock variance in admin is CUT** (ruled 2026-09-12): no cloud read route
+  exists for inventory. Step 5 is the **Orders tab and the received GRN**, those
+  two only.
+- **Stock for step 3 is shown ON THE TILL**, not in admin.
+- The cloud's ledger is **empty until the till replays into it** — that is the
+  intended state after `ca9ac49`, not a missing seed.
 
 ---
 
