@@ -235,24 +235,39 @@ func TestSeedCatalogueFromFile_WritesEveryTable(t *testing.T) {
 			enteredQty, baseQty, lineTotal)
 	}
 
-	var receiptLedgerCount int
+	// THE CLOUD SEEDER WRITES NO stock_ledger_entry ROWS, from either key.
+	// Both of these counts asserted 1 until the seeded ledger was removed:
+	// the ledger is edge-authoritative (§50.1, ADR-018), the outlet mints
+	// every row's id and entry_seq, and a cloud that seeds its own copy under
+	// its own ids makes the outlet's first ranged replay miss on id, INSERT,
+	// and hit UNIQUE (outlet_id, entry_seq) -- a 409 before any real stock
+	// movement exists.
+	//
+	// Counted across the WHOLE TABLE rather than by the two ids the fixture
+	// used, because a count keyed on the old ids would stay green if some
+	// other path in this package started seeding ledger rows under different
+	// ones -- which is the defect, under a new name.
+	var anyLedgerCount int
 	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM stock_ledger_entry WHERE source_grn_id = $1 AND origin = 'GOODS_RECEIPT'`,
-		"0191afff-0000-7000-8000-000000000060").Scan(&receiptLedgerCount); err != nil {
-		t.Fatalf("counting GRN stock_ledger_entry rows: %v", err)
+		`SELECT count(*) FROM stock_ledger_entry`).Scan(&anyLedgerCount); err != nil {
+		t.Fatalf("counting stock_ledger_entry rows: %v", err)
 	}
-	if receiptLedgerCount != 1 {
-		t.Fatalf("expected exactly 1 GOODS_RECEIPT stock_ledger_entry row, got %d", receiptLedgerCount)
+	if anyLedgerCount != 0 {
+		t.Fatalf("the cloud seeder must write no stock_ledger_entry rows (they arrive by replay from the edge that minted them), got %d", anyLedgerCount)
 	}
 
-	var openingStockCount int
+	// The receipt DOCUMENT is still seeded, and must be: source_grn_id is a
+	// real FK to goods_receipt_note(id) (postgres/0028), the receipt's own
+	// movements are the first marks the outlet replays, and the seeded GRN
+	// produces no outbox row so it cannot arrive by replay instead.
+	var grnDocCount int
 	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM stock_ledger_entry WHERE id = $1 AND origin = 'MANUAL'`,
-		"0191afff-0000-7000-8000-000000000070").Scan(&openingStockCount); err != nil {
-		t.Fatalf("counting opening_stock stock_ledger_entry row: %v", err)
+		`SELECT count(*) FROM goods_receipt_note WHERE id = $1`,
+		"0191afff-0000-7000-8000-000000000060").Scan(&grnDocCount); err != nil {
+		t.Fatalf("counting goods_receipt_note: %v", err)
 	}
-	if openingStockCount != 1 {
-		t.Fatalf("expected exactly 1 opening-stock stock_ledger_entry row, got %d", openingStockCount)
+	if grnDocCount != 1 {
+		t.Fatalf("the goods receipt document must still be seeded (stock_ledger_entry.source_grn_id references it), got %d", grnDocCount)
 	}
 
 	var supplierItemCount int

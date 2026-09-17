@@ -98,7 +98,10 @@ type seedFile struct {
 	// Deliberate exception (seed/README.md, "The goods receipt is a
 	// deliberate exception"). Nullable: a seed file with no receipt yet is
 	// legal while the demo content is still being authored.
-	GoodsReceipt *seedGoodsReceipt      `json:"goods_receipt"`
+	GoodsReceipt *seedGoodsReceipt `json:"goods_receipt"`
+	// DECODED AND DISCARDED, like goods_receipt.ledger_entries: the edge
+	// seeder writes these 38 opening movements and replays them: the cloud
+	// does not author ledger rows. See seedStockLedgerEntry's doc comment.
 	OpeningStock []seedStockLedgerEntry `json:"opening_stock"`
 }
 
@@ -346,10 +349,10 @@ type seedGoodsReceipt struct {
 	BusinessDate     string        `json:"business_date"`
 	Notes            *string       `json:"notes"`
 	Lines            []seedGRNLine `json:"lines"`
-	// LedgerEntries are the stock movements the receipt produced, if the
-	// emitter chooses to carry them here rather than in top-level
-	// opening_stock. Optional: this file never invents a ledger row the JSON
-	// did not supply.
+	// LedgerEntries are the stock movements the receipt produced. DECODED
+	// AND DISCARDED -- the cloud seeds no stock_ledger_entry rows; they
+	// arrive by replay from the outlet that minted them. Present so the
+	// shared catalogue still parses. See seedStockLedgerEntry's doc comment.
 	LedgerEntries []seedStockLedgerEntry `json:"ledger_entries"`
 }
 
@@ -369,11 +372,19 @@ type seedGRNLine struct {
 	ExpiryDate           *string `json:"expiry_date"`
 }
 
-// seedStockLedgerEntry mirrors stock_ledger_entry. entry_seq is optional in
-// the JSON: if the emitter supplies one it is used verbatim, otherwise this
-// seeder assigns the next value from a local, outlet-scoped counter. Either
-// way the value actually written is never invented silently -- it is either
-// the author's value or a value this file is responsible for and documents.
+// seedStockLedgerEntry mirrors stock_ledger_entry.
+//
+// NOTHING IN THIS PACKAGE WRITES ONE. The ledger is edge-authoritative
+// (§50.1, ADR-018): the outlet mints each row's id and entry_seq and the
+// cloud's copy arrives by replay. The type is kept only so the shared
+// catalogue's `opening_stock` and `goods_receipt.ledger_entries` keys still
+// DECODE -- the edge seeder reads those rows, so they stay in the file, and
+// a Go struct that could not parse them would make the cloud seeder reject
+// a catalogue that is correct for its actual reader.
+//
+// If a future change makes the cloud write these rows again, it is
+// reintroducing the split-authority defect this comment exists to prevent:
+// see seedGoodsReceiptAndOpeningStock in seedwrite.go.
 type seedStockLedgerEntry struct {
 	ID                       string  `json:"id"`
 	OutletID                 *string `json:"outlet_id"`

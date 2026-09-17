@@ -9,9 +9,10 @@ import (
 )
 
 // seedCatalogueFromFile writes every "Shared" table from seed/README.md into
-// Postgres, EXCEPT the goods receipt and opening stock -- see
-// seedGoodsReceiptAndOpeningStock below for why those wait until after
-// seed() runs. Cloud-only rows (role, role_permission, app_user, user_role)
+// Postgres, EXCEPT the goods receipt -- see seedGoodsReceiptAndOpeningStock
+// below for why that waits until after seed() runs, and for why the stock
+// ledger is seeded by nothing on this side at all.
+// Cloud-only rows (role, role_permission, app_user, user_role)
 // are NOT written here -- they stay hand-written in seed() in main.go, which
 // reads the tenantID/outletID constants this file validates the JSON against.
 //
@@ -358,24 +359,42 @@ func seedCatalogueFromFile(ctx context.Context, pool postgres.Pool, sf *seedFile
 	return nil
 }
 
-// seedGoodsReceiptAndOpeningStock writes the goods receipt (and its ledger
-// entries) plus any standalone opening_stock rows. Split out from
-// seedCatalogueFromFile deliberately: goods_receipt_note.received_by_user_id
-// and stock_ledger_entry.created_by_user_id reference app_user, and the
+// seedGoodsReceiptAndOpeningStock writes the goods receipt document. Split
+// out from seedCatalogueFromFile deliberately:
+// goods_receipt_note.received_by_user_id references app_user, and the
 // cloud-only identity rows (role, app_user, user_role) are seeded by seed()
 // in main.go, which itself depends on tenant/outlet already existing. The
 // call order in main() is therefore: seedCatalogueFromFile, then seed(),
 // then this function.
+//
+// THE CLOUD SEEDS NO stock_ledger_entry ROWS AT ALL. The ledger is
+// edge-authoritative (§50.1, ADR-018): the outlet mints every row's id and
+// its entry_seq, and the cloud's copy arrives by replay. This seeder used to
+// write the same 45 opening movements itself, under ITS OWN row ids, and the
+// two stores then disagreed about which row held which mark -- so the
+// outlet's first ranged replay looked its row up by id, found nothing,
+// INSERTed, and hit UNIQUE (outlet_id, entry_seq). A 409 on the sync banner
+// before a single real movement had been made.
+//
+// Seeding them here at all was the defect: it made the cloud a second writer
+// of an edge-owned sequence. The rows are not seeded under corrected ids
+// either -- they are simply not the cloud's to write. A freshly seeded cloud
+// holds an EMPTY ledger until an edge replays into it, and that is the
+// intended state, not a missing step.
+//
+// The goods receipt DOCUMENT is a different matter and stays. It is
+// cloud-seeded because stock_ledger_entry.source_grn_id is a real foreign
+// key to goods_receipt_note(id) (postgres/0028_m5_procurement.sql), and the
+// receipt's own ledger rows are the FIRST marks the outlet replays -- so a
+// cloud without the document fails the replay on entry_seq 1. It cannot
+// arrive by replay instead: the seeder writes it through
+// Db::record_goods_receipt, not the _with_outbox variant, so it produces no
+// outbox row and pump_procurement never sees it. Both stores use the
+// catalogue's GRN_ID, so there is no second copy to conflict with.
 func seedGoodsReceiptAndOpeningStock(ctx context.Context, pool postgres.Pool, sf *seedFile) error {
 	if sf.GoodsReceipt != nil {
 		if err := seedGoodsReceiptFromFile(ctx, pool, sf.GoodsReceipt); err != nil {
 			return err
-		}
-	}
-
-	if len(sf.OpeningStock) > 0 {
-		if err := seedStockLedgerEntries(ctx, pool, sf.Outlet.ID, sf.OpeningStock); err != nil {
-			return fmt.Errorf("seeding opening_stock: %w", err)
 		}
 	}
 
@@ -417,80 +436,10 @@ func seedGoodsReceiptFromFile(ctx context.Context, pool postgres.Pool, gr *seedG
 		}
 	}
 
-	if len(gr.LedgerEntries) > 0 {
-		if err := seedStockLedgerEntries(ctx, pool, gr.OutletID, gr.LedgerEntries); err != nil {
-			return fmt.Errorf("seeding goods_receipt ledger entries: %w", err)
-		}
-	}
-
-	return nil
-}
-
-// seedStockLedgerEntries writes rows into stock_ledger_entry. entry_seq is
-// taken from the JSON when the emitter supplies one; otherwise this
-// function assigns the next value from the outlet's current high-water
-// mark, so a re-run against an already-seeded database and a fresh bootstrap
-// both produce a row satisfying UNIQUE (outlet_id, entry_seq).
-func seedStockLedgerEntries(ctx context.Context, pool postgres.Pool, defaultOutletID string, entries []seedStockLedgerEntry) error {
-	var nextSeq int64
-	needsCounter := false
-	for _, e := range entries {
-		if e.EntrySeq == nil {
-			needsCounter = true
-			break
-		}
-	}
-	if needsCounter {
-		row := pool.QueryRow(ctx,
-			`SELECT COALESCE(MAX(entry_seq), 0) FROM stock_ledger_entry WHERE outlet_id = $1`, defaultOutletID)
-		if err := row.Scan(&nextSeq); err != nil {
-			return fmt.Errorf("reading current stock_ledger_entry high-water mark: %w", err)
-		}
-	}
-
-	for _, e := range entries {
-		outletID := defaultOutletID
-		if e.OutletID != nil && *e.OutletID != "" {
-			outletID = *e.OutletID
-		}
-
-		entrySeq := e.EntrySeq
-		if entrySeq == nil {
-			nextSeq++
-			v := nextSeq
-			entrySeq = &v
-		}
-
-		occurredAt, err := parseTime(e.OccurredAt)
-		if err != nil {
-			return fmt.Errorf("stock_ledger_entry %s occurred_at: %w", e.ID, err)
-		}
-		businessDate, err := parseDate(e.BusinessDate)
-		if err != nil {
-			return fmt.Errorf("stock_ledger_entry %s business_date: %w", e.ID, err)
-		}
-
-		if _, err := pool.Exec(ctx,
-			`INSERT INTO stock_ledger_entry (
-				id, outlet_id, entry_seq, inventory_item_id, inventory_item_name, dimension,
-				entry_type, origin, quantity_applied_micro,
-				recipe_id, recipe_version, recipe_name,
-				reason_code, note, occurred_at, business_date, created_by_user_id,
-				modifier_delta_id, modifier_name, modifier_delta_version,
-				unit_cost_paise, line_total_paise,
-				source_grn_id, source_purchase_return_id, source_stock_transfer_out_id, source_stock_count_id
-			 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
-			 ON CONFLICT (id) DO NOTHING`,
-			e.ID, outletID, *entrySeq, e.InventoryItemID, e.InventoryItemName, e.Dimension,
-			e.EntryType, e.Origin, e.QuantityMicro,
-			e.RecipeID, e.RecipeVersion, e.RecipeName,
-			e.ReasonCode, e.Note, occurredAt, businessDate, e.CreatedByUserID,
-			e.ModifierDeltaID, e.ModifierName, e.ModifierDeltaVersion,
-			e.UnitCostPaise, e.LineTotalPaise,
-			e.SourceGrnID, e.SourcePurchaseReturnID, e.SourceStockTransferOutID, e.SourceStockCountID); err != nil {
-			return fmt.Errorf("seeding stock_ledger_entry %s: %w", e.ID, err)
-		}
-	}
+	// gr.LedgerEntries is deliberately NOT written -- see
+	// seedGoodsReceiptAndOpeningStock. The receipt's stock movements are the
+	// edge's rows to mint and replay; writing them here made the cloud a
+	// second writer of entry_seq and 409'd the outlet's first replay.
 
 	return nil
 }
