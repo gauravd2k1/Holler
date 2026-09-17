@@ -1,5 +1,11 @@
 # The client demonstration: three phones, one laptop, one restaurant
 
+> **SUPERSEDED FOR DEMO USE BY [`docs/demo-runbook.md`](demo-runbook.md).**
+> That one file runs cold laptop to finished demo: hotspot, IP, encryption key,
+> firewall, the one command, device roles, waiter credentials, on-stage
+> workarounds and shutdown. **Read it on the day, not this.** This file is kept
+> for its detail and its history.
+
 This is the document you speak from. It tells you what to show, what to say,
 and why each thing you are showing is genuinely difficult to build. That last
 part matters. Anyone can show a screen. Explaining why the screen was hard to

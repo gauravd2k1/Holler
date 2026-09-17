@@ -1,5 +1,11 @@
 # LAN setup — Wednesday-morning demo checklist
 
+> **SUPERSEDED FOR DEMO USE BY [`docs/demo-runbook.md`](demo-runbook.md).**
+> That one file runs cold laptop to finished demo: hotspot, IP, encryption key,
+> firewall, the one command, device roles, waiter credentials, on-stage
+> workarounds and shutdown. **Read it on the day, not this.** This file is kept
+> for its detail and its history.
+
 **Who this is for:** the operator, alone, on demo morning, with no agent
 available. Every command here is runnable as written in **Windows PowerShell
 5.1**. Every port, variable and URL below was read out of the repository and is

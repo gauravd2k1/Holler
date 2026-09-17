@@ -1,5 +1,11 @@
 # Demo script
 
+> **SUPERSEDED FOR DEMO USE BY [`docs/demo-runbook.md`](demo-runbook.md).**
+> That one file runs cold laptop to finished demo: hotspot, IP, encryption key,
+> firewall, the one command, device roles, waiter credentials, on-stage
+> workarounds and shutdown. **Read it on the day, not this.** This file is kept
+> for its detail and its history.
+
 **Work item 7 of `docs/demo-kickoff.md`.** This file is what gets read aloud and
 followed click by click on the day.
 

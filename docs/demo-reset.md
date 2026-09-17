@@ -1,5 +1,11 @@
 # `scripts/demo-reset.ps1` — the one command that resets cloud + edge
 
+> **SUPERSEDED FOR DEMO USE BY [`docs/demo-runbook.md`](demo-runbook.md).**
+> That one file runs cold laptop to finished demo: hotspot, IP, encryption key,
+> firewall, the one command, device roles, waiter credentials, on-stage
+> workarounds and shutdown. **Read it on the day, not this.** This file is kept
+> for its detail and its history.
+
 Implements `seed/README.md`'s "The one command" and demo-kickoff work item 2
 (T10). Read `seed/README.md`'s "The one command" section first -- it is the
 binding spec this script follows, in order.
