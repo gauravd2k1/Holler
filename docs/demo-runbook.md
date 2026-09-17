@@ -413,6 +413,58 @@ VITE_ADMIN_TENANT_ID=0191a000-0000-7000-8000-000000000001
 Vite reads env **at startup only** — after editing, stop `pnpm dev` and start it
 again.
 
+#### "Failed to fetch" on the sign-in form — it is the BROWSER, not the login
+
+Observed 2026-09-17, mid-rehearsal: the admin console signed in fine from **VS
+Code's Simple Browser** and failed in **Chrome at the same URL**. Everything
+server-side measured clean at the time — `/health` 200 on both `127.0.0.1` and
+`[::1]`, preflight from `http://localhost:5175` returning 204 with
+`Access-Control-Allow-Origin`, `.env.local` correct, and Vite started hours
+after that file was last written.
+
+**Read the message first, because the two failures look alike and are not:**
+
+| On screen | Means |
+|---|---|
+| **"Failed to fetch"** | The request never left the browser. Nothing to do with the password |
+| **"Sign-in failed. Check the email and password…"** | The API answered and refused. A real credential or rate-limit problem (`session.ts:85`) |
+| **"VITE_ADMIN_API_BASE_URL is not set."** | A missing variable in `.env.local` (`api.ts:35`) |
+
+For "Failed to fetch", in order, a minute each:
+
+1. **Chrome's HTTPS-First mode** — the top suspect. It upgrades
+   `http://localhost:8080` to `https://`, nothing answers, and `fetch` rejects.
+   `chrome://settings/security` → turn **off** "Always use secure connections".
+   Hard-reload.
+2. **An extension.** Ad-blockers and privacy extensions block cross-port
+   localhost requests. Try an **Incognito window** (extensions off by default);
+   if it works there, run the demo in Incognito or disable them.
+3. **A stale service worker** on 5175. DevTools ▸ Application ▸ Service workers
+   ▸ **Unregister**, then Ctrl+Shift+R.
+4. **The address bar.** `http://127.0.0.1:5175` or the LAN address is refused by
+   CORS; only `http://localhost:5175` is allowed.
+
+To name the cause outright, paste this into the DevTools Console **on the admin
+page** — it is the same call the form makes:
+
+```js
+fetch("http://localhost:8080/auth/login", {
+  method: "POST",
+  headers: { "content-type": "application/json", "x-tenant-id": "0191a000-0000-7000-8000-000000000001" },
+  body: JSON.stringify({ email: "owner@holler.test", password: "holler123", outlet_id: "0191a000-0000-7000-8000-00000000000a" })
+}).then(r => r.text()).then(t => console.log("OK", t)).catch(e => console.error("ERR", e));
+```
+
+`OK {...}` means the API is fine and the app's own bundle is at fault. A CORS
+message names the origin; a `net::ERR_` code points at HTTPS-First or an
+extension.
+
+**THE DEMO-DAY ANSWER IS NOT TO DEBUG THIS. Show the admin console in VS Code's
+Simple Browser**, which is a clean Electron profile with no extensions and no
+HTTPS-First, on the same laptop. Edge is a second option for the same reason.
+Step 5 needs only the Orders tab and the received GRN on screen, and neither
+cares which browser draws it.
+
 ### 4.1 The KDS, on a phone or the second laptop
 
 Open `http://192.168.137.1:5174/` in the browser. Nothing to configure:
@@ -598,6 +650,8 @@ the state the client will see.
 
 | Symptom | Almost always | Do this |
 |---|---|---|
+| Nothing on `http://localhost:5175` | `demo-up` never starts the admin console | Start it by hand — §4.3 |
+| Admin sign-in says **"Failed to fetch"** | The browser blocked the request — Chrome HTTPS-First, an extension, a service worker, or the wrong origin in the address bar | §4.3. **On the day: show it in VS Code's Simple Browser instead and move on** |
 | KDS loads, never connects | Stale `VITE_KDS_LAN_URL`, or wrong `-LanHost` | Delete that line from `apps\kds\.env.dev`; re-run with the address `lan-ip.ps1` ranks first |
 | Phone cannot open any URL | Firewall, or phone on mobile data / another network | Section 1.3 rules; turn mobile data off; confirm the phone is on the hotspot |
 | Phones refused even though the firewall rules exist | `-RemoteAddress` names the wrong network — usually your WiFi lease's subnet instead of the **hotspot adapter's**, often because the rules were added with the hotspot off | `Get-NetFirewallRule -DisplayName "Holler demo -*" \| Get-NetFirewallAddressFilter` and compare against the phone's own IP. Remove and re-add with the right `$subnet` |
