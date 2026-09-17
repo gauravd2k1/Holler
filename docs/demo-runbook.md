@@ -349,7 +349,69 @@ All ports are on the till laptop. Substitute your hotspot address.
 | **Till** | The Tauri window `demo-up` opened | `cashier@holler.test` / `holler123` |
 | **KDS** | `http://192.168.137.1:5174/` | none |
 | **Captain** (phones) | `http://192.168.137.1:9320/` | paste the pair token |
-| **Admin console** | `http://localhost:5175` (or the LAN address from laptop 2) | `owner@holler.test` / `holler123` |
+| **Admin console** | `http://localhost:5175` — **started by hand, see 4.3** | `owner@holler.test` / `holler123` |
+
+### 4.0 Every credential, in one place
+
+All of these are **development credentials seeded by `devseed`**. They exist
+only in a dev/demo database and are never a default anywhere else.
+
+| What | Username | Password | Used for |
+|---|---|---|---|
+| **Cashier** | `cashier@holler.test` | `holler123` | The till. This is the one you sign in with on stage |
+| **Owner** | `owner@holler.test` | `holler123` | The admin console, and `add-waiter.ps1`'s enrolment call (it needs `outlet.manage`) |
+| **Buyer** | `buyer@holler.test` | `holler123` | Procurement approvals up to ₹50,000. Not used in the demo story |
+| **Captain** (phones) | — | the **pair token** `demo-up` printed | Paste once; stored in `localStorage`. A new token every run |
+| **KDS** | — | a device token in `apps\kds\.env.dev` | Written by the bootstrap; you never type it |
+| **Postgres** | `holler` | `holler_dev` | Only if you open the database by hand |
+
+The owner's approval ceiling is ₹500,000 and the buyer's ₹50,000, which is why
+they are separate accounts.
+
+### 4.3 The admin console is NOT started by `demo-up`
+
+`demo-up.ps1` starts the till and the KDS. It does **not** start the admin
+console — it only tells the backend to accept that origin
+(`-AdminOrigin`, `demo-up.ps1:209`). Start it yourself, in its own terminal,
+and leave that terminal open:
+
+```powershell
+cd C:\Code\Holler\apps\admin
+pnpm dev
+```
+
+Then `http://localhost:5175`.
+
+**Open it as `localhost`, never `127.0.0.1` and never the LAN IP.** The backend
+allows exactly one origin and CORS compares the string, so a preflight from
+`http://127.0.0.1:5175` is refused with no `Access-Control-Allow-Origin` — and
+the browser reports that as **"Failed to fetch"** on the sign-in form, which
+looks like a rejected password rather than a blocked request. (A real rejected
+password says *"Sign-in failed. Check the email and password…"*.)
+
+To use it from the second laptop, restart the backend allowing both origins —
+the setting is a comma-separated list (`config.go:62`) — and add the 5175
+firewall rule from §1.3:
+
+```powershell
+.\scripts\demo-up.ps1 -Release -NoBuild -DbKeyHex $env:HOLLER_DB_KEY_HEX -LanHost 192.168.137.1 `
+  -AdminOrigin "http://localhost:5175,http://192.168.137.1:5175"
+```
+
+Note: **no `-Fresh`**, so your seeded state survives.
+
+`apps\admin\.env.local` must carry all three of these
+(`apps/admin/src/lib/api.ts:28-31`); a missing one shows a named config error
+rather than a fetch failure:
+
+```
+VITE_ADMIN_API_BASE_URL=http://localhost:8080
+VITE_ADMIN_OUTLET_ID=0191a000-0000-7000-8000-00000000000a
+VITE_ADMIN_TENANT_ID=0191a000-0000-7000-8000-000000000001
+```
+
+Vite reads env **at startup only** — after editing, stop `pnpm dev` and start it
+again.
 
 ### 4.1 The KDS, on a phone or the second laptop
 
