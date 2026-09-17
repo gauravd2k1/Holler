@@ -96,7 +96,7 @@ impl HttpClient {
     pub fn post_json(&self, path: &str, body: &Value) -> Result<Reply, SyncError> {
         self.with_one_transport_retry(|| {
             let req = self.authorize(self.agent.post(&self.url(path)));
-            req.send_json(body.clone())
+            req.send_json(body.clone()).map_err(Box::new)
         })
         .map(|resp| Reply::Ok(resp.into_json::<Value>().unwrap_or(Value::Null)))
         .or_else(|e| match e {
@@ -116,23 +116,33 @@ impl HttpClient {
     ///
     /// An HTTP STATUS is never retried — the server answered, and answering
     /// twice would not change its mind.
+    /// `attempt` hands back a BOXED `ureq::Error`. The error is 272 bytes,
+    /// so an unboxed one would sit in the `Result` of every call this client
+    /// makes, success or not (`clippy::result_large_err`). It never escapes
+    /// this function — both arms convert it to a [`SyncError`] — so the box
+    /// costs one allocation on a path that has already done I/O, and the
+    /// match below is unchanged arm for arm.
     fn with_one_transport_retry(
         &self,
-        attempt: impl Fn() -> Result<ureq::Response, ureq::Error>,
+        attempt: impl Fn() -> Result<ureq::Response, Box<ureq::Error>>,
     ) -> Result<ureq::Response, SyncError> {
         match attempt() {
             Ok(resp) => Ok(resp),
-            Err(ureq::Error::Status(status, resp)) => Err(SyncError::HttpStatus {
-                status,
-                code: error_code_of(resp),
-            }),
-            Err(ureq::Error::Transport(_)) => match attempt() {
-                Ok(resp) => Ok(resp),
-                Err(ureq::Error::Status(status, resp)) => Err(SyncError::HttpStatus {
+            Err(e) => match *e {
+                ureq::Error::Status(status, resp) => Err(SyncError::HttpStatus {
                     status,
                     code: error_code_of(resp),
                 }),
-                Err(ureq::Error::Transport(_)) => Err(SyncError::HttpTransport),
+                ureq::Error::Transport(_) => match attempt() {
+                    Ok(resp) => Ok(resp),
+                    Err(e) => match *e {
+                        ureq::Error::Status(status, resp) => Err(SyncError::HttpStatus {
+                            status,
+                            code: error_code_of(resp),
+                        }),
+                        ureq::Error::Transport(_) => Err(SyncError::HttpTransport),
+                    },
+                },
             },
         }
     }
@@ -148,7 +158,7 @@ impl HttpClient {
         // node as offline before a single row was attempted.
         self.with_one_transport_retry(|| {
             let req = self.authorize(self.agent.get(&self.url(path)));
-            req.call()
+            req.call().map_err(Box::new)
         })?
         .into_json::<T>()
         .map_err(|e| SyncError::Json(serde_json_error_from_io(e)))
