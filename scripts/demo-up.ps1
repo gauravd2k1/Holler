@@ -710,6 +710,12 @@ Write-Step 5 "bootstrap -- edge seed, env files, POS and KDS credentials"
 $resolvedSinkDir = if ($PrinterFileSinkDir -ne "") { $PrinterFileSinkDir } else { Join-Path $repoRoot ".dev-prints" }
 
 $bootstrapArgs = @{ WithBilling = $true; PrinterFileSinkDir = $resolvedSinkDir }
+# ALWAYS PASSED. This script's $DatabaseUrl is the single source: it already
+# goes to demo-reset.ps1 (whose DROP SCHEMA target is derived from it) and to
+# the backend. The bootstrap seeds the same cloud and must be told the same
+# database, or it falls back to its own default and two steps of one run can
+# name two databases.
+$bootstrapArgs["DatabaseUrl"] = $DatabaseUrl
 if ($DbKeyHex -ne "")     { $bootstrapArgs["DbKeyHex"] = $DbKeyHex }
 $bootstrapArgs["LanHost"] = $LanHost   # always set now -- resolved above
 if ($OutletFile -ne "")   { $bootstrapArgs["OutletFile"] = $OutletFile }

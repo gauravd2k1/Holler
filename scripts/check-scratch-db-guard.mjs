@@ -139,6 +139,74 @@ for (const step of ciSteps) {
   }
 }
 
+// EVERY POWERSHELL CALLER OF THE SEEDER NAMES ITS DATABASE TOO.
+//
+// The CI loop above covered workflow steps and nothing else, so when 29e3ead
+// removed devseed's default the PowerShell callers were missed entirely:
+// `scripts\dev-bootstrap.ps1` ran `go run ./cmd/devseed` with no database at
+// all and died at its step [2/4] with "devseed: no database named" -- on a
+// demo morning, in the middle of `demo-up.ps1 -Fresh`. The guard existed, it
+// was green, and it could not see the caller that broke.
+//
+// A caller satisfies this by either passing --database-url or assigning
+// $env:DATABASE_URL, and in both cases the value must come from a
+// $DatabaseUrl parameter rather than a literal: a second literal is a second
+// source, and demo-reset.ps1's DROP SCHEMA target is derived from that same
+// parameter. That is the whole point of D13's fix.
+const seederCallers = [
+  "scripts/dev-bootstrap.ps1",
+  "scripts/demo-reset.ps1",
+];
+for (const file of seederCallers) {
+  const text = read(file);
+  // Comments do not run -- same rule the CI loop above learned.
+  const executable = text
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*#/.test(line))
+    .join("\n");
+
+  for (const raw of executable.split(/\r?\n/)) {
+    // QUOTED TEXT DOES NOT RUN, the same way comments do not. demo-reset.ps1's
+    // -WhatIf branch prints the words "would run 'go run ./cmd/devseed'", and
+    // the first version of this loop read that message as a call and demanded
+    // a flag on a Write-Note. A check that reads prose as behaviour produces
+    // the noise that teaches people to ignore it -- this file already learned
+    // that once, one loop up.
+    const line = raw.replace(/"[^"]*"/g, '""').replace(/'[^']*'/g, "''");
+    if (!/go run \.\/cmd\/devseed/.test(line)) continue;
+    if (!/--database-url/.test(line)) {
+      failures.push(
+        `${file} runs the Go seeder without --database-url. devseed has no default any more, so this call names no database and refuses at run time -- which is exactly how dev-bootstrap.ps1 broke a demo morning while this guard was green.`,
+      );
+      continue;
+    }
+    if (!/--database-url\s+\$DatabaseUrl\b/.test(line)) {
+      failures.push(
+        `${file} passes --database-url from something other than $DatabaseUrl. It must come from the same parameter demo-reset.ps1 derives its DROP SCHEMA target from -- a second source can drift from the one the destructive step reads (D13).`,
+      );
+    }
+  }
+
+  // The parameter itself must exist, or the line above is passing an empty
+  // string and the refusal moves from the caller to the seeder.
+  if (/go run \.\/cmd\/devseed/.test(executable) && !/\[string\]\$DatabaseUrl\s*=/.test(text)) {
+    failures.push(
+      `${file} calls the Go seeder but declares no [string]$DatabaseUrl parameter, so there is nothing for a caller to override and no single source for the database name.`,
+    );
+  }
+}
+
+// demo-up.ps1 must hand its own $DatabaseUrl down to the bootstrap. It already
+// passes it to demo-reset.ps1 and to the backend; the bootstrap seeds the same
+// cloud, and a run whose steps name two databases is the defect this whole
+// file exists for.
+const demoUp = read("scripts/demo-up.ps1");
+if (!/\$bootstrapArgs\["DatabaseUrl"\]\s*=\s*\$DatabaseUrl/.test(demoUp)) {
+  failures.push(
+    `scripts/demo-up.ps1 does not pass DatabaseUrl to dev-bootstrap.ps1. It passes one to demo-reset.ps1 and to the backend, so without this the bootstrap falls back to its own default and one run can seed two different databases.`,
+  );
+}
+
 if (failures.length > 0) {
   console.error("scratch-database guard check FAILED:\n");
   for (const f of failures) console.error(`  - ${f}`);

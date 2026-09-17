@@ -651,7 +651,12 @@ if ($WhatIf) {
         $env:DATABASE_URL = $DatabaseUrl
         # The RUN-LOCAL catalogue emitted above, so the cloud gets this
         # installation's restaurant rather than the committed example one.
-        $seedOutput = go run ./cmd/devseed -seed-file $runCatalogue
+        # --database-url NAMED as well as exported. The env var above still
+        # covers anything else in this scope that reads it, but the seeder
+        # itself is told outright: an ambient DATABASE_URL is how a seed run
+        # lands on a database nobody chose, and every other caller of this
+        # seeder now names it the same way.
+        $seedOutput = go run ./cmd/devseed -seed-file $runCatalogue --database-url $DatabaseUrl
         $devseedExit = $LASTEXITCODE
     } finally {
         Pop-Location

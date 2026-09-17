@@ -33,6 +33,22 @@ param(
     # real one.
     [string]$RepoRoot = "",
 
+    # The cloud database this run seeds. PASSED TO devseed EXPLICITLY, never
+    # left to an ambient DATABASE_URL.
+    #
+    # `backend/cmd/devseed` used to default to this same URL itself. 29e3ead
+    # removed that default deliberately -- a seeder that picks a database when
+    # nobody named one is the shape behind D13 and D19 -- and this caller was
+    # missed, so step [2/4] died with "devseed: no database named" on a demo
+    # morning. scripts\check-scratch-db-guard.mjs covered the CI steps and not
+    # the PowerShell callers; it covers them now.
+    #
+    # Same default and same spelling as scripts\demo-reset.ps1 and
+    # scripts\demo-up.ps1, and demo-up passes ITS value down rather than
+    # letting this default apply -- one source, not a second variable that can
+    # drift from the one the destructive DROP SCHEMA reads.
+    [string]$DatabaseUrl = "postgres://holler:holler_dev@localhost:5432/holler?sslmode=disable",
+
     # Where the POS keeps its edge database. Must match Tauri's app_data_dir()
     # for identifier com.holler.pos, or the POS will open a different (empty)
     # database than the one this script seeds.
@@ -774,7 +790,10 @@ try {
     # -seed-file points at the RUN-LOCAL catalogue emitted in step 0b, not the
     # committed seed/demo-outlet.json, so the cloud is seeded with this
     # installation's restaurant rather than the example one.
-    $seedOutput = go run ./cmd/devseed -seed-file $runCatalogue
+    # --database-url is NAMED, never inherited from the environment: devseed
+    # has no default (29e3ead) and an ambient DATABASE_URL is how a seed run
+    # lands on a database nobody chose.
+    $seedOutput = go run ./cmd/devseed -seed-file $runCatalogue --database-url $DatabaseUrl
     if ($LASTEXITCODE -ne 0) { throw "backend devseed failed" }
 } finally {
     Pop-Location
