@@ -243,17 +243,22 @@ func TestSeedCatalogueFromFile_WritesEveryTable(t *testing.T) {
 	// and hit UNIQUE (outlet_id, entry_seq) -- a 409 before any real stock
 	// movement exists.
 	//
-	// Counted across the WHOLE TABLE rather than by the two ids the fixture
-	// used, because a count keyed on the old ids would stay green if some
-	// other path in this package started seeding ledger rows under different
-	// ones -- which is the defect, under a new name.
-	var anyLedgerCount int
+	// Counted for the FIXTURE'S OUTLET rather than by the two row ids the
+	// fixture used: a count keyed on those ids would stay green if some other
+	// path in this package started seeding ledger rows under different ones,
+	// which is the same defect under a new name. Scoped to the outlet rather
+	// than the whole table because `go test ./...` runs every package against
+	// one database and the inventory and procurement suites write ledger rows
+	// of their own for their own outlets -- a bare `count(*)` here reads
+	// those and fails for a reason that has nothing to do with seeding.
+	var seededLedgerCount int
 	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM stock_ledger_entry`).Scan(&anyLedgerCount); err != nil {
-		t.Fatalf("counting stock_ledger_entry rows: %v", err)
+		`SELECT count(*) FROM stock_ledger_entry WHERE outlet_id = $1`,
+		sf.Outlet.ID).Scan(&seededLedgerCount); err != nil {
+		t.Fatalf("counting stock_ledger_entry rows for the seeded outlet: %v", err)
 	}
-	if anyLedgerCount != 0 {
-		t.Fatalf("the cloud seeder must write no stock_ledger_entry rows (they arrive by replay from the edge that minted them), got %d", anyLedgerCount)
+	if seededLedgerCount != 0 {
+		t.Fatalf("the cloud seeder must write no stock_ledger_entry rows for the seeded outlet (they arrive by replay from the edge that minted them), got %d", seededLedgerCount)
 	}
 
 	// The receipt DOCUMENT is still seeded, and must be: source_grn_id is a
