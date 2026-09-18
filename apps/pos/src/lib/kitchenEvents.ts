@@ -29,6 +29,37 @@ export const KITCHEN_CHANGED_EVENT = "holler://kitchen-changed";
 export async function onKitchenChanged(
   onChange: (kotId: string) => void,
 ): Promise<UnlistenFn> {
+  // NO-OP OUTSIDE A TAURI WINDOW, AND THE DEV SERVER IS OUTSIDE ONE.
+  //
+  // `listen` reaches for `window.__TAURI_INTERNALS__.transformCallback`,
+  // which exists only inside the Tauri webview. In a plain browser it throws
+  // `Cannot read properties of undefined (reading 'transformCallback')`
+  // during module evaluation.
+  //
+  // This never fired while the only caller was `KotsPanel`, mounted just
+  // while a Kitchen panel was expanded -- a browser sitting on the login
+  // screen never reached it. Moving the subscription to `App` (2026-09-18)
+  // made it run at boot on every screen, and `pos-dev-server-smoke` caught it
+  // on the first push: two `pageerror`s, with `tsc`, eslint, `pnpm build` and
+  // all 264 unit tests green. The third runtime again, exactly as CLAUDE.md
+  // says.
+  //
+  // The fix is here rather than in the smoke test's ignore list, which is
+  // deliberately empty: filtering the error would buy a green suite and cost
+  // the ability to see this whole class of failure.
+  //
+  // The warn is deliberate. If this ever fires INSIDE the Tauri window the
+  // till goes quietly back to being stale, which is the failure mode this
+  // whole track exists to remove -- so it says so in the console rather than
+  // returning a silent no-op that reads as success.
+  if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) {
+    console.warn(
+      `${KITCHEN_CHANGED_EVENT}: not running inside a Tauri window, so kitchen ` +
+        `updates will not arrive. Expected in a browser or the dev server; a DEFECT in the app.`,
+    );
+    return () => {};
+  }
+
   return listen<string>(KITCHEN_CHANGED_EVENT, (event) => {
     onChange(event.payload);
   });
