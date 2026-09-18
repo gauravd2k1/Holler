@@ -209,13 +209,24 @@ const RECIPE_STONE_BOWL_SAUCE_ID: &str = "0191e850-0000-7000-8000-000000000007";
 /// order. Seeded unconditionally (menu_item.tax_profile_id is a NOT-NULL-
 /// enforceable foreign key once set, and PRAGMA foreign_keys is ON — see
 /// pragma.rs), but deliberately `is_default: false` and with NO `tax_rule`
-/// children here: a `tax_rule` needs a `compliance_version_id`, and the
-/// only `compliance_version` this crate seeds lives behind
-/// `HOLLER_SEED_BILLING=1` in `seed_billing` below, precisely so the
-/// harness's bare (non-billing) devseed run never gains a second
-/// `compliance_version` row and never sees its own resolution silently
-/// redirected to this one (`tax::resolve_compliance_version` has no
-/// tie-break beyond insertion order). Menu items below reference these
+/// children here: a `tax_rule` needs a `compliance_version_id`.
+///
+/// CORRECTED 2026-09-18. This comment used to promise that the only
+/// `compliance_version` this crate seeds lives behind
+/// `HOLLER_SEED_BILLING=1`, "precisely so the harness's bare (non-billing)
+/// devseed run never gains a second `compliance_version` row". **THAT HAS
+/// NOT BEEN TRUE SINCE THE SHARED CATALOGUE CARRIED THE TAX CONFIG**:
+/// `write_tax` seeds `COMPLIANCE_VERSION_ID` UNCONDITIONALLY (see `seed`'s
+/// own comment on why it is not gated), so a bare devseed run DOES write one.
+///
+/// The e2e harness believed this comment, minted a second
+/// `compliance_version` of its own with the same `effective_from`, and — since
+/// `tax::resolve_compliance_version` has no tie-break beyond insertion order —
+/// had every invoice resolve to devseed's version, under which the harness's
+/// own tax profile has no rules at all. `e2e-scenario` was red on that for
+/// weeks. Fixed at the harness end (it now RESOLVES the version instead of
+/// assuming one); this comment is corrected so the next reader is not misled
+/// the same way. Menu items below reference these
 /// profiles explicitly (never `None`), so the `is_default` fallback these
 /// items would otherwise trigger is never reached — only the untouched
 /// legacy ITEM_CHAI_ID/ITEM_THALI_ID pair relies on that fallback.

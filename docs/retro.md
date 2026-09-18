@@ -1899,3 +1899,81 @@ The local-green habit is the seductive part: every individual claim was true. Wh
 4. **When a test starts running for the first time, read what it says before believing the fix.** The value of fixing `crash_durability` was not a green test; it was a failing assertion nobody had been able to see.
 5. **A CHECK THAT READS PROSE AS BEHAVIOUR, OR IS SATISFIED BY PROSE, IS NOISE.** Both halves happened within a day, in checks written the same day. `check-tests-need-no-gitignored-files` accepted a file that merely MENTIONED `outlet.example.toml`, so deleting the line that actually passed it still passed — satisfied by prose. `check-scratch-db-guard` matched `cargo run --bin devseed` inside a COMMENT and reported two innocent `cargo check` steps — prose read as behaviour. The first kind is a guard that cannot fire; the second trains people to ignore the output, which is the same outcome by a slower route. A check reads what RUNS, and is satisfied only by what runs.
 6. **AN ASSERTION'S MESSAGE IS A STATED INVARIANT, NOT AN OBSERVATION. Report what the probe showed, not what the assertion says it guards.** Within the hour this entry was written, the one newly-visible `crash_durability` failure was reported as a durability defect — "an uncommitted receipt consumes a GRN number" — because that is what the assertion's message says. It is not what happened. `grn_sequence_next_value` reads `MAX(next_value)` across the whole table, unfiltered, while every helper beside it filters by the receipt under test, and the dev seed issues a REAL goods receipt that advances the counter to 1 before the test starts. `left: 1, right: 0` meant "the seed happened". A probe asserting the counter's value BEFORE any crash settled it in one run. The invoice counter was checked at the same time and is correct: minted and committed in one transaction.
+
+---
+
+## 2026-09-18 — A kickoff's citations are claims, not facts, and a hand-written enumeration is a list with something missing
+
+### What happened
+
+An autonomous run executed three planned M7 tracks from `docs/m7-kickoff.md`,
+which had been written the day before from the demo feedback. **Three of its
+load-bearing citations were wrong, and one of them had already been about to
+buy the wrong fix.**
+
+- **B0's cause.** The kickoff said the e2e harness "mints its own compliance
+  version instead of reusing devseed's". The repository said the opposite:
+  minting its own was the DESIGNED behaviour, resting on a devseed comment
+  promising that the only `compliance_version` devseed writes is gated behind
+  `HOLLER_SEED_BILLING=1`. That promise had gone stale — `write_tax` seeds one
+  unconditionally — so the outlet carried two versions with identical
+  `effective_from`, and `resolve_compliance_version` has no tie-break beyond
+  insertion order. The fix that follows from the kickoff (hardcode devseed's
+  id) would have worked and desynced again at the next renumbering. The fix
+  that follows from the code asks the resolver.
+- **B1's CORS citation.** `backend/internal/.../config.go:62` **does not
+  exist.** The middleware already takes a list and exact-matches; it
+  deliberately has no default at all, for a reason written in its own header.
+  The single origin is a dev-script default at `scripts/dev-up.ps1:62`. A
+  reader sent to `config.go` finds nothing and concludes the whole claim is
+  stale.
+- **B1's "three branches already exist in code".** Two exist. The third — *the
+  request never left the browser* — does not, and it is the entire defect: a
+  `fetch` rejection surfaces as a raw `TypeError` and the screen reports a
+  blocked request in the words of a wrong password.
+
+Separately, and the more useful half: **B2-T0's hand-written sink enumeration
+said there were FOUR write paths into the edge database that bypass the
+webview. The guard written an hour later, in the same track, found a FIFTH on
+its first run** — `pull_and_apply_aggregator_orders`, which is demo step 6's
+own path — by refusing a query key nobody had ruled on. The same run refused
+two more unruled keys and caught one ruling the enumeration had asserted from
+memory and got wrong.
+
+### Why it is worth an entry
+
+**The enumeration lesson already in this log — "enumerate the sinks, not the
+surfaces" — is right and was followed, and it still produced an incomplete
+list.** Enumerating by reading is better than enumerating by recall and is
+still a human pass over a large surface. What actually closed the set was a
+check over something the code already enforces: the key registry. The
+difference is not diligence; it is which side of the machine the enumeration
+lives on.
+
+And a planning document written by the same process that writes code inherits
+none of its verification. `docs/m7-kickoff.md` was careful, specific and
+internally consistent, and three of its file:line citations did not survive
+contact with the tree. A citation is a claim with a checkable form, which makes
+it more dangerous than a vague one, because it reads as already checked.
+
+### Rules
+
+1. **VERIFY A KICKOFF'S CITATIONS AGAINST THE TREE BEFORE BUILDING ON THEM,
+   AND SAY SO OUT LOUD WHEN ONE FAILS.** A plan document and the repository
+   disagreeing is already covered ("the repo is the authority"); what is new is
+   that the disagreement hides inside a `file.go:62` that looks like evidence.
+   Open the file. If the line is not there, the claim is unsupported, not
+   merely mis-numbered — and the fix that was derived from it is suspect too.
+2. **CORRECT THE PLANNING DOCUMENT IN PLACE, IN THE SAME COMMIT, AND LEAVE
+   WHAT IT USED TO SAY.** A corrected belief that survives in the document the
+   next session reads first is not corrected. All three corrections here are
+   written into `docs/m7-kickoff.md` beside the original wording.
+3. **A HAND-WRITTEN ENUMERATION IS A DRAFT UNTIL A CHECK CLOSES IT.** Write the
+   guard in the same track as the enumeration, not after it, and expect the
+   guard to find something the enumeration missed. If it finds nothing, suspect
+   the guard rather than congratulating the list.
+4. **When the guard corrects the enumeration, correct the enumeration and say
+   it was wrong.** `docs/m7-b2-sinks.md` says FIVE now and records that it said
+   FOUR, because the next reader's real question is how complete it is, and a
+   document that has been caught once and says so is more trustworthy than one
+   that has never been tested.

@@ -117,10 +117,23 @@ pilot, and *that* is the M7 work:
    typing `pnpm dev` in `apps/admin` (`CLAUDE.md`, *Rebuilding the stack from
    cold*, step 4). A client cannot operate that, and a Vite dev server is a
    fourth runtime with its own failure modes.
-2. **CORS allows exactly one origin and compares the string**
-   (`backend/internal/.../config.go:62`). `http://127.0.0.1:5175` is refused
-   with no `Access-Control-Allow-Origin` and the browser reports that as
-   "Failed to fetch", which reads as a rejected password.
+2. **The deployed allowlist carries exactly one origin.**
+   `http://127.0.0.1:5175` is refused with no `Access-Control-Allow-Origin`
+   and the browser reports that as "Failed to fetch", which reads as a
+   rejected password.
+
+   **CORRECTED 2026-09-18 — this said "CORS allows exactly one origin and
+   compares the string (`backend/internal/.../config.go:62`)". THERE IS NO
+   SUCH FILE OR LINE.** The middleware
+   (`backend/internal/platform/httpx/cors.go:34`) already takes
+   `allowedOrigins []string` and exact-matches each, and it deliberately has
+   **no default at all** — its own comment rejects one for the same reason
+   `dev-bootstrap.ps1` has no default database key, so that a misconfigured
+   deployment fails closed rather than serving every origin. The single origin
+   comes from the DEV SCRIPT: `scripts/dev-up.ps1:62`,
+   `-AdminOrigin = "http://localhost:5175"`, passed as
+   `HOLLER_CORS_ALLOWED_ORIGINS`. **So B1-T3 is a one-line dev-script change,
+   not a backend change**, and it must not add a default on the server side.
 3. **The sign-in form cannot tell the operator which of the three failures
    happened.** The three messages are documented side by side in the runbook but
    the screen does not distinguish a blocked request from a refused credential.
@@ -136,7 +149,7 @@ a one-line correction.
 |---|---|
 | **B1-T0** | Reproduce the Chrome failure once with the Console snippet at `docs/demo-runbook.md:450` so the cause **names itself**. Record which of the four it was. This is the falsifier: without it, every fix below is speculative |
 | **B1-T1** | Serve `apps/admin` as a **static build** from the backend (or a static file server), not a dev server. Removes the 5175 origin entirely and with it the whole class |
-| **B1-T2** | Make the sign-in form distinguish *request never left* from *API refused* from *missing config*, on screen, in the operator's words. `session.ts:85`, `api.ts:35` already hold the three branches |
+| **B1-T2** | Make the sign-in form distinguish *request never left* from *API refused* from *missing config*, on screen, in the operator's words. **CORRECTED 2026-09-18: only TWO branches exist, and the missing one is the whole defect.** `api.ts:34-38` (`configError()`) covers the missing variable and `session.ts:80-87` covers the API refusal; **the TRANSPORT branch does not exist** — a `fetch` rejection surfaces as the raw `TypeError: Failed to fetch`, caught nowhere and re-worded nowhere. **Do NOT touch the credential message**: it is deliberately undifferentiated per ADR-012, because a distinguishable throttle response is an account-enumeration oracle |
 | **B1-T3** | Widen the CORS allowlist handling so a same-machine origin variant is not a silent refusal. `-AdminOrigin` already accepts a comma-separated list; the default does not |
 
 ### Contract impact
