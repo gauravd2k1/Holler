@@ -233,6 +233,26 @@ jobs:
       # RED on a drifted name and on a replanted table.
       - name: the till and the edge agree on the kitchen event and its state machine
         run: node scripts/check-kitchen-event-drift.mjs
+      # EVERY REACT-QUERY KEY IN THE POS CARRIES A RULING ABOUT STALENESS.
+      # The till is no longer the only writer of its own state: the KDS writes
+      # KOT status over the LAN socket, the captain writes orders over HTTP,
+      # the config apply writes the menu and the aggregator pull writes orders
+      # -- all inside the POS process, none through a Tauri mutation, so
+      # nothing invalidates anything. Two defects have already come out of
+      # that (the kitchen panel that only updated on a remount, and a waiter's
+      # order that never reached the order list) and both were invisible to
+      # every suite.
+      #
+      # This check cannot prove a screen is fresh -- a listener's MOUNT POINT
+      # decides that and no static check sees it. What it does is refuse a key
+      # nobody has ruled on, which is the shape both defects had. Watched
+      # letting a one-hour poll through, and watched RED on three planted
+      # violations: an unruled key, a "poll" ruling with its interval removed,
+      # and an "event" ruling with its invalidation removed. It also found a
+      # fifth write path the hand-written enumeration had missed
+      # (docs/m7-b2-sinks.md).
+      - name: every POS query key is ruled on for staleness
+        run: node scripts/check-query-key-freshness.mjs
       # A TEST MAY ONLY DEPEND ON FILES THE REPOSITORY CONTAINS. Third
       # occurrence of one class: a "scratch" run that overwrote the operator's
       # real .env.dev, seed_offline_sale defaulting to the gitignored

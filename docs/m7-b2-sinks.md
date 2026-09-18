@@ -53,9 +53,19 @@ looked like two defects:
 
 ## The sinks
 
-Four writers reach the edge database inside the POS process without a Tauri
+**FIVE** writers reach the edge database inside the POS process without a Tauri
 mutation running in the webview. Nothing else does: the till's own commands all
 invalidate through `queryClient` at their call sites.
+
+> **This section said FOUR when it was first written, and the fifth was found
+> by B2-T3's guard on its first run** — by refusing a key (`unacceptedAggregatorOrders`)
+> that this hand-written enumeration had not ruled on. That is the enumeration
+> lesson turned on its author: a list assembled by reading is a list with
+> something missing, and the only reliable finder is a check over a closed set
+> the code already enforces. Two other keys (`grnGaps`,
+> `purchaseOrderReceiptProgress`) and one wrong ruling (`blockedReplays`, which
+> this document had recorded as polled and which is not) came out of the same
+> run.
 
 ### 1. The LAN server — `set_kot_status`
 
@@ -102,7 +112,17 @@ and only while a panel is expanded. 2a and 2b have no channel at all.
 | **Writes** | `outbox` row state, `sync_state` cursors, `sync_replay_block` |
 | **Announces itself?** | **NO** |
 | **Keys that must react** | `blockedOutboxRows`, `unroutableOutboxRows`, `persistentlyFailingOutboxRows`, `blockedReplays` |
-| **Status** | **COVERED, by polling.** All four are on a 15s `refetchInterval` (`queries.ts:129,151,162,217`), written for exactly this reason — "a condition someone must act on has to reach the screen without anyone navigating to it" |
+| **Status** | **PARTLY COVERED.** Three of the four are on a 15s `refetchInterval` (`queries.ts:129,151,162`), written for exactly this reason — "a condition someone must act on has to reach the screen without anyone navigating to it". **`blockedReplays` is NOT**, which this document asserted before B2-T3's guard checked it |
+
+### 5. The aggregator pull
+
+| | |
+|---|---|
+| **Entry** | `edge/sync/src/aggregator.rs:75` `pull_and_apply_aggregator_orders`, called from the A5 worker loop (`edge/sync/src/worker.rs:313`) under the same database lock as the outbox pump and the config apply |
+| **Writes** | `aggregator_order`, and the `order` rows those documents become (`repo::apply_aggregator_order`, `aggregator.rs:120`) |
+| **Announces itself?** | **NO** |
+| **Keys that must react** | `unacceptedAggregatorOrders`, `orders` |
+| **Status** | **UNCOVERED.** An aggregator order lands in the edge database from a background loop and reaches no screen until something else refetches. **This is demo step 6's path** — the fake ONDC order that arrives and is accepted on the till |
 
 ### Not a sink, recorded so nobody re-derives it
 
@@ -114,7 +134,7 @@ same reason as sink 4 and needs nothing further.
 
 ## The verdict per key
 
-Every key in `queryKeys` (`apps/pos/src/lib/queries.ts:34-59`), against the
+Every key in `queryKeys` (`apps/pos/src/lib/queries.ts:34-63`), against the
 sinks above.
 
 | Key | Reachable by a non-webview writer | Covered? |
@@ -124,9 +144,12 @@ sinks above.
 | `kots(id)` | 1, 2c | **PARTIAL** — live while the panel is expanded, which is when it is rendered. Arguably sufficient; stated rather than assumed |
 | `tables` | 2a (opens a table session) | **NO** |
 | `menuItems`, `menuCategories`, `menuItemVariants`, `stations`, `discountDefinitions`, `outletIdentity` | 3 | **NO** |
-| `blockedOutboxRows`, `unroutableOutboxRows`, `persistentlyFailingOutboxRows`, `blockedReplays` | 4 | **YES** — 15s poll |
-| `failedPrintJobs` | not a sink | **YES** — 5s poll |
-| `invoices(id)`, `payments(id)`, `cashShift(id)`, `currentStock`, `stockDeductionGaps`, `kotStatusTransitions`, `stockCount*` | none | **N/A** — every writer is a till-side mutation that invalidates at its call site |
+| `blockedOutboxRows`, `unroutableOutboxRows`, `persistentlyFailingOutboxRows` | 4 | **YES** — 15s poll |
+| `blockedReplays` | 4 | **NO** — its three siblings are polled and this one is not. Recorded here as polled before the guard checked it |
+| `unacceptedAggregatorOrders` | 5 | **NO** — demo step 6's path |
+| `purchaseOrderReceiptProgress(id)` | 3 (`purchase_order` travels on `GET /sync/config` since 0.6.0) | **NO** |
+| `failedPrintJobs`, `currentStock` | not sinks | **YES** — 5s and 15s polls for the till's own async work |
+| `grnGaps`, `invoices(id)`, `payments(id)`, `cashShift(id)`, `stockDeductionGaps`, `kotStatusTransitions`, `stockCount*` | none | **N/A** — every writer is a till-side mutation that invalidates at its call site |
 
 ---
 
@@ -155,3 +178,29 @@ The shape the repository already chose, and the one to extend:
 `m7-b2-stale-screens` is a stopgap that covers sinks 1, 2a, 2b and 2c for one
 key at the cost of a permanent 5s tick. It is the right shape only if 1 and 2
 are not done; it should not land alongside them.
+
+
+---
+
+## The guard that holds this document to the code
+
+`scripts/check-query-key-freshness.mjs` (B2-T3), wired into `.githooks/pre-push`
+and the `contracts` CI job. Every key in `queryKeys` must carry a ruling —
+`poll`, `event`, `uncovered` with the track that owns it, or `exempt` with a
+reason. A key added without one fails the build.
+
+**What it was watched doing.** Three planted violations, each caught: a new
+unruled key, a `poll` ruling whose `refetchInterval` was removed, and an
+`event` ruling whose invalidation was removed. And, before it was trusted,
+what it LETS THROUGH:
+
+- **A `refetchInterval` of one hour passes as a poll.** It checks for the
+  property, not for a sane value.
+- **A key ruled `event` passes even when its listener is mounted somewhere it
+  will not be** — which is the live defect right now. No static check sees a
+  mount point.
+- **A new SINK with no new key passes.** The guard is key-centric; if a sixth
+  writer starts writing rows behind an already-ruled key, nothing fires.
+
+Those three are the honest boundary of it. The first check — refuse an unruled
+key — is the one with teeth, and it is the one that found sink 5.

@@ -29,6 +29,7 @@ node scripts/check-scratch-db-guard.mjs
 node scripts/check-tests-need-no-gitignored-files.mjs
 node scripts/check-order-source-drift.mjs
 node scripts/check-event-type-drift.mjs
+node scripts/check-query-key-freshness.mjs
 
 echo "pre-push: drift checks OK."
 echo "pre-push: REMINDER -- these are static checks only. They say nothing about"
