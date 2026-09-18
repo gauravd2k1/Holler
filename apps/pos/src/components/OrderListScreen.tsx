@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import type { Kot, KotStatus } from "@holler/contracts";
@@ -9,7 +9,6 @@ import {
   useStationsQuery,
   queryKeys,
 } from "../lib/queries";
-import { onKitchenChanged } from "../lib/kitchenEvents";
 import { formatPaiseAsRupees } from "../domain/money";
 import { confirmOrder, sendOrderToKitchen, transitionKotStatus } from "../lib/tauri";
 import { hasPermission } from "../domain/permissions";
@@ -298,34 +297,17 @@ function KotsPanel({
     ? buildKotTransitionTable(transitionsQuery.data)
     : undefined;
 
-  // D14 PART 1: THE TILL HEARS THE KITCHEN.
+  // D14 PART 1 LIVES IN `KitchenChangedListener` NOW, MOUNTED IN `App`.
   //
-  // The KDS bumps a ticket, the LAN hub inside this process broadcasts it, and
-  // the Rust side forwards it here. Before this, nothing did: this query has
-  // no `refetchInterval` and `App.tsx` sets `refetchOnWindowFocus: false`, so
-  // the only way to a fresh value was unmounting and remounting the panel.
-  // Observed in VV-009 — the KDS acknowledged ticket #1 and the till went on
-  // showing New, and offering a button the edge then refused.
+  // It was here, and being here was the defect: React mounts this panel only
+  // while its order's Kitchen view is expanded, so with every panel collapsed
+  // — the normal state — nothing in the process was subscribed and the
+  // `holler://kitchen-changed` event was emitted into nothing. Moving it up
+  // fixes the order list too, which is the same defect wearing a second bug
+  // report (`docs/m7-b2-sinks.md`).
   //
-  // Invalidate, never patch from the payload: the event carries an id and the
-  // row is re-read through the same command as always.
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    let cancelled = false;
-    void onKitchenChanged(() => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.kots(orderId) });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.orders });
-    }).then((fn) => {
-      // The effect may have been torn down while `listen` was in flight;
-      // without this the listener outlives the panel and leaks one per open.
-      if (cancelled) fn();
-      else unlisten = fn;
-    });
-    return () => {
-      cancelled = true;
-      unlisten?.();
-    };
-  }, [orderId, queryClient]);
+  // Nothing replaces it here. A second subscription at panel level would be
+  // two listeners invalidating the same keys.
 
   async function handleTransition(kot: Kot, newStatus: KotStatus) {
     if (!canOfferKotTransition(principal)) return;

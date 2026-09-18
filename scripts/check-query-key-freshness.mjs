@@ -34,9 +34,11 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
+const NL = String.fromCharCode(10);
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const QUERIES = join(repoRoot, "apps/pos/src/lib/queries.ts");
-const ORDER_LIST = join(repoRoot, "apps/pos/src/components/OrderListScreen.tsx");
+const LISTENER = join(repoRoot, "apps/pos/src/components/KitchenChangedListener.tsx");
+const APP = join(repoRoot, "apps/pos/src/App.tsx");
 
 // The ruling for every key, from docs/m7-b2-sinks.md. `sinks` names the
 // non-webview writers that can reach it, so a reader can check the ruling
@@ -53,15 +55,19 @@ const RULINGS = {
   // NOTE THE KNOWN GAP: the listener lives in KotsPanel, which is mounted only
   // while a Kitchen panel is expanded. This guard cannot see mount points; the
   // gap is recorded in docs/m7-b2-sinks.md and is B2-T1's work.
-  kots: { mechanism: "event", sinks: ["LAN set_kot_status", "captain send"] },
+  // The listener is `KitchenChangedListener`, mounted in `App` so it is alive
+  // on every screen. It invalidates every "kots" key by predicate rather than
+  // one order's, because a bump can land on an order whose panel is closed.
+  kots: { mechanism: "event", match: '"kots"', sinks: ["LAN set_kot_status", "captain send"] },
 
   // --- reachable and NOT yet covered -------------------------------------
   // Declared with `mechanism: "uncovered"` rather than omitted: an omission
   // reads as an oversight, a declaration reads as a debt with an owner.
   orders: {
-    mechanism: "uncovered",
-    sinks: ["LAN set_kot_status", "captain create/add/send"],
-    reason: "B2-T1. Covered only via the KotsPanel listener, which is unmounted when no panel is expanded.",
+    mechanism: "event",
+    match: "queryKeys.orders",
+    alsoPolled: true,
+    sinks: ["LAN set_kot_status", "captain create/add/send", "aggregator pull"],
   },
   order: {
     mechanism: "uncovered",
@@ -119,7 +125,8 @@ const RULINGS = {
 const fail = [];
 
 const queriesSrc = readFileSync(QUERIES, "utf8");
-const orderListSrc = readFileSync(ORDER_LIST, "utf8");
+const listenerSrc = readFileSync(LISTENER, "utf8");
+const appSrc = readFileSync(APP, "utf8");
 
 // ---- parse the queryKeys object ------------------------------------------
 const keysBlock = queriesSrc.match(/export const queryKeys = \{([\s\S]*?)\n\};/);
@@ -179,15 +186,43 @@ for (const [key, ruling] of Object.entries(RULINGS)) {
 }
 
 // ---- 3. an `event` ruling needs the key inside a kitchen-event listener ---
+const listenerBody = listenerSrc.match(/onKitchenChanged\(\(\) => \{([\s\S]*?)\}\)\.then/);
 for (const [key, ruling] of Object.entries(RULINGS)) {
   if (ruling.mechanism !== "event") continue;
-  const listener = orderListSrc.match(/onKitchenChanged\(\(\) => \{([\s\S]*?)\}\)/);
-  if (!listener || !listener[1].includes(`queryKeys.${key}`)) {
+  const needle = ruling.match ?? `queryKeys.${key}`;
+  if (!listenerBody || !listenerBody[1].includes(needle)) {
     fail.push(
-      `queryKeys.${key} is ruled "event" but is not invalidated inside an onKitchenChanged callback in OrderListScreen.tsx.\n` +
-        `      A key whose only freshness mechanism is an event nobody fires for it is stale by construction.`,
+      [
+        `queryKeys.${key} is ruled "event" but ${needle} does not appear inside the onKitchenChanged callback in KitchenChangedListener.tsx.`,
+        "      A key whose only freshness mechanism is an event nobody fires for it is stale by construction.",
+      ].join(NL),
     );
   }
+  // A ruling of "event" plus a fallback poll must have BOTH. The poll covers
+  // the sinks no event reaches (a captain order before it is sent, an
+  // aggregator order applied by the worker); dropping it silently would leave
+  // the ruling claiming a coverage the code no longer has.
+  if (ruling.alsoPolled) {
+    const body = hookBodyFor(key);
+    if (body === null || !/refetchInterval\s*:/.test(body)) {
+      fail.push(`queryKeys.${key} is ruled "event" with alsoPolled, but its hook has no refetchInterval fallback.`);
+    }
+  }
+}
+
+// THE LISTENER'S MOUNT POINT IS THE DEFECT THIS WHOLE TRACK CAME FROM, so it
+// is checked rather than trusted: `KitchenChangedListener` must be mounted in
+// `App`, which is alive on every screen. Mounted in a component React
+// unmounts -- which is exactly what `KotsPanel` was -- the event reaches
+// nothing and every "event" ruling above becomes a claim no other check sees.
+if (!/<KitchenChangedListener\s*\/>/.test(appSrc)) {
+  fail.push(
+    [
+      "KitchenChangedListener is not mounted in apps/pos/src/App.tsx.",
+      '      Every "event" ruling above depends on it being alive on every screen. It lived in KotsPanel',
+      "      until 2026-09-18, mounted only while a Kitchen panel was expanded, and that WAS the defect.",
+    ].join(NL),
+  );
 }
 
 // ---- 4. `uncovered` and `exempt` must carry a reason ----------------------

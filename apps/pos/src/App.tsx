@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider } from "@tanstack/react-router";
 import { router } from "./routes/router";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { KitchenChangedListener } from "./components/KitchenChangedListener";
 import { PerfOverlay } from "./components/PerfOverlay";
 
 const queryClient = new QueryClient({
@@ -24,6 +25,11 @@ export function App() {
   return (
     <ErrorBoundary>
       <QueryClientProvider client={queryClient}>
+        {/* Subscribes to `holler://kitchen-changed` for the whole app. It
+            lived in `KotsPanel` until 2026-09-18, which React mounts only
+            while a Kitchen panel is expanded — so with every panel collapsed
+            nothing was listening. Renders nothing; it exists to invalidate. */}
+        <KitchenChangedListener />
         <RouterProvider router={router} />
         {/* Hidden unless Ctrl+Alt+P has been pressed. Rendered here so it is
             available on every screen, not just the two that stamp the

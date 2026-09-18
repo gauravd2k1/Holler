@@ -92,8 +92,24 @@ export function useTablesQuery() {
   return useQuery({ queryKey: queryKeys.tables, queryFn: listTables });
 }
 
+/** Event-driven first, polled as a FALLBACK.
+ *
+ * `KitchenChangedListener` invalidates this key the moment anything touches a
+ * KOT, which covers the KDS bump and a captain order once it reaches the
+ * kitchen. The poll covers what no event reaches: a captain order that has
+ * only been created or added to (`captain.rs` writes it inside this very
+ * process, so no Tauri mutation runs in the webview) and an aggregator order
+ * applied by the sync worker. See `docs/m7-b2-sinks.md`.
+ *
+ * 15s, not 5s, and deliberately: the event carries the cases a human is
+ * watching for, so the poll is a backstop rather than the mechanism, and it
+ * matches the interval the outbox queries already use. */
 export function useOrdersQuery() {
-  return useQuery({ queryKey: queryKeys.orders, queryFn: listOrders });
+  return useQuery({
+    queryKey: queryKeys.orders,
+    queryFn: listOrders,
+    refetchInterval: 15000,
+  });
 }
 
 export function useStationsQuery() {

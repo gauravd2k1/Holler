@@ -32,11 +32,18 @@ including one made by the captain.**
 
 The defect is narrower and is a MOUNTING defect, not a missing channel:
 
-> **The listener lives in `KotsPanel` (`OrderListScreen.tsx:280`), which is
+> **The listener lived in `KotsPanel` (`OrderListScreen.tsx:280`), which is
 > mounted only while an order's Kitchen panel is expanded.** Collapsed — which
 > is the normal state, and the only state during the demo failure — nothing in
-> the process is listening, so the event is emitted into nothing and the orders
-> list is never invalidated.
+> the process was listening, so the event was emitted into nothing and the
+> orders list was never invalidated.
+>
+> **FIXED 2026-09-18.** The subscription is now `KitchenChangedListener`,
+> mounted in `App` inside `QueryClientProvider` and outside the router, so it
+> is alive on every screen and across every navigation. It invalidates
+> `orders` and **every** `kots` key by predicate, because a bump can land on an
+> order whose panel is closed or on a screen that is not the order list. The
+> guard checks the mount point rather than trusting it.
 
 That single fact explains both reported symptoms at once, and explains why they
 looked like two defects:
@@ -75,7 +82,7 @@ invalidate through `queryClient` at their call sites.
 | **Writes** | `kot.status`, `kot_status_history` |
 | **Announces itself?** | **YES** — writes through the hub, which broadcasts `KotUpserted`, which `lib.rs:86` forwards as `holler://kitchen-changed` |
 | **Keys that must react** | `kots(orderId)`, `orders` |
-| **Status** | **Channel exists; listener is mounted in the wrong place.** Covered only while a Kitchen panel is expanded |
+| **Status** | **COVERED** since 2026-09-18 — `KitchenChangedListener`, mounted in `App`. Was covered only while a Kitchen panel was expanded |
 
 ### 2. The captain HTTP API — three write routes
 
@@ -91,8 +98,12 @@ All three run inside the POS process (`apps/pos/src-tauri/src/captain.rs`) and
 **Keys that must react:** `orders`, `order(orderId)`, `kots(orderId)`,
 `tables` (a captain order opens a table session).
 
-**Status: UNCOVERED.** 2c is covered by accident, through the KOT channel,
-and only while a panel is expanded. 2a and 2b have no channel at all.
+**Status: PARTLY COVERED.** 2c is covered through the KOT channel — incidentally,
+because creating a ticket broadcasts — and now from anywhere rather than only
+from an open panel. **2a and 2b still have no channel at all**: an order that
+has only been created or added to produces no KOT, so nothing broadcasts. They
+are covered by the 15s fallback poll on `useOrdersQuery` and nothing better.
+Emitting on the captain's own writes remains the exact fix and is not done.
 
 ### 3. The config pull and apply
 
@@ -139,9 +150,9 @@ sinks above.
 
 | Key | Reachable by a non-webview writer | Covered? |
 |---|---|---|
-| `orders` | 1, 2a, 2b, 2c | **NO** — only via the `KotsPanel` listener, mounted only when expanded |
-| `order(id)` | 2a, 2b, 2c | **NO** |
-| `kots(id)` | 1, 2c | **PARTIAL** — live while the panel is expanded, which is when it is rendered. Arguably sufficient; stated rather than assumed |
+| `orders` | 1, 2a, 2b, 2c, 5 | **YES** — event from anywhere (sinks 1, 2c), plus a 15s fallback poll for 2a, 2b and 5, which no event reaches |
+| `order(id)` | 2a, 2b, 2c | **NO** — the single-order key is not invalidated by the listener. Reached only by the order list's own refetch |
+| `kots(id)` | 1, 2c | **YES** — every `kots` key is invalidated by predicate, from anywhere |
 | `tables` | 2a (opens a table session) | **NO** |
 | `menuItems`, `menuCategories`, `menuItemVariants`, `stations`, `discountDefinitions`, `outletIdentity` | 3 | **NO** |
 | `blockedOutboxRows`, `unroutableOutboxRows`, `persistentlyFailingOutboxRows` | 4 | **YES** — 15s poll |
@@ -196,11 +207,39 @@ what it LETS THROUGH:
 
 - **A `refetchInterval` of one hour passes as a poll.** It checks for the
   property, not for a sane value.
-- **A key ruled `event` passes even when its listener is mounted somewhere it
-  will not be** — which is the live defect right now. No static check sees a
-  mount point.
+- ~~A key ruled `event` passes even when its listener is mounted somewhere it
+  will not be.~~ **CLOSED 2026-09-18.** This was the live defect, so the guard
+  now checks that `KitchenChangedListener` is mounted in `App.tsx` — watched
+  RED with the mount removed. It is still a NAME check, not a React check: a
+  listener mounted inside a conditionally-rendered `App` subtree would pass.
 - **A new SINK with no new key passes.** The guard is key-centric; if a sixth
   writer starts writing rows behind an already-ruled key, nothing fires.
 
 Those three are the honest boundary of it. The first check — refuse an unruled
 key — is the one with teeth, and it is the one that found sink 5.
+
+
+---
+
+## What changed on 2026-09-18, and what did not
+
+**Done:** the listener moved out of `KotsPanel` into `KitchenChangedListener`,
+mounted in `App`; it invalidates `orders` and every `kots` key; `useOrdersQuery`
+carries a **15s** fallback poll (not 5s — the event carries the cases a human
+watches for, so the poll is a backstop, and 15s matches the outbox queries);
+the guard gained a mount-point check and an `alsoPolled` rule.
+
+**Not done, and deliberately named rather than left implicit:**
+
+- **Sinks 2a and 2b still have no event.** A captain order that has only been
+  created or added to reaches the screen by poll alone. `captain.rs` contains
+  no `emit` call; adding one is the exact fix.
+- **Sink 3 (config apply) and sink 5 (aggregator pull) are still uncovered** —
+  11 keys ruled so. Both are Rust loops with no natural UI event; a long
+  interval is defensible where a 5s poll is not.
+- **`order(orderId)` is not invalidated by the listener.** Only the list key
+  is.
+- **NONE OF THIS IS VERIFIED IN THE TAURI RELEASE WINDOW.** 264 POS tests,
+  `tsc`, eslint and `pnpm build` pass either way — they cannot see a Tauri
+  event listener's mount point any more than they could see the defect it
+  fixes. The acceptance row is `docs/visual-verify.md`.
