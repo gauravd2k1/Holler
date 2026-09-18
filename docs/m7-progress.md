@@ -107,3 +107,90 @@ file. No change either way — this fix removes failures, not work.
 B1.
 
 ---
+## B1 — Admin console serving and sign-in error clarity: **BLOCKED, no code written**
+
+**Branch:** none. **Commits:** none. Nothing was implemented, deliberately.
+
+### Why it is blocked
+
+**Every one of B1's four acceptance criteria terminates in a person looking at
+Chrome on the demo laptop**, and the track's own design makes the first of them
+a precondition for the rest. `docs/m7-kickoff.md` §F1 states it plainly:
+B1-T0 is *"the falsifier: without it, every fix below is speculative"*.
+
+Under the run's stop rule — *an acceptance criterion cannot be executed;
+read-verified only is not a pass* — writing T1/T2/T3 now would be producing
+exactly the speculative work the track forbids, then reporting it as landed
+because CI happened to be green. CI cannot see any of this.
+
+It is also blocked mechanically, not only by policy:
+
+- The admin console runs on **5175** and the API on **8080**. Both are on the
+  forbidden-port list for this session, and the failure under investigation is
+  *origin-specific*, so moving either to a scratch port changes the thing being
+  measured.
+- A scratch-port backend needs Postgres. **Docker is not running on this box**
+  and starting it is outside the track.
+- The browser automation available to this session cannot stand in: the
+  observation required is the operator's own Chrome, with their extensions and
+  their HTTPS-First setting, which is the entire hypothesis space.
+
+### What this track produced anyway: three corrections to the kickoff
+
+Read-verified, from the stated files. Each changes what the work is.
+
+1. **CORS is already a list and already exact-matches — the "one origin"
+   is a DEV SCRIPT DEFAULT, not a server limitation.**
+   `backend/internal/platform/httpx/cors.go:34` takes
+   `allowedOrigins []string` and matches each exactly. The single origin comes
+   from `scripts/dev-up.ps1:62`, `-AdminOrigin = "http://localhost:5175"`,
+   passed as `HOLLER_CORS_ALLOWED_ORIGINS`. So B1-T3 is a one-line dev-script
+   change, not a backend change.
+2. **The kickoff cites `config.go:62` for this. There is no such line.** The
+   file is `scripts/dev-up.ps1` and the line number happens to match. A reader
+   sent to `config.go` finds nothing and concludes the claim is stale.
+3. **"All three branches already exist in code" is WRONG, and the missing one
+   is the whole defect.** `api.ts:34-38` has `configError()` for the missing
+   variable. `session.ts:80-87` has the API-refusal message, and it is
+   **deliberately undifferentiated** — its own comment says ADR-012 returns the
+   identical answer for a wrong password and a throttled attempt, because a
+   distinguishable throttle is an account-enumeration oracle. **Do not
+   "improve" that one.** The third branch — *the request never left the
+   browser* — does **not** exist: a `fetch` rejection surfaces as the raw
+   `TypeError: Failed to fetch`, caught nowhere and re-worded nowhere. That is
+   why the screen reports a blocked request in the words of a wrong password.
+
+**Consequence for whoever picks this up:** T2 is narrower than written (add one
+transport branch; leave the credential message exactly as it is), and T3 is a
+dev-script default rather than a backend change. T1 is unchanged.
+
+### What the operator must do to unblock it
+
+One observation, five minutes, on the demo laptop:
+
+1. Open the admin console in **Chrome** — their normal profile, extensions on,
+   HTTPS-First at its default.
+2. Paste the Console snippet at `docs/demo-runbook.md:450` into DevTools on the
+   admin page. It is the same call the form makes.
+3. Record **which** of the four candidates it names (HTTPS-First upgrade, an
+   extension, a stale service worker, the wrong origin in the address bar) and
+   write that into `docs/visual-verify.md` as a new row.
+
+Until that row exists, B1's fixes cannot be distinguished from guesses.
+
+### Verified — EXECUTED
+
+Nothing. Stated plainly rather than dressed up: **no part of B1 was executed
+this run.**
+
+### Verified — READ-VERIFIED ONLY (not a pass)
+
+The three corrections above, from `cors.go`, `dev-up.ps1`, `api.ts`,
+`session.ts` and `docs/demo-runbook.md`.
+
+### Next
+
+B2, per the run's ordering. B1 is left with no branch and no partial work in
+the tree.
+
+---
