@@ -270,7 +270,7 @@ defects being hidden by a seeded cloud; those are fixed, so the ruling is lifted
 and seed parity across cloud and edge is the first item of work. Read that
 deliberately rather than from memory.
 
-**Contracts stay FROZEN at v0.8.1. The demo build requires NO contract change**
+**Contracts stay FROZEN at v0.8.3. The demo build requires NO contract change**
 — and a builder proposing one has found either a real blocker to escalate or a
 scope leak. `WAITER` already exists in `device.kind`; `order.source` stays
 `POS`.
@@ -422,7 +422,7 @@ Established by inspection, not recall — cite the file, not this summary:
 - **No pilot-only work.** `docs/pilot-readiness.md` is untouched. An item
   appearing on it is not a reason to do it now. That includes **A4, A6 and
   A7** — do not fix them for the demo.
-- **No contract change.** Contracts are FROZEN at v0.8.1 and the demo needs
+- **No contract change.** Contracts are FROZEN at v0.8.3 and the demo needs
   none.
 - **Captain: no bill screen, no payment, no modifiers unless free**, no customer
   tab, no `table_device` principal, no `TABLE_TAB` source.
