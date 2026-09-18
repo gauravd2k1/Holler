@@ -1,64 +1,82 @@
-# RESTART HERE — autonomous M7 run, 2026-09-18
+# RESTART HERE — autonomous M7 run 2, 2026-09-18
 
-**PREVIOUS SECTION IS BELOW AND STILL TRUE except where this one supersedes
-it.** The demo ran and went well; the freeze is lifted; `docs/m7-kickoff.md` is
-still the scope proposal awaiting approval.
+## THE NEXT ACTION IS A SITTING, NOT CODE
 
-## WHAT IS WAITING ON THE OPERATOR — READ THIS FIRST
+**`docs/vv-sitting.md` is prepared and NOT RUN.** It covers **19 open VV rows
+plus three extra rows** in one launch of the stack, ordered so nothing destroys
+a later row's precondition, with per-row PASS/FAIL wording, screenshot
+filenames and minute estimates. **75-95 minutes.** Three of its rows are the
+ones blocking tracks:
 
-| # | Waiting on you | Where |
-|---|---|---|
-| 1 | **VV-017, VV-018, VV-019 — still OPEN, carried deliberately.** Three menu-screen changes from `045b68e` that NO suite can see (264 POS tests, `tsc`, eslint and `pnpm build` pass either way). They need a person in the **Tauri release window**. The binary is built and content-verified | `docs/visual-verify.md` |
-| 2 | **B1 is BLOCKED on one five-minute observation.** Open the admin console in YOUR Chrome, paste the Console snippet at `docs/demo-runbook.md:450`, and record which of the four candidates it names. Until that row exists every B1 fix is a guess — the track's own design says so | `docs/m7-progress.md` § B1 |
-| 3 | **ADR-029 was NOT written.** The run was hard-stopped after B2 by your own budget rule, so F2-T0 was never started. No contract change was made or proposed | — |
-| 4 | **B2-T1 is unlanded and unverifiable by an agent.** Its acceptance needs the Tauri release window. Two branches carry unmerged work — see below | branches |
-| 5 | **The stale comment in `devseed.rs` that caused B0** still promises the only `compliance_version` it seeds is gated behind `HOLLER_SEED_BILLING=1`. It is not. Left alone because `edge/database` is outside B0's stated files | `docs/m7-progress.md` § B0 Remaining |
+| Row | Unblocks |
+|---|---|
+| **B1-0** — the Chrome Console snippet | **B1 entirely.** Its own design says every fix below it is speculative without this |
+| **A6-1** — does closing the window seal the database | **A6.** Record whether the PROCESS survives the window; that one line is the diagnosis |
+| **A6-2** — does Ctrl+C seal it | A6's other half. **Expected to FAIL** — no signal handler exists anywhere |
+| **VV-020** | B2-T1's acceptance. Falsifier is the **COLLAPSED** panel |
 
-## STATE OF THE RUN
+Paste results back as row id + PASS/FAIL + screenshot filename.
 
-**Scope given:** B0 → B1 → B2, hard stop after B2. A6, A7, F2-T0 and F6-T0
-**were not started**, as instructed.
+## STATE
+
+**Scope given:** docs-only commit, then B1 -> B2 -> A6, hard stop after A6.
 
 | Track | Verdict |
 |---|---|
-| **B0** | **LANDED on `main` at `3b92f27`.** CI run `35329292383` — **16 of 16 green on a fresh checkout**, the first fully green run in this repository's visible history |
-| **B1** | **BLOCKED.** No branch, no code, nothing in the tree. Its falsifier needs a person in Chrome |
-| **B2** | **T0 and T3 done** on branch `m7-b2-query-key-guard`. **T1/T2 not landed** — their acceptance is in the release window |
+| **docs** | **LANDED** `27e2532` — the stale `devseed.rs` comment that caused B0, three kickoff citations, two retro entries |
+| **B1** | **STILL BLOCKED.** The Chrome observation came through **blank** in the instruction, so nothing could start. Rescoped work is recorded and ready |
+| **B2-T1** | **LANDED** `d0af9a8`. CI run `35338940145`, **16/16 green**. Acceptance owed: VV-020 |
+| **A6** | **BLOCKED on observation.** No code. Cause not established by reading; probes written into the sitting |
 
-**Branches, neither merged:**
+**CI on HEAD:** `d0af9a8` was 16/16 green (run `35338940145`). Later docs-only
+commits sit on top.
 
-- **`m7-b2-query-key-guard`** — B2-T0 (the sink enumeration) and B2-T3 (the
-  guard), committed at `d1f8c7c`. **Merge it once CI is green**; it changes no
-  runtime code, only a check and two documents.
-- **`m7-b2-stale-screens`** — the operator's own `refetchInterval: 5000` on
-  `useOrdersQuery`, at `29de133`. **Do not merge it as-is.** The enumeration
-  now shows it is the right shape only if the event-based fixes are NOT done.
+## WHAT B1 NEEDS, ALREADY RESCOPED AND READY TO BUILD
 
-**Also on `main`:** `7b9f2db` corrects `CLAUDE.md`'s demo-build section from
-"FROZEN at v0.8.1" to **0.8.3** (the historical 0.8.1 references were left
-alone, being true of when they were written).
+Your three items, with the corrections that change two of them:
 
-## THE THREE FINDINGS WORTH MORE THAN THE CODE
+- **(a)** the Chrome observation — row B1-0 of the sitting.
+- **(b)** `scripts/dev-up.ps1:62` CORS default as a list. **Note this is a DEV
+  SCRIPT change, not a backend one**: the middleware
+  (`httpx/cors.go:34`) already takes `allowedOrigins []string` and
+  exact-matches, and deliberately has **no default at all** — its comment
+  rejects one for the same reason `dev-bootstrap.ps1` has no default database
+  key. **Do not add a server-side default.**
+- **(c)** the transport-error branch. **Only TWO branches exist, not three**:
+  `api.ts:34-38` (`configError()`) and `session.ts:80-87` (API refusal). The
+  transport branch does not exist — a `fetch` rejection surfaces as a raw
+  `TypeError`. **The credential message stays exactly as it is** (ADR-012:
+  a distinguishable throttle is an account-enumeration oracle).
 
-1. **B0's cause was not what the kickoff recorded.** The harness minting its
-   own compliance version was the DESIGNED behaviour, resting on a devseed
-   promise that went stale when `write_tax` became unconditional. The fix asks
-   the resolver instead of hardcoding an id, so a renumbering cannot desync it
-   again.
-2. **The push channel B2-T2 was to "propose" already exists**, built in D14
-   (`97bc3dc`), and already invalidates both the KOT key and the orders key.
-   The defect is a MOUNTING defect: the listener lives in `KotsPanel`, mounted
-   only while a Kitchen panel is expanded. **That one fact explains both
-   reported symptoms**, which is why they read as two defects.
-3. **THERE IS A FIFTH WRITE PATH AND THE GUARD FOUND IT, NOT THE
-   ENUMERATION.** `pull_and_apply_aggregator_orders` runs in the A5 worker loop
-   and writes `aggregator_order` and `order` rows that reach no screen — **demo
-   step 6's path**. The hand-written enumeration, done an hour earlier by
-   reading the code, said four. The check that refuses an unruled key said
-   five, plus two more unruled keys and one ruling that was simply wrong
-   (`blockedReplays` is not polled; the document had said it was).
+All three corrections are now written into `docs/m7-kickoff.md` beside the
+original wording, and `config.go:62` is recorded as a citation to a file that
+does not exist.
 
----
+## THE FINDING FROM THIS RUN
+
+**MY OWN B2 FIX BROKE THE BROWSER, AND ONLY THE THIRD RUNTIME SAW IT.** Moving
+the kitchen subscription from `KotsPanel` to `App` made `listen()` run at boot
+on every screen — including in a plain browser, where
+`window.__TAURI_INTERNALS__` does not exist. Two `pageerror`s, caught by
+`pos-dev-server-smoke` on the first push, with **`tsc`, eslint, `pnpm build`
+and all 264 unit tests green through both the defect and the fix**. It had
+never fired before because the only caller was mounted where a browser never
+reached it. Fixed at the cause, not in the smoke test's deliberately-empty
+ignore list.
+
+## BRANCHES
+
+- **`m7-b2-stale-screens`** (`29de133`) — **CLOSE UNMERGED, as ruled.** Its
+  `refetchInterval: 5000` is superseded: the event fix landed and the fallback
+  is 15s. Left in place rather than deleted (history-rewriting and branch
+  deletion are denied to builders); nothing should merge it.
+- **`m7-b2-query-key-guard`**, **`m7-b2-listener-mount`**,
+  **`m7-b0-e2e-compliance-version`** — all merged.
+
+## GATED, UNTOUCHED
+
+**ADR-029 not written. F6-T0 not started. No contract change. No milestone
+tag.** VV rows left OPEN.
 
 # Previous session — post-demo planning, 2026-09-17, HEAD `2b62795`
 

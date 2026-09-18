@@ -319,3 +319,156 @@ job.
 started, as instructed.
 
 ---
+## B2-T1 — the listener's mount point: **LANDED**, acceptance still owed
+
+**Branch:** `m7-b2-listener-mount` -> merged to `main` at `d0af9a8`
+**CI on a fresh checkout:** run `35338940145`, **16 of 16 green.** The first
+attempt (`35337921322`) was RED and is the more useful half of this report.
+
+### Implemented
+
+The subscription moved out of `KotsPanel` into `KitchenChangedListener`,
+mounted in `App` inside `QueryClientProvider` and outside the router, so it is
+alive on every screen and across every navigation. It invalidates `orders` and
+**every** `kots` key by predicate, because a bump can land on an order whose
+panel is closed or while the operator is on another screen. `useOrdersQuery`
+gained a **15s** fallback poll -- not 5s: the event covers what a human is
+watching for, so the poll is a backstop for the sinks no event reaches, at the
+same interval the outbox queries already use.
+
+The guard gained two checks, both aimed at this defect: the listener element
+must be present in `App.tsx`, and an `event` ruling may declare `alsoPolled` to
+require both mechanisms.
+
+### THE FIRST ATTEMPT FAILED IN THE THIRD RUNTIME, AND THE FAILURE WAS MINE
+
+`pos-dev-server-smoke` reported two `pageerror`s:
+`Cannot read properties of undefined (reading 'transformCallback')`.
+
+`listen` reaches for `window.__TAURI_INTERNALS__.transformCallback`, which
+exists only inside the Tauri webview. **It had never fired before because the
+only caller was mounted where a browser never reached it** -- `KotsPanel`
+mounts only while a Kitchen panel is expanded, and a browser sitting on the
+login screen never expands one. Moving the subscription to `App` made it run
+at boot, on every screen, in every runtime.
+
+**`tsc`, eslint, `pnpm build` and all 264 unit tests were green through both
+the defect and the fix.** This is the rule in CLAUDE.md doing exactly what it
+was written for, on the same class of defect that produced it.
+
+The fix is at the cause. It is **not** in the smoke test's
+`IGNORED_CONSOLE_PATTERNS`, which is deliberately empty -- filtering the error
+would have bought a green suite and cost the ability to see this whole class.
+The no-op path carries a `console.warn` on purpose: if it ever fires INSIDE
+the Tauri window the till goes quietly back to being stale, which is the exact
+failure this track exists to remove, so it announces itself rather than
+returning a silent success.
+
+### Verified — EXECUTED
+
+| What | Result |
+|---|---|
+| `pos-dev-server-smoke` locally, port 5198 (its own scratch port, never 5173) | **1 passed** after the fix; **RED in CI before it** |
+| POS unit suite via `scripts/assert-tests-ran.mjs` | **264 tests executed**, passed |
+| `tsc --noEmit` | clean |
+| `check-query-key-freshness.mjs` | green; watched **RED on three plants** -- listener unmounted from `App`, `kots` predicate removed, `orders` fallback poll removed |
+| CI on a fresh checkout, run `35338940145` | **16/16 green** |
+
+### Verified — READ-VERIFIED ONLY (not a pass)
+
+**The fix itself.** No one has watched a KDS bump reach an untouched order
+window. 264 tests, `tsc`, eslint and `pnpm build` pass with the listener
+mounted or unmounted -- they cannot see a Tauri event subscription's mount
+point any more than they could see the defect it fixes.
+
+**VV-020 is the acceptance row**, and its falsifier is specifically the
+**COLLAPSED** panel: a pre-fix binary passes any version of this test that has
+a panel open, which is why VV-012's wording would not have caught it.
+
+### Remaining
+
+- Sinks 2a and 2b (captain create / add item) still have **no event** --
+  `captain.rs` contains no emit call. They are covered by the 15s poll alone.
+- Sinks 3 and 5 (config apply, aggregator pull) remain uncovered: 11 keys.
+- `order(orderId)` is not invalidated by the listener; only the list key is.
+
+---
+
+## A6 — no exit path seals the edge database: **BLOCKED on observation, no code written**
+
+**Branch:** none. **Commits:** none.
+
+### Why it is blocked
+
+A6's acceptance is *"after each exit path, no plaintext `edge.db` beside the
+`.enc`"*. That is a filesystem observation after a real application exit. The
+Tauri window cannot be opened from here (`run-dev.ps1` refuses under
+`CLAUDECODE`, and a window launched from a tool with redirected stdio never
+appears), so **the criterion cannot be executed** -- the run's stop rule.
+
+Worse, the *cause* is not established either, and fixing what has not been
+diagnosed is the speculative work these rules exist to prevent.
+
+### What reading established
+
+**The exit hook is complete and correct** (`apps/pos/src-tauri/src/lib.rs:199-243`):
+stop the periodic pump, stop the LAN server, drain the outbox on a bounded
+budget, then seal -- in that order, with the ordering argued in comments
+(ADR-020: a drain after the seal finds nothing, reports success and replays
+nothing forever). **Nothing about the hook needs changing. It simply never
+runs.**
+
+Ruled out by inspection, so the next person does not repeat it:
+
+| Hypothesis | Verdict |
+|---|---|
+| A `std::process::exit` somewhere skips the hook | **No** -- none in `apps/pos/src-tauri/src` |
+| A tray icon keeps the app alive after the window closes | **No** -- `trayIcon` is absent from `tauri.conf.json` |
+| A second window keeps the event loop alive | **No** -- one window configured |
+| `AppState` retains an `AppHandle`/`Window`, keeping it from being destroyed | **No** -- neither type appears in `state.rs` |
+| An `ExitRequested` handler calls `prevent_exit` | **No** -- the `run` closure matches only `RunEvent::Exit` |
+
+**The Ctrl+C half is certain and needs no observation:** no signal handler is
+installed anywhere (no `ctrlc` dependency, no handler in the tree), so SIGINT
+terminates the process before any Rust destructor or Tauri hook runs. A fix
+exists in principle -- install a handler that calls the same shutdown path --
+but it adds a dependency to the **shipped POS binary** and cannot be verified
+here, so it is not landed.
+
+**The window-close half is the one actually observed** (`docs/RESUME.md:230`:
+*"A POS process survived its window being closed"*) **and is not diagnosable by
+reading.** A process that outlives its window means the event loop never ended,
+and nothing in the tree explains why.
+
+### A6 IS LESS SEVERE THAN THE CARRIED SUMMARY SAYS, AND THE DIFFERENCE MATTERS
+
+The summary carried since M6 is *"no trustworthy backup can be taken before a
+risky migration"*. Reading `edge/database/src/crypto.rs:312-400`
+(`recover_crash_leftovers`) narrows that:
+
+- A **readable** plaintext leftover is **not discarded**. The next open proves
+  the key first, folds any WAL pages in, and **reseals that merged, up-to-date
+  state**. No session's writes are lost.
+- An **unreadable** leftover is **quarantined with its bytes intact**, never
+  deleted, and the session continues from the sealed file -- with a refusal
+  instead if no sealed file exists.
+
+So the real harm is narrower and should be stated as: **(1)** a decrypted
+SQLite file holding cached Argon2id credential hashes sits on disk, in the
+clear, between an abnormal exit and the next open -- the ADR-011 at-rest
+concern, and reason enough on its own; and **(2)** a backup that copies only
+`edge.db.enc` silently loses the last session, because the newer state is in
+the plaintext beside it. **A backup must take both files, or be taken after a
+verified clean exit.**
+
+### Verified — EXECUTED
+
+Nothing. Stated plainly: **no part of A6 was executed this run.**
+
+### Next
+
+Two probes are written into `docs/vv-sitting.md` (A6-1 window close, A6-2
+Ctrl+C) so the cause is settled in the same sitting as the VV rows, from an
+application the operator launches themselves.
+
+---
