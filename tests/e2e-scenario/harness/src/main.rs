@@ -82,6 +82,10 @@ mod devseed_ids {
 // against a bare devseed template — mirrors apps/pos/src-tauri/tests/
 // billing_flow.rs's own fixture set, the only place this shape was already
 // proven correct. ----
+/// Fallback only. The harness no longer PINS its tax rules to this id: it
+/// pins them to whatever `tax::resolve_compliance_version` actually resolves
+/// for the outlet (see `harness_compliance_version_id` below), and mints a
+/// row under this id only when devseed left the outlet with none at all.
 const COMPLIANCE_VERSION_ID: &str = "0191c000-0000-7000-8000-000000000001";
 const TAX_PROFILE_ID: &str = "0191c000-0000-7000-8000-000000000002";
 const FISCAL_PROFILE_ID: &str = "0191c000-0000-7000-8000-000000000003";
@@ -524,18 +528,54 @@ fn build_template(root: &Path) -> PathBuf {
     // above and in devseed itself leaves tax_profile_id = None, so all of
     // them resolve to this one default profile (GST 5%, CGST 2.5% + SGST
     // 2.5%) via holler_edge_database::tax::resolve_tax_profile's fallback. ----
-    repo::upsert_compliance_version(
-        conn,
-        &model::ComplianceVersion {
-            id: COMPLIANCE_VERSION_ID.to_string(),
-            outlet_id: devseed_ids::OUTLET_ID.to_string(),
-            label: "GST e2e-harness".to_string(),
-            effective_from: "2020-01-01T00:00:00Z".to_string(),
-            notes: None,
-            config_version: 1,
-        },
-    )
-    .expect("seed compliance version");
+    // THE COMPLIANCE VERSION IS READ BACK, NEVER ASSUMED, AND THAT IS THE
+    // WHOLE FIX. This harness used to mint its own row
+    // (`COMPLIANCE_VERSION_ID`, the `0191c000-…` family) and pin its tax
+    // rules to it, on the strength of a devseed comment promising that the
+    // only `compliance_version` devseed writes lives behind
+    // `HOLLER_SEED_BILLING=1`, which this harness does not set. THAT PROMISE
+    // WENT STALE: `write_tax` now seeds the shared catalogue's
+    // `compliance_version` (`0191a000-…-0040`) UNCONDITIONALLY, because every
+    // spec menu item's `tax_profile_id` points at a profile hanging off it
+    // (see `seed`'s own comment on `write_tax` in devseed.rs). So the outlet
+    // carried TWO versions, both with `effective_from`
+    // 2020-01-01T00:00:00Z, and `resolve_compliance_version` has no
+    // tie-break beyond insertion order — it returned devseed's, under which
+    // this harness's own tax profile has no rules at all. That is the
+    // `issue_invoice` rejection every scenario carrying
+    // `9_tax_reconciliation` was failing on.
+    //
+    // Resolving instead of hardcoding devseed's id is deliberate: a third
+    // version, or a renumbered catalogue, cannot desync this again, because
+    // the harness now asks the same function the billing path asks.
+    let seeded_versions = repo::list_compliance_versions_for_outlet(conn, devseed_ids::OUTLET_ID)
+        .expect("list the compliance versions devseed seeded");
+    let compliance_version_id = if seeded_versions.is_empty() {
+        // Nothing seeded one — mint this harness's own, the pre-existing
+        // behaviour, so a bare template with no catalogue tax config still
+        // bills.
+        repo::upsert_compliance_version(
+            conn,
+            &model::ComplianceVersion {
+                id: COMPLIANCE_VERSION_ID.to_string(),
+                outlet_id: devseed_ids::OUTLET_ID.to_string(),
+                label: "GST e2e-harness".to_string(),
+                effective_from: "2020-01-01T00:00:00Z".to_string(),
+                notes: None,
+                config_version: 1,
+            },
+        )
+        .expect("seed compliance version");
+        COMPLIANCE_VERSION_ID.to_string()
+    } else {
+        holler_edge_database::tax::resolve_compliance_version(
+            &seeded_versions,
+            devseed_ids::OUTLET_ID,
+            chrono::Utc::now(),
+        )
+        .expect("resolve the compliance version devseed seeded")
+        .id
+    };
 
     repo::upsert_tax_profile(
         conn,
@@ -558,7 +598,7 @@ fn build_template(root: &Path) -> PathBuf {
             &model::TaxRule {
                 id: format!("{TAX_PROFILE_ID}-{component}"),
                 tax_profile_id: TAX_PROFILE_ID.to_string(),
-                compliance_version_id: COMPLIANCE_VERSION_ID.to_string(),
+                compliance_version_id: compliance_version_id.clone(),
                 component: component.to_string(),
                 rate_bps,
                 effective_from: "2020-01-01T00:00:00Z".to_string(),

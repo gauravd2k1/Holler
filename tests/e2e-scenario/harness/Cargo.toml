@@ -37,3 +37,8 @@ uuid = { version = "1", features = ["v7"] }
 # minted here verifies there byte-for-byte.
 argon2 = { version = "0.5", default-features = false, features = ["alloc"] }
 base64 = "0.22"
+# Supplies the instant `tax::resolve_compliance_version` resolves AT, so this
+# harness pins its tax rules to the version the billing path will itself pick
+# rather than to one it assumed. Same version and feature set edge/database
+# uses, so there is one chrono in the graph.
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
