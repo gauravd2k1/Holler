@@ -194,3 +194,128 @@ B2, per the run's ordering. B1 is left with no branch and no partial work in
 the tree.
 
 ---
+## B2 — the till is not the only writer of its own state: **T0 and T3 landed, T1/T2 not**
+
+**Branch:** `m7-b2-query-key-guard` → merged to `main` at `d1f8c7c`
+**CI on a fresh checkout:** run `35336799438`, **`completed success`, 16 of 16
+jobs green.**
+
+### Implemented
+
+- **B2-T0** — `docs/m7-b2-sinks.md`: every write path into the edge database
+  that does not originate in the POS webview, and a ruling for every key in
+  `queryKeys` against them.
+- **B2-T3** — `scripts/check-query-key-freshness.mjs`, wired into
+  `.githooks/pre-push` and the `contracts` CI job. Every key must carry a
+  ruling: `poll`, `event`, `uncovered` naming the owning track, or `exempt`
+  with a reason. A key added with no ruling fails the build.
+
+**No runtime code was changed by this track.** B2-T1 (landing the freshness
+fixes) and B2-T2 (choosing poll versus event) are NOT done — see Remaining.
+
+### The two corrections this track forced
+
+**1. The push channel B2-T2 was to "propose" already exists.** The kickoff's
+§F4 says *"there is no push from the LAN hub into the till's UI"*. It has
+existed since D14 (`97bc3dc`): `apps/pos/src-tauri/src/lib.rs:62-90` subscribes
+to the in-process hub for every station and forwards `KotUpserted`/`KotRemoved`
+as `holler://kitchen-changed`; `OrderListScreen.tsx:312-327` listens and
+invalidates **both** the KOT key and the orders key. Its shape is already
+right — the payload is an id and the row is re-read through the same command,
+never patched from the event.
+
+**The defect is a MOUNTING defect.** That listener lives in `KotsPanel`
+(`OrderListScreen.tsx:280`), mounted only while an order's Kitchen panel is
+expanded. Collapsed — the normal state, and the state during the demo failure —
+nothing in the process is listening. **That one fact explains both reported
+symptoms**, which is why they were filed as two defects: the "only updates on a
+remount" kitchen status is the collapsed case plus `staleTime: 0` refetching on
+the next mount, and the waiter's order never appeared because a captain order
+not yet sent to the kitchen creates no KOT at all, so the hub has nothing to
+broadcast regardless of who is listening.
+
+**2. THERE IS A FIFTH SINK, AND THE GUARD FOUND IT — THE ENUMERATION DID
+NOT.** `pull_and_apply_aggregator_orders` (`edge/sync/src/aggregator.rs:75`)
+runs in the A5 worker loop (`edge/sync/src/worker.rs:313`) and writes
+`aggregator_order` and the `order` rows those documents become. Nothing in the
+webview hears it. **This is demo step 6's path** — the fake ONDC order that
+arrives and is accepted on the till.
+
+The hand-written enumeration, produced an hour earlier by reading the code,
+said **four**. The guard said five on its first run, by refusing a key
+(`unacceptedAggregatorOrders`) that nobody had ruled on. It also refused
+`grnGaps` and `purchaseOrderReceiptProgress`, and caught one ruling written
+from memory that was simply wrong: **`blockedReplays` is not polled**, though
+the document asserted it was. The document is corrected in place and says what
+it said before.
+
+This is the enumeration lesson turned on its author. "Enumerate the sinks, not
+the surfaces" is right, and a sink list assembled by reading is still a list
+with something missing. The only reliable finder is a check over a closed set
+the code already enforces.
+
+### Verified — EXECUTED
+
+| What | Result |
+|---|---|
+| Guard on the unmodified tree, first run | **FAILED — 3 unruled keys and 1 wrong ruling**, before any violation was planted |
+| Plant: a new key with no ruling | **caught**, exit 1 |
+| Plant: a `poll` ruling with its `refetchInterval` removed | **caught**, exit 1 |
+| Plant: an `event` ruling with its invalidation removed | **caught**, exit 1 |
+| Guard after the rulings were corrected | OK — 27 keys: 5 polled, 1 event, 12 uncovered, 9 exempt |
+| CI on a fresh checkout, run `35336799438` | **16/16 green** |
+
+**WHAT IT WAS WATCHED LETTING THROUGH, before it was trusted** — a check is
+falsified by what it lets through, not by what it catches:
+
+- **A `refetchInterval` of one hour passes as a poll.** It checks for the
+  property, not for a sane value. Confirmed by experiment.
+- **An `event` ruling passes even when its listener is mounted somewhere it
+  will not be** — which is the live defect right now. No static check sees a
+  mount point.
+- **A sixth writer of rows behind an already-ruled key fires nothing.** The
+  guard is key-centric, not sink-centric.
+
+All three are written into the script's own header and into
+`docs/m7-b2-sinks.md`, rather than left for a reader to discover.
+
+### Verified — READ-VERIFIED ONLY (not a pass)
+
+- **Every claim about what a sink writes**, and every file:line in the
+  enumeration. Read from the code, not instrumented.
+- **The mounting diagnosis.** `KotsPanel` is a child rendered only when
+  expanded, read from `OrderListScreen.tsx:227,280,290`. Consistent with both
+  reported symptoms and with VV-009's recorded FAIL, but **not observed in the
+  Tauri release window by anyone this run.**
+- **That sinks 3 and 5 leave a screen stale.** Derived from the absence of an
+  emit and the absence of a poll, not from watching a stale screen.
+
+### Performance
+
+No runtime change. The guard adds ~100ms to `pre-push` and to the `contracts`
+job.
+
+### Remaining
+
+- **B2-T1 — land the fixes. NOT DONE, and an agent cannot close it**:
+  acceptance criteria 1 and 2 both require observation in the Tauri release
+  window, which refuses to launch under `CLAUDECODE`. The enumeration names the
+  order to do it in: move the kitchen listener up out of `KotsPanel`, emit on
+  the captain's own writes (sinks 2a/2b, the only ones with no channel at all),
+  then rule separately on sinks 3 and 5, which are genuine polling cases.
+- **B2-T2 — propose poll versus event. Superseded in part**: the event
+  mechanism already exists and works, so the question is narrower than the
+  kickoff framed it.
+- **`m7-b2-stale-screens` (`29de133`) must not be merged as-is.** The
+  `refetchInterval: 5000` on `useOrdersQuery` is the right shape *only* if the
+  event fixes are not done. It covers one key at the cost of a permanent 5s
+  tick.
+- **12 keys stand ruled `uncovered`.** That is a declared debt with a named
+  owner, not an oversight, and the guard will keep it visible.
+
+### Next
+
+**Nothing — the run's hard stop is here.** A6, A7, F2-T0 and F6-T0 were not
+started, as instructed.
+
+---

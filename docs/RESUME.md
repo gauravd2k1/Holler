@@ -1,4 +1,66 @@
-# RESTART HERE — post-demo planning session, 2026-09-17, HEAD `2b62795`
+# RESTART HERE — autonomous M7 run, 2026-09-18
+
+**PREVIOUS SECTION IS BELOW AND STILL TRUE except where this one supersedes
+it.** The demo ran and went well; the freeze is lifted; `docs/m7-kickoff.md` is
+still the scope proposal awaiting approval.
+
+## WHAT IS WAITING ON THE OPERATOR — READ THIS FIRST
+
+| # | Waiting on you | Where |
+|---|---|---|
+| 1 | **VV-017, VV-018, VV-019 — still OPEN, carried deliberately.** Three menu-screen changes from `045b68e` that NO suite can see (264 POS tests, `tsc`, eslint and `pnpm build` pass either way). They need a person in the **Tauri release window**. The binary is built and content-verified | `docs/visual-verify.md` |
+| 2 | **B1 is BLOCKED on one five-minute observation.** Open the admin console in YOUR Chrome, paste the Console snippet at `docs/demo-runbook.md:450`, and record which of the four candidates it names. Until that row exists every B1 fix is a guess — the track's own design says so | `docs/m7-progress.md` § B1 |
+| 3 | **ADR-029 was NOT written.** The run was hard-stopped after B2 by your own budget rule, so F2-T0 was never started. No contract change was made or proposed | — |
+| 4 | **B2-T1 is unlanded and unverifiable by an agent.** Its acceptance needs the Tauri release window. Two branches carry unmerged work — see below | branches |
+| 5 | **The stale comment in `devseed.rs` that caused B0** still promises the only `compliance_version` it seeds is gated behind `HOLLER_SEED_BILLING=1`. It is not. Left alone because `edge/database` is outside B0's stated files | `docs/m7-progress.md` § B0 Remaining |
+
+## STATE OF THE RUN
+
+**Scope given:** B0 → B1 → B2, hard stop after B2. A6, A7, F2-T0 and F6-T0
+**were not started**, as instructed.
+
+| Track | Verdict |
+|---|---|
+| **B0** | **LANDED on `main` at `3b92f27`.** CI run `35329292383` — **16 of 16 green on a fresh checkout**, the first fully green run in this repository's visible history |
+| **B1** | **BLOCKED.** No branch, no code, nothing in the tree. Its falsifier needs a person in Chrome |
+| **B2** | **T0 and T3 done** on branch `m7-b2-query-key-guard`. **T1/T2 not landed** — their acceptance is in the release window |
+
+**Branches, neither merged:**
+
+- **`m7-b2-query-key-guard`** — B2-T0 (the sink enumeration) and B2-T3 (the
+  guard), committed at `d1f8c7c`. **Merge it once CI is green**; it changes no
+  runtime code, only a check and two documents.
+- **`m7-b2-stale-screens`** — the operator's own `refetchInterval: 5000` on
+  `useOrdersQuery`, at `29de133`. **Do not merge it as-is.** The enumeration
+  now shows it is the right shape only if the event-based fixes are NOT done.
+
+**Also on `main`:** `7b9f2db` corrects `CLAUDE.md`'s demo-build section from
+"FROZEN at v0.8.1" to **0.8.3** (the historical 0.8.1 references were left
+alone, being true of when they were written).
+
+## THE THREE FINDINGS WORTH MORE THAN THE CODE
+
+1. **B0's cause was not what the kickoff recorded.** The harness minting its
+   own compliance version was the DESIGNED behaviour, resting on a devseed
+   promise that went stale when `write_tax` became unconditional. The fix asks
+   the resolver instead of hardcoding an id, so a renumbering cannot desync it
+   again.
+2. **The push channel B2-T2 was to "propose" already exists**, built in D14
+   (`97bc3dc`), and already invalidates both the KOT key and the orders key.
+   The defect is a MOUNTING defect: the listener lives in `KotsPanel`, mounted
+   only while a Kitchen panel is expanded. **That one fact explains both
+   reported symptoms**, which is why they read as two defects.
+3. **THERE IS A FIFTH WRITE PATH AND THE GUARD FOUND IT, NOT THE
+   ENUMERATION.** `pull_and_apply_aggregator_orders` runs in the A5 worker loop
+   and writes `aggregator_order` and `order` rows that reach no screen — **demo
+   step 6's path**. The hand-written enumeration, done an hour earlier by
+   reading the code, said four. The check that refuses an unruled key said
+   five, plus two more unruled keys and one ruling that was simply wrong
+   (`blockedReplays` is not polled; the document had said it was).
+
+---
+
+# Previous session — post-demo planning, 2026-09-17, HEAD `2b62795`
 
 **THE DEMO RAN AND IT WENT WELL.** Shinjuku Yakitori, 2026-09-17, reported by
 the operator. **The demo-period freeze ("no new features") is LIFTED.**
