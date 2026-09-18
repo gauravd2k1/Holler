@@ -33,6 +33,20 @@ line arrived mid-sitting, it would have read as B1-0's "OK with a token"
 branch, and filing it would have closed a row on something that never happened
 in this repository. **A row closes on the artefact, never on a report of one.**
 
+## THE TWO `wip/` BRANCHES — DECIDED, DO NOT RE-RAISE
+
+`wip/edge-database-stash` (25 unpushed commits, last 2026-08-08) and
+`wip/t13-retry-partial` (1, last 2026-08-14) are local-only and carry
+**pre-rewrite SHAs** — the work they snapshot landed on `main` long ago through
+normal commits, which is why they read as unpushed.
+
+**The operator ruled on 2026-09-19: LEAVE THEM ALONE.** Do not push, rename,
+archive or delete them, and do not offer to. They are not at risk and they are
+not work in progress.
+
+Everything else is pushed: `main` matches `origin/main`, and all four `m7-*`
+branches track their remotes with zero unpushed.
+
 ## MACHINE STATE AT SHUTDOWN, MEASURED NOT ASSUMED
 
 - **No `holler-pos` process was running**, so the shutdown loses nothing.
