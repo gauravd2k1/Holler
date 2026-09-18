@@ -1,35 +1,47 @@
-# RESTART HERE — session ended 2026-09-17 evening, HEAD `045b68e`, tree clean and pushed
+# RESTART HERE — post-demo planning session, 2026-09-17, HEAD `2b62795`
 
-**THE DEMO DID NOT RUN. The rehearsal was in progress when the machine was shut
-down.** Nothing was cancelled and nothing failed on stage — the operator was
-mid-setup. Do not read any part of this file as a demo verdict.
+**THE DEMO RAN AND IT WENT WELL.** Shinjuku Yakitori, 2026-09-17, reported by
+the operator. **The demo-period freeze ("no new features") is LIFTED.**
+
+This corrects the previous version of this heading, which read *"THE DEMO DID
+NOT RUN"* — written when the machine was shut down mid-rehearsal, before the
+demo itself. The repository is the authority on the code; the operator is the
+authority on what happened in the room.
+
+**The planning that came out of the demo is `docs/m7-kickoff.md`, and it is the
+first thing to read.** It maps the operator's feedback F1–F6 to milestones with
+tracks, contract impact and acceptance criteria, and it is **a proposal awaiting
+approval**, not a committed scope.
 
 ## CI STATUS OF HEAD — READ BEFORE CLAIMING ANYTHING IS GREEN
 
-**`045b68e`: 14 of 16 jobs green. Two red — `backend` and `e2e-scenario`.**
+**`2b62795`, run `35219643824`: 15 of 16 jobs green. One red —
+`e2e-scenario`.**
 
 | Job | State | Why |
 |---|---|---|
-| `edge-style` | **GREEN** (was red all session) | fixed `56a6950` |
-| `cloud-replay` | **GREEN** (was red all session) | fixed `ca9ac49` — this was fix 5 |
-| `e2e-scenario` | **RED, KNOWN, SCOPED OUT** | harness fixture collision, diagnosed in full below. Not the taxed bill path |
-| `backend` | **RED, NEW ON THIS RUN, CAUSE UNKNOWN** | see below — treat as unresolved |
+| `e2e-scenario` | **RED, DIAGNOSED, FIX AGREED** | the harness mints a second compliance version. Diagnosed in full below; scheduled as M7-B0 |
+| `backend` | **GREEN — the previous session's UNRESOLVED question is now SETTLED** | see below |
+| every other job | GREEN | |
 
-**`backend` needs a first look next session.** It was **green on `aa79396`**, and
-`045b68e` touched only `apps/pos/**` and `docs/**`, which that job does not
-build. The failure:
+**`backend` was recorded here as RED, NEW, CAUSE UNKNOWN on `045b68e`**, with
+this exact failure:
 
 ```
 --- FAIL: TestSyncConfig_DeviceCredentialsFlowThroughRealPostgres (1.06s)
     device_credentials_sync_test.go:203: GET /sync/config after enroll: expected 200, got 401
 ```
 
-Enroll returns 201, the very next `GET /sync/config` returns 401. **A POS-only
-commit cannot cause that**, so the live hypotheses are a flaky/ordering
-condition in that test, or something intermittent that `aa79396` happened to
-miss. **The query that settles it: re-run the `backend` job on `045b68e`
-unchanged.** Green on a re-run means flaky; red again means it is real and
-predates this commit. Recorded as UNRESOLVED rather than guessed at.
+The query recorded to settle it was to re-run that job unchanged. **It is green
+on `2b62795`, which touched only `docs/**` — so nothing in the backend moved
+between the two runs. The test is FLAKY, not broken.** Recorded as settled
+rather than quietly dropped, because the whole point of writing the
+discriminator down was to be able to close it.
+
+**It is still worth a row.** A flaky auth test is how a real 401 regression gets
+re-run away, and this suite already carries two filed flakes (`edge/printer`'s
+logo tests, `stale_connection.rs:160`'s wall-clock bound). It is not scheduled
+here; it is named so the next person who sees it red does not start from zero.
 
 ## WHAT LANDED THIS SESSION, IN ORDER
 
@@ -77,8 +89,21 @@ present *before* the till has drained, fix 5 has regressed.
 
 ## THE FIRST THING TO DO NEXT SESSION
 
-**Nothing in the code. Three VV rows are waiting on a person, and an agent
-cannot close any of them.** The binary they need is already built and verified.
+**Read `docs/m7-kickoff.md` and get the M7 scope approved.** Nothing below it
+should start before that: F2 and F3 both need a contract bump and an ADR, and
+B2's sink enumeration is a prerequisite for trusting anything F2 puts on a
+screen.
+
+**One loose change is in the tree and belongs to M7-B2:** `refetchInterval:
+5000` on `useOrdersQuery` (`apps/pos/src/lib/queries.ts:95`), written when a
+waiter's order failed to appear in the POS order list at the demo. `tsc` is
+clean; it is **uncommitted and unverified in the Tauri release window**, which
+per the four-runtimes rule means it is not verified at all.
+
+### Still open from before the demo, unchanged
+
+**Three VV rows are waiting on a person, and an agent cannot close any of
+them.** The binary they need is already built and verified.
 
 `docs/visual-verify.md` → **VV-017, VV-018, VV-019**, all `OPEN`, all from
 `045b68e`:
@@ -147,7 +172,19 @@ Nothing is damaged when this fires: the script refuses before touching disk.
 
 ## OPEN ITEMS, NOT STARTED
 
-**Post-demo, agreed with the operator:**
+**From the demo itself (2026-09-17), now planned in `docs/m7-kickoff.md` and
+filed in `docs/backlog.md`:** F1 admin console serving and sign-in error
+clarity; F2 prep-time timer per table (contract 0.9.0); F3 occupancy-triggered
+dynamic pricing (recommended M8); F4 non-webview writers not reaching the
+screen; F5 the competitive research note correcting the offline-moat claim; F6
+the visual refresh. **F3 and F6's image storage are the only contract questions,
+and neither is decided.**
+
+**Also unfrozen now the demo is done:** the carried Phase A gaps **A4, A6 and
+A7**. A6 (no exit path seals the edge database) and A7 (78 rows with no sync
+route) are pilot blockers whose deferral reason has expired.
+
+**Post-demo, agreed with the operator earlier:**
 
 1. **A real "not sold" flag on the category.** `045b68e` hides the two internal
    sections by **matching the word "internal" in the name** — a stopgap,
