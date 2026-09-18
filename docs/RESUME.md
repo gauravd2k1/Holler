@@ -18,18 +18,20 @@ thing blocking the whole B1 track.
 **Before phase 2, re-run `.\scripts\check-release-binary.ps1` yourself.** See
 the binary note below for why that is not paranoia.
 
-## ONE THING IS UNRESOLVED AND MUST NOT BE READ AS A RESULT
+## RESOLVED: THE "LOGGED IN AND WORKING" MESSAGE WAS NOT ABOUT HOLLER
 
-At 2026-09-19 the operator wrote **"logged in and working"** and the session
-ended before the follow-up was answered. **WHICH SURFACE IS UNKNOWN** -- admin
-console in Chrome (which would be B1-0's "OK with a token" branch) or the POS
-release binary. **Nothing was recorded anywhere from it, deliberately.**
+At 2026-09-19 the operator wrote **"logged in and working"**. It was held here
+as UNRESOLVED rather than filed as a result, because the surface was not named.
+**The operator has since confirmed it was meant for a different window and is
+not a Holler observation at all.**
 
-Recorded as UNRESOLVED rather than guessed, with the query that settles it:
-**ask which surface, and take B1-0 with a screenshot regardless.** A row closes
-on the artefact, never on a report of it -- this project has already had
-verdicts reconstructed from a transcript and then contradicted by the next
-session.
+So: **B1-0 has NOT been run, nothing about it has been observed, and no row
+anywhere was marked from it.** The B1 track is blocked exactly as it was.
+
+Worth keeping the shape rather than deleting this section: a plausible-sounding
+line arrived mid-sitting, it would have read as B1-0's "OK with a token"
+branch, and filing it would have closed a row on something that never happened
+in this repository. **A row closes on the artefact, never on a report of one.**
 
 ## MACHINE STATE AT SHUTDOWN, MEASURED NOT ASSUMED
 
