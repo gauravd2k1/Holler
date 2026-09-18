@@ -1,4 +1,75 @@
-# RESTART HERE — autonomous M7 run 2, 2026-09-18
+# RESTART HERE — machine shut down 2026-09-19, VV sitting booked for MONDAY 2026-09-22
+
+**HEAD `d583b32`, tree clean, everything pushed.** Last full CI verdict:
+`d0af9a8`, run `35338940145`, **16 of 16 green on a fresh checkout**. The two
+commits on top of it are docs-only.
+
+## MONDAY: RUN `docs/vv-sitting.md`
+
+It is prepared and NOT RUN: 19 open VV rows plus **B1-0** (the Chrome
+observation) and **A6-1 / A6-2** (the exit probes), six phases, 75-95 minutes,
+ordered so one launch covers everything. Two rows are EXPECTED to fail --
+VV-010 (no artwork, D23) and A6-2 (no signal handler exists) -- so a failure
+there is information, not a surprise.
+
+**Start at phase 0 (B1-0).** It needs no stack running and it is the single
+thing blocking the whole B1 track.
+
+**Before phase 2, re-run `.\scripts\check-release-binary.ps1` yourself.** See
+the binary note below for why that is not paranoia.
+
+## ONE THING IS UNRESOLVED AND MUST NOT BE READ AS A RESULT
+
+At 2026-09-19 the operator wrote **"logged in and working"** and the session
+ended before the follow-up was answered. **WHICH SURFACE IS UNKNOWN** -- admin
+console in Chrome (which would be B1-0's "OK with a token" branch) or the POS
+release binary. **Nothing was recorded anywhere from it, deliberately.**
+
+Recorded as UNRESOLVED rather than guessed, with the query that settles it:
+**ask which surface, and take B1-0 with a screenshot regardless.** A row closes
+on the artefact, never on a report of it -- this project has already had
+verdicts reconstructed from a transcript and then contradicted by the next
+session.
+
+## MACHINE STATE AT SHUTDOWN, MEASURED NOT ASSUMED
+
+- **No `holler-pos` process was running**, so the shutdown loses nothing.
+- **No plaintext `edge.db` exists** in `%APPDATA%\com.holler.pos` -- only
+  `edge.db.enc`. The last exit sealed, or recovery folded it in.
+- **Three quarantined files are present** and are **NOT new**:
+  `edge.db.unreadable-1789224402` plus its `-wal`/`-shm` siblings, timestamped
+  **2026-09-12 14:46 UTC** -- the known incident named in
+  `edge/database/src/crypto.rs`, where `edge.db` was ciphertext rather than a
+  database. `quarantine_unreadable_leftover` moved them aside with their bytes
+  intact and continued from the sealed file. **Do not delete them**; that is
+  the operator's call, and they are evidence.
+- **A Vite dev server (node, pid 51972, started 2026-09-19 00:41) holds port
+  5173.** It is the operator's, not this session's. Left alone.
+
+## THE RELEASE BINARY, AND A LESSON THAT CHANGES WHEN TO CHECK IT
+
+`apps\pos\src-tauri	argetelease\holler-pos.exe`, rebuilt 2026-09-18,
+content-verified: entry chunk `index-B7byvtKn.js` (was `index-Cw4hDDCP.js`), so
+today's frontend is positively inside it. Without that rebuild the sitting
+would have tested VV-020 against a binary that does not contain its fix.
+
+**THE BUNDLER PATCHES THE EXE AFTER THE COMPILE, SO VERIFY AFTER THE BUNDLE,
+NOT AFTER THE BUILD.** `tauri build` wrote the binary at 16:56, it was
+content-checked, and then the NSIS step patched that same file at 17:00 with
+bundle-type information -- same size, different bytes. The check was re-run on
+the patched file and is green. A verification that lands between those two
+steps is verifying a file that no longer exists in that form, which is the
+2026-09-15 substitution one step further along.
+
+The installer is `bundle
+sis\Holler POS_0.1.0_x64-setup.exe`, **219 MB**,
+with `webviewInstallMode: offlineInstaller` -- WebView2 embedded at build time,
+which is what ADR-013 requires. The `go.microsoft.com` download in the build log
+is that embed, not an install-time fetch.
+
+---
+
+# Autonomous M7 run 2, 2026-09-18
 
 ## THE NEXT ACTION IS A SITTING, NOT CODE
 
