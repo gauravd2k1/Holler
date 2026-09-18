@@ -92,8 +92,19 @@ export function useTablesQuery() {
   return useQuery({ queryKey: queryKeys.tables, queryFn: listTables });
 }
 
+/** Polled, because the till is not the only writer of an order any more. The
+ * captain server writes one from a waiter's phone inside this same process
+ * (`captain.rs`, `create_order_impl_as`), so no Tauri mutation runs in the
+ * webview and nothing invalidates this key — the list sat on a stale cache and
+ * the order was invisible here while the KDS, which is pushed over the LAN
+ * socket, had it instantly. Same interval and same reason as
+ * `useFailedPrintJobsQuery`: a write this screen cannot see coming. */
 export function useOrdersQuery() {
-  return useQuery({ queryKey: queryKeys.orders, queryFn: listOrders });
+  return useQuery({
+    queryKey: queryKeys.orders,
+    queryFn: listOrders,
+    refetchInterval: 5000,
+  });
 }
 
 export function useStationsQuery() {
