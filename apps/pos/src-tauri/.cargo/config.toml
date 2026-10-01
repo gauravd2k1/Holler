@@ -18,3 +18,16 @@ rustflags = ["-C", "target-feature=+crt-static"]
 
 [target.aarch64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
+
+# --- build layout -----------------------------------------------------------
+# Opts this crate OUT of any repo-root `build.target-dir` override. The POS
+# release binary must stay at
+# apps\pos\src-tauri\target\release\holler-pos.exe: that exact path is named by
+# scripts/check-release-binary.ps1, apps/pos/run-dev.ps1, scripts/demo-build.ps1
+# and scripts/demo-up.ps1, and by a Windows Firewall rule that matches on the
+# program path, not on the binary's identity. A nearer config file wins over an
+# ancestor one, so this pins the target directory back to the crate's own.
+#
+# A no-op on a checkout with no root override, so it is safe to commit.
+[build]
+target-dir = "target"
