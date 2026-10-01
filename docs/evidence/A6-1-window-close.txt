@@ -1,0 +1,53 @@
+A6-1 — does closing the POS window seal the edge database?
+
+VERDICT: FAIL (reproduces the 2026-09-17 observation)
+
+Observed 2026-10-01. Operator closed the window with the X button; the agent
+measured the process independently, because the port answering and the window
+vanishing are each consistent with the process still running.
+
+PRECONDITION
+  POS launched from the verified release binary
+  (apps\pos\src-tauri\target\release\holler-pos.exe, content-checked: entry
+  chunk index-B7byvtKn.js present inside it), pid 26576, started 10:03:07,
+  after a clean demo-reset.ps1 -Force.
+
+BEFORE THE CLOSE
+  pid 26576 ALIVE   MainWindowHandle = 791468   MainWindowTitle = 'Holler POS'
+  9310 LISTEN pid=26576      9320 LISTEN pid=26576
+  edge.db                 1384448  10:03:07   (plaintext working file: normal while running)
+  edge.db-shm               32768  10:03:07
+  edge.db-wal                   0  10:03:07
+  edge.db.enc             1384476  09:45:33   (sealed; already OLDER than the plaintext)
+  edge.db.open-marker           0  10:03:07
+
+AFTER THE CLOSE (X button, +10s)
+  pid 26576 STILL ALIVE   MainWindowHandle = 2822940   MainWindowTitle = ''   CPU = 5.7s
+  9310 LISTEN pid=26576      9320 LISTEN pid=26576     <-- listeners never released
+  edge.db                 1384448  10:03:07   <-- UNCHANGED, plaintext remains
+  edge.db.enc             1384476  09:45:33   <-- UNCHANGED, never resealed
+  edge.db.open-marker           0  10:03:07   <-- still present
+
+WHAT THE WINDOW HANDLE SHOWS
+  The window really did close: the title went empty and the original handle was
+  replaced. The PROCESS did not exit. That one line is the diagnosis -- a
+  process that outlives its window means the Tauri event loop never ended, so
+  RunEvent::Exit never fires, so the exit hook at
+  apps/pos/src-tauri/src/lib.rs:199-243 -- which is correct and complete -- is
+  never reached. The bug is not in the hook; it is that nothing calls it.
+
+WHAT THIS DOES AND DOES NOT MEAN
+  No data is lost. recover_crash_leftovers (edge/database/src/crypto.rs:312)
+  proves the key, folds any WAL pages in and reseals the leftover on the next
+  open; an unreadable leftover is quarantined with its bytes intact.
+  The real harm is narrower:
+    1. A decrypted SQLite file holding cached Argon2id credential hashes sits
+       on disk in the clear between an abnormal exit and the next open
+       (ADR-011).
+    2. A backup that copies only edge.db.enc silently loses the last session,
+       because the newer state is in the plaintext beside it. This run shows
+       that gap directly: the sealed file was 17 minutes older than the
+       plaintext at the moment of the close.
+
+NOT YET TAKEN: A6-2 (Ctrl+C). Expected to FAIL -- no signal handler exists
+anywhere in the tree.
