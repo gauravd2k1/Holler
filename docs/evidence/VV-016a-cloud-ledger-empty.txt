@@ -1,0 +1,20 @@
+VV-016a — cloud stock ledger is empty immediately after a clean reseed
+observed: 2026-10-01 by Claude Code session (read-only psql), operator ran demo-reset.ps1 -Force
+precondition: demo-reset.ps1 -Force completed; POS NOT yet launched, so the till had not drained
+backend: api pid 35320 on :8080; db: holler-postgres-1, database 'holler'
+
+$ SELECT id, name FROM outlet;
+                  id                  |       name        
+--------------------------------------+-------------------
+ 0191a000-0000-7000-8000-00000000000a | Shinjuku Yakitori
+(1 row)
+
+$ SELECT outlet_id, count(*), min(entry_seq), max(entry_seq) FROM stock_ledger_entry GROUP BY outlet_id;
+ outlet_id | rows | min_seq | max_seq 
+-----------+------+---------+---------
+(0 rows)
+
+
+VERDICT: PASS — 0 rows. 45 rows before the till drains would mean fix 5 regressed.
+NOTE: docs/visual-verify.md rule 2 wants a .png; this text artefact records the measurement,
+      and VV-016a-cloud-ledger-empty.png from the operator's own psql run closes the row.
