@@ -525,6 +525,57 @@ if ([string]::IsNullOrWhiteSpace($DbKeyHex)) {
     $DbKeyHex = $env:HOLLER_DB_KEY_HEX
 }
 if ([string]::IsNullOrWhiteSpace($DbKeyHex)) {
+    # THE ADVICE BELOW IS WRONG ON A MACHINE THAT ALREADY HAS A SEALED
+    # DATABASE, so work out which machine this is before printing it.
+    #
+    # The failure this guards against is mundane and has cost real time more
+    # than once: HOLLER_DB_KEY_HEX lives in the process environment, so it dies
+    # with the terminal. Open a new window, re-run this script, and the refusal
+    # fires -- and its only suggestion is to MINT A NEW KEY. Follow that on a
+    # machine holding an edge.db.enc and the sealed database becomes
+    # unopenable; the edge crate refuses rather than overwriting it (T25), but
+    # the operator is still stopped dead with a key they now have to undo.
+    #
+    # The existing key is sitting in apps\pos\.env.dev, which this very script
+    # wrote. So when a sealed file AND that line both exist, the correct advice
+    # is to read it back, and minting is the wrong move, not merely one of two.
+    $sealedPath = Join-Path $EdgeDataDir "edge.db.enc"
+    $posEnvPath = if ([string]::IsNullOrWhiteSpace($PosEnvFile)) {
+        Join-Path $PSScriptRoot "..pps\pos\.env.dev"
+    } else {
+        $PosEnvFile
+    }
+    $hasSealed = Test-Path -LiteralPath $sealedPath
+    $hasEnvKey = (Test-Path -LiteralPath $posEnvPath) -and
+                 ($null -ne (Select-String -Path $posEnvPath -Pattern '^HOLLER_DB_KEY_HEX=.' -ErrorAction SilentlyContinue))
+
+    if ($hasSealed -and $hasEnvKey) {
+        throw @"
+HOLLER_DB_KEY_HEX is not set in THIS terminal.
+
+Do NOT mint a new key. This machine already has a sealed edge database:
+
+    $sealedPath
+
+and the key that opens it is already recorded in:
+
+    $posEnvPath
+
+A different key cannot open that file and never falls back to an empty one, so
+minting here does not get you running -- it stops you. Read the existing key
+back instead, in this terminal, then re-run:
+
+    `$env:HOLLER_DB_KEY_HEX = (Select-String -Path '$posEnvPath' -Pattern '^HOLLER_DB_KEY_HEX=(.+)`$').Matches[0].Groups[1].Value
+
+Check it took before re-running -- the length, never the value:
+
+    "len = `$(`$env:HOLLER_DB_KEY_HEX.Length)"   # expect 64
+
+The variable lives in the process environment, so it dies with the window. A
+new terminal needs that line again; that is the whole cause of this message.
+"@
+    }
+
     throw @"
 HOLLER_DB_KEY_HEX is not set and -DbKeyHex was not supplied.
 
