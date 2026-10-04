@@ -84,13 +84,46 @@ func NewPostgresRepository(pool postgres.Pool) *PostgresRepository {
 // unchanged" rather than an explicit content-mismatch error. Accepted as a
 // known trade-off for Milestone 1 — the edge is trusted not to reuse
 // UUIDv7s — revisit if that trust assumption ever needs enforcing cloud-side.
+//
+// IT PERSISTS THE PAYLOAD'S LINES, AND UNTIL 2026-10-05 IT DID NOT. The till
+// puts the whole CanonicalOrder into the OrderCreated event, items included
+// (apps/pos/src-tauri/src/commands/orders.rs), and this method wrote the
+// header and dropped them: json.Unmarshal is lenient, order.Items decoded
+// fine, and nothing ever read it. A line therefore reached the cloud ONLY if
+// the cashier added it AFTER the create, as its own ItemAdded event. Measured
+// on the live edge database 2026-10-04: all three orders that have ever
+// replayed carried one item in their create payload, all three OrderCreated
+// rows were `sent`, and the cloud's order_item set was exactly the separately
+// sent ItemAdded events — leaving #A2 at total_paise = 194500 against zero
+// lines, and the admin console unable to name anything that had been sold.
+// This is the cloud failing to honour a wire type it already claimed, the
+// same defect as display_number at contracts 0.8.2, and it needs no contract
+// change.
+//
+// The header and the lines go in ONE transaction. A create is a single edge
+// event and must not be able to land half-applied — a committed header with
+// its lines rolled back is the very state this fixes, reachable again through
+// any mid-insert failure.
+//
+// NOTE WHAT THIS DOES NOT FIX. order.total_paise is still the create-time
+// snapshot and no event ever revises it, so an order amended after create
+// still shows a header that disagrees with its own lines. Fixing that either
+// makes the cloud a second writer of a number the edge authors (§50.1) or
+// changes a frozen event payload, so it is filed and escalated rather than
+// bundled in here (docs/backlog.md, VV-004).
 func (r *PostgresRepository) InsertOrder(ctx context.Context, tenantID, deviceID string, version int, order Order) (StoredOrder, bool, error) {
 	sourcePayload, err := json.Marshal(order.SourcePayload)
 	if err != nil {
 		return StoredOrder{}, false, fmt.Errorf("ordering: marshalling source_payload: %w", err)
 	}
 
-	tag, err := r.pool.Exec(ctx,
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return StoredOrder{}, false, fmt.Errorf("ordering: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	tag, err := tx.Exec(ctx,
 		`INSERT INTO "order" (id, outlet_id, device_id, order_type, status, table_id,
 			subtotal_paise, discount_paise, taxes_paise, total_paise, version,
 			source_payload, created_at, updated_at,
@@ -109,6 +142,30 @@ func (r *PostgresRepository) InsertOrder(ctx context.Context, tenantID, deviceID
 	)
 	if err != nil {
 		return StoredOrder{}, false, storage.Wrap("ordering: inserting order", err)
+	}
+
+	// Only when the header actually landed. On a redelivery the header
+	// insert is a no-op and the lines are already stored, so re-running the
+	// line inserts would add nothing (they carry ON CONFLICT DO NOTHING on
+	// the item's own id) but would still have to be refused by the order_id
+	// foreign key on the one path where the header never existed at all —
+	// the outlet/tenant mismatch below.
+	if tag.RowsAffected() > 0 {
+		for _, item := range order.Items {
+			if _, err := tx.Exec(ctx,
+				`INSERT INTO order_item (id, order_id, menu_item_id, variant_id, quantity, unit_price_paise, line_total_paise, notes, created_at)
+				 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
+				 ON CONFLICT (id) DO NOTHING`,
+				item.ID, order.HollerOrderID, item.MenuItemID, item.VariantID,
+				item.Quantity, item.UnitPricePaise, item.LineTotalPaise, item.Notes,
+			); err != nil {
+				return StoredOrder{}, false, storage.Wrap("ordering: inserting order line from create payload", err)
+			}
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return StoredOrder{}, false, fmt.Errorf("ordering: commit tx: %w", err)
 	}
 
 	stored, getErr := r.GetByID(ctx, tenantID, order.HollerOrderID)
