@@ -1,0 +1,25 @@
+Shinjuku Yakitori Hospitality Pvt Ltd
+Shinjuku Yakitori
+Camp
+Pune 411001
+GSTIN: 27AAAAA0000A1Z5
+FSSAI: 11522998000123
+------------------------------------------------
+TAX INVOICE
+Invoice No: SY/000001
+Date: 03 Oct 2026, 08:10 PM IST
+Order: A2
+Table: Main / T2
+Place of Supply: Maharashtra (27)
+------------------------------------------------
+1 x Non Veg (Regular)
+  HSN/SAC 9963
+  Rate Rs 1895.00  Taxable Rs 1804.76
+------------------------------------------------
+Taxable Value: Rs 1804.76
+CGST: Rs 45.12
+SGST: Rs 45.12
+Grand Total: Rs 1895.00
+Payment: Cash + UPI
+------------------------------------------------
+Thank you - please visit again
