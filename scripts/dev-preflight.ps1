@@ -235,8 +235,13 @@ if ([string]::IsNullOrWhiteSpace($env:HOLLER_DB_KEY_HEX)) {
     $posEnv = Join-Path $repoRoot 'apps\pos\.env.dev'
     $sealed = Join-Path $EdgeDataDir 'edge.db.enc'
     if (Test-Path -LiteralPath $sealed) {
-        Add-Finding -Area 'edge-key' -Status 'FAIL' `
-            -Detail 'HOLLER_DB_KEY_HEX is not set in this terminal, and a sealed edge.db.enc EXISTS. Do not mint a new key -- a different key cannot open that file and never falls back to an empty one.' `
+        # WARN, not FAIL. This reads the environment of the shell THIS SCRIPT
+        # runs in, which is not necessarily the shell that will launch the POS
+        # -- an agent running the preflight always sees it unset, and reporting
+        # that as a blocker makes every clean stack look broken. The variable
+        # is per-process and only has to be set where run-dev.ps1 is invoked.
+        Add-Finding -Area 'edge-key' -Status 'WARN' `
+            -Detail 'HOLLER_DB_KEY_HEX is not set IN THIS TERMINAL, and a sealed edge.db.enc EXISTS. It only needs to be set in the terminal you launch the POS from -- if that is a different window, this is not a problem. Do not mint a new key: a different key cannot open that file and never falls back to an empty one.' `
             -Fix "`$env:HOLLER_DB_KEY_HEX = (Select-String -Path '$posEnv' -Pattern '^HOLLER_DB_KEY_HEX=(.+)`$').Matches[0].Groups[1].Value"
     } else {
         Add-Finding -Area 'edge-key' -Status 'WARN' `
@@ -332,6 +337,39 @@ if (Test-Path -LiteralPath $kdsEnv) {
     }
 } else {
     Add-Finding -Area 'kds' -Status 'WARN' -Detail 'apps\kds\.env.dev does not exist.' -Fix '.\scripts\dev-bootstrap.ps1'
+}
+
+# ------------------------------------------------------ 8b. printer sink ----
+#
+# Without HOLLER_PRINTER_FILE_SINK_DIR the seeded printer points at a
+# deliberately non-existent device path (edge/database/src/bin/devseed.rs:3088),
+# so "Print Bill" writes NOTHING and -- observed 2026-10-04 -- shows no banner
+# either. On a machine with no printer attached, which is every machine here,
+# that silently removes the receipt from the demo's step 2.
+#
+# Note it is read at transport construction, i.e. at PROCESS START, so it has to
+# be in the environment of the shell that launches the POS -- putting it in
+# .env.dev only helps because run-dev.ps1 reads that file.
+
+$posEnvFile = Join-Path $repoRoot 'apps\pos\.env.dev'
+if (Test-Path -LiteralPath $posEnvFile) {
+    $sinkLine = Select-String -Path $posEnvFile -Pattern '^HOLLER_PRINTER_FILE_SINK_DIR=(.+)$' -ErrorAction SilentlyContinue
+    if ($sinkLine) {
+        $sinkDir = $sinkLine.Matches[0].Groups[1].Value.Trim()
+        if (Test-Path -LiteralPath $sinkDir) {
+            $recent = @(Get-ChildItem $sinkDir -Filter '*.pdf' -ErrorAction SilentlyContinue |
+                        Sort-Object LastWriteTime -Descending | Select-Object -First 1)
+            $last = if ($recent.Count -gt 0) { " Last receipt: $($recent[0].LastWriteTime)." } else { ' No receipts written yet.' }
+            Add-Finding -Area 'printer' -Status 'OK' -Detail "File sink -> $sinkDir.$last"
+        } else {
+            Add-Finding -Area 'printer' -Status 'WARN' -Detail "HOLLER_PRINTER_FILE_SINK_DIR names '$sinkDir', which does not exist." `
+                -Fix "New-Item -ItemType Directory -Path '$sinkDir' -Force"
+        }
+    } else {
+        Add-Finding -Area 'printer' -Status 'FAIL' `
+            -Detail 'HOLLER_PRINTER_FILE_SINK_DIR is NOT in apps\pos\.env.dev. With no printer attached the seeded printer points at a non-existent device path, so Print Bill writes nothing AND shows no banner -- the receipt silently disappears from the demo.' `
+            -Fix '.\scripts\dev-bootstrap.ps1 -PrinterFileSinkDir C:\Code\Holler\.dev-prints   # or set $env:HOLLER_PRINTER_FILE_SINK_DIR in the shell that launches the POS'
+    }
 }
 
 # ------------------------------------------------------- 9. release binary ---
