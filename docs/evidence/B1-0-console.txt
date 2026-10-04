@@ -1,0 +1,41 @@
+B1-0 -- name the admin console's "Failed to fetch"
+
+VERDICT: CAUSE NAMED. The failure DOES NOT REPRODUCE on this stack.
+Observed 2026-10-04 by the Claude Code session driving the operator's own Chrome
+(their profile, their extensions, not Incognito, not VS Code's Simple Browser).
+
+PRECONDITION
+  backend api pid 74720 on :8080, healthy; admin dev server on :5175;
+  clean reseed earlier the same sitting; device_credential re-minted.
+
+STEP 1 -- the snippet from docs/demo-runbook.md:448, run in the DevTools
+context of http://localhost:5175, i.e. the same origin the form posts from:
+    fetch("http://localhost:8080/auth/login", {method:"POST",
+      headers:{"content-type":"application/json",
+               "x-tenant-id":"0191a000-0000-7000-8000-000000000001"},
+      body: JSON.stringify({email:"owner@holler.test", password:"...",
+                            outlet_id:"0191a000-0000-7000-8000-00000000000a"})})
+  RESULT: {"status":200,"ok":true}
+
+STEP 2 -- the form itself, filled and submitted in the same tab:
+  RESULT: signed in. Admin console rendered, 'Dev Owner', outlet
+  'Shinjuku Yakitori', Menu and pricing listing 281 items.
+
+WHICH OF THE FOUR CAUSES IT IS
+  None of them. The row's table maps a 200 to 'the API is reachable; the
+  failure is in the app, not the transport'. Here even that does not apply,
+  because the app's own form succeeds too. So it is NOT an extension, NOT
+  HTTPS-First, NOT a CORS origin mismatch and NOT a stale service worker --
+  on this configuration, today.
+
+WHAT THIS DOES AND DOES NOT SETTLE
+  It settles the RESUME.md UNRESOLVED item: the operator's 'logged in and
+  working' was the ADMIN CONSOLE in Chrome. That is now observed directly
+  rather than inferred, which is what the row existed to do.
+  It does NOT prove the earlier failure was imaginary. Between then and now
+  the stack was reseeded and dev-up.ps1 was restarted, and dev-up.ps1:62
+  sets HOLLER_CORS_ALLOWED_ORIGINS for the backend it launches -- so a
+  backend started differently could still refuse. The B1 track's remaining
+  items (b) the CORS default as a list, and (c) the transport-error branch,
+  are now DEFENSIVE rather than diagnostic, and should be re-scoped on that
+  basis rather than built as written.
